@@ -1,0 +1,195 @@
+# CLAUDE.md — Switchyard
+
+Switchyard is a fast, native, cross-platform desktop app that combines a database client
+(PostgreSQL, SQL Server), SSH terminals with tunnels, and file transfer (SFTP, FTP, FTPS)
+behind one connection model. It also visualizes query plans, finds optimization hotspots,
+and exposes a `swy` CLI plus an MCP server so coding CLIs (Claude Code, Codex CLI, Gemini CLI,
+or a custom one) can plan and optimize queries. Written in Rust with GPUI + gpui-component.
+
+- Full product spec: `docs/SPEC.md` (source of truth for behavior and UX)
+- Task plan: `PLAN.md` (work through it in order)
+- Decisions log: `docs/DECISIONS.md` (append when you make or need a non-obvious call)
+
+Oracle is out of scope until after beta. Do not add Oracle code paths, but keep the
+`Driver` / `Dialect` traits general enough that Oracle can be added later.
+
+## How to work in this repo
+
+1. Open `PLAN.md`, take the first unchecked task in the current milestone.
+2. Before coding, state a short plan: files you will touch, types you will add, how you will test.
+3. Implement only that task. No drive-by refactors; note them in `PLAN.md` under "Follow-ups".
+4. Run the checks below. All must pass.
+5. Tick the task in `PLAN.md` and add a one-line note (what landed, anything deferred).
+6. If the spec is ambiguous or a task conflicts with a rule here, stop and ask. Record the answer in `docs/DECISIONS.md`.
+7. When you learn something non-obvious (a crate quirk, a platform trap), add it to "Gotchas" below.
+
+## Commands
+
+```bash
+cargo build --workspace
+cargo run -p switchyard-app
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace                              # unit tests, no network
+docker compose -f docker/compose.yml up -d          # test services
+cargo test --workspace -- --ignored                 # integration tests (need docker)
+cargo bench -p switchyard-db                        # decode / grid benchmarks
+```
+
+Definition of done for any task: builds on stable, fmt clean, clippy clean with `-D warnings`,
+unit tests pass, integration tests pass if the task touches a driver or protocol, PLAN.md updated.
+
+## Workspace layout
+
+```
+switchyard/
+  Cargo.toml              # workspace, shared [workspace.dependencies]
+  rust-toolchain.toml     # pinned stable
+  crates/
+    app/       switchyard-app      GPUI binary: windows, panels, editor, grid, terminal view, file browser
+    core/      switchyard-core     Hosts, connections, sessions, env rules, tokio runtime, event bus
+    store/     switchyard-store    SQLite profiles, schema cache, query history, keychain/vault
+    db/        switchyard-db       Driver/DbSession/Dialect traits, Value, RowBatch; pg + mssql modules
+    remote/    switchyard-remote   SSH sessions, tunnels, SFTP, FTP/FTPS, RemoteFs trait
+    term/      switchyard-term     Terminal state (alacritty_terminal), local PTY
+    drivers/   switchyard-drivers  Driver Manager: manifests, detection, install, verify, runtime loading
+    plan/      switchyard-plan     Plan capture, normalized PlanNode tree, findings rules, access-stats queries
+    cli/       switchyard-cli      `swy` binary and MCP server (stdio)
+    agents/    switchyard-agents   AgentAdapter trait, runner, Claude Code / Codex / Gemini / custom adapters
+  docker/compose.yml      # postgres, mssql, openssh, ftp for integration tests
+  docs/SPEC.md, docs/DECISIONS.md
+```
+
+Dependency direction: `app → core → {store, db, remote, term, drivers, plan, agents}` and
+`cli → core`. `plan` depends on `db` only. `db` may depend on
+`remote` only through the `TunnelEndpoint` type re-exported by `core`. Nothing depends on `app`.
+
+## Architecture rules (do not break these)
+
+- **The UI thread never does I/O.** All network and disk work runs on the tokio runtime owned by
+  `switchyard-core`. The UI sends commands and receives events over channels. A GPUI task awaits
+  the receiver and updates entities. No `block_on` anywhere in `app`.
+- **Stream, don't materialize.** Query results flow as `ResultStream` events
+  (`Columns`, `Rows(RowBatch)`, `Notice`, `NextResultSet`, `Done`). Batches of ~500–1,000 rows.
+  The grid appends batches; it never waits for the full result.
+- **Columnar results.** `RowBatch` stores typed column buffers; strings and bytes in an arena.
+  No `Vec<Vec<String>>`, no per-cell allocation in hot paths.
+- **Everything cancellable.** Every query and transfer holds a cancel handle reachable from the UI.
+- **Dialect behind a trait.** Identifier quoting, catalog queries, LIMIT vs TOP, script splitting
+  and batch separators live in `Dialect` impls. No `if engine == Postgres` in UI code.
+- **Optional native libraries are runtime-loaded** with `libloading` through the Driver Manager.
+  A missing library disables one feature; the app must still start. Do not link optional native
+  libs at build time without an entry in `docs/DECISIONS.md`.
+- **One SSH session per Host**, shared by terminals, SFTP and tunnels.
+- **Virtualize every long list**: grid rows and columns, schema tree, file lists, scrollback.
+- **One plan model.** PostgreSQL JSON plans and SQL Server showplan XML both convert into
+  `PlanNode`. Findings rules and the plan UI only ever see `PlanNode`, never engine output.
+- **The app and `swy` share one core.** The CLI and MCP server reuse `core` and `store`; no
+  duplicated connection or query logic in `cli`.
+
+## Agent safety rules (MCP server and assistant)
+
+- Agent access is off by default, enabled per connection; Production excluded unless explicitly
+  enabled, and then estimated plans and read-only tools only.
+- `run_query` accepts only SELECT/WITH (checked with `sqlparser`), runs in `BEGIN READ ONLY`
+  (PostgreSQL) or a rolled-back transaction (SQL Server), with a timeout and a row cap (default 200).
+- Actual plans (`ANALYZE`, `STATISTICS XML`) from an agent need approval in the app. DML is always
+  wrapped in a transaction and rolled back.
+- Agents see connection names only: never hostnames, users, or secrets.
+- No tool executes DDL. Index and statistics suggestions are returned as text.
+- Every agent call is written to query history tagged `agent`.
+- Safety lives in the MCP server, never in agent settings: every tool is read-only server-side,
+  whatever a coding CLI is configured to allow.
+- Coding CLIs run through `AgentAdapter` implementations (Claude Code, Codex CLI, Gemini CLI,
+  custom). The UI only consumes normalized `AgentEvent`s; no CLI-specific code outside its adapter.
+- Each run: private empty temp working directory (never a user project), MCP config written in the
+  CLI's native format, short-lived `swy mcp` session token scoped to agent-enabled connections,
+  token revoked and temp dir removed when the run ends.
+- Where a CLI supports allow-lists or approval settings, permit only Switchyard's MCP tools and deny
+  its shell and file-edit tools.
+- Never read, copy, store or proxy a coding CLI's credentials. Each CLI uses its own login.
+- History tags: `agent:claude-code`, `agent:codex`, `agent:gemini`, `agent:custom`.
+
+## Coding conventions
+
+- Edition 2024. Stable toolchain only.
+- Errors: `thiserror` enums per library crate; `anyhow` only in `switchyard-app`'s top level.
+- No `unwrap()` / `expect()` outside tests and one-time startup code.
+- Logging with `tracing`. Spans per session and per query (id, engine, host alias — never credentials).
+- Secrets are `secrecy::SecretString`. Never `Debug`, log, serialize, or put them in history/exports.
+- Public types and traits get doc comments. Keep modules small; one driver per module.
+- Tests: unit tests next to code; integration tests in `crates/*/tests/`, marked `#[ignore]`,
+  using the docker services. Use `insta` snapshots for generated SQL and catalog output.
+
+## Approved dependencies
+
+Use these. Ask before adding anything else. Use the latest versions that compile together and
+pin them in `[workspace.dependencies]`.
+
+| Purpose | Crates |
+| --- | --- |
+| UI | `gpui`, `gpui-component` (versions must match each other) |
+| Async | `tokio`, `tokio-util` (compat for tiberius), `futures` |
+| PostgreSQL | `tokio-postgres`, `tokio-postgres-rustls`, `postgres-types` |
+| SQL Server | `tiberius` (rustls feature) |
+| SSH / SFTP | `russh`, `russh-sftp` |
+| FTP / FTPS | `suppaftp` (async + rustls) |
+| Terminal | `alacritty_terminal`, `portable-pty` |
+| SQL tooling | `sqlparser`, tree-sitter + a SQL grammar (check what gpui-component bundles first) |
+| Storage | `rusqlite` (bundled), `keyring`, `secrecy`, `argon2` + `chacha20poly1305` (fallback vault) |
+| TLS / net | `rustls`, `reqwest` (rustls, for driver downloads), `minisign-verify` |
+| Platform | `directories`, `libloading` |
+| Serialization | `serde`, `serde_json` |
+| Errors / logs | `thiserror`, `anyhow`, `tracing`, `tracing-subscriber` |
+| Plans / CLI / MCP | `quick-xml` (showplan), `clap` (`swy`), `rmcp` (official Rust MCP SDK) |
+| Testing | `insta`, `criterion`, `tempfile` |
+
+## Licensing
+
+The project must stay free of GPL code. GPUI and gpui-component are Apache-2.0 and fine.
+Most other Zed crates (including its editor and terminal view) are GPL-3: do not copy or port
+code from them. Check a crate's license before adding it.
+
+## Security rules
+
+- Passwords, passphrases, tokens: keychain or fallback vault only.
+- TLS certificate verification on by default. Trust exceptions are per connection and pinned.
+- SSH: strict host key checking; a changed key blocks the connection.
+- Driver Manager downloads: verify signed manifest and SHA-256 before extracting.
+- Production-labeled connections: confirm destructive statements (DROP, TRUNCATE,
+  DELETE/UPDATE without WHERE), detected with `sqlparser`, not regex.
+
+## Performance budgets (from SPEC; enforced in CI by M6)
+
+Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 50 ms after arrival ·
+1M-row grid scrolls without dropped frames · idle memory with 3 tabs < 150 MB ·
+1M rows × 10 numeric columns < 150 MB · no spinner for operations under 200 ms.
+
+## Gotchas
+
+- `EXPLAIN ANALYZE` and `SET STATISTICS XML ON` execute the statement. Never run them on DML
+  outside a transaction that is rolled back.
+- SQL Server returns showplan XML as a separate result set; the statement's own results arrive too.
+  `SET SHOWPLAN_XML ON` must be alone in its batch.
+- Coding CLI headless invocations (verify against the pinned versions; these change often):
+  Claude Code `claude -p --output-format stream-json --mcp-config <json>`, resume `--resume <id>`;
+  Codex CLI `codex exec --json`, MCP via `[mcp_servers]` in `config.toml`, resume `codex exec resume <id>`;
+  Gemini CLI `gemini -p --output-format stream-json`, MCP via `mcpServers` in `.gemini/settings.json`.
+- Codex CLI `exec` has been reported to cancel MCP tool calls that need approval (no one can answer
+  the prompt), and a generated `CODEX_HOME` hides the user's stored login. See PLAN task M5-12.
+- `pg_stat_statements`, HypoPG and Query Store are optional. Detect them and degrade gracefully;
+  missing permissions (`pg_read_all_stats`, `VIEW SERVER STATE`) produce a hint, not an error.
+
+- `gpui` and `gpui-component` versions must be compatible; check the gpui-component README for the
+  matching `gpui` version before bumping either.
+- `tiberius` takes a `futures` AsyncRead/AsyncWrite stream: wrap tokio streams with
+  `tokio_util::compat` (`compat_write()`).
+- `tiberius`'s `integrated-auth-gssapi` feature links GSSAPI at build time, which conflicts with
+  the runtime-loading rule. See PLAN task M3-7 before enabling it.
+- PostgreSQL cancel opens a second connection to the server. Through an SSH tunnel it must use the
+  same tunnel endpoint.
+- For SSH terminals, feed channel bytes into `alacritty_terminal`'s `Term` through its ANSI parser.
+  Do not use its local tty module for remote sessions; that is only for the local PTY.
+- Script splitting must respect strings, comments, PostgreSQL dollar-quoted bodies, and treat
+  `GO` as a separator only when it stands alone on its line (SQL Server).
+- `keyring` on Linux needs a Secret Service. Detect absence and fall back to the vault.

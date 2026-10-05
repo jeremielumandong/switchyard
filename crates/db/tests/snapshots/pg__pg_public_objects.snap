@@ -1,0 +1,20 @@
+---
+source: crates/db/tests/pg.rs
+expression: "snap.join(\"\\n\")"
+---
+Table abandoned_carts
+Table customers
+Table order_items
+Table orders
+Table payments
+Table products
+Table type_samples
+View top_customers
+MaterializedView daily_revenue
+Function customer_revenue(cid bigint)
+Sequence abandoned_carts_id_seq
+Sequence customers_id_seq
+Sequence orders_id_seq
+Sequence payments_id_seq
+Sequence products_id_seq
+Type order_status
