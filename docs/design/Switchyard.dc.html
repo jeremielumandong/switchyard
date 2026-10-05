@@ -1,0 +1,1231 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0e0e10;--panel:#131316;--surface:#17171a;--elev:#1d1d21;--bd:#232328;--bd2:#2f2f35;--hover:rgba(255,255,255,.045);--sel:oklch(0.68 0.13 250 / .2);--line:rgba(255,255,255,.035);--fg:#e7e7ea;--fg2:#a1a1aa;--fg3:#6e6e77;--acc:oklch(0.7 0.13 250);--acc-fg:#0b0b0d;--prod:oklch(0.66 0.19 25);--stg:oklch(0.79 0.14 78);--dev:oklch(0.73 0.14 150);--loc:#8b8b94;--prod-bg:oklch(0.66 0.19 25 / .13);--stg-bg:oklch(0.79 0.14 78 / .13);--dev-bg:oklch(0.73 0.14 150 / .12);--staged:oklch(0.79 0.14 78 / .17);--sx-kw:oklch(0.76 0.12 300);--sx-str:oklch(0.78 0.12 145);--sx-num:oklch(0.8 0.11 65);--sx-fn:oklch(0.78 0.1 225);--sx-cm:#6e6e77;--term:#0b0b0d;--shadow:0 16px 48px rgba(0,0,0,.55),0 0 0 1px rgba(255,255,255,.07);--scrim:rgba(0,0,0,.5)}
+:root[data-theme=light]{--bg:#f2f2f3;--panel:#f8f8f9;--surface:#ffffff;--elev:#ffffff;--bd:#e2e2e6;--bd2:#d2d2d8;--hover:rgba(0,0,0,.04);--sel:oklch(0.56 0.15 255 / .12);--line:rgba(0,0,0,.028);--fg:#18181b;--fg2:#53535c;--fg3:#8a8a93;--acc:oklch(0.55 0.15 255);--acc-fg:#ffffff;--prod:oklch(0.56 0.2 25);--stg:oklch(0.64 0.15 70);--dev:oklch(0.56 0.14 150);--loc:#8a8a93;--prod-bg:oklch(0.56 0.2 25 / .09);--stg-bg:oklch(0.7 0.15 70 / .13);--dev-bg:oklch(0.56 0.14 150 / .09);--staged:oklch(0.8 0.15 80 / .28);--sx-kw:oklch(0.48 0.17 300);--sx-str:oklch(0.5 0.13 145);--sx-num:oklch(0.55 0.14 55);--sx-fn:oklch(0.48 0.13 240);--sx-cm:#9a9aa2;--term:#fbfbfc;--shadow:0 16px 48px rgba(0,0,0,.14),0 0 0 1px rgba(0,0,0,.07);--scrim:rgba(20,20,25,.22)}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg)}
+body{font-family:Geist,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--acc);text-decoration:none}a:hover{color:var(--fg)}
+input{font:inherit;color:inherit}
+button{white-space:nowrap;flex:none}
+::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:var(--bd2);border-radius:10px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-corner{background:transparent}
+@keyframes sy-pulse{0%,100%{opacity:1}50%{opacity:.3}}
+@keyframes sy-shimmer{0%{background-position:-160px 0}100%{background-position:160px 0}}
+@keyframes sy-indet{0%{transform:translateX(-100%)}100%{transform:translateX(260%)}}
+</style>
+</helmet>
+<div style="height:100vh;display:flex;flex-direction:column;background:var(--bg);color:var(--fg);font-size:13px;line-height:1.4;overflow:hidden;position:relative">
+
+  <div style="height:38px;flex:none;display:flex;align-items:center;gap:12px;padding:0 10px 0 12px;background:var(--panel);border-bottom:1px solid var(--bd)">
+    <div style="display:flex;gap:7px;flex:none">
+      <span style="width:11px;height:11px;border-radius:50%;background:var(--bd2)"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:var(--bd2)"></span>
+      <span style="width:11px;height:11px;border-radius:50%;background:var(--bd2)"></span>
+    </div>
+    <div style="display:flex;align-items:center;gap:7px;height:26px;padding:0 8px;border-radius:6px;cursor:default;flex:none" style-hover="background:var(--hover)">
+      <span style="width:14px;height:14px;border-radius:3px;background:var(--fg);display:grid;place-items:center"><span style="width:6px;height:6px;background:var(--panel);border-radius:1px"></span></span>
+      <span style="font-weight:600;font-size:12.5px;white-space:nowrap">acme-ops</span>
+      <span style="color:var(--fg3);font-size:10px">▾</span>
+    </div>
+    <button onClick="{{toggleSidebar}}" style="height:26px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:var(--fg2);font:500 12px Geist,sans-serif;cursor:default" style-hover="background:var(--hover);color:var(--fg)">Sidebar</button>
+    <div style="flex:1;display:flex;justify-content:center;min-width:0">
+      <div onClick="{{openPalette}}" style="width:100%;max-width:460px;height:26px;display:flex;align-items:center;gap:8px;padding:0 6px 0 10px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg3);font-size:12.5px;cursor:text" style-hover="border-color:var(--bd2)">
+        <span style="flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Search connections, tables, commands…</span>
+        <span style="font:500 10.5px 'Geist Mono',monospace;padding:1px 5px;border:1px solid var(--bd2);border-radius:4px;color:var(--fg2)">{{K.palette}}</span>
+      </div>
+    </div>
+    <button onClick="{{toggleTheme}}" style="height:26px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:var(--fg2);font:500 12px Geist,sans-serif;cursor:default" style-hover="background:var(--hover);color:var(--fg)">{{themeLabel}}</button>
+    <button onClick="{{openComponents}}" style="height:26px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:var(--fg2);font:500 12px Geist,sans-serif;cursor:default" style-hover="background:var(--hover);color:var(--fg)">Components</button>
+    <button onClick="{{openSettings}}" style="height:26px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:var(--fg2);font:500 12px Geist,sans-serif;cursor:default" style-hover="background:var(--hover);color:var(--fg)">Settings</button>
+  </div>
+
+  <div style="flex:1;display:flex;min-height:0">
+
+    <sc-if value="{{sidebarOpen}}" hint-placeholder-val="{{true}}">
+    <div style="width:264px;flex:none;display:flex;flex-direction:column;background:var(--panel);border-right:1px solid var(--bd);min-height:0">
+      <div style="padding:8px 8px 6px;flex:none">
+        <div style="display:grid;grid-template-columns:1fr 1fr;padding:2px;gap:2px;background:var(--bg);border:1px solid var(--bd);border-radius:6px">
+          <button onClick="{{sideConn}}" style="height:22px;border:0;border-radius:4px;background:{{sideTabs.connBg}};color:{{sideTabs.connFg}};font:500 12px Geist,sans-serif;cursor:default">Connections</button>
+          <button onClick="{{sideSchema}}" style="height:22px;border:0;border-radius:4px;background:{{sideTabs.schemaBg}};color:{{sideTabs.schemaFg}};font:500 12px Geist,sans-serif;cursor:default">Schema</button>
+        </div>
+      </div>
+
+      <sc-if value="{{isSideConn}}" hint-placeholder-val="{{true}}">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 12px 4px;color:var(--fg3);font-size:11px;font-weight:500;letter-spacing:.02em">
+        <span>HOSTS</span><span style="font-family:'Geist Mono',monospace">by host ▾</span>
+      </div>
+      <div style="flex:1;overflow:auto;padding-bottom:8px">
+        <sc-for list="{{connRows}}" as="r" hint-placeholder-count="12">
+          <div onClick="{{r.onClick}}" style="height:26px;display:flex;align-items:center;gap:7px;padding:0 10px 0 {{r.pad}};background:{{r.bg}};cursor:default;font-size:12.5px" style-hover="background:var(--hover)">
+            <span style="width:10px;flex:none;color:var(--fg3);font-size:9px;text-align:center">{{r.caret}}</span>
+            <sc-if value="{{r.isHost}}"><span style="width:7px;height:7px;flex:none;border-radius:50%;background:{{r.envColor}}"></span></sc-if>
+            <sc-if value="{{r.isLeaf}}"><span style="font:600 8.5px/15px 'Geist Mono',monospace;width:28px;height:15px;flex:none;text-align:center;border-radius:3px;background:var(--hover);color:var(--fg2);border:1px solid var(--bd)">{{r.badge}}</span></sc-if>
+            <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:{{r.weight}}">{{r.label}}</span>
+            <span style="font:11px 'Geist Mono',monospace;color:var(--fg3);white-space:nowrap">{{r.sub}}</span>
+            <span style="width:6px;height:6px;flex:none;border-radius:50%;background:{{r.live}}"></span>
+          </div>
+        </sc-for>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{isSideSchema}}" hint-placeholder-val="{{false}}">
+      <div style="padding:2px 8px 6px;flex:none">
+        <div style="height:26px;display:flex;align-items:center;gap:8px;padding:0 8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg3);font-size:12px"><span style="flex:1">Search objects in shop_prod</span><span style="font:10.5px 'Geist Mono',monospace">{{K.quick}}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:6px 2px 0;font-size:11px;color:var(--fg3)"><span>Cached 2 min ago</span><span style="color:var(--acc);cursor:default">Refresh</span></div>
+      </div>
+      <div style="flex:1;overflow:auto;padding-bottom:8px">
+        <sc-for list="{{schemaRows}}" as="r" hint-placeholder-count="14">
+          <div onClick="{{r.onClick}}" onContextMenu="{{r.onCtx}}" style="height:26px;display:flex;align-items:center;gap:7px;padding:0 10px 0 {{r.pad}};background:{{r.bg}};cursor:default;font-size:12.5px;color:{{r.fg}}" style-hover="background:var(--hover)">
+            <span style="width:10px;flex:none;color:var(--fg3);font-size:9px;text-align:center">{{r.caret}}</span>
+            <span style="width:14px;flex:none;font:600 10px 'Geist Mono',monospace;color:var(--fg3);text-align:center">{{r.icon}}</span>
+            <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{r.label}}</span>
+            <sc-if value="{{r.loading}}"><span style="width:64px;height:8px;border-radius:4px;background:linear-gradient(90deg,var(--hover) 0,var(--bd2) 50%,var(--hover) 100%);background-size:160px 8px;animation:sy-shimmer 1.2s linear infinite"></span></sc-if>
+            <span style="font:11px 'Geist Mono',monospace;color:var(--fg3)">{{r.sub}}</span>
+          </div>
+        </sc-for>
+      </div>
+      </sc-if>
+
+      <div style="flex:none;padding:8px;border-top:1px solid var(--bd);display:flex;gap:6px">
+        <button onClick="{{newConn}}" style="flex:1;height:26px;border:1px solid var(--bd2);border-radius:6px;background:var(--elev);color:var(--fg);font:500 12px Geist,sans-serif;cursor:default" style-hover="border-color:var(--fg3)">New connection</button>
+        <button onClick="{{newHost}}" style="height:26px;padding:0 10px;border:1px solid var(--bd2);border-radius:6px;background:var(--elev);color:var(--fg);font:500 12px Geist,sans-serif;cursor:default" style-hover="border-color:var(--fg3)">New host</button>
+      </div>
+    </div>
+    </sc-if>
+
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column;background:var(--surface)">
+      <div style="height:34px;flex:none;display:flex;align-items:stretch;background:var(--panel);border-bottom:1px solid var(--bd);overflow:hidden">
+        <sc-for list="{{tabs}}" as="t" hint-placeholder-count="4">
+          <div onClick="{{t.onClick}}" style="position:relative;display:flex;align-items:center;gap:7px;padding:0 10px 0 12px;min-width:0;max-width:230px;border-right:1px solid var(--bd);background:{{t.bg}};color:{{t.fg}};margin-bottom:{{t.mb}};cursor:default;font-size:12.5px">
+            <span style="position:absolute;left:0;right:0;top:0;height:2px;background:{{t.edge}}"></span>
+            <span style="font:600 8.5px/14px 'Geist Mono',monospace;padding:0 4px;border-radius:3px;border:1px solid var(--bd);color:var(--fg2)">{{t.badge}}</span>
+            <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{t.label}}</span>
+            <span style="width:6px;height:6px;border-radius:50%;background:{{t.dirty}};flex:none"></span>
+          </div>
+        </sc-for>
+        <div style="flex:1;border-bottom:0"></div>
+        <div style="display:flex;align-items:center;gap:2px;padding:0 8px;color:var(--fg3);font:12px 'Geist Mono',monospace">
+          <span style="padding:3px 6px;border-radius:4px" style-hover="background:var(--hover)">⊟</span>
+          <span style="padding:3px 6px;border-radius:4px" style-hover="background:var(--hover)">⊞</span>
+        </div>
+      </div>
+
+      <sc-if value="{{isSql}}" hint-placeholder-val="{{true}}">
+      <div style="flex:1;min-height:0;display:flex;flex-direction:column">
+        <div style="height:38px;flex:none;display:flex;align-items:center;gap:6px;padding:0 10px;border-bottom:1px solid var(--bd);overflow:hidden;white-space:nowrap">
+          <button onClick="{{run}}" style="height:26px;display:flex;align-items:center;gap:8px;padding:0 8px 0 10px;border:0;border-radius:6px;background:var(--acc);color:var(--acc-fg);font:600 12px Geist,sans-serif;cursor:default">Run<span style="font:500 10.5px 'Geist Mono',monospace;opacity:.7">{{K.run}}</span></button>
+          <button onClick="{{runScript}}" style="height:26px;display:flex;align-items:center;gap:8px;padding:0 8px 0 10px;border:1px solid var(--bd2);border-radius:6px;background:var(--elev);color:var(--fg);font:500 12px Geist,sans-serif;cursor:default">Run script<span style="font:500 10.5px 'Geist Mono',monospace;color:var(--fg3)">{{K.script}}</span></button>
+          <button onClick="{{stop}}" style="height:26px;display:flex;align-items:center;gap:8px;padding:0 8px 0 10px;border:1px solid var(--bd2);border-radius:6px;background:var(--elev);color:{{stopFg}};font:500 12px Geist,sans-serif;cursor:default">Stop<span style="font:500 10.5px 'Geist Mono',monospace;color:var(--fg3)">{{K.stop}}</span></button>
+          <span style="width:1px;height:18px;background:var(--bd);margin:0 4px"></span>
+          <div style="display:flex;flex:none;padding:2px;gap:2px;background:var(--bg);border:1px solid var(--bd);border-radius:6px">
+            <button onClick="{{txnAuto}}" style="height:20px;padding:0 8px;border:0;border-radius:4px;background:{{txnSeg.autoBg}};color:{{txnSeg.autoFg}};font:500 11.5px Geist,sans-serif;cursor:default">Auto-commit</button>
+            <button onClick="{{txnManual}}" style="height:20px;padding:0 8px;border:0;border-radius:4px;background:{{txnSeg.manBg}};color:{{txnSeg.manFg}};font:500 11.5px Geist,sans-serif;cursor:default">Manual</button>
+          </div>
+          <sc-if value="{{txnOpen}}" hint-placeholder-val="{{false}}">
+            <button style="height:26px;padding:0 10px;border:1px solid var(--bd2);border-radius:6px;background:var(--elev);color:var(--fg);font:500 12px Geist,sans-serif">Commit</button>
+            <button style="height:26px;padding:0 10px;border:1px solid var(--bd2);border-radius:6px;background:var(--elev);color:var(--fg);font:500 12px Geist,sans-serif">Rollback</button>
+          </sc-if>
+          <button style="height:26px;padding:0 10px;border:0;border-radius:6px;background:transparent;color:var(--fg2);font:500 12px Geist,sans-serif" style-hover="background:var(--hover)">Format</button>
+          <div style="flex:1"></div>
+          <div onClick="{{openQuick}}" style="height:26px;flex:none;display:flex;align-items:center;gap:8px;padding:0 10px;border:1px solid var(--prod);border-radius:6px;background:var(--prod-bg);font-size:12px;cursor:default">
+            <span style="width:7px;height:7px;border-radius:50%;background:var(--prod)"></span>
+            <span style="font-weight:500">shop_prod</span>
+            <span style="font:600 9.5px 'Geist Mono',monospace;letter-spacing:.06em;color:var(--prod)">PROD</span>
+            <span style="color:var(--fg3);font-size:10px">▾</span>
+          </div>
+        </div>
+
+        <div style="height:{{editorH}}px;flex:none;display:flex;position:relative;overflow:hidden;box-shadow:inset 2px 0 0 var(--prod)">
+          <div style="flex:1;overflow:auto;padding:10px 0;font:12.5px/20px 'Geist Mono',monospace">
+            <sc-for list="{{lines}}" as="l" hint-placeholder-count="14">
+              <div style="display:flex;height:20px;background:{{l.bg}};position:relative">
+                <span style="position:absolute;left:2px;top:0;bottom:0;width:2px;background:{{l.mark}}"></span>
+                <span style="width:52px;flex:none;text-align:right;padding-right:16px;color:{{l.numColor}};user-select:none">{{l.n}}</span>
+                <span style="position:relative;display:flex;white-space:nowrap"><sc-for list="{{l.toks}}" as="t"><span style="white-space:pre;color:{{t.c}};font-style:{{t.fs}};text-decoration:{{t.deco}};text-underline-offset:4px">{{t.t}}</span></sc-for><sc-if value="{{l.caret}}"><span style="display:inline-block;width:2px;height:16px;margin-top:2px;background:var(--acc);position:relative">
+                    <sc-if value="{{l.comp}}">
+                      <div style="position:absolute;top:19px;left:-18px;width:340px;background:var(--elev);border-radius:7px;box-shadow:var(--shadow);padding:4px;z-index:5;white-space:normal;font:12px/1.3 'Geist Mono',monospace">
+                        <sc-for list="{{completions}}" as="c">
+                          <div style="height:26px;display:flex;align-items:center;gap:8px;padding:0 8px;border-radius:4px;background:{{c.bg}}">
+                            <span style="width:16px;font-size:10px;color:var(--fg3);text-align:center">{{c.kind}}</span>
+                            <span style="flex:1;color:var(--fg)">{{c.name}}</span>
+                            <span style="color:var(--fg3);font-size:11px">{{c.type}}</span>
+                          </div>
+                        </sc-for>
+                        <div style="padding:6px 8px 3px;border-top:1px solid var(--bd);margin-top:4px;color:var(--fg3);font:11px Geist,sans-serif;display:flex;justify-content:space-between"><span>orders o · public</span><span>↵ insert · esc</span></div>
+                      </div>
+                    </sc-if>
+                  </span></sc-if>
+                </span>
+              </div>
+              <sc-if value="{{l.err}}">
+                <div style="display:flex;margin:2px 0 4px">
+                  <span style="width:52px;flex:none"></span>
+                  <div style="display:flex;align-items:center;gap:10px;padding:3px 10px;border-radius:5px;background:var(--prod-bg);color:var(--fg);font:12px Geist,sans-serif">
+                    <span style="color:var(--prod);font-weight:600">ERROR 42703</span>
+                    <span>column o.customer_ud does not exist</span>
+                    <span style="color:var(--fg2)">Did you mean <span style="font-family:'Geist Mono',monospace;color:var(--fg)">o.customer_id</span>?</span>
+                    <span style="color:var(--fg3);font-family:'Geist Mono',monospace;font-size:11px">Ln 6, Col 21</span>
+                  </div>
+                </div>
+              </sc-if>
+            </sc-for>
+          </div>
+        </div>
+
+        <div onMouseDown="{{startDrag}}" style="height:6px;flex:none;cursor:row-resize;border-top:1px solid var(--bd);background:var(--panel);display:grid;place-items:center" style-hover="background:var(--hover)"><span style="width:28px;height:2px;border-radius:2px;background:var(--bd2)"></span></div>
+
+        <div style="flex:1;min-height:0;display:flex;flex-direction:column;background:var(--surface)">
+          <div style="height:32px;flex:none;display:flex;align-items:stretch;gap:2px;padding:0 8px;border-bottom:1px solid var(--bd);background:var(--panel)">
+            <sc-for list="{{resultTabs}}" as="rt" hint-placeholder-count="2">
+              <div onClick="{{rt.onClick}}" style="display:flex;flex:none;white-space:nowrap;align-items:center;gap:6px;padding:0 10px;font-size:12px;color:{{rt.fg}};box-shadow:{{rt.line}};cursor:default">{{rt.label}}<span style="font:11px 'Geist Mono',monospace;color:var(--fg3)">{{rt.count}}</span></div>
+            </sc-for>
+            <div style="flex:1"></div>
+            <div style="display:flex;align-items:center;gap:6px;position:relative">
+              <button onClick="{{fetchAll}}" style="height:22px;padding:0 8px;border:0;border-radius:5px;background:transparent;color:var(--fg2);font:500 11.5px Geist,sans-serif" style-hover="background:var(--hover)">Fetch all</button>
+              <button onClick="{{toggleExport}}" style="height:22px;padding:0 8px;border:1px solid var(--bd2);border-radius:5px;background:var(--elev);color:var(--fg);font:500 11.5px Geist,sans-serif">Export ▾</button>
+              <button onClick="{{toggleInspector}}" style="height:22px;padding:0 8px;border:0;border-radius:5px;background:transparent;color:var(--fg2);font:500 11.5px Geist,sans-serif" style-hover="background:var(--hover)">Inspector</button>
+              <sc-if value="{{exportOpen}}" hint-placeholder-val="{{false}}">
+                <div style="position:absolute;top:28px;right:70px;width:220px;background:var(--elev);border-radius:7px;box-shadow:var(--shadow);padding:4px;z-index:20">
+                  <div style="padding:4px 8px;font-size:11px;color:var(--fg3)">Copy selection as</div>
+                  <sc-for list="{{exportItems}}" as="x"><div onClick="{{x.onClick}}" style="height:26px;display:flex;align-items:center;justify-content:space-between;padding:0 8px;border-radius:4px;font-size:12.5px;cursor:default" style-hover="background:var(--sel)"><span>{{x.label}}</span><span style="font:10.5px 'Geist Mono',monospace;color:var(--fg3)">{{x.key}}</span></div></sc-for>
+                  <div style="height:1px;background:var(--bd);margin:4px 0"></div>
+                  <div onClick="{{toggleExport}}" style="height:26px;display:flex;align-items:center;padding:0 8px;border-radius:4px;font-size:12.5px;cursor:default" style-hover="background:var(--sel)">Export full result to file…</div>
+                </div>
+              </sc-if>
+            </div>
+          </div>
+
+          <sc-if value="{{rs.isError}}" hint-placeholder-val="{{false}}">
+            <div style="flex:1;padding:20px 22px;display:flex;flex-direction:column;gap:10px;align-items:flex-start">
+              <div style="display:flex;gap:10px;align-items:baseline"><span style="font:600 12px 'Geist Mono',monospace;color:var(--prod)">ERROR 42703</span><span style="font-size:13.5px;font-weight:500">column o.customer_ud does not exist</span></div>
+              <div style="font:12px/1.6 'Geist Mono',monospace;color:var(--fg2);white-space:pre">LINE 6: JOIN orders o ON o.customer_ud = c.id
+                            ^
+HINT:  Perhaps you meant to reference the column "o.customer_id".</div>
+              <div style="display:flex;gap:6px"><button style="height:26px;padding:0 10px;border:1px solid var(--bd2);border-radius:6px;background:var(--elev);color:var(--fg);font:500 12px Geist,sans-serif">Go to Ln 6, Col 21</button><button style="height:26px;padding:0 10px;border:0;border-radius:6px;background:transparent;color:var(--fg2);font:500 12px Geist,sans-serif">Copy error</button></div>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{rs.showGrid}}" hint-placeholder-val="{{true}}">
+          <div style="flex:1;min-height:0;overflow:auto;font-size:12px;position:relative">
+            <sc-if value="{{rs.isCancelled}}">
+              <div style="position:sticky;left:0;display:flex;align-items:center;gap:10px;padding:6px 12px;background:var(--stg-bg);border-bottom:1px solid var(--bd);font-size:12px"><span style="font-weight:600;color:var(--stg)">Cancelled</span><span>after 2.4 s by user · {{rs.rowsLabel}} rows kept</span><span style="flex:1"></span><span onClick="{{run}}" style="color:var(--acc);cursor:default">Run again</span></div>
+            </sc-if>
+            <div style="min-width:860px">
+              <div style="position:sticky;top:0;z-index:2;display:grid;grid-template-columns:44px 80px minmax(200px,1.5fr) 72px 104px 176px minmax(100px,1fr);height:28px;background:var(--panel);border-bottom:1px solid var(--bd)">
+                <sc-for list="{{cols}}" as="c">
+                  <div style="display:flex;align-items:center;justify-content:{{c.justify}};gap:6px;padding:0 10px;border-right:1px solid var(--bd);font-weight:600;font-size:11.5px;color:var(--fg2);white-space:nowrap">{{c.n}}<span style="font:400 10px 'Geist Mono',monospace;color:var(--fg3)">{{c.t}}</span></div>
+                </sc-for>
+              </div>
+              <sc-for list="{{gridRows}}" as="row" hint-placeholder-count="12">
+                <div onClick="{{row.onClick}}" style="display:grid;grid-template-columns:44px 80px minmax(200px,1.5fr) 72px 104px 176px minmax(100px,1fr);height:26px;background:{{row.bg}};border-bottom:1px solid var(--line);cursor:default">
+                  <sc-for list="{{row.cells}}" as="cell">
+                    <div style="display:flex;align-items:center;justify-content:{{cell.justify}};padding:0 10px;border-right:1px solid var(--line);font-family:'Geist Mono',monospace;font-variant-numeric:tabular-nums;color:{{cell.color}};font-style:{{cell.fs}};background:{{cell.bg}};box-shadow:{{cell.ring}};white-space:nowrap;overflow:hidden">{{cell.v}}</div>
+                  </sc-for>
+                </div>
+              </sc-for>
+              <sc-if value="{{rs.isStreaming}}">
+                <div style="height:26px;display:flex;align-items:center;padding-left:54px;gap:10px;color:var(--fg3);font-size:12px"><span style="width:120px;height:8px;border-radius:4px;background:linear-gradient(90deg,var(--hover) 0,var(--bd2) 50%,var(--hover) 100%);background-size:160px 8px;animation:sy-shimmer 1s linear infinite"></span>receiving rows…</div>
+              </sc-if>
+            </div>
+            <sc-if value="{{rs.isEmpty}}">
+              <div style="padding:40px 20px;text-align:center;color:var(--fg2);font-size:13px">Query returned no rows<div style="margin-top:4px;color:var(--fg3);font-size:12px">SELECT 0 · 23 ms</div></div>
+            </sc-if>
+          </div>
+          </sc-if>
+
+          <sc-if value="{{rs.isEditing}}" hint-placeholder-val="{{false}}">
+            <div style="flex:none;border-top:1px solid var(--bd);background:var(--panel);padding:10px 12px;display:flex;gap:14px;align-items:flex-start">
+              <div style="flex:1;min-width:0">
+                <div style="display:flex;gap:8px;align-items:center;font-size:12px;margin-bottom:6px"><span style="width:8px;height:8px;border-radius:2px;background:var(--stg)"></span><span style="font-weight:600">2 staged changes</span><span style="color:var(--fg3)">· public.customers · committed in one transaction</span></div>
+                <div style="font:11.5px/1.65 'Geist Mono',monospace;color:var(--fg2);background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:8px 10px;white-space:pre;overflow:auto"><span style="color:var(--sx-kw)">UPDATE</span> customers <span style="color:var(--sx-kw)">SET</span> segment = <span style="color:var(--sx-str)">'vip'</span> <span style="color:var(--sx-kw)">WHERE</span> id = <span style="color:var(--sx-num)">10037</span>;
+<span style="color:var(--sx-kw)">UPDATE</span> customers <span style="color:var(--sx-kw)">SET</span> email = <span style="color:var(--sx-str)">'priya.nair@example.com'</span> <span style="color:var(--sx-kw)">WHERE</span> id = <span style="color:var(--sx-num)">10148</span>;</div>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:6px;padding-top:22px">
+                <button onClick="{{commitEdits}}" style="height:26px;padding:0 12px;border:0;border-radius:6px;background:var(--acc);color:var(--acc-fg);font:600 12px Geist,sans-serif">Commit 2 changes</button>
+                <button onClick="{{commitEdits}}" style="height:26px;padding:0 12px;border:1px solid var(--bd2);border-radius:6px;background:var(--elev);color:var(--fg);font:500 12px Geist,sans-serif">Discard</button>
+              </div>
+            </div>
+          </sc-if>
+
+          <div style="height:26px;flex:none;display:flex;align-items:center;gap:14px;padding:0 12px;border-top:1px solid var(--bd);background:var(--panel);font-size:11.5px;color:var(--fg2)">
+            <span style="display:flex;align-items:center;gap:6px"><span style="width:6px;height:6px;border-radius:50%;background:{{rs.dot}};animation:{{rs.anim}}"></span><span style="color:var(--fg)">{{rs.label}}</span></span>
+            <span style="font-family:'Geist Mono',monospace">{{rs.meta}}</span>
+            <span style="flex:1"></span>
+            <span style="white-space:nowrap">{{rs.notice}}</span>
+            <span style="font-family:'Geist Mono',monospace;color:var(--fg3);white-space:nowrap">limit 10,000</span>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{isTerm}}" hint-placeholder-val="{{false}}">
+      <div style="flex:1;min-height:0;display:flex;flex-direction:column;position:relative">
+        <div style="height:36px;flex:none;display:flex;align-items:center;gap:8px;padding:0 10px;border-bottom:1px solid var(--bd);font-size:12px">
+          <span style="width:7px;height:7px;border-radius:50%;background:var(--prod)"></span>
+          <span style="font-weight:500">prod-db-01</span>
+          <span style="font-family:'Geist Mono',monospace;color:var(--fg3)">deploy@10.0.4.12 · ed25519 · via bastion.acme.dev</span>
+          <span style="flex:1"></span>
+          <span style="display:flex;align-items:center;gap:6px;color:var(--fg2)"><span style="width:6px;height:6px;border-radius:50%;background:{{term.dot}}"></span>{{term.label}}</span>
+          <span style="width:1px;height:16px;background:var(--bd)"></span>
+          <button style="height:24px;padding:0 8px;border:0;border-radius:5px;background:transparent;color:var(--fg2);font:500 12px Geist,sans-serif" style-hover="background:var(--hover)">Split</button>
+          <button style="height:24px;padding:0 8px;border:0;border-radius:5px;background:transparent;color:var(--fg2);font:500 12px Geist,sans-serif" style-hover="background:var(--hover)">Broadcast: off</button>
+          <button onClick="{{newTerm}}" style="height:24px;padding:0 8px;border:1px solid var(--bd2);border-radius:5px;background:var(--elev);color:var(--fg);font:500 12px Geist,sans-serif">New terminal <span style="font-family:'Geist Mono',monospace;color:var(--fg3);font-size:10.5px">{{K.term}}</span></button>
+        </div>
+        <sc-if value="{{term.banner}}">
+          <div style="flex:none;display:flex;align-items:center;gap:10px;padding:7px 12px;background:{{term.bannerBg}};border-bottom:1px solid var(--bd);font-size:12px">
+            <span style="font-weight:600;color:{{term.dot}}">{{term.bannerTitle}}</span><span>{{term.bannerText}}</span><span style="flex:1"></span>
+            <button style="height:22px;padding:0 10px;border:1px solid var(--bd2);border-radius:5px;background:var(--elev);color:var(--fg);font:500 11.5px Geist,sans-serif">Reconnect now</button>
+          </div>
+        </sc-if>
+        <div style="flex:1;min-height:0;display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--bd);opacity:{{term.opacity}}">
+          <div style="background:var(--term);padding:10px 12px;font:12.5px/19px 'Geist Mono',monospace;overflow:hidden;box-shadow:inset 0 0 0 1px var(--acc)">
+            <sc-for list="{{termA}}" as="ln" hint-placeholder-count="10"><div style="white-space:pre;min-height:19px"><sc-for list="{{ln}}" as="s"><span style="color:{{s.c}};background:{{s.bg}}">{{s.t}}</span></sc-for></div></sc-for>
+          </div>
+          <div style="background:var(--term);padding:10px 12px;font:12.5px/19px 'Geist Mono',monospace;overflow:hidden;position:relative">
+            <div style="position:absolute;top:8px;right:8px;display:flex;align-items:center;gap:6px;padding:4px 4px 4px 10px;background:var(--elev);border-radius:6px;box-shadow:var(--shadow);font:12px Geist,sans-serif">
+              <span style="font-family:'Geist Mono',monospace;min-width:130px">POST /api/checkout</span><span style="color:var(--fg3)">2 of 7</span>
+              <span style="padding:2px 6px;border-radius:4px;color:var(--fg2)">↑</span><span style="padding:2px 6px;border-radius:4px;color:var(--fg2)">↓</span><span style="padding:2px 6px;border-radius:4px;color:var(--fg2)">×</span>
+            </div>
+            <sc-for list="{{termB}}" as="ln" hint-placeholder-count="10"><div style="white-space:pre;min-height:19px"><sc-for list="{{ln}}" as="s"><span style="color:{{s.c}};background:{{s.bg}}">{{s.t}}</span></sc-for></div></sc-for>
+          </div>
+        </div>
+        <sc-if value="{{term.prompt}}">
+          <div style="position:absolute;inset:36px 0 0 0;display:grid;place-items:center;background:var(--scrim)">
+            <div style="width:480px;background:var(--elev);border-radius:10px;box-shadow:var(--shadow);padding:18px 20px">
+              <div style="font-size:14px;font-weight:600;margin-bottom:4px">Unknown host key for staging-app</div>
+              <div style="color:var(--fg2);font-size:12.5px;margin-bottom:12px">This is the first connection to 10.0.8.3:22. Compare the fingerprint with the one your admin published before trusting it.</div>
+              <div style="font:12px/1.6 'Geist Mono',monospace;background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:8px 10px;margin-bottom:14px">ED25519<br>SHA256:k3Vq9mE1x0yQ7fJ2bWnR8tLz4pA6cHdS5uGoY1iKvXw</div>
+              <div style="display:flex;gap:6px;justify-content:flex-end"><button style="height:28px;padding:0 12px;border:0;border-radius:6px;background:transparent;color:var(--fg2);font:500 12px Geist,sans-serif">Cancel</button><button style="height:28px;padding:0 12px;border:1px solid var(--bd2);border-radius:6px;background:var(--elev);color:var(--fg);font:500 12px Geist,sans-serif">Trust once</button><button style="height:28px;padding:0 12px;border:0;border-radius:6px;background:var(--acc);color:var(--acc-fg);font:600 12px Geist,sans-serif">Trust and connect</button></div>
+            </div>
+          </div>
+        </sc-if>
+        <sc-if value="{{term.changed}}">
+          <div style="position:absolute;inset:36px 0 0 0;display:grid;place-items:center;background:var(--bg)">
+            <div style="width:540px;border:1px solid var(--prod);border-radius:10px;background:var(--surface);overflow:hidden">
+              <div style="padding:14px 20px;background:var(--prod-bg);border-bottom:1px solid var(--bd)"><div style="font:600 10.5px 'Geist Mono',monospace;letter-spacing:.08em;color:var(--prod);margin-bottom:4px">CONNECTION BLOCKED</div><div style="font-size:15px;font-weight:600">The host key for prod-db-01 has changed</div></div>
+              <div style="padding:16px 20px;display:flex;flex-direction:column;gap:12px">
+                <div style="font-size:12.5px;color:var(--fg2)">The server at 10.0.4.12 presented a different key than the one in ~/.ssh/known_hosts. This can mean the server was rebuilt — or that someone is intercepting the connection.</div>
+                <div style="display:grid;grid-template-columns:72px 1fr;gap:6px 10px;font:12px 'Geist Mono',monospace"><span style="color:var(--fg3)">Stored</span><span style="text-decoration:line-through;color:var(--fg2)">SHA256:Hq2mT8…a91XwP</span><span style="color:var(--fg3)">Received</span><span style="color:var(--prod)">SHA256:Zr0Lc4…7bNe2Q</span></div>
+                <div style="display:flex;gap:6px;justify-content:flex-end;padding-top:4px"><button style="height:28px;padding:0 12px;border:0;border-radius:6px;background:transparent;color:var(--prod);font:500 12px Geist,sans-serif">Replace stored key…</button><button style="height:28px;padding:0 12px;border:1px solid var(--bd2);border-radius:6px;background:var(--elev);color:var(--fg);font:500 12px Geist,sans-serif">Open known_hosts</button><button style="height:28px;padding:0 12px;border:0;border-radius:6px;background:var(--fg);color:var(--bg);font:600 12px Geist,sans-serif">Stay disconnected</button></div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{isFiles}}" hint-placeholder-val="{{false}}">
+      <div style="flex:1;min-height:0;display:flex;flex-direction:column;position:relative">
+        <div style="height:36px;flex:none;display:flex;align-items:center;gap:4px;padding:0 10px;border-bottom:1px solid var(--bd)">
+          <sc-for list="{{fileTools}}" as="ft"><button style="height:24px;padding:0 8px;border:0;border-radius:5px;background:transparent;color:var(--fg2);font:500 12px Geist,sans-serif" style-hover="background:var(--hover);color:var(--fg)">{{ft}}</button></sc-for>
+          <span style="flex:1"></span>
+          <span style="font:11.5px 'Geist Mono',monospace;color:var(--fg3)">SFTP · shares SSH session of prod-db-01</span>
+        </div>
+        <div style="flex:1;min-height:0;display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--bd)">
+          <sc-for list="{{panes}}" as="p" hint-placeholder-count="2">
+            <div style="background:var(--surface);display:flex;flex-direction:column;min-width:0;min-height:0">
+              <div style="height:32px;flex:none;display:flex;align-items:center;gap:6px;padding:0 10px;border-bottom:1px solid var(--bd);font-size:12px">
+                <span style="font-weight:600">{{p.title}}</span>
+                <span style="color:var(--fg3)">·</span>
+                <sc-for list="{{p.crumbs}}" as="cr"><span style="color:var(--fg2);font-family:'Geist Mono',monospace;font-size:11.5px">{{cr}}</span><span style="color:var(--fg3);font-size:10px">›</span></sc-for>
+                <span style="flex:1"></span><span style="color:var(--fg3);font-size:11px">{{p.count}}</span>
+              </div>
+              <div style="display:grid;grid-template-columns:minmax(0,1fr) 80px 120px 90px;height:26px;align-items:center;padding:0 10px;font-size:11.5px;font-weight:600;color:var(--fg2);border-bottom:1px solid var(--bd);background:var(--panel)"><span>Name ↑</span><span style="text-align:right">Size</span><span style="padding-left:14px">Modified</span><span>Mode</span></div>
+              <div style="flex:1;overflow:auto">
+                <sc-for list="{{p.rows}}" as="f">
+                  <div style="display:grid;grid-template-columns:minmax(0,1fr) 80px 120px 90px;height:26px;align-items:center;padding:0 10px;font-size:12.5px;background:{{f.bg}};color:{{f.fg}};cursor:default" style-hover="background:var(--hover)">
+                    <span style="display:flex;gap:8px;align-items:center;min-width:0"><span style="font:600 9px 'Geist Mono',monospace;color:var(--fg3);width:22px">{{f.kind}}</span><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{f.n}}</span></span>
+                    <span style="text-align:right;font:11.5px 'Geist Mono',monospace;color:var(--fg2)">{{f.s}}</span>
+                    <span style="padding-left:14px;font-size:12px;color:var(--fg2)">{{f.m}}</span>
+                    <span style="font:11px 'Geist Mono',monospace;color:var(--fg3)">{{f.p}}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+        <div style="height:212px;flex:none;border-top:1px solid var(--bd);background:var(--panel);display:flex;flex-direction:column">
+          <div style="height:32px;flex:none;display:flex;align-items:center;gap:10px;padding:0 12px;border-bottom:1px solid var(--bd);font-size:12px">
+            <span style="font-weight:600">Transfers</span>
+            <span style="color:var(--fg2)">{{queue.summary}}</span>
+            <span style="flex:1"></span>
+            <span style="font:11.5px 'Geist Mono',monospace;color:var(--fg3)">4 parallel</span>
+            <button onClick="{{togglePause}}" style="height:22px;padding:0 10px;border:1px solid var(--bd2);border-radius:5px;background:var(--elev);color:var(--fg);font:500 11.5px Geist,sans-serif">{{queue.pauseLabel}}</button>
+            <button style="height:22px;padding:0 8px;border:0;border-radius:5px;background:transparent;color:var(--fg2);font:500 11.5px Geist,sans-serif">Clear done</button>
+          </div>
+          <div style="flex:1;overflow:auto">
+            <sc-for list="{{queue.items}}" as="q" hint-placeholder-count="5">
+              <div style="display:grid;grid-template-columns:22px minmax(0,1.3fr) minmax(120px,1fr) 46px 80px 58px 150px;gap:10px;align-items:center;height:30px;padding:0 12px;border-bottom:1px solid var(--line);font-size:12px">
+                <span style="font-family:'Geist Mono',monospace;color:var(--fg2);text-align:center">{{q.dir}}</span>
+                <span style="min-width:0;display:flex;flex-direction:column;line-height:1.2"><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{q.n}}</span><span style="font:10.5px 'Geist Mono',monospace;color:var(--fg3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{q.to}}</span></span>
+                <span style="height:4px;border-radius:2px;background:var(--bd);overflow:hidden"><span style="display:block;height:100%;width:{{q.pct}}%;background:{{q.bar}}"></span></span>
+                <span style="font:11.5px 'Geist Mono',monospace;text-align:right;color:var(--fg2)">{{q.pct}}%</span>
+                <span style="font:11.5px 'Geist Mono',monospace;text-align:right;color:var(--fg2)">{{q.speed}}</span>
+                <span style="font:11.5px 'Geist Mono',monospace;text-align:right;color:var(--fg3)">{{q.eta}}</span>
+                <span style="display:flex;gap:8px;align-items:center;justify-content:flex-end;white-space:nowrap"><span style="color:{{q.stColor}}">{{q.st}}</span><sc-if value="{{q.retry}}"><span style="color:var(--acc);cursor:default">Retry</span></sc-if></span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <sc-if value="{{isConflict}}">
+          <div style="position:absolute;inset:0;display:grid;place-items:center;background:var(--scrim)">
+            <div style="width:500px;background:var(--elev);border-radius:10px;box-shadow:var(--shadow);padding:18px 20px">
+              <div style="font-size:14px;font-weight:600;margin-bottom:4px">nginx.conf changed on the server</div>
+              <div style="color:var(--fg2);font-size:12.5px;margin-bottom:12px">Someone modified <span style="font-family:'Geist Mono',monospace;color:var(--fg)">/etc/nginx/nginx.conf</span> after you opened it. Saving now would overwrite their change.</div>
+              <div style="display:grid;grid-template-columns:110px 1fr;gap:4px 10px;font-size:12px;margin-bottom:14px"><span style="color:var(--fg3)">You opened</span><span style="font-family:'Geist Mono',monospace">22:04:11 · 4,112 bytes</span><span style="color:var(--fg3)">Server now</span><span style="font-family:'Geist Mono',monospace;color:var(--stg)">22:16:48 · 4,180 bytes</span></div>
+              <div style="display:flex;gap:6px;justify-content:flex-end"><button style="height:28px;padding:0 12px;border:0;border-radius:6px;background:transparent;color:var(--prod);font:500 12px Geist,sans-serif">Overwrite</button><button style="height:28px;padding:0 12px;border:1px solid var(--bd2);border-radius:6px;background:var(--elev);color:var(--fg);font:500 12px Geist,sans-serif">Reload remote</button><button style="height:28px;padding:0 12px;border:0;border-radius:6px;background:var(--acc);color:var(--acc-fg);font:600 12px Geist,sans-serif">Compare changes</button></div>
+            </div>
+          </div>
+        </sc-if>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{isWelcome}}" hint-placeholder-val="{{false}}">
+      <div style="flex:1;overflow:auto;display:flex;justify-content:center;padding:64px 32px">
+        <div style="width:100%;max-width:680px;display:flex;flex-direction:column;gap:28px">
+          <div>
+            <div style="font-size:24px;font-weight:600;letter-spacing:-.01em">{{welcome.title}}</div>
+            <div style="color:var(--fg2);margin-top:6px;font-size:13.5px;text-wrap:pretty">{{welcome.sub}}</div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px">
+            <div onClick="{{newHost}}" style="border:1px solid var(--bd);border-radius:8px;padding:14px;background:var(--panel);cursor:default;display:flex;flex-direction:column;gap:6px" style-hover="border-color:var(--bd2)"><span style="font:600 9px 'Geist Mono',monospace;color:var(--fg2);border:1px solid var(--bd2);border-radius:3px;padding:1px 4px;align-self:flex-start">SSH</span><span style="font-weight:600">New Host</span><span style="color:var(--fg2);font-size:12px">A server you reach over SSH. Terminals, files and tunnels reuse it.</span></div>
+            <div onClick="{{newConn}}" style="border:1px solid var(--bd);border-radius:8px;padding:14px;background:var(--panel);cursor:default;display:flex;flex-direction:column;gap:6px" style-hover="border-color:var(--bd2)"><span style="font:600 9px 'Geist Mono',monospace;color:var(--fg2);border:1px solid var(--bd2);border-radius:3px;padding:1px 4px;align-self:flex-start">DB</span><span style="font-weight:600">New Connection</span><span style="color:var(--fg2);font-size:12px">PostgreSQL, SQL Server, SFTP or FTP — direct or via a Host.</span></div>
+            <div style="border:1px solid var(--bd);border-radius:8px;padding:14px;background:var(--panel);cursor:default;display:flex;flex-direction:column;gap:6px" style-hover="border-color:var(--bd2)"><span style="font:600 9px 'Geist Mono',monospace;color:var(--fg2);border:1px solid var(--bd2);border-radius:3px;padding:1px 4px;align-self:flex-start">~/.ssh</span><span style="font-weight:600">Import ssh config</span><span style="color:var(--fg2);font-size:12px">Found 14 hosts in ~/.ssh/config, 3 with ProxyJump.</span></div>
+          </div>
+          <sc-if value="{{welcome.returning}}" hint-placeholder-val="{{true}}">
+          <div>
+            <div style="display:flex;justify-content:space-between;color:var(--fg3);font-size:11px;font-weight:500;letter-spacing:.02em;padding:0 2px 6px;border-bottom:1px solid var(--bd)"><span>RECENT</span><span style="font-family:'Geist Mono',monospace">{{K.quick}} to switch</span></div>
+            <sc-for list="{{recents}}" as="rc">
+              <div onClick="{{rc.onClick}}" style="display:grid;grid-template-columns:14px 34px minmax(0,1fr) auto 80px;gap:8px;align-items:center;height:32px;padding:0 4px;border-bottom:1px solid var(--line);cursor:default;font-size:12.5px" style-hover="background:var(--hover)">
+                <span style="width:7px;height:7px;border-radius:50%;background:{{rc.env}}"></span>
+                <span style="font:600 8.5px/15px 'Geist Mono',monospace;text-align:center;border:1px solid var(--bd);border-radius:3px;color:var(--fg2)">{{rc.badge}}</span>
+                <span style="font-weight:500">{{rc.n}}</span>
+                <span style="font:11.5px 'Geist Mono',monospace;color:var(--fg3)">{{rc.host}}</span>
+                <span style="text-align:right;color:var(--fg3);font-size:12px">{{rc.when}}</span>
+              </div>
+            </sc-for>
+          </div>
+          </sc-if>
+          <sc-if value="{{welcome.first}}" hint-placeholder-val="{{false}}">
+            <div style="border:1px dashed var(--bd2);border-radius:8px;padding:22px;color:var(--fg2);font-size:12.5px;display:flex;flex-direction:column;gap:4px"><span style="color:var(--fg);font-weight:500">Nothing saved yet</span><span>Start with a Host. Once it's saved, open a terminal, browse its files or tunnel a database through it with one login.</span></div>
+          </sc-if>
+          <div style="display:flex;gap:18px;color:var(--fg3);font-size:12px">
+            <span>Command palette <span style="font-family:'Geist Mono',monospace;color:var(--fg2)">{{K.palette}}</span></span>
+            <span>Quick switch <span style="font-family:'Geist Mono',monospace;color:var(--fg2)">{{K.quick}}</span></span>
+            <span>Settings <span style="font-family:'Geist Mono',monospace;color:var(--fg2)">{{K.settings}}</span></span>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+    </div>
+
+    <sc-if value="{{inspectorOpen}}" hint-placeholder-val="{{true}}">
+    <div style="width:300px;flex:none;display:flex;flex-direction:column;background:var(--panel);border-left:1px solid var(--bd);min-height:0">
+      <div style="height:34px;flex:none;display:flex;align-items:center;gap:8px;padding:0 10px 0 12px;border-bottom:1px solid var(--bd)">
+        <span style="font-size:12px;font-weight:600">Value viewer</span>
+        <span style="font:11px 'Geist Mono',monospace;color:var(--fg3)">row {{insp.row}}</span>
+        <span style="flex:1"></span>
+        <span onClick="{{toggleInspector}}" style="color:var(--fg3);padding:2px 6px;border-radius:4px;cursor:default" style-hover="background:var(--hover)">×</span>
+      </div>
+      <div style="padding:8px 10px;flex:none">
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);padding:2px;gap:2px;background:var(--bg);border:1px solid var(--bd);border-radius:6px">
+          <sc-for list="{{vfmts}}" as="vf"><button onClick="{{vf.onClick}}" style="height:20px;border:0;border-radius:4px;background:{{vf.bg}};color:{{vf.fg}};font:500 11.5px Geist,sans-serif;cursor:default">{{vf.l}}</button></sc-for>
+        </div>
+      </div>
+      <div style="flex:1;overflow:auto;padding:4px 12px 12px;font:12px/19px 'Geist Mono',monospace">
+        <sc-for list="{{insp.lines}}" as="ln" hint-placeholder-count="8"><div style="white-space:pre"><sc-for list="{{ln}}" as="s"><span style="color:{{s.c}}">{{s.t}}</span></sc-for></div></sc-for>
+      </div>
+      <div style="flex:none;padding:8px 12px;border-top:1px solid var(--bd);display:flex;justify-content:space-between;font-size:11px;color:var(--fg3)"><span>{{insp.size}}</span><span style="color:var(--acc);cursor:default">Copy</span></div>
+    </div>
+    </sc-if>
+  </div>
+
+  <div style="height:24px;flex:none;display:flex;align-items:center;gap:14px;padding:0 0 0 0;border-top:1px solid var(--bd);background:var(--panel);font-size:11.5px;color:var(--fg2);white-space:nowrap;overflow:hidden">
+    <span style="align-self:stretch;display:flex;align-items:center;padding:0 10px;background:{{sb.envBg}};color:{{sb.envFg}};font:600 10px 'Geist Mono',monospace;letter-spacing:.08em">{{sb.env}}</span>
+    <span style="color:var(--fg)">{{sb.conn}}</span>
+    <span style="display:flex;align-items:center;gap:5px;color:{{sb.txnColor}}"><span style="width:6px;height:6px;border-radius:50%;background:{{sb.txnColor}}"></span>{{sb.txn}}</span>
+    <span onClick="{{toggleTunnels}}" style="cursor:default;position:relative" style-hover="color:var(--fg)">2 tunnels</span>
+    <span style="flex:1"></span>
+    <span onClick="{{goFiles}}" style="cursor:default" style-hover="color:var(--fg)">{{sb.transfers}}</span>
+    <span style="font-family:'Geist Mono',monospace">{{sb.rows}}</span>
+    <span style="font-family:'Geist Mono',monospace;color:var(--fg3)">{{sb.pos}}</span>
+    <span style="padding-right:12px;color:var(--fg3)">{{sb.engine}}</span>
+  </div>
+
+  <sc-if value="{{tunnelsOpen}}" hint-placeholder-val="{{false}}">
+    <div style="position:absolute;left:250px;bottom:30px;width:460px;background:var(--elev);border-radius:8px;box-shadow:var(--shadow);z-index:30;overflow:hidden">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-bottom:1px solid var(--bd);font-size:12px"><span style="font-weight:600">Tunnels</span><span onClick="{{toggleTunnels}}" style="color:var(--fg3);cursor:default">×</span></div>
+      <sc-for list="{{tunnels}}" as="tn">
+        <div style="display:grid;grid-template-columns:62px minmax(0,1fr) 92px 60px 36px;gap:8px;align-items:center;height:32px;padding:0 12px;border-bottom:1px solid var(--line);font:11.5px 'Geist Mono',monospace">
+          <span style="color:var(--fg)">:{{tn.port}}</span><span style="color:var(--fg2);overflow:hidden;text-overflow:ellipsis">{{tn.target}}</span>
+          <span style="display:flex;align-items:center;gap:5px;font-family:Geist,sans-serif;color:{{tn.c}}"><span style="width:6px;height:6px;border-radius:50%;background:{{tn.c}}"></span>{{tn.st}}</span>
+          <span style="text-align:right;color:var(--fg3)">{{tn.bytes}}</span><span style="text-align:right;color:var(--fg3);font-family:Geist,sans-serif">Stop</span>
+        </div>
+      </sc-for>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ctx}}" hint-placeholder-val="{{false}}">
+    <div onClick="{{closeCtx}}" style="position:absolute;inset:0;z-index:40">
+      <div style="position:absolute;left:{{ctxPos.x}}px;top:{{ctxPos.y}}px;width:230px;background:var(--elev);border-radius:7px;box-shadow:var(--shadow);padding:4px;font-size:12.5px">
+        <sc-for list="{{ctxItems}}" as="ci">
+          <sc-if value="{{ci.sep}}"><div style="height:1px;background:var(--bd);margin:4px 0"></div></sc-if>
+          <sc-if value="{{ci.item}}"><div style="height:26px;display:flex;align-items:center;justify-content:space-between;padding:0 8px;border-radius:4px;color:{{ci.c}};cursor:default" style-hover="background:var(--sel)"><span>{{ci.l}}</span><span style="font:10.5px 'Geist Mono',monospace;color:var(--fg3)">{{ci.k}}</span></div></sc-if>
+        </sc-for>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{toast}}" hint-placeholder-val="{{false}}">
+    <div style="position:absolute;right:16px;bottom:36px;z-index:60;display:flex;gap:10px;align-items:center;padding:10px 14px;background:var(--elev);border-radius:8px;box-shadow:var(--shadow);font-size:12.5px"><span style="width:7px;height:7px;border-radius:50%;background:var(--dev)"></span>{{toast}}</div>
+  </sc-if>
+
+  <sc-if value="{{ov.palette}}" hint-placeholder-val="{{false}}">
+    <div onClick="{{closeOverlay}}" style="position:fixed;inset:0;z-index:50;background:var(--scrim);display:flex;justify-content:center;align-items:flex-start;padding-top:72px">
+      <div onClick="{{stopProp}}" style="width:620px;max-width:calc(100% - 32px);background:var(--elev);border-radius:10px;box-shadow:var(--shadow);overflow:hidden">
+        <div style="display:flex;align-items:center;gap:10px;padding:0 14px;height:46px;border-bottom:1px solid var(--bd)">
+          <span style="font:600 10px 'Geist Mono',monospace;letter-spacing:.06em;padding:2px 6px;border-radius:4px;background:var(--hover);color:var(--fg2)">{{pal.mode}}</span>
+          <input autoFocus="{{true}}" value="{{q}}" onChange="{{onQ}}" onKeyDown="{{onPalKey}}" placeholder="{{pal.placeholder}}" style="flex:1;height:44px;border:0;outline:0;background:transparent;font-size:14px">
+          <span onClick="{{swapMode}}" style="font:10.5px 'Geist Mono',monospace;color:var(--fg3);cursor:default;white-space:nowrap;flex:none">{{pal.swap}}</span>
+        </div>
+        <div style="max-height:380px;overflow-y:auto;overflow-x:hidden;padding:4px">
+          <sc-for list="{{pal.items}}" as="pi">
+            <div onClick="{{pi.onClick}}" onMouseEnter="{{pi.onHover}}" style="height:32px;display:flex;align-items:center;gap:10px;padding:0 10px;border-radius:6px;background:{{pi.bg}};cursor:default;font-size:13px">
+              <span style="width:7px;height:7px;border-radius:50%;background:{{pi.dot}};flex:none"></span>
+              <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{pi.label}}</span>
+              <span style="font-size:11.5px;color:var(--fg3);white-space:nowrap">{{pi.group}}</span>
+              <span style="font:10.5px 'Geist Mono',monospace;color:var(--fg2);min-width:44px;text-align:right">{{pi.key}}</span>
+            </div>
+          </sc-for>
+          <sc-if value="{{pal.none}}">
+            <div style="padding:28px 16px;text-align:center;color:var(--fg2);font-size:13px">No matches for “{{q}}”<div style="color:var(--fg3);font-size:12px;margin-top:4px">{{pal.noneHint}}</div></div>
+          </sc-if>
+        </div>
+        <div style="display:flex;gap:14px;padding:8px 14px;border-top:1px solid var(--bd);font-size:11px;color:var(--fg3)"><span>↑↓ navigate</span><span>↵ run</span><span>esc close</span><span style="flex:1"></span><span>{{pal.count}}</span></div>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ov.conn}}" hint-placeholder-val="{{false}}">
+    <div style="position:fixed;inset:0;z-index:50;background:var(--scrim);display:grid;place-items:center;padding:20px">
+      <div style="width:780px;max-width:100%;max-height:calc(100vh - 40px);display:flex;flex-direction:column;background:var(--elev);border-radius:10px;box-shadow:var(--shadow);overflow:hidden">
+        <div style="height:46px;flex:none;display:flex;align-items:center;padding:0 16px;border-bottom:1px solid var(--bd)"><span style="font-weight:600;font-size:14px">New connection</span><span style="flex:1"></span><span onClick="{{closeOverlay}}" style="color:var(--fg3);padding:2px 8px;border-radius:4px;cursor:default" style-hover="background:var(--hover)">×</span></div>
+        <div style="flex:1;min-height:0;display:grid;grid-template-columns:190px minmax(0,1fr);grid-template-rows:minmax(0,1fr)">
+          <div style="border-right:1px solid var(--bd);padding:8px;display:flex;flex-direction:column;gap:2px;background:var(--panel)">
+            <sc-for list="{{ctypes}}" as="ct">
+              <div onClick="{{ct.onClick}}" style="display:flex;align-items:center;gap:9px;padding:7px 8px;border-radius:6px;background:{{ct.bg}};cursor:default" style-hover="background:var(--hover)">
+                <span style="font:600 8.5px/16px 'Geist Mono',monospace;width:32px;text-align:center;border:1px solid var(--bd2);border-radius:3px;color:var(--fg2)">{{ct.badge}}</span>
+                <span style="display:flex;flex-direction:column;line-height:1.25;min-width:0"><span style="font-size:12.5px;font-weight:500;white-space:nowrap">{{ct.l}}</span><span style="font-size:11px;color:var(--fg3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ct.sub}}</span></span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="overflow:auto;min-height:0;padding:16px 18px;display:grid;grid-auto-rows:max-content;align-content:start;gap:14px">
+            <div style="display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px 12px">
+              <sc-for list="{{fields}}" as="fd">
+                <label style="grid-column:span {{fd.span}};display:flex;flex-direction:column;gap:5px;min-width:0">
+                  <span style="font-size:11.5px;color:var(--fg2);font-weight:500">{{fd.l}}</span>
+                  <span style="height:28px;display:flex;align-items:center;gap:6px;padding:0 9px;border:1px solid var(--bd2);border-radius:6px;background:var(--bg);font-size:12.5px;font-family:{{fd.font}};color:{{fd.c}};white-space:nowrap;overflow:hidden"><span style="flex:1;overflow:hidden;text-overflow:ellipsis">{{fd.v}}</span><span style="color:var(--fg3);font-size:10px">{{fd.caret}}</span></span>
+                  <sc-if value="{{fd.hint}}"><span style="font-size:11px;color:var(--fg3)">{{fd.hint}}</span></sc-if>
+                </label>
+              </sc-for>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <span style="font-size:11.5px;color:var(--fg2);font-weight:500">Environment</span>
+              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">
+                <sc-for list="{{envOpts}}" as="eo">
+                  <div onClick="{{eo.onClick}}" style="height:30px;display:flex;align-items:center;gap:8px;padding:0 10px;border:1px solid {{eo.bd}};border-radius:6px;background:{{eo.bg}};font-size:12.5px;cursor:default"><span style="width:8px;height:8px;border-radius:50%;background:{{eo.c}}"></span>{{eo.l}}</div>
+                </sc-for>
+              </div>
+              <sc-if value="{{envIsProd}}"><span style="font-size:11.5px;color:var(--fg2)">Destructive statements ask for confirmation. <span style="color:var(--fg)">Lock read-only</span> is available below.</span></sc-if>
+            </div>
+
+            <sc-if value="{{dcard.show}}" hint-placeholder-val="{{false}}">
+              <div style="border:1px solid {{dcard.bd}};border-radius:8px;background:var(--bg);overflow:hidden">
+                <div style="padding:12px 14px;display:flex;gap:12px;align-items:flex-start">
+                  <span style="font:600 9px/18px 'Geist Mono',monospace;padding:0 6px;border-radius:4px;background:{{dcard.tagBg}};color:{{dcard.tagFg}};white-space:nowrap">{{dcard.tag}}</span>
+                  <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px">
+                    <span style="font-weight:600;font-size:13px">{{dcard.title}}</span>
+                    <span style="font-size:12px;color:var(--fg2);text-wrap:pretty">{{dcard.body}}</span>
+                    <span style="font:11px 'Geist Mono',monospace;color:var(--fg3)">{{dcard.meta}}</span>
+                  </div>
+                </div>
+                <sc-if value="{{dcard.progress}}">
+                  <div style="padding:0 14px 12px;display:flex;flex-direction:column;gap:6px">
+                    <span style="height:4px;border-radius:2px;background:var(--bd);overflow:hidden;position:relative"><span style="position:absolute;left:0;top:0;bottom:0;width:{{dcard.pct}}%;background:var(--acc)"></span><sc-if value="{{dcard.indet}}"><span style="position:absolute;top:0;bottom:0;width:40%;background:var(--acc);animation:sy-indet 1.1s ease-in-out infinite"></span></sc-if></span>
+                    <span style="display:flex;justify-content:space-between;font:11px 'Geist Mono',monospace;color:var(--fg3)"><span>{{dcard.pLeft}}</span><span>{{dcard.pRight}}</span></span>
+                  </div>
+                </sc-if>
+                <sc-if value="{{dcard.cmd}}">
+                  <div style="margin:0 14px 12px;display:flex;align-items:center;gap:8px;padding:7px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--surface);font:12px 'Geist Mono',monospace"><span style="color:var(--fg3)">$</span><span style="flex:1">sudo apt install libgssapi-krb5-2</span><span style="font-family:Geist,sans-serif;font-size:11.5px;color:var(--acc)">Copy</span></div>
+                </sc-if>
+                <sc-if value="{{dcard.license}}">
+                  <div style="margin:0 14px 12px;display:flex;flex-direction:column;gap:8px">
+                    <div style="height:70px;overflow:auto;padding:8px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--surface);font-size:11.5px;color:var(--fg2);line-height:1.5">Oracle Technology Network License Agreement for Oracle Instant Client. Use of the software is subject to the terms of the license, which permits development, testing, prototyping and demonstrating your application. Read the full license before accepting.</div>
+                    <label style="display:flex;gap:8px;align-items:center;font-size:12px"><span style="width:14px;height:14px;border:1px solid var(--bd2);border-radius:3px;background:var(--surface)"></span>I accept the Oracle license terms</label>
+                  </div>
+                </sc-if>
+                <div style="display:flex;gap:6px;padding:10px 14px;border-top:1px solid var(--bd);background:var(--panel)">
+                  <sc-for list="{{dcard.actions}}" as="da"><button onClick="{{da.onClick}}" style="height:26px;padding:0 11px;border:{{da.bd}};border-radius:6px;background:{{da.bg}};color:{{da.fg}};font:{{da.w}} 12px Geist,sans-serif;cursor:default">{{da.l}}</button></sc-for>
+                </div>
+              </div>
+            </sc-if>
+          </div>
+        </div>
+        <div style="height:52px;flex:none;display:flex;align-items:center;gap:10px;padding:0 16px;border-top:1px solid var(--bd)">
+          <button onClick="{{testConn}}" style="height:28px;padding:0 12px;border:1px solid var(--bd2);border-radius:6px;background:var(--elev);color:var(--fg);font:500 12px Geist,sans-serif;cursor:default">Test connection</button>
+          <span style="display:flex;align-items:center;gap:7px;font-size:12px;color:{{testUI.c}};min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><span style="width:6px;height:6px;border-radius:50%;background:{{testUI.c}};animation:{{testUI.anim}};flex:none"></span>{{testUI.l}}</span>
+          <span style="flex:1"></span>
+          <button onClick="{{closeOverlay}}" style="height:28px;padding:0 12px;border:0;border-radius:6px;background:transparent;color:var(--fg2);font:500 12px Geist,sans-serif">Cancel</button>
+          <button onClick="{{saveConn}}" style="height:28px;padding:0 12px;border:0;border-radius:6px;background:var(--acc);color:var(--acc-fg);font:600 12px Geist,sans-serif">Save and connect</button>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ov.safety}}" hint-placeholder-val="{{false}}">
+    <div style="position:fixed;inset:0;z-index:50;background:var(--scrim);display:grid;place-items:center;padding:20px">
+      <div style="width:560px;max-width:100%;max-height:calc(100vh - 40px);overflow:auto;background:var(--elev);border-radius:10px;box-shadow:var(--shadow);overflow:hidden;border-top:3px solid var(--prod)">
+        <div style="padding:16px 20px 0;display:flex;flex-direction:column;gap:4px">
+          <span style="font:600 10px 'Geist Mono',monospace;letter-spacing:.08em;color:var(--prod)">PRODUCTION · shop_prod @ prod-db-01</span>
+          <span style="font-size:16px;font-weight:600">Delete every row in abandoned_carts?</span>
+          <span style="font-size:12.5px;color:var(--fg2)">The script contains a DELETE without a WHERE clause.</span>
+        </div>
+        <div style="margin:14px 20px;padding:10px 12px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);font:12.5px/1.6 'Geist Mono',monospace"><span style="color:var(--fg3)">14</span>  <span style="color:var(--sx-kw)">DELETE FROM</span> abandoned_carts<span style="background:var(--prod-bg);color:var(--prod);padding:0 3px;border-radius:3px;margin-left:4px">no WHERE</span>;</div>
+        <div style="display:grid;grid-template-columns:120px 1fr;gap:6px 12px;padding:0 20px;font-size:12.5px">
+          <span style="color:var(--fg3)">Object</span><span style="font-family:'Geist Mono',monospace">public.abandoned_carts</span>
+          <span style="color:var(--fg3)">Estimated rows</span><span style="font-family:'Geist Mono',monospace">~48,210</span>
+          <span style="color:var(--fg3)">Transaction</span><span>Auto-commit — this cannot be rolled back</span>
+        </div>
+        <div style="padding:16px 20px 0;display:flex;flex-direction:column;gap:6px">
+          <span style="font-size:12px;color:var(--fg2)">Type <span style="font-family:'Geist Mono',monospace;color:var(--fg)">abandoned_carts</span> to confirm</span>
+          <input autoFocus="{{true}}" value="{{confirm}}" onChange="{{onConfirm}}" spellCheck="false" style="height:30px;padding:0 10px;border:1px solid var(--bd2);border-radius:6px;background:var(--bg);outline:0;font:12.5px 'Geist Mono',monospace">
+        </div>
+        <div style="display:flex;gap:6px;justify-content:flex-end;padding:16px 20px">
+          <button onClick="{{closeOverlay}}" style="height:30px;padding:0 14px;border:1px solid var(--bd2);border-radius:6px;background:var(--elev);color:var(--fg);font:500 12.5px Geist,sans-serif">Cancel</button>
+          <button onClick="{{confirmRun}}" style="height:30px;padding:0 14px;border:0;border-radius:6px;background:var(--prod);color:#fff;font:600 12.5px Geist,sans-serif;opacity:{{safetyOpacity}}">Delete 48,210 rows</button>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ov.settings}}" hint-placeholder-val="{{false}}">
+    <div style="position:fixed;inset:0;z-index:50;background:var(--scrim);display:grid;place-items:center;padding:20px">
+      <div style="width:920px;max-width:100%;height:600px;max-height:calc(100vh - 40px);display:grid;grid-template-columns:190px minmax(0,1fr);grid-template-rows:minmax(0,1fr);background:var(--elev);border-radius:10px;box-shadow:var(--shadow);overflow:hidden">
+        <div style="background:var(--panel);border-right:1px solid var(--bd);padding:14px 8px;display:flex;flex-direction:column;gap:2px">
+          <span style="padding:0 8px 10px;font-weight:600;font-size:14px">Settings</span>
+          <sc-for list="{{setNav}}" as="sn"><div onClick="{{sn.onClick}}" style="height:28px;display:flex;align-items:center;padding:0 8px;border-radius:6px;background:{{sn.bg}};color:{{sn.fg}};font-size:12.5px;cursor:default" style-hover="background:var(--hover)">{{sn.l}}</div></sc-for>
+        </div>
+        <div style="display:flex;flex-direction:column;min-width:0;min-height:0">
+          <div style="height:46px;flex:none;display:flex;align-items:center;padding:0 18px;border-bottom:1px solid var(--bd)"><span style="font-weight:600;font-size:14px">{{setPage}}</span><span style="flex:1"></span><span onClick="{{closeOverlay}}" style="color:var(--fg3);padding:2px 8px;border-radius:4px;cursor:default" style-hover="background:var(--hover)">×</span></div>
+          <sc-if value="{{isDrivers}}" hint-placeholder-val="{{true}}">
+          <div style="flex:1;overflow:auto;padding:16px 18px;display:flex;flex-direction:column;gap:16px">
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <span style="font-size:12.5px;color:var(--fg2);text-wrap:pretty">Built-in drivers need nothing installed. Optional native components are loaded at runtime — a missing one disables a single feature, never the app.</span>
+              <div style="display:flex;flex-wrap:wrap;gap:6px"><sc-for list="{{builtins}}" as="bi"><span style="display:flex;align-items:center;gap:6px;height:24px;padding:0 9px;border:1px solid var(--bd);border-radius:12px;font-size:11.5px;color:var(--fg2)"><span style="width:6px;height:6px;border-radius:50%;background:var(--dev)"></span>{{bi}}</span></sc-for></div>
+            </div>
+            <div style="border:1px solid var(--bd);border-radius:8px;overflow:hidden">
+              <div style="display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1.3fr) 90px 130px 96px;gap:10px;align-items:center;height:30px;padding:0 12px;background:var(--panel);font-size:11.5px;font-weight:600;color:var(--fg2);border-bottom:1px solid var(--bd)"><span>Component</span><span>Needed for</span><span>Version</span><span>Status</span><span></span></div>
+              <sc-for list="{{drivers}}" as="dr">
+                <div style="display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1.3fr) 90px 130px 96px;gap:10px;align-items:center;min-height:46px;padding:6px 12px;border-bottom:1px solid var(--line);font-size:12.5px">
+                  <span style="display:flex;flex-direction:column;min-width:0"><span style="font-weight:500">{{dr.n}}</span><span style="font:10.5px 'Geist Mono',monospace;color:var(--fg3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{dr.loc}}</span></span>
+                  <span style="color:var(--fg2);font-size:12px">{{dr.for}}</span>
+                  <span style="font:11.5px 'Geist Mono',monospace;color:var(--fg2)">{{dr.v}}</span>
+                  <span style="display:flex;align-items:center;gap:6px;font-size:12px;color:{{dr.c}}"><span style="width:6px;height:6px;border-radius:50%;background:{{dr.c}}"></span>{{dr.st}}</span>
+                  <span style="text-align:right"><button style="height:24px;padding:0 10px;border:1px solid var(--bd2);border-radius:5px;background:var(--elev);color:{{dr.aFg}};font:500 11.5px Geist,sans-serif">{{dr.a}}</button></span>
+                </div>
+              </sc-for>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;font-size:12px;color:var(--fg2)">
+              <button style="height:26px;padding:0 10px;border:1px solid var(--bd2);border-radius:6px;background:var(--elev);color:var(--fg);font:500 12px Geist,sans-serif">Install from file…</button>
+              <button style="height:26px;padding:0 10px;border:1px solid var(--bd2);border-radius:6px;background:var(--elev);color:var(--fg);font:500 12px Geist,sans-serif">Check for updates</button>
+              <span style="flex:1"></span>
+              <span>Downloads from <span style="font-family:'Geist Mono',monospace;color:var(--fg)">updates.switchyard.dev</span> · signed manifest</span>
+            </div>
+          </div>
+          </sc-if>
+          <sc-if value="{{isAppearance}}" hint-placeholder-val="{{false}}">
+          <div style="flex:1;overflow:auto;padding:16px 18px;display:flex;flex-direction:column;gap:18px">
+            <div style="display:flex;flex-direction:column;gap:8px"><span style="font-size:12px;font-weight:500;color:var(--fg2)">Theme</span>
+              <div style="display:flex;gap:8px"><sc-for list="{{themeOpts}}" as="to"><div onClick="{{to.onClick}}" style="width:150px;border:1px solid {{to.bd}};border-radius:8px;padding:8px;cursor:default;display:flex;flex-direction:column;gap:6px"><span style="height:64px;border-radius:5px;background:{{to.sw}};border:1px solid var(--bd)"></span><span style="font-size:12.5px">{{to.l}}</span></div></sc-for></div>
+            </div>
+            <div style="display:grid;grid-template-columns:200px 220px;gap:8px 12px;align-items:center;font-size:12.5px"><span style="color:var(--fg2)">Editor font</span><span style="height:28px;display:flex;align-items:center;padding:0 9px;border:1px solid var(--bd2);border-radius:6px;background:var(--bg);font-family:'Geist Mono',monospace">Geist Mono · 12.5</span><span style="color:var(--fg2)">Row height</span><span style="height:28px;display:flex;align-items:center;padding:0 9px;border:1px solid var(--bd2);border-radius:6px;background:var(--bg)">Compact · 26 px</span></div>
+          </div>
+          </sc-if>
+          <sc-if value="{{isOtherSetting}}" hint-placeholder-val="{{false}}">
+            <div style="flex:1;padding:18px;color:var(--fg3);font-size:12.5px">Not designed in this pass.</div>
+          </sc-if>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ov.components}}" hint-placeholder-val="{{false}}">
+    <div style="position:fixed;inset:0;z-index:50;background:var(--bg);overflow:auto">
+      <div style="max-width:1120px;margin:0 auto;padding:28px 32px 60px;display:flex;flex-direction:column;gap:28px">
+        <div style="display:flex;align-items:baseline;gap:12px"><span style="font-size:20px;font-weight:600">Component sheet</span><span style="color:var(--fg3);font-size:12.5px">gpui-component vocabulary · {{themeName}} theme</span><span style="flex:1"></span><button onClick="{{closeOverlay}}" style="height:28px;padding:0 12px;border:1px solid var(--bd2);border-radius:6px;background:var(--elev);color:var(--fg);font:500 12px Geist,sans-serif">Close</button></div>
+
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px">
+          <div style="border:1px solid var(--bd);border-radius:8px;background:var(--surface);padding:14px;display:flex;flex-direction:column;gap:12px">
+            <span style="font-size:11px;font-weight:600;color:var(--fg3);letter-spacing:.04em">ENVIRONMENT</span>
+            <sc-for list="{{envSheet}}" as="es">
+              <div style="display:flex;align-items:center;gap:12px">
+                <span style="width:8px;height:8px;border-radius:50%;background:{{es.c}}"></span>
+                <span style="font:600 10px 'Geist Mono',monospace;letter-spacing:.08em;padding:3px 7px;border-radius:4px;background:{{es.c}};color:{{es.fgOn}}">{{es.up}}</span>
+                <span style="font:600 10px 'Geist Mono',monospace;letter-spacing:.08em;padding:2px 6px;border-radius:4px;border:1px solid {{es.c}};color:{{es.c}}">{{es.up}}</span>
+                <span style="width:60px;height:22px;border-radius:4px 4px 0 0;background:var(--panel);box-shadow:inset 0 2px 0 {{es.c}}"></span>
+                <span style="font-size:12px;color:var(--fg2)">{{es.l}}</span>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="border:1px solid var(--bd);border-radius:8px;background:var(--surface);padding:14px;display:flex;flex-direction:column;gap:12px">
+            <span style="font-size:11px;font-weight:600;color:var(--fg3);letter-spacing:.04em">BUTTONS</span>
+            <div style="display:flex;flex-wrap:wrap;gap:8px">
+              <button style="height:26px;display:flex;align-items:center;gap:8px;padding:0 10px;border:0;border-radius:6px;background:var(--acc);color:var(--acc-fg);font:600 12px Geist,sans-serif">Run<span style="font:500 10.5px 'Geist Mono',monospace;opacity:.7">{{K.run}}</span></button>
+              <button style="height:26px;padding:0 10px;border:1px solid var(--bd2);border-radius:6px;background:var(--elev);color:var(--fg);font:500 12px Geist,sans-serif">Secondary</button>
+              <button style="height:26px;padding:0 10px;border:0;border-radius:6px;background:transparent;color:var(--fg2);font:500 12px Geist,sans-serif">Ghost</button>
+              <button style="height:26px;padding:0 10px;border:0;border-radius:6px;background:var(--prod);color:#fff;font:600 12px Geist,sans-serif">Destructive</button>
+              <button style="height:26px;padding:0 10px;border:1px solid var(--bd);border-radius:6px;background:var(--elev);color:var(--fg3);font:500 12px Geist,sans-serif">Disabled</button>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <span style="height:28px;flex:1;display:flex;align-items:center;padding:0 9px;border:1px solid var(--bd2);border-radius:6px;background:var(--bg);font-size:12.5px">Input value</span>
+              <span style="height:28px;flex:1;display:flex;align-items:center;padding:0 9px;border:1px solid var(--acc);box-shadow:0 0 0 3px var(--sel);border-radius:6px;background:var(--bg);font-size:12.5px;color:var(--fg3)">Focused</span>
+            </div>
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+              <sc-for list="{{kbds}}" as="kb"><span style="font:500 10.5px 'Geist Mono',monospace;padding:1px 5px;border:1px solid var(--bd2);border-radius:4px;color:var(--fg2)">{{kb}}</span></sc-for>
+            </div>
+          </div>
+
+          <div style="border:1px solid var(--bd);border-radius:8px;background:var(--surface);padding:14px;display:flex;flex-direction:column;gap:12px">
+            <span style="font-size:11px;font-weight:600;color:var(--fg3);letter-spacing:.04em">CONNECTION TYPES</span>
+            <div style="display:flex;flex-wrap:wrap;gap:10px">
+              <sc-for list="{{ctypes}}" as="ct"><span style="display:flex;align-items:center;gap:7px;font-size:12px"><span style="font:600 8.5px/16px 'Geist Mono',monospace;width:32px;text-align:center;border:1px solid var(--bd2);border-radius:3px;color:var(--fg2)">{{ct.badge}}</span>{{ct.l}}</span></sc-for>
+            </div>
+            <span style="font-size:11.5px;color:var(--fg3)">Monogram placeholders — swap for the final line-icon set.</span>
+          </div>
+
+          <div style="border:1px solid var(--bd);border-radius:8px;background:var(--surface);overflow:hidden;display:flex;flex-direction:column">
+            <span style="font-size:11px;font-weight:600;color:var(--fg3);letter-spacing:.04em;padding:14px 14px 10px">TABS</span>
+            <div style="height:34px;display:flex;background:var(--panel);border-top:1px solid var(--bd);border-bottom:1px solid var(--bd)">
+              <div style="position:relative;display:flex;align-items:center;gap:7px;padding:0 12px;background:var(--surface);border-right:1px solid var(--bd);margin-bottom:-1px;font-size:12.5px"><span style="position:absolute;left:0;right:0;top:0;height:2px;background:var(--prod)"></span>Active · prod<span style="width:6px;height:6px;border-radius:50%;background:var(--fg2)"></span></div>
+              <div style="position:relative;display:flex;align-items:center;padding:0 12px;border-right:1px solid var(--bd);color:var(--fg2);font-size:12.5px"><span style="position:absolute;left:0;right:0;top:0;height:2px;background:var(--stg);opacity:.6"></span>Staging</div>
+              <div style="display:flex;align-items:center;padding:0 12px;border-right:1px solid var(--bd);color:var(--fg2);font-size:12.5px">No env</div>
+            </div>
+            <div style="height:32px;display:flex;gap:2px;padding:0 8px">
+              <div style="display:flex;align-items:center;padding:0 10px;font-size:12px;box-shadow:inset 0 -2px 0 var(--fg)">Result 1</div>
+              <div style="display:flex;align-items:center;padding:0 10px;font-size:12px;color:var(--fg2)">Messages</div>
+            </div>
+          </div>
+
+          <div style="border:1px solid var(--bd);border-radius:8px;background:var(--panel);overflow:hidden;display:flex;flex-direction:column">
+            <span style="font-size:11px;font-weight:600;color:var(--fg3);letter-spacing:.04em;padding:14px 14px 6px">TREE ROWS · 26 PX</span>
+            <div style="height:26px;display:flex;align-items:center;gap:7px;padding:0 10px;font-size:12.5px"><span style="width:10px;font-size:9px;color:var(--fg3)">▾</span><span style="width:7px;height:7px;border-radius:50%;background:var(--prod)"></span><span style="flex:1;font-weight:600">Host · connected</span><span style="width:6px;height:6px;border-radius:50%;background:var(--dev)"></span></div>
+            <div style="height:26px;display:flex;align-items:center;gap:7px;padding:0 10px 0 28px;font-size:12.5px;background:var(--sel)"><span style="font:600 8.5px/15px 'Geist Mono',monospace;width:28px;text-align:center;border:1px solid var(--bd);border-radius:3px;color:var(--fg2)">PG</span><span style="flex:1">Selected leaf</span><span style="font:11px 'Geist Mono',monospace;color:var(--fg3)">:54012</span></div>
+            <div style="height:26px;display:flex;align-items:center;gap:7px;padding:0 10px 0 28px;font-size:12.5px"><span style="width:10px;font-size:9px;color:var(--fg3)">▾</span><span style="flex:1">Loading node</span><span style="width:64px;height:8px;border-radius:4px;background:linear-gradient(90deg,var(--hover) 0,var(--bd2) 50%,var(--hover) 100%);background-size:160px 8px;animation:sy-shimmer 1.2s linear infinite"></span></div>
+            <div style="height:26px;display:flex;align-items:center;gap:7px;padding:0 10px 0 28px;font-size:12.5px;color:var(--fg2)"><span style="width:10px;font-size:9px;color:var(--fg3)">▸</span><span style="flex:1">Cached · refreshing</span><span style="font:11px 'Geist Mono',monospace;color:var(--fg3);animation:sy-pulse 1.4s infinite">↻</span></div>
+          </div>
+
+          <div style="border:1px solid var(--bd);border-radius:8px;background:var(--surface);overflow:hidden;display:flex;flex-direction:column">
+            <span style="font-size:11px;font-weight:600;color:var(--fg3);letter-spacing:.04em;padding:14px 14px 10px">GRID CELLS</span>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;border-top:1px solid var(--bd);font:12px 'Geist Mono',monospace">
+              <span style="height:26px;display:flex;align-items:center;padding:0 10px;border-right:1px solid var(--line);border-bottom:1px solid var(--line)">text value</span>
+              <span style="height:26px;display:flex;align-items:center;justify-content:flex-end;padding:0 10px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums">4,812.40</span>
+              <span style="height:26px;display:flex;align-items:center;padding:0 10px;border-bottom:1px solid var(--line);color:var(--fg3);font-style:italic">NULL</span>
+              <span style="height:26px;display:flex;align-items:center;padding:0 10px;border-right:1px solid var(--line);color:var(--fg3)">''</span>
+              <span style="height:26px;display:flex;align-items:center;padding:0 10px;border-right:1px solid var(--line);background:var(--staged);box-shadow:inset 2px 0 0 var(--stg)">staged</span>
+              <span style="height:26px;display:flex;align-items:center;padding:0 10px;background:var(--sel);box-shadow:inset 0 0 0 1px var(--acc)">selected</span>
+            </div>
+          </div>
+
+          <div style="border:1px solid var(--bd);border-radius:8px;background:var(--surface);overflow:hidden;display:flex;flex-direction:column;grid-column:1/-1">
+            <span style="font-size:11px;font-weight:600;color:var(--fg3);letter-spacing:.04em;padding:14px 14px 10px">STATUS BAR ITEMS</span>
+            <div style="height:24px;display:flex;align-items:center;gap:14px;border-top:1px solid var(--bd);background:var(--panel);font-size:11.5px;color:var(--fg2);white-space:nowrap;overflow:hidden">
+              <span style="align-self:stretch;display:flex;align-items:center;padding:0 10px;background:var(--prod);color:#fff;font:600 10px 'Geist Mono',monospace;letter-spacing:.08em">PRODUCTION</span>
+              <span style="color:var(--fg)">shop_prod @ prod-db-01</span>
+              <span style="display:flex;align-items:center;gap:5px;color:var(--stg)"><span style="width:6px;height:6px;border-radius:50%;background:var(--stg)"></span>Transaction open · 2 statements</span>
+              <span>2 tunnels</span><span style="flex:1"></span><span>↑↓ 3 transfers · 46%</span><span style="font-family:'Geist Mono',monospace">1,248 rows · 84 ms</span><span style="font-family:'Geist Mono',monospace;color:var(--fg3);padding-right:12px">Ln 8, Col 30</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;default&quot;:&quot;dark&quot;,&quot;tsType&quot;:&quot;'dark'|'light'&quot;,&quot;section&quot;:&quot;Global&quot;},&quot;keys&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;mac&quot;,&quot;pc&quot;],&quot;default&quot;:&quot;mac&quot;,&quot;tsType&quot;:&quot;'mac'|'pc'&quot;,&quot;section&quot;:&quot;Global&quot;},&quot;openOverlay&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;none&quot;,&quot;palette&quot;,&quot;conn&quot;,&quot;safety&quot;,&quot;settings&quot;,&quot;components&quot;],&quot;default&quot;:&quot;none&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Global&quot;},&quot;editorState&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;idle&quot;,&quot;completion&quot;,&quot;error&quot;,&quot;transaction&quot;],&quot;default&quot;:&quot;idle&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;SQL editor&quot;},&quot;resultsState&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;complete&quot;,&quot;streaming&quot;,&quot;empty&quot;,&quot;error&quot;,&quot;cancelled&quot;,&quot;editing&quot;],&quot;default&quot;:&quot;complete&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;SQL editor&quot;},&quot;termState&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;connected&quot;,&quot;reconnecting&quot;,&quot;disconnected&quot;,&quot;hostKeyPrompt&quot;,&quot;hostKeyChanged&quot;],&quot;default&quot;:&quot;connected&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Terminal &amp; files&quot;},&quot;filesState&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;running&quot;,&quot;paused&quot;,&quot;conflict&quot;],&quot;default&quot;:&quot;running&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Terminal &amp; files&quot;},&quot;driverState&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;missing&quot;,&quot;admin&quot;,&quot;downloading&quot;,&quot;verifying&quot;,&quot;installed&quot;,&quot;failed&quot;,&quot;license&quot;],&quot;default&quot;:&quot;missing&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Connection dialog&quot;},&quot;firstRun&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Welcome&quot;}}">
+const KW = new Set('SELECT FROM JOIN ON WHERE AND OR GROUP BY ORDER LIMIT AS DESC ASC DELETE INSERT INTO UPDATE SET INTERVAL NOT NULL LEFT INNER VALUES'.split(' '));
+const FN = new Set(['count', 'sum', 'now', 'coalesce', 'max', 'min']);
+const ENVC = { prod: 'var(--prod)', stg: 'var(--stg)', dev: 'var(--dev)', loc: 'var(--loc)' };
+const ENVL = { prod: 'Production', stg: 'Staging', dev: 'Development', loc: 'Local' };
+const SQL = [
+  '-- Top customers by revenue, last 30 days',
+  'SELECT c.id, c.email, count(o.id) AS orders,',
+  '       sum(o.total) AS revenue, max(o.created_at) AS last_order_at,',
+  '       c.segment',
+  'FROM customers c',
+  'JOIN orders o ON o.customer_id = c.id',
+  "WHERE o.created_at > now() - INTERVAL '30 days'",
+  "  AND o.status <> 'cancelled'",
+  'GROUP BY c.id, c.email, c.segment',
+  'ORDER BY revenue DESC',
+  'LIMIT 2000;',
+  '',
+  '-- cleanup',
+  'DELETE FROM abandoned_carts;'
+];
+function tokSql(line) {
+  const out = []; const re = /(--.*$)|('(?:[^']|'')*')|(\b\d+\b)|([A-Za-z_]\w*)|(\s+)|([^\sA-Za-z_\d']+)/g; let m;
+  while ((m = re.exec(line))) {
+    let c = 'var(--fg)', fs = 'normal';
+    if (m[1]) { c = 'var(--sx-cm)'; fs = 'italic'; }
+    else if (m[2]) c = 'var(--sx-str)';
+    else if (m[3]) c = 'var(--sx-num)';
+    else if (m[4]) { if (KW.has(m[4]) ) c = 'var(--sx-kw)'; else if (FN.has(m[4])) c = 'var(--sx-fn)'; }
+    else if (m[6]) c = 'var(--fg2)';
+    out.push({ t: m[0], c, fs, deco: m[4] === 'customer_ud' ? 'underline wavy var(--prod)' : 'none' });
+  }
+  return out;
+}
+const TC = { g: 'var(--dev)', b: 'var(--acc)', y: 'var(--stg)', r: 'var(--prod)', d: 'var(--fg3)', m: 'var(--sx-kw)' };
+function tokTerm(s) {
+  const out = []; const re = /\{(\w+)\}(.*?)\{\/\}|([^{]+)/g; let m;
+  while ((m = re.exec(s))) {
+    if (m[3]) out.push({ t: m[3], c: 'var(--fg)', bg: 'transparent' });
+    else if (m[1] === 'hl') out.push({ t: m[2], c: 'var(--fg)', bg: 'var(--staged)' });
+    else if (m[1] === 'cur') out.push({ t: ' ', c: 'var(--fg)', bg: 'var(--fg)' });
+    else out.push({ t: m[2], c: TC[m[1]] || 'var(--fg)', bg: 'transparent' });
+  }
+  if (!out.length) out.push({ t: ' ', c: 'var(--fg)', bg: 'transparent' });
+  return out;
+}
+const TERM_A = [
+  '{g}deploy@prod-db-01{/}:{b}~{/}$ systemctl status postgresql@16-main',
+  '{g}●{/} postgresql@16-main.service - PostgreSQL Cluster 16-main',
+  '     Loaded: loaded (/lib/systemd/system/postgresql@.service; enabled)',
+  '     Active: {g}active (running){/} since Mon 2026-10-05 08:14:22 UTC; 14h ago',
+  '   Main PID: 1184 (postgres)',
+  '      Tasks: 23 (limit: 18997)',
+  '     Memory: 2.1G',
+  '',
+  '{g}deploy@prod-db-01{/}:{b}~{/}$ df -h /var/lib/postgresql',
+  '{d}Filesystem      Size  Used Avail Use% Mounted on{/}',
+  '/dev/nvme1n1    500G  312G  188G  {y}63%{/} /var/lib/postgresql',
+  '',
+  '{g}deploy@prod-db-01{/}:{b}~{/}$ psql -c "select count(*) from orders"',
+  '  count',
+  '---------',
+  ' 1204871',
+  '(1 row)',
+  '',
+  '{g}deploy@prod-db-01{/}:{b}~{/}$ {cur} {/}'
+];
+const TERM_B = [
+  '{g}deploy@prod-db-01{/}:{b}/var/log/nginx{/}$ tail -f access.log',
+  '{d}22:18:04{/} GET  /api/products?page=2   {g}200{/}  41ms',
+  '{d}22:18:05{/} {hl}POST /api/checkout{/}         {g}201{/} 212ms',
+  '{d}22:18:05{/} GET  /cart                  {g}200{/}  18ms',
+  '{d}22:18:07{/} {hl}POST /api/checkout{/}         {r}502{/} 30.0s',
+  '{d}22:18:07{/} GET  /static/app.4f2a.js    {g}200{/}   3ms',
+  '{d}22:18:09{/} GET  /api/orders/10148      {g}200{/}  27ms',
+  '{d}22:18:10{/} {hl}POST /api/checkout{/}         {g}201{/} 198ms',
+  '{d}22:18:12{/} GET  /health                {g}200{/}   1ms',
+  '{d}22:18:13{/} PUT  /api/cart/items/88     {y}409{/}  12ms',
+  '{d}22:18:15{/} GET  /api/products?page=3   {g}200{/}  39ms',
+  '{d}22:18:16{/} DELETE /api/cart/items/91   {g}204{/}   9ms'
+];
+const NAMES = ['maya.chen', 'j.okafor', 'lena.berg', 'tom.reyes', 'priya.n', 'sam.wolfe', 'ana.ruiz', 'kenji.t', 'olivia.k', 'marco.p', 'fatima.z', 'ben.h', 'chloe.d', 'arjun.m', 'eva.l', 'noah.s', 'iris.v', 'leo.g', 'zoe.b', 'omar.f', 'nina.r', 'paul.c'];
+const SEG = ['vip', 'repeat', null, 'vip', 'repeat', null, 'repeat', 'vip', null, 'repeat', 'new', null, 'repeat', 'new', 'vip', null, 'repeat', 'new', null, 'repeat', 'new', null];
+const DATA = NAMES.map((n, i) => ({
+  id: 10000 + ((i * 37 + 11) % 400),
+  email: n + '@example.com',
+  orders: Math.max(2, 31 - i - (i % 3)),
+  revenue: (4812.4 - i * 173.35 - (i % 4) * 11.2).toFixed(2),
+  last_order_at: `2026-10-0${5 - (i % 5)} ${String(8 + (i * 5) % 14).padStart(2, '0')}:${String((i * 17) % 60).padStart(2, '0')}:${String((i * 29) % 60).padStart(2, '0')}+00`,
+  segment: SEG[i]
+}));
+const fz = (q, s) => { q = q.toLowerCase(); s = s.toLowerCase(); let i = 0; for (const ch of s) { if (ch === q[i]) i++; } return i === q.length; };
+const btn = (l, kind, onClick) => ({ l, onClick, bd: kind === 'secondary' ? '1px solid var(--bd2)' : '0', bg: kind === 'primary' ? 'var(--acc)' : kind === 'secondary' ? 'var(--elev)' : 'transparent', fg: kind === 'primary' ? 'var(--acc-fg)' : kind === 'secondary' ? 'var(--fg)' : 'var(--fg2)', w: kind === 'primary' ? '600' : '500' });
+
+class Component extends DCLogic {
+  state = { theme: null, tab: 'sql', side: 'conn', overlay: undefined, pmode: 'cmd', q: '', pi: 0, run: null, rows: 1248, inspector: typeof window !== 'undefined' ? window.innerWidth >= 1280 : true, sidebar: true, ctype: 'mssql', env: 'stg', test: null, driver: null, dprog: 0, setPage: 'Drivers', confirm: '', sel: 3, collapsed: {}, editorH: 300, vfmt: 'JSON', exportOpen: false, ctx: null, toast: null, schemaSel: 'orders', txn: null, paused: null, tunnels: false, rtab: 0 };
+
+  componentDidMount() {
+    this.applyTheme();
+    this.onKey = (e) => {
+      const mod = e.metaKey || e.ctrlKey; const k = e.key.toLowerCase();
+      if (k === 'escape') { this.setState({ overlay: null, exportOpen: false, ctx: null, tunnels: false }); return; }
+      if (mod && e.shiftKey && k === 'p') { e.preventDefault(); this.openPal('cmd'); return; }
+      if (mod && !e.shiftKey && k === 'p') { e.preventDefault(); this.openPal('conn'); return; }
+      if (mod && k === ',') { e.preventDefault(); this.setState({ overlay: 'settings', setPage: 'Drivers' }); return; }
+      if (this.ov()) return;
+      if (mod && e.shiftKey && k === 'enter') { e.preventDefault(); this.runScript(); return; }
+      if (mod && k === 'enter') { e.preventDefault(); this.run(); return; }
+      if (mod && k === '.') { e.preventDefault(); this.stop(); return; }
+      if (mod && k === 'b') { e.preventDefault(); this.setState(s => ({ sidebar: !s.sidebar })); }
+    };
+    window.addEventListener('keydown', this.onKey);
+  }
+  componentDidUpdate(pp) {
+    this.applyTheme();
+    const p = this.props, ch = {};
+    if (pp.theme !== p.theme) ch.theme = null;
+    if (pp.resultsState !== p.resultsState) { ch.run = null; ch.tab = 'sql'; }
+    if (pp.driverState !== p.driverState) { ch.driver = null; ch.test = null; ch.overlay = 'conn'; ch.ctype = 'mssql'; }
+    if (pp.openOverlay !== p.openOverlay) ch.overlay = undefined;
+    if (pp.termState !== p.termState) ch.tab = 'term';
+    if (pp.filesState !== p.filesState) { ch.tab = 'files'; ch.paused = null; }
+    if (pp.firstRun !== p.firstRun) ch.tab = 'welcome';
+    if (pp.editorState !== p.editorState) { ch.tab = 'sql'; ch.txn = null; }
+    if (Object.keys(ch).length) this.setState(ch);
+  }
+  componentWillUnmount() { window.removeEventListener('keydown', this.onKey); clearInterval(this.timer); clearInterval(this.dtimer); }
+
+  themeName() { return this.state.theme ?? this.props.theme ?? 'dark'; }
+  applyTheme() { document.documentElement.dataset.theme = this.themeName(); }
+  ov() { if (this.state.overlay !== undefined) return this.state.overlay; const o = this.props.openOverlay; return o && o !== 'none' ? o : null; }
+  rs() { return this.state.run ?? this.props.resultsState ?? 'complete'; }
+  es() { return this.props.editorState ?? 'idle'; }
+  ds() { return this.state.driver ?? this.props.driverState ?? 'missing'; }
+  K(a) { const mac = (this.props.keys ?? 'mac') === 'mac'; const m = mac ? { mod: '⌘', shift: '⇧', enter: '↵' } : { mod: 'Ctrl', shift: 'Shift', enter: 'Enter' }; return a.map(k => m[k] ?? k).join(mac ? '' : '+'); }
+  openPal(mode) { this.setState({ overlay: 'palette', pmode: mode, q: '', pi: 0 }); }
+  toastMsg(t) { clearTimeout(this.tt); this.setState({ toast: t }); this.tt = setTimeout(() => this.setState({ toast: null }), 2600); }
+
+  run = () => {
+    clearInterval(this.timer);
+    this.setState({ run: 'streaming', rows: 0, tab: 'sql', exportOpen: false });
+    this.timer = setInterval(() => this.setState(s => {
+      const r = Math.min(1248, s.rows + 88);
+      if (r >= 1248) { clearInterval(this.timer); return { rows: 1248, run: 'complete' }; }
+      return { rows: r };
+    }), 70);
+  };
+  stop = () => { if (this.rs() === 'streaming') { clearInterval(this.timer); this.setState(s => ({ run: 'cancelled', rows: this.state.run ? s.rows : 412 })); } };
+  runScript = () => this.setState({ overlay: 'safety', confirm: '' });
+
+  act(id) {
+    const close = { overlay: null };
+    const map = {
+      newconn: () => this.setState({ overlay: 'conn', test: null, driver: null }),
+      newhost: () => this.setState({ overlay: 'conn', ctype: 'ssh', test: null }),
+      term: () => this.setState({ ...close, tab: 'term' }),
+      run: () => { this.setState(close); this.run(); },
+      script: () => this.runScript(),
+      stop: () => { this.setState(close); this.stop(); },
+      files: () => this.setState({ ...close, tab: 'files' }),
+      settings: () => this.setState({ overlay: 'settings', setPage: 'Drivers' }),
+      theme: () => this.setState({ ...close, theme: this.themeName() === 'dark' ? 'light' : 'dark' }),
+      inspector: () => this.setState(s => ({ ...close, inspector: !s.inspector })),
+      sidebar: () => this.setState(s => ({ ...close, sidebar: !s.sidebar })),
+      welcome: () => this.setState({ ...close, tab: 'welcome' }),
+      components: () => this.setState({ overlay: 'components' }),
+      sql: () => this.setState({ ...close, tab: 'sql' })
+    };
+    (map[id] || (() => this.setState(close)))();
+  }
+
+  testConn = () => {
+    this.setState({ test: 'testing' });
+    clearTimeout(this.tt2);
+    this.tt2 = setTimeout(() => {
+      const t = this.state.ctype;
+      this.setState({ test: t === 'mssql' && this.ds() !== 'installed' ? 'missing' : t === 'ftp' ? 'failed' : 'passed' });
+    }, 900);
+  };
+  elevate = () => {
+    clearInterval(this.dtimer);
+    this.setState({ driver: 'downloading', dprog: 0, test: 'missing' });
+    this.dtimer = setInterval(() => this.setState(s => {
+      const d = Math.min(100, s.dprog + 6);
+      if (d >= 100) {
+        clearInterval(this.dtimer);
+        setTimeout(() => this.setState({ driver: 'verifying' }), 0);
+        setTimeout(() => this.setState({ driver: 'installed' }), 1100);
+        setTimeout(() => this.setState({ test: 'passed' }), 2300);
+      }
+      return { dprog: d };
+    }), 90);
+  };
+
+  renderVals() {
+    const s = this.state, p = this.props;
+    const theme = this.themeName(), ov = this.ov(), rs = this.rs(), es = this.es(), ds = this.ds();
+    const mac = (p.keys ?? 'mac') === 'mac';
+    const K = {
+      palette: this.K(['mod', 'shift', 'P']), quick: this.K(['mod', 'P']), run: this.K(['mod', 'enter']), script: this.K(['mod', 'shift', 'enter']),
+      stop: this.K(['mod', '.']), term: mac ? '⌘T' : 'Ctrl+Shift+T', settings: this.K(['mod', ',']), sidebar: this.K(['mod', 'B'])
+    };
+    const tab = s.tab;
+
+    // connections tree
+    const hosts = [
+      { id: 'prod-db-01', env: 'prod', live: true, sub: '10.0.4.12', kids: [['SSH', 'Terminal', '', 'term'], ['SFTP', 'Files', '', 'files'], ['PG', 'shop_prod', ':54012', 'sql']] },
+      { id: 'staging-app', env: 'stg', sub: '10.0.8.3', kids: [['SSH', 'Terminal', '', 'term'], ['PG', 'shop_staging', '', 'sql']] },
+      { id: 'reporting', env: 'prod', sub: 'direct', kids: [['MS', 'Reporting', '1433', 'sql']] },
+      { id: 'dev-box', env: 'dev', sub: 'dev.acme.dev', kids: [['SSH', 'Terminal', '', 'term'], ['PG', 'shop_dev', '', 'sql']] },
+      { id: 'Local', env: 'loc', sub: '', kids: [['SH', 'zsh', '', 'term'], ['MS', 'mssql-dev', 'docker', 'sql'], ['FTP', 'assets.acme.dev', '', 'files']] }
+    ];
+    const connRows = [];
+    hosts.forEach(h => {
+      const col = s.collapsed[h.id];
+      connRows.push({ isHost: true, isLeaf: false, pad: '8px', caret: col ? '▸' : '▾', envColor: ENVC[h.env], label: h.id, sub: h.sub, weight: 600, live: h.live ? 'var(--dev)' : 'transparent', bg: 'transparent', badge: '', onClick: () => this.setState(st => ({ collapsed: { ...st.collapsed, [h.id]: !st.collapsed[h.id] } })) });
+      if (!col) h.kids.forEach(k => {
+        const active = h.id === 'prod-db-01' && k[3] === tab;
+        connRows.push({ isHost: false, isLeaf: true, pad: '26px', caret: '', envColor: '', label: k[1], sub: k[2], weight: 400, live: h.live ? 'var(--dev)' : 'transparent', badge: k[0], bg: active ? 'var(--sel)' : 'transparent', onClick: () => this.setState({ tab: k[3] }) });
+      });
+    });
+
+    const schemaDef = [
+      [0, '▾', 'DB', 'shop_prod', 'pg 16'], [1, '▾', 'S', 'public', ''], [2, '▾', '', 'Tables', '12'],
+      [3, '', 'T', 'orders', '1.2M'], [3, '', 'T', 'customers', '84K'], [3, '', 'T', 'order_items', '3.9M'], [3, '', 'T', 'products', '2.1K'], [3, '', 'T', 'payments', '1.1M'], [3, '', 'T', 'abandoned_carts', '48K'],
+      [2, '▸', '', 'Views', '3'], [2, '▸', '', 'Materialized views', '1'], [2, '▾', '', 'Functions', '', true], [2, '▸', '', 'Sequences', '9'], [2, '▸', '', 'Types', '4'],
+      [1, '▸', 'S', 'analytics', ''], [1, '▸', 'S', 'audit', '']
+    ];
+    const schemaRows = schemaDef.map(([d, caret, icon, label, sub, loading]) => ({
+      pad: (8 + d * 14) + 'px', caret, icon, label, sub: loading ? '' : sub, loading: !!loading,
+      bg: icon === 'T' && s.schemaSel === label ? 'var(--sel)' : 'transparent', fg: d === 2 ? 'var(--fg2)' : 'var(--fg)',
+      onClick: () => icon === 'T' && this.setState({ schemaSel: label }),
+      onCtx: (e) => { e.preventDefault(); if (icon === 'T') this.setState({ schemaSel: label, ctx: { x: e.clientX, y: e.clientY } }); }
+    }));
+
+    const tabsDef = [['sql', 'PG', 'top_customers.sql', 'prod', true], ['term', 'SSH', 'prod-db-01', 'prod'], ['files', 'SFTP', 'Files · prod-db-01', 'prod'], ['welcome', '', 'Welcome', null]];
+    const tabs = tabsDef.filter(t => t[0] !== 'welcome' || tab === 'welcome' || true).map(([id, badge, label, env, dirty]) => {
+      const a = tab === id;
+      return { badge: badge || 'SY', label, bg: a ? 'var(--surface)' : 'transparent', fg: a ? 'var(--fg)' : 'var(--fg2)', mb: a ? '-1px' : '0', edge: env ? (a ? ENVC[env] : 'color-mix(in oklch, ' + ENVC[env] + ' 45%, transparent)') : 'transparent', dirty: dirty ? 'var(--fg2)' : 'transparent', onClick: () => this.setState({ tab: id, exportOpen: false }) };
+    });
+
+    // editor
+    const src = SQL.slice();
+    if (es === 'completion') src[7] = '  AND o.st';
+    if (es === 'error') src[5] = 'JOIN orders o ON o.customer_ud = c.id';
+    const lines = src.map((t, i) => ({
+      n: i + 1, toks: tokSql(t), caret: i === 7, comp: i === 7 && es === 'completion', err: i === 5 && es === 'error',
+      bg: i === 7 ? 'var(--line)' : 'transparent', mark: i >= 1 && i <= 10 ? 'var(--acc)' : 'transparent', numColor: i === 7 ? 'var(--fg)' : 'var(--fg3)'
+    }));
+    const completions = [['C', 'status', 'text'], ['C', 'store_id', 'int4'], ['C', 'shipped_at', 'timestamptz'], ['C', 'subtotal', 'numeric(12,2)'], ['ƒ', 'starts_with()', 'bool']].map((c, i) => ({ kind: c[0], name: c[1], type: c[2], bg: i === 0 ? 'var(--sel)' : 'transparent' }));
+    const txn = s.txn ?? (es === 'transaction' ? 'manual' : 'auto');
+    const txnOpen = txn === 'manual' && es === 'transaction';
+
+    // results
+    const streaming = rs === 'streaming', editing = rs === 'editing';
+    let shown = DATA.length;
+    if (streaming) shown = Math.max(3, Math.round(DATA.length * (s.run ? s.rows : 640) / 1248));
+    if (rs === 'cancelled') shown = 9;
+    const cols = [['#', ''], ['id', 'int8'], ['email', 'text'], ['orders', 'int8'], ['revenue', 'numeric'], ['last_order_at', 'timestamptz'], ['segment', 'text']].map(([n, t], i) => ({ n, t, justify: [0, 3, 4].includes(i) ? 'flex-end' : 'flex-start' }));
+    const gridRows = rs === 'empty' ? [] : DATA.slice(0, shown).map((r, i) => {
+      const sel = s.sel === i;
+      const vals = [String(i + 1), String(r.id), r.email, String(r.orders), Number(r.revenue).toLocaleString('en-US', { minimumFractionDigits: 2 }), r.last_order_at, r.segment];
+      if (editing && i === 1) vals[6] = 'vip';
+      if (editing && i === 4) vals[2] = 'priya.nair@example.com';
+      return {
+        bg: sel ? 'var(--sel)' : 'transparent', onClick: () => this.setState({ sel: i }),
+        cells: vals.map((v, j) => {
+          const isNull = v === null, staged = editing && ((i === 1 && j === 6) || (i === 4 && j === 2));
+          return { v: isNull ? 'NULL' : v, justify: [0, 3, 4].includes(j) ? 'flex-end' : 'flex-start', color: j === 0 || isNull ? 'var(--fg3)' : 'var(--fg)', fs: isNull ? 'italic' : 'normal', bg: staged ? 'var(--staged)' : 'transparent', ring: staged ? 'inset 2px 0 0 var(--stg)' : 'none' };
+        })
+      };
+    });
+    const loaded = streaming ? (s.run ? s.rows : 640) : rs === 'cancelled' ? (s.run ? s.rows : 412) : 1248;
+    const rsInfo = {
+      complete: ['Complete', 'var(--dev)', '1,248 rows · 84 ms', 'none'],
+      streaming: ['Streaming', 'var(--acc)', `${loaded.toLocaleString()} rows · fetching`, 'sy-pulse 1s infinite'],
+      empty: ['Complete', 'var(--dev)', '0 rows · 23 ms', 'none'],
+      error: ['Failed', 'var(--prod)', 'after 11 ms', 'none'],
+      cancelled: ['Cancelled', 'var(--stg)', `${loaded.toLocaleString()} rows kept · 2.4 s`, 'none'],
+      editing: ['Editing', 'var(--stg)', '2 staged · public.customers', 'none']
+    }[rs];
+    const rsv = {
+      isError: rs === 'error', showGrid: rs !== 'error', isEmpty: rs === 'empty', isStreaming: streaming, isCancelled: rs === 'cancelled', isEditing: editing,
+      label: rsInfo[0], dot: rsInfo[1], meta: rsInfo[2], anim: rsInfo[3], rowsLabel: loaded.toLocaleString(), notice: rs === 'error' ? '1 error' : 'no notices'
+    };
+    const resultTabs = [['Result 1', rs === 'error' ? '' : loaded.toLocaleString()], ['Messages', rs === 'error' ? '1' : '']].map((r, i) => ({ label: r[0], count: r[1], fg: s.rtab === i ? 'var(--fg)' : 'var(--fg2)', line: s.rtab === i ? 'inset 0 -2px 0 var(--fg)' : 'none', onClick: () => this.setState({ rtab: i }) }));
+    const exportItems = [['TSV', this.K(['mod', 'C'])], ['CSV', ''], ['JSON', ''], ['Markdown table', ''], ['SQL INSERT', this.K(['mod', 'shift', 'C'])]].map(([l, k]) => ({ label: l, key: k, onClick: () => { this.setState({ exportOpen: false }); this.toastMsg(`Copied 1 row as ${l}`); } }));
+
+    // inspector
+    const row = DATA[Math.min(s.sel, DATA.length - 1)];
+    const json = JSON.stringify(row, null, 2);
+    let iLines;
+    if (s.vfmt === 'JSON') iLines = json.split('\n').map(l => { const out = []; const re = /("[^"]*")(\s*:)|("[^"]*")|(\b-?\d+(?:\.\d+)?\b)|(null)|([^"\d]+|.)/g; let m; while ((m = re.exec(l))) { if (m[1]) { out.push({ t: m[1], c: 'var(--sx-fn)' }); out.push({ t: m[2], c: 'var(--fg2)' }); } else if (m[3]) out.push({ t: m[3], c: 'var(--sx-str)' }); else if (m[4]) out.push({ t: m[4], c: 'var(--sx-num)' }); else if (m[5]) out.push({ t: m[5], c: 'var(--fg3)' }); else out.push({ t: m[0], c: 'var(--fg2)' }); } return out; });
+    else if (s.vfmt === 'Text') iLines = Object.entries(row).map(([k, v]) => [{ t: k.padEnd(14), c: 'var(--fg3)' }, { t: v === null ? 'NULL' : String(v), c: v === null ? 'var(--fg3)' : 'var(--fg)' }]);
+    else { const bytes = Array.from(new TextEncoder().encode(json)).slice(0, 160); iLines = []; for (let i = 0; i < bytes.length; i += 8) { const ch = bytes.slice(i, i + 8); iLines.push([{ t: i.toString(16).padStart(4, '0') + '  ', c: 'var(--fg3)' }, { t: ch.map(b => b.toString(16).padStart(2, '0')).join(' ').padEnd(24) + '  ', c: 'var(--fg)' }, { t: ch.map(b => (b > 31 && b < 127 ? String.fromCharCode(b) : '.')).join(''), c: 'var(--fg2)' }]); } }
+    const vfmts = ['JSON', 'Text', 'Hex'].map(l => ({ l, bg: s.vfmt === l ? 'var(--elev)' : 'transparent', fg: s.vfmt === l ? 'var(--fg)' : 'var(--fg2)', onClick: () => this.setState({ vfmt: l }) }));
+
+    // terminal
+    const ts = p.termState ?? 'connected';
+    const term = {
+      connected: { dot: 'var(--dev)', label: 'Connected · 14h', opacity: 1 },
+      reconnecting: { dot: 'var(--stg)', label: 'Reconnecting', opacity: 0.55, banner: true, bannerBg: 'var(--stg-bg)', bannerTitle: 'Connection lost', bannerText: 'Reconnecting in 3 s · attempt 2 of 5 · tunnels paused' },
+      disconnected: { dot: 'var(--prod)', label: 'Disconnected', opacity: 0.55, banner: true, bannerBg: 'var(--prod-bg)', bannerTitle: 'Disconnected', bannerText: 'Server closed the connection (exit 255) · scrollback kept' },
+      hostKeyPrompt: { dot: 'var(--stg)', label: 'Awaiting host key', opacity: 0.4, prompt: true },
+      hostKeyChanged: { dot: 'var(--prod)', label: 'Blocked', opacity: 1, changed: true }
+    }[ts];
+
+    // files
+    const fsx = p.filesState ?? 'running';
+    const paused = s.paused ?? (fsx === 'paused');
+    const local = [['', '..', '', '', ''], ['DIR', 'exports', '—', 'Oct 3, 09:12', ''], ['DIR', 'nginx', '—', 'Sep 28, 17:40', ''], ['GZ', 'release-2026.10.04.tar.gz', '84.2 MB', 'Oct 4, 18:02', '', 1], ['CSV', 'orders-sept.csv', '212 MB', 'Oct 1, 07:30', ''], ['TXT', 'robots.txt', '68 B', 'Aug 12, 10:01', ''], ['ICO', 'favicon.ico', '15 KB', 'Aug 12, 10:01', '']];
+    const remote = [['', '..', '', '', ''], ['DIR', 'current → releases/2026.10.03', '—', 'Oct 3, 21:55', 'lrwxr-xr-x'], ['DIR', 'releases', '—', 'Oct 4, 18:05', 'drwxr-xr-x', 1], ['DIR', 'shared', '—', 'Sep 2, 11:20', 'drwxr-xr-x'], ['DIR', 'storage', '—', 'Oct 5, 22:10', 'drwxrwxr-x'], ['CONF', 'nginx.conf', '4.1 KB', 'Oct 5, 22:16', '-rw-r--r--'], ['GZ', 'release-2026.10.03.tar.gz', '83.9 MB', 'Oct 3, 21:50', '-rw-r--r--']];
+    const mkRows = (arr) => arr.map(([kind, n, sz, m, pm, sel]) => ({ kind, n, s: sz, m, p: pm, bg: sel ? 'var(--sel)' : 'transparent', fg: n === '..' ? 'var(--fg3)' : 'var(--fg)' }));
+    const panes = [
+      { title: 'Local', crumbs: ['~', 'builds', 'shop'], count: '7 items', rows: mkRows(local) },
+      { title: 'prod-db-01', crumbs: ['/', 'var', 'www', 'shop'], count: '7 items · 1 selected', rows: mkRows(remote) }
+    ];
+    const Q = [
+      ['↑', 'release-2026.10.04.tar.gz', '→ /var/www/shop/releases', 62, '8.4 MB/s', '4 s', 'run'],
+      ['↓', 'access.log.1.gz', '← /var/log/nginx', 28, '3.9 MB/s', '21 s', 'run'],
+      ['↑', 'assets/ (214 files)', '→ /var/www/shop/shared/assets', 0, '—', '—', 'queued'],
+      ['↓', 'db-backup-2026-10-04.dump', '← /backups', 100, '—', '—', 'done'],
+      ['↑', 'storage/uploads/hero.mp4', 'Connection reset · resumes from 18.9 MB', 41, '—', '—', 'failed']
+    ];
+    const qItems = Q.map(([dir, n, to, pct, speed, eta, st]) => {
+      const pst = paused && (st === 'run' || st === 'queued') ? 'paused' : st;
+      return { dir, n, to, pct, speed: pst === 'run' ? speed : '—', eta: pst === 'run' ? eta : '—', retry: pst === 'failed',
+        st: { run: 'Uploading', queued: 'Queued', done: 'Done', failed: 'Failed', paused: 'Paused' }[pst].replace('Uploading', dir === '↓' ? 'Downloading' : 'Uploading'),
+        stColor: { run: 'var(--fg)', queued: 'var(--fg3)', done: 'var(--dev)', failed: 'var(--prod)', paused: 'var(--stg)' }[pst],
+        bar: { run: 'var(--acc)', queued: 'var(--fg3)', done: 'var(--dev)', failed: 'var(--prod)', paused: 'var(--stg)' }[pst] };
+    });
+    const queue = { items: qItems, summary: paused ? 'Paused · 3 waiting · 1 failed' : '2 active · 12.3 MB/s · 1 queued · 1 failed', pauseLabel: paused ? 'Resume all' : 'Pause all' };
+
+    // welcome
+    const first = !!p.firstRun;
+    const welcome = { returning: !first, first, title: first ? 'Welcome to Switchyard' : 'Good evening', sub: first ? 'Databases, terminals and file transfer behind one connection model. Nothing to install — PostgreSQL, SQL Server, SSH, SFTP and FTP drivers are built in.' : 'Pick up where you left off, or open something new.' };
+    const recents = [['prod', 'PG', 'shop_prod', 'via prod-db-01', '2 min ago', 'sql'], ['prod', 'SSH', 'prod-db-01', 'deploy@10.0.4.12', '2 min ago', 'term'], ['stg', 'PG', 'shop_staging', 'via staging-app', 'Yesterday', 'sql'], ['prod', 'MS', 'Reporting', 'sql-rpt.corp.acme.internal', 'Mon', 'sql'], ['loc', 'FTP', 'assets.acme.dev', 'ftps · explicit', 'Sep 29', 'files']].map(([e, badge, n, host, when, t]) => ({ env: ENVC[e], badge, n, host, when, onClick: () => this.setState({ tab: t }) }));
+
+    // palette
+    const cmds = [
+      ['newconn', 'New Connection…', 'Connections', this.K(['mod', 'N'])], ['newhost', 'New Host…', 'Connections', ''],
+      ['term', 'New Terminal on prod-db-01', 'Terminal', K.term], ['run', 'Run Statement at Cursor', 'Editor', K.run], ['script', 'Run Script', 'Editor', K.script], ['stop', 'Stop Query', 'Editor', K.stop],
+      ['files', 'Open Files · prod-db-01', 'Files', ''], ['settings', 'Settings: Drivers', 'Preferences', K.settings], ['theme', 'Toggle Light / Dark Theme', 'Preferences', ''],
+      ['inspector', 'Toggle Inspector', 'View', ''], ['sidebar', 'Toggle Sidebar', 'View', K.sidebar], ['welcome', 'Show Welcome', 'View', ''], ['components', 'Open Component Sheet', 'View', '']
+    ].map(([id, label, group, key]) => ({ id, label, group, key, dot: 'transparent' }));
+    const conns = [['sql', 'shop_prod', 'PostgreSQL · prod-db-01', 'prod'], ['term', 'prod-db-01', 'SSH · 10.0.4.12', 'prod'], ['files', 'prod-db-01 files', 'SFTP', 'prod'], ['sql', 'shop_staging', 'PostgreSQL · staging-app', 'stg'], ['sql', 'Reporting', 'SQL Server · direct', 'prod'], ['sql', 'shop_dev', 'PostgreSQL · dev-box', 'dev'], ['term', 'zsh', 'Local shell', 'loc'], ['files', 'assets.acme.dev', 'FTPS', 'loc']].map(([id, label, group, env]) => ({ id: id === 'sql' ? 'sql' : id, label, group, key: '', dot: ENVC[env] }));
+    const pool = s.pmode === 'cmd' ? cmds : conns;
+    const filtered = pool.filter(i => !s.q || fz(s.q, i.label));
+    const pi = Math.min(s.pi, Math.max(0, filtered.length - 1));
+    const pal = {
+      mode: s.pmode === 'cmd' ? 'COMMANDS' : 'CONNECTIONS', placeholder: s.pmode === 'cmd' ? 'Type a command…' : 'Switch to a connection…',
+      swap: s.pmode === 'cmd' ? K.quick + ' connections' : K.palette + ' commands', none: filtered.length === 0,
+      noneHint: s.pmode === 'cmd' ? `Try “run” or “settings”, or ${K.quick} to search connections` : `Press ${K.palette} to search commands instead`,
+      count: `${filtered.length} ${s.pmode === 'cmd' ? 'commands' : 'connections'}`,
+      items: filtered.map((it, i) => ({ ...it, bg: i === pi ? 'var(--sel)' : 'transparent', onClick: () => this.act(it.id), onHover: () => this.setState({ pi: i }) }))
+    };
+
+    // connection editor
+    const CT = { pg: ['PG', 'PostgreSQL', 'Database'], mssql: ['MS', 'SQL Server', 'Database'], ssh: ['SSH', 'SSH Host', 'Terminal + tunnels'], sftp: ['SFTP', 'SFTP', 'Files over a Host'], ftp: ['FTP', 'FTP / FTPS', 'Files, own login'] };
+    const ctypes = Object.entries(CT).map(([k, [badge, l, sub]]) => ({ badge, l, sub, bg: s.ctype === k ? 'var(--sel)' : 'transparent', onClick: () => this.setState({ ctype: k, test: null }) }));
+    const F = (l, v, span = 6, o = {}) => ({ l, v, span, font: o.mono ? "'Geist Mono',monospace" : 'Geist,sans-serif', c: o.ph ? 'var(--fg3)' : 'var(--fg)', caret: o.sel ? '▾' : '', hint: o.hint || '' });
+    const fields = {
+      pg: [F('Name', 'shop_prod', 6), F('Host', 'localhost', 4, { mono: 1 }), F('Port', '5432', 2, { mono: 1 }), F('Database', 'shop', 3), F('User', 'app_ro', 3), F('Password', '••••••••••', 3, { hint: 'Stored in the OS keychain' }), F('SSL mode', 'verify-full', 3, { sel: 1 }), F('Connect via Host', 'prod-db-01 · SSH tunnel', 6, { sel: 1, hint: 'Opens an ephemeral local port automatically' })],
+      mssql: [F('Name', 'Reporting', 6), F('Server', 'sql-rpt.corp.acme.internal', 4, { mono: 1 }), F('Port', '1433', 2, { mono: 1 }), F('Database', 'Reporting', 3), F('Authentication', 'Integrated (Kerberos / AD)', 3, { sel: 1 }), F('Encrypt', 'Strict · TLS 1.3', 3, { sel: 1 }), F('Connect via Host', 'None — direct', 3, { sel: 1 })],
+      ssh: [F('Name', 'prod-db-01', 6), F('Address', '10.0.4.12', 4, { mono: 1 }), F('Port', '22', 2, { mono: 1 }), F('User', 'deploy', 3), F('Auth', 'Public key', 3, { sel: 1 }), F('Key file', '~/.ssh/id_ed25519', 6, { mono: 1, hint: 'Read in place — never copied' }), F('Jump hosts', 'bastion.acme.dev', 4, { mono: 1 }), F('Keepalive', '30 s', 2)],
+      sftp: [F('Name', 'prod-db-01 files', 6), F('Host', 'prod-db-01 · reuses SSH session', 6, { sel: 1, hint: 'No second login' }), F('Default remote path', '/var/www/shop', 6, { mono: 1 })],
+      ftp: [F('Name', 'assets.acme.dev', 6), F('Server', 'ftp.assets.acme.dev', 4, { mono: 1 }), F('Port', '21', 2, { mono: 1 }), F('TLS', 'Explicit (FTPES)', 3, { sel: 1 }), F('Mode', 'Passive', 3, { sel: 1 }), F('User', 'deploy-assets', 3), F('Password', '••••••••', 3)]
+    }[s.ctype];
+    const envOpts = ['prod', 'stg', 'dev', 'loc'].map(e => ({ l: ENVL[e], c: ENVC[e], bd: s.env === e ? ENVC[e] : 'var(--bd2)', bg: s.env === e ? `var(--${e}-bg, var(--hover))` : 'var(--bg)', onClick: () => this.setState({ env: e }) }));
+    const testState = s.test ?? (p.driverState && p.driverState !== 'missing' && s.ctype === 'mssql' ? 'missing' : 'idle');
+    const testUI = {
+      idle: { l: '', c: 'transparent', anim: 'none' }, testing: { l: 'Connecting…', c: 'var(--acc)', anim: 'sy-pulse 1s infinite' },
+      passed: { l: { pg: 'Connected · PostgreSQL 16.4 · 38 ms via tunnel', mssql: 'Connected · SQL Server 2022 · Kerberos ticket OK · 52 ms', ssh: 'Connected · OpenSSH 9.6 · ed25519 · 61 ms', sftp: 'Connected · SFTP v3 over existing session', ftp: 'Connected' }[s.ctype], c: 'var(--dev)', anim: 'none' },
+      failed: { l: '530 Login incorrect — check user and password', c: 'var(--prod)', anim: 'none' },
+      missing: { l: 'A required component is missing', c: 'var(--stg)', anim: 'none' }
+    }[testState];
+    const D = {
+      missing: { tag: 'MISSING', title: 'Kerberos (GSSAPI) is not installed', body: 'Integrated authentication to SQL Server needs the system Kerberos library. Switchyard looked for libgssapi_krb5.so.2 and did not find it.', meta: '1.8 MB · MIT license · apt package libgssapi-krb5-2', actions: [btn('Install automatically', 'primary', () => this.setState({ driver: 'admin' })), btn('Use existing path…', 'secondary'), btn('Show manual steps', 'ghost')] },
+      admin: { tag: 'NEEDS ADMIN', title: 'This one installs as a system package', body: 'Kerberos must come from your package manager. Switchyard will run this command through the system elevation prompt:', meta: 'Detected: Ubuntu 24.04 · apt', cmd: true, actions: [btn('Run with elevation', 'primary', this.elevate), btn('I ran it myself — re-check', 'secondary'), btn('Cancel', 'ghost', () => this.setState({ driver: 'missing' }))] },
+      downloading: { tag: 'INSTALLING', title: 'Installing Kerberos (GSSAPI)', body: 'Downloading libgssapi-krb5-2 and dependencies.', meta: 'apt · 3 packages', progress: true, pct: s.driver ? s.dprog : 58, pLeft: `${((s.driver ? s.dprog : 58) * 0.018).toFixed(1)} MB of 1.8 MB`, pRight: '640 KB/s', actions: [btn('Cancel', 'secondary')] },
+      verifying: { tag: 'VERIFYING', title: 'Verifying the download', body: 'Checking SHA-256 against the signed manifest (ed25519) from updates.switchyard.dev.', meta: 'minisign · key 7F3A…E10C', progress: true, indet: true, pct: 0, pLeft: 'checking signature', pRight: '', actions: [] },
+      installed: { tag: 'READY', title: 'Kerberos 1.21.3 installed', body: 'Library loaded and registered. Retrying your connection now.', meta: '/usr/lib/x86_64-linux-gnu/libgssapi_krb5.so.2', actions: [btn('Done', 'secondary')] },
+      failed: { tag: 'FAILED', title: 'Install refused: checksum mismatch', body: 'The downloaded package did not match the signed manifest, so Switchyard deleted it. Nothing was installed.', meta: 'expected 9c1e…4ab2 · got 77d0…e913', actions: [btn('Retry', 'primary', () => this.setState({ driver: 'admin' })), btn('Install from file…', 'secondary'), btn('Show manual steps', 'ghost')] },
+      license: { tag: 'LICENSE', title: 'Oracle Instant Client requires a license', body: 'Review and accept Oracle\'s terms before Switchyard downloads it into the app-managed drivers folder. No admin rights needed.', meta: '79 MB · <data_dir>/switchyard/drivers/oracle/23.5', license: true, actions: [btn('Accept and download', 'primary'), btn('Install from file…', 'secondary'), btn('Cancel', 'ghost')] }
+    }[ds];
+    const tone = { missing: 'stg', admin: 'stg', downloading: 'acc', verifying: 'acc', installed: 'dev', failed: 'prod', license: 'stg' }[ds];
+    const dcard = { show: testState === 'missing' || (testState === 'passed' && s.driver === 'installed'), ...D, bd: tone === 'acc' ? 'var(--bd2)' : `var(--${tone})`, tagBg: tone === 'acc' ? 'var(--sel)' : `var(--${tone}-bg)`, tagFg: tone === 'acc' ? 'var(--acc)' : `var(--${tone})`, progress: !!D.progress, cmd: !!D.cmd, license: !!D.license, indet: !!D.indet };
+
+    // settings
+    const setNav = ['General', 'Editor', 'Appearance', 'Keybindings', 'Drivers', 'Security'].map(l => ({ l, bg: s.setPage === l ? 'var(--sel)' : 'transparent', fg: s.setPage === l ? 'var(--fg)' : 'var(--fg2)', onClick: () => this.setState({ setPage: l }) }));
+    const drivers = [
+      ['Kerberos / GSSAPI', '/usr/lib/x86_64-linux-gnu', 'SQL Server integrated auth', '1.21.3', 'Installed', 'var(--dev)', 'Remove', 'var(--fg)'],
+      ['SSH agent', '$SSH_AUTH_SOCK', 'Agent-based SSH auth', 'OpenSSH 9.6', 'Detected', 'var(--dev)', 'Details', 'var(--fg)'],
+      ['Corporate CA certificates', '/etc/ssl/certs · 3 certs', 'TLS to internal servers', '2026-08', 'Update available', 'var(--stg)', 'Update', 'var(--fg)'],
+      ['Oracle Instant Client', '<data_dir>/switchyard/drivers/oracle', 'Oracle (after beta)', '—', 'Not installed', 'var(--fg3)', 'Install', 'var(--fg3)']
+    ].map(([n, loc, f, v, st, c, a, aFg]) => ({ n, loc, for: f, v, st, c, a, aFg }));
+    const themeOpts = [['dark', 'Dark', '#17171a'], ['light', 'Light', '#ffffff']].map(([k, l, sw]) => ({ l, sw, bd: theme === k ? 'var(--acc)' : 'var(--bd)', onClick: () => this.setState({ theme: k }) }));
+
+    const sb = tab === 'sql' || tab === 'term' || tab === 'files'
+      ? { env: 'PRODUCTION', envBg: 'var(--prod)', envFg: '#fff', conn: tab === 'sql' ? 'shop_prod @ prod-db-01' : tab === 'term' ? 'deploy@prod-db-01' : 'SFTP · prod-db-01', engine: tab === 'sql' ? 'PostgreSQL 16.4' : tab === 'term' ? 'xterm-256color · 120×38' : 'SFTP v3' }
+      : { env: 'NO CONNECTION', envBg: 'var(--hover)', envFg: 'var(--fg2)', conn: 'acme-ops', engine: '' };
+    Object.assign(sb, {
+      txn: txnOpen ? 'Transaction open · 2 statements' : txn === 'manual' ? 'Manual · no open transaction' : 'Auto-commit', txnColor: txnOpen ? 'var(--stg)' : 'var(--fg3)',
+      transfers: paused ? '↑↓ 3 transfers paused' : '↑↓ 3 transfers · 46%', rows: tab === 'sql' ? rsInfo[2] : '', pos: tab === 'sql' ? (es === 'completion' ? 'Ln 8, Col 11' : 'Ln 8, Col 30') : ''
+    });
+    const tunnels = [['54012', 'prod-db-01 → 127.0.0.1:5432', 'Active', 'var(--dev)', '48.2 MB'], ['54013', 'staging-app → 10.0.8.20:5432', 'Reconnecting', 'var(--stg)', '1.1 MB'], ['6380', 'prod-db-01 → redis.internal:6379', 'Failed', 'var(--prod)', '0 B']].map(([port, target, st, c, bytes]) => ({ port, target, st, c, bytes }));
+
+    const ctxItems = [{ l: 'Open data (first 100 rows)', k: '↵' }, { l: 'Generate SELECT', k: '' }, { l: 'Generate INSERT', k: '' }, { l: 'Generate UPDATE', k: '' }, { l: 'Copy qualified name', k: this.K(['mod', 'shift', 'C']) }, { l: 'View DDL', k: '' }, { sep: true }, { l: 'Truncate…', k: '' }, { l: 'Drop table…', k: '' }]
+      .map(i => ({ ...i, sep: !!i.sep, item: !i.sep, c: i.l && /Truncate|Drop/.test(i.l) ? 'var(--prod)' : 'var(--fg)' }));
+
+    return {
+      K, themeLabel: theme === 'dark' ? 'Light' : 'Dark', themeName: theme,
+      toggleTheme: () => this.setState({ theme: theme === 'dark' ? 'light' : 'dark' }),
+      toggleSidebar: () => this.setState(st => ({ sidebar: !st.sidebar })),
+      openPalette: () => this.openPal('cmd'), openQuick: () => this.openPal('conn'),
+      openSettings: () => this.setState({ overlay: 'settings', setPage: 'Drivers' }),
+      openComponents: () => this.setState({ overlay: 'components' }),
+      newConn: () => this.setState({ overlay: 'conn', test: null, driver: null, ctype: 'mssql' }),
+      newHost: () => this.setState({ overlay: 'conn', test: null, ctype: 'ssh' }),
+      newTerm: () => this.toastMsg('Opened terminal 2 on prod-db-01 · same session'),
+      sidebarOpen: s.sidebar, isSideConn: s.side === 'conn', isSideSchema: s.side === 'schema',
+      sideConn: () => this.setState({ side: 'conn' }), sideSchema: () => this.setState({ side: 'schema' }),
+      sideTabs: { connBg: s.side === 'conn' ? 'var(--elev)' : 'transparent', connFg: s.side === 'conn' ? 'var(--fg)' : 'var(--fg2)', schemaBg: s.side === 'schema' ? 'var(--elev)' : 'transparent', schemaFg: s.side === 'schema' ? 'var(--fg)' : 'var(--fg2)' },
+      connRows, schemaRows, tabs,
+      isSql: tab === 'sql', isTerm: tab === 'term', isFiles: tab === 'files', isWelcome: tab === 'welcome',
+      run: this.run, runScript: this.runScript, stop: this.stop, stopFg: streaming ? 'var(--prod)' : 'var(--fg3)',
+      txnSeg: { autoBg: txn === 'auto' ? 'var(--elev)' : 'transparent', autoFg: txn === 'auto' ? 'var(--fg)' : 'var(--fg2)', manBg: txn === 'manual' ? 'var(--elev)' : 'transparent', manFg: txn === 'manual' ? 'var(--fg)' : 'var(--fg2)' },
+      txnAuto: () => this.setState({ txn: 'auto' }), txnManual: () => this.setState({ txn: 'manual' }), txnOpen,
+      editorH: s.editorH, lines, completions,
+      startDrag: (e) => { e.preventDefault(); const y0 = e.clientY, h0 = s.editorH; const mv = ev => this.setState({ editorH: Math.max(120, Math.min(560, h0 + ev.clientY - y0)) }); const up = () => { window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up); }; window.addEventListener('mousemove', mv); window.addEventListener('mouseup', up); },
+      resultTabs, rs: rsv, cols, gridRows, exportOpen: s.exportOpen, exportItems,
+      toggleExport: () => this.setState(st => ({ exportOpen: !st.exportOpen })),
+      fetchAll: () => this.toastMsg('Fetching all rows in the background'),
+      commitEdits: () => { this.setState({ run: 'complete' }); this.toastMsg('Committed 2 changes in 1 transaction · 14 ms'); },
+      inspectorOpen: s.inspector && tab === 'sql', toggleInspector: () => this.setState(st => ({ inspector: !st.inspector })),
+      insp: { row: Math.min(s.sel, DATA.length - 1) + 1, lines: iLines, size: `${new TextEncoder().encode(json).length} bytes · UTF-8` }, vfmts,
+      term, termA: TERM_A.map(tokTerm), termB: TERM_B.map(tokTerm),
+      fileTools: ['Upload', 'Download', 'New folder', 'Rename', 'Delete', 'Refresh', 'Show hidden'], panes, queue, isConflict: fsx === 'conflict',
+      togglePause: () => this.setState({ paused: !paused }),
+      welcome, recents,
+      sb, tunnels, tunnelsOpen: s.tunnels, toggleTunnels: () => this.setState(st => ({ tunnels: !st.tunnels })), goFiles: () => this.setState({ tab: 'files' }),
+      ctx: !!s.ctx, ctxPos: s.ctx || { x: 0, y: 0 }, ctxItems, closeCtx: () => this.setState({ ctx: null }),
+      toast: s.toast,
+      ov: { palette: ov === 'palette', conn: ov === 'conn', safety: ov === 'safety', settings: ov === 'settings', components: ov === 'components' },
+      closeOverlay: () => this.setState({ overlay: null }), stopProp: (e) => e.stopPropagation(),
+      q: s.q, onQ: (e) => this.setState({ q: e.target.value, pi: 0 }),
+      onPalKey: (e) => {
+        if (e.key === 'ArrowDown') { e.preventDefault(); this.setState({ pi: Math.min(filtered.length - 1, pi + 1) }); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); this.setState({ pi: Math.max(0, pi - 1) }); }
+        else if (e.key === 'Enter' && filtered[pi]) { e.preventDefault(); this.act(filtered[pi].id); }
+      },
+      swapMode: () => this.setState(st => ({ pmode: st.pmode === 'cmd' ? 'conn' : 'cmd', q: '', pi: 0 })), pal,
+      ctypes, fields, envOpts, envIsProd: s.env === 'prod', testUI, dcard, testConn: this.testConn,
+      saveConn: () => { this.setState({ overlay: null }); this.toastMsg('Saved · secrets stored in the OS keychain'); },
+      confirm: s.confirm, onConfirm: (e) => this.setState({ confirm: e.target.value }), safetyOpacity: s.confirm === 'abandoned_carts' ? 1 : 0.4,
+      confirmRun: () => { if (s.confirm !== 'abandoned_carts') return; this.setState({ overlay: null }); this.toastMsg('DELETE 48,210 · 412 ms'); },
+      setNav, setPage: s.setPage, isDrivers: s.setPage === 'Drivers', isAppearance: s.setPage === 'Appearance', isOtherSetting: !['Drivers', 'Appearance'].includes(s.setPage),
+      builtins: ['PostgreSQL · tokio-postgres', 'SQL Server · tiberius', 'SSH · russh', 'SFTP · russh-sftp', 'FTP/FTPS · suppaftp'], drivers, themeOpts,
+      envSheet: ['prod', 'stg', 'dev', 'loc'].map(e => ({ c: ENVC[e], l: ENVL[e], up: ENVL[e].toUpperCase(), fgOn: e === 'stg' ? '#1a1406' : '#fff' })),
+      kbds: [K.palette, K.quick, K.run, K.script, K.stop, K.term]
+    };
+  }
+}
+</script>
+</body>
+</html>

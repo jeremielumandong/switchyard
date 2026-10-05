@@ -1,0 +1,6 @@
+/target
+**/*.rs.bk
+*.pending-snap
+.DS_Store
+docker/ssh/id_ed25519
+docker/ftp/*.pem

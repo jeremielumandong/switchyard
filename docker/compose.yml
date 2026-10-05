@@ -1,0 +1,72 @@
+# Test services for integration tests: `docker compose -f docker/compose.yml up -d`
+# then `cargo test --workspace -- --ignored`. Credentials here are test-only.
+name: switchyard-test
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: switchyard
+      POSTGRES_PASSWORD: switchyard
+      POSTGRES_DB: shop
+    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements"]
+    ports: ["5432:5432"]
+    volumes:
+      - ./postgres:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U switchyard -d shop"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Switchyard!2026"
+      MSSQL_PID: Developer
+    ports: ["1433:1433"]
+    volumes:
+      - ./mssql:/seed:ro
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'Switchyard!2026' -Q 'select 1' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+
+  mssql-seed:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    depends_on:
+      mssql:
+        condition: service_healthy
+    volumes:
+      - ./mssql:/seed:ro
+    entrypoint: ["/bin/bash", "-c", "/opt/mssql-tools18/bin/sqlcmd -C -S mssql -U sa -P 'Switchyard!2026' -i /seed/seed.sql"]
+    restart: "no"
+
+  ssh:
+    image: lscr.io/linuxserver/openssh-server:latest
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      USER_NAME: deploy
+      USER_PASSWORD: switchyard
+      PASSWORD_ACCESS: "true"
+      PUBLIC_KEY_FILE: /config/seed/id_ed25519.pub
+      DOCKER_MODS: linuxserver/mods:openssh-server-ssh-tunnel
+    ports: ["2222:2222"]
+    volumes:
+      - ./ssh:/config/seed:ro
+
+  ftp:
+    image: delfer/alpine-ftp-server:latest
+    environment:
+      USERS: "deploy|switchyard|/home/deploy"
+      ADDRESS: localhost
+      TLS_CERT: /etc/ftp-tls/cert.pem
+      TLS_KEY: /etc/ftp-tls/key.pem
+    ports:
+      - "2121:21"
+      - "21000-21010:21000-21010"
+    volumes:
+      - ./ftp:/etc/ftp-tls:ro

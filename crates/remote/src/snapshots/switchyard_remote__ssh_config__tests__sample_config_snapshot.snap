@@ -1,0 +1,38 @@
+---
+source: crates/remote/src/ssh_config.rs
+expression: parse_ssh_config(cfg)
+---
+- alias: bastion
+  hostname: bastion.acme.dev
+  user: deploy
+  port: ~
+  identity_file: ~/.ssh/id_ed25519
+  proxy_jump: []
+- alias: prod-db-01
+  hostname: 10.0.4.12
+  user: fallback
+  port: 2222
+  identity_file: ~
+  proxy_jump:
+    - bastion
+- alias: prod-db-02
+  hostname: 10.0.4.12
+  user: fallback
+  port: 2222
+  identity_file: ~
+  proxy_jump:
+    - bastion
+- alias: staging-app
+  hostname: 10.0.8.3
+  user: fallback
+  port: ~
+  identity_file: ~
+  proxy_jump:
+    - bastion
+    - jump2
+- alias: reports.internal
+  hostname: reports.internal
+  user: ops
+  port: ~
+  identity_file: ~
+  proxy_jump: []

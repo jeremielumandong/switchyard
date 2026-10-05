@@ -1,0 +1,14 @@
+---
+source: crates/db/tests/pg.rs
+expression: detail.ddl
+---
+CREATE TABLE public.orders (
+    id bigint DEFAULT nextval('orders_id_seq'::regclass) NOT NULL,
+    customer_id bigint NOT NULL,
+    status text DEFAULT 'new'::text NOT NULL,
+    total numeric(12,2) NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT orders_customer_id_fkey FOREIGN KEY (customer_id) REFERENCES customers(id),
+    CONSTRAINT orders_pkey PRIMARY KEY (id)
+);
+CREATE INDEX orders_customer_id_idx ON public.orders USING btree (customer_id);
