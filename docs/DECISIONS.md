@@ -493,3 +493,12 @@ current user, and adds `swy` to the user PATH (`HKCU\Environment`, via `path.ps1
 all-users copy from an earlier per-machine installer exists (HKLM uninstall key), the installer
 says so and installs alongside it; removing that copy still needs an administrator. An
 all-users option (MSI for GPO, or an NSIS MultiUser mode) can come back with M6-2 if needed.
+
+## 2026-10-06 — Version bumps (user request)
+
+`scripts/bump-version.py major|minor|patch|X.Y.Z` sets `[workspace.package] version` (all
+crates inherit it) and the workspace crates' `Cargo.lock` entries, then checks the lockfile
+with `cargo metadata --locked`. The "Bump version" workflow (manual, on main) runs it on a
+`bump/vX.Y.Z` branch and opens a PR instead of pushing to main: commits pushed with
+`GITHUB_TOKEN` trigger no workflows, and the release workflows require a push-event CI run
+on main for the exact commit, which merging the PR provides.

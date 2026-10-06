@@ -1,0 +1,64 @@
+name: Bump version
+
+# Bumps the workspace version on a new branch and opens a pull request. Merging it is an
+# ordinary push to main, which runs CI; the release workflows require that run to pass.
+# (A commit pushed here with GITHUB_TOKEN would not trigger CI, so this never pushes to main.)
+# Needs "Allow GitHub Actions to create and approve pull requests" in Settings > Actions.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Which part to bump
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      version:
+        description: Or an exact version (MAJOR.MINOR.PATCH); overrides the choice above
+        type: string
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: bump-version
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - name: Bump
+        id: bump
+        env:
+          BUMP: ${{ inputs.version != '' && inputs.version || inputs.bump }}
+        run: |
+          old=$(python3 scripts/bump-version.py --current)
+          new=$(python3 scripts/bump-version.py "$BUMP" | tail -n1)
+          echo "old=$old" >> "$GITHUB_OUTPUT"
+          echo "new=$new" >> "$GITHUB_OUTPUT"
+      - name: Open the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OLD: ${{ steps.bump.outputs.old }}
+          NEW: ${{ steps.bump.outputs.new }}
+        run: |
+          branch="bump/v$NEW"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            echo "::error::Branch $branch already exists; merge or delete it first."
+            exit 1
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "$branch"
+          git add Cargo.toml Cargo.lock
+          git commit -m "Bump version to $NEW"
+          git push origin "$branch"
+          gh pr create --base main --head "$branch" --title "Bump version to $NEW" \
+            --body "Bumps the workspace version from $OLD to $NEW (\`scripts/bump-version.py\`). Merge, wait for CI on main, then run the release workflows."
