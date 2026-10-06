@@ -247,3 +247,19 @@ the rev with it (Cargo warns "patch not used" until then).
   (250 ms) and the workspace's relative times such as "Cached 3 min ago" (30 s).
 - Checked in the app: query streaming and timer, grid scrolling, terminal (`htop`), theme
   switch. No frame-time comparison yet (the grid frame-time harness is still a follow-up).
+
+## 2026-10-06 — SSH tunnels
+
+- A tunnel is a local listener on `127.0.0.1:<ephemeral>`; every accepted connection gets
+  its own `direct-tcpip` channel on the Host's shared session. Drivers only ever see a
+  `TunnelEndpoint`, so PostgreSQL's cancel request (a second TCP connection) goes through
+  the same tunnel automatically.
+- Core keeps one tunnel per (Host, target host, target port), shared by every session that
+  needs it; creation is serialized so a SQL tab and the schema explorer connecting at the
+  same moment do not open two. Sessions hold the tunnel; it closes with its last session.
+- A tunnel holds its SSH session while it exists, and a new connection after a drop logs
+  in again (prompting if the Host needs it). Its status is Reconnecting until then.
+- Stopping a tunnel aborts its forwarded connections and ends every session that used it,
+  with a message naming the Host and port.
+- New SSH sessions stay up for 60 s even with no users, so "Test connection" followed by
+  "Save and connect", or reopening a terminal, does not ask for a second MFA code.
