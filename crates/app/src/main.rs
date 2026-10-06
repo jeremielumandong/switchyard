@@ -12,6 +12,7 @@ mod conn_editor;
 mod drivers_page;
 mod editor_tab;
 mod files_tab;
+mod folds;
 mod grid;
 mod overlays;
 mod palette;

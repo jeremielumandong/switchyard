@@ -84,15 +84,15 @@ Exit: query the 1M-row table, scroll without dropped frames, cancel a long query
   sequences, types. Lazy per scope; cached in the store.
   Done when: insta snapshots of catalog output against the seeded schema.
   Note: insta snapshots in `crates/db/tests/snapshots`; cached in `schema_cache`.
-- [ ] **M1-6 Editor tab.** gpui-component editor with tree-sitter SQL highlighting, multi-cursor,
+- [x] **M1-6 Editor tab.** gpui-component editor with tree-sitter SQL highlighting, multi-cursor,
   find/replace, comment toggle, folding. Buffers autosave and restore after restart.
   Done when: kill the app mid-edit, relaunch, buffer content is intact.
-  Note: Partial: tree-sitter SQL highlighting, find, comment toggle and buffer autosave/restore
-  (`buffers_survive_reopen`, checked manually by killing the app) work. Multi-cursor checked
-  manually: Alt+click and Shift+Alt+↑/↓ add cursors and typing edits every line (gpui-kit's
-  Ctrl+Alt+↑/↓ did not fire under X11 here; desktops often take that chord). Folding: enabled
-  (gpui-kit default) but no fold markers appeared for SQL statements spanning several lines;
-  see Follow-ups.
+  Note: tree-sitter SQL highlighting, find, comment toggle, buffer autosave/restore
+  (`buffers_survive_reopen`, checked by killing the app). Multi-cursor checked manually:
+  Alt+click and Shift+Alt+↑/↓ (gpui-kit's Ctrl+Alt+↑/↓ did not fire under X11 here).
+  Folding: the SQL tab supplies fold regions from the dialect lexer and splitter
+  (`folds.rs` tests): statements, parenthesised blocks and block comments of 3+ lines;
+  checked folding/unfolding and after a restart.
 - [x] **M1-7 Statement splitting and execution.** PostgreSQL dialect splitter handling strings,
   comments and dollar-quoted bodies. Run statement at cursor, selection, whole script.
   Parameter prompts for `:name` and `$1`.
@@ -375,8 +375,6 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 
 - Observe CI green on macOS, Windows and Linux (M0-1).
 - Smoke tests for the SQL Server, SSH and FTP containers (M0-2).
-- SQL editor folding (M1-6): gpui-kit folds from tree-sitter nodes spanning 3+ lines, yet no
-  markers show for multi-line SQL; find out whether the SQL tree or the fold candidates are missing.
 - Grid frame-time harness (M1-16).
 - Driver Manager: fetch the signed manifest from the update server; zip archives (Oracle
   Instant Client ships zip) once a zip reader is approved.
