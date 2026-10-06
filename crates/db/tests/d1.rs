@@ -37,8 +37,12 @@ fn rows(columns: &[&str], rows: Json, meta: Json) -> Json {
 
 /// Answer one statement the way D1 would.
 fn answer(sql: &str, params: &[Json]) -> Json {
-    if sql == "SELECT sqlite_version()" {
-        return rows(&["sqlite_version()"], json!([["3.45.1"]]), json!({}));
+    if sql == "SELECT 1" {
+        return rows(&["1"], json!([[1]]), json!({}));
+    }
+    if sql.contains("sqlite_version") {
+        // Like the real service: D1 does not allow it.
+        return json!({"success": false, "error": "not authorized to use function: sqlite_version at offset 7: SQLITE_AUTH"});
     }
     if sql.starts_with("select id, name, score from users") {
         let data: Vec<Json> = (1..=2500)
@@ -200,7 +204,7 @@ async fn collect(s: &mut dyn DbSession, sql: &str, params: &[Value]) -> Vec<Resu
 async fn connects_and_reports_version() {
     let (base, _) = server().await;
     let s = connect(&base).await;
-    assert_eq!(s.server_version(), "Cloudflare D1 · SQLite 3.45.1");
+    assert_eq!(s.server_version(), "Cloudflare D1");
     assert!(!s.in_transaction());
 }
 
