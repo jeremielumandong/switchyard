@@ -34,18 +34,9 @@ use params::PgParam;
 #[derive(Clone, Debug, Default)]
 pub struct PgDriver;
 
-/// Build a rustls client config with the platform's root certificates.
+/// Build a rustls connector with the platform's root certificates.
 pub fn tls_connector() -> Result<MakeRustlsConnect> {
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let mut roots = rustls::RootCertStore::empty();
-    let loaded = rustls_native_certs::load_native_certs();
-    roots.add_parsable_certificates(loaded.certs);
-    let config = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .map_err(|e| DbError::Tls(e.to_string()))?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    Ok(MakeRustlsConnect::new(config))
+    Ok(MakeRustlsConnect::new(crate::tls::client_config()?))
 }
 
 pub(crate) fn map_error(e: tokio_postgres::Error, cancelled: bool) -> DbError {

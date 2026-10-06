@@ -19,7 +19,7 @@ use switchyard_core::store::{
     BufferState, DbConnection, EnvironmentLabel, HistoryEntry, Profile, ProfileId,
     Workspace as SavedWorkspace,
 };
-use switchyard_core::{Command, Event, EventReceiver, RuntimeHandle};
+use switchyard_core::{Command, Event, EventReceiver, RuntimeHandle, TermId};
 
 use crate::actions::{self, CommandId};
 use crate::app_state::{Profiles, SessionState, badge_of, describe, next_id};
@@ -149,9 +149,55 @@ impl Workspace {
 
     // ---------------------------------------------------------------- events
 
+    fn terminal_tab(&self, term: TermId, cx: &App) -> Option<Entity<TerminalTab>> {
+        self.tabs.iter().find_map(|t| match t {
+            Tab::Terminal(t) if t.read(cx).owns(term) => Some(t.clone()),
+            _ => None,
+        })
+    }
+
     fn on_event(&mut self, ev: Event, window: &mut Window, cx: &mut Context<Self>) {
         match ev {
             Event::Pong { .. } => {}
+            Event::TerminalOpened {
+                term,
+                terminal,
+                description,
+            } => match self.terminal_tab(term, cx) {
+                Some(t) => t.update(cx, |t, cx| {
+                    t.on_opened(term, terminal, description, window, cx)
+                }),
+                None => self.core.send(Command::CloseTerminal { term }),
+            },
+            Event::TerminalFailed { term, message } => {
+                if let Some(t) = self.terminal_tab(term, cx) {
+                    t.update(cx, |t, cx| t.on_failed(term, message, cx));
+                }
+            }
+            Event::TerminalWake { term } => {
+                if let Some(t) = self.terminal_tab(term, cx) {
+                    t.update(cx, |t, cx| t.on_wake(term, cx));
+                }
+            }
+            Event::TerminalTitle { term, title } => {
+                if let Some(t) = self.terminal_tab(term, cx) {
+                    t.update(cx, |t, cx| t.on_title(term, title, cx));
+                }
+            }
+            Event::TerminalBell { .. } => {}
+            Event::TerminalClipboard { text, .. } => {
+                // OSC 52 copy: allowed (it only writes); reading the clipboard is never offered.
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
+            }
+            Event::TerminalExited {
+                term,
+                code,
+                message,
+            } => {
+                if let Some(t) = self.terminal_tab(term, cx) {
+                    t.update(cx, |t, cx| t.on_exited(term, code, message, cx));
+                }
+            }
             Event::Profiles(list) => {
                 self.profiles = Profiles { all: list };
                 self.profiles_loaded = true;
@@ -578,6 +624,9 @@ impl Workspace {
                 self.core.send(Command::CloseSession { session: s });
             }
         }
+        if let Tab::Terminal(t) = &self.tabs[ix] {
+            t.update(cx, |t, _| t.shutdown());
+        }
         self.tabs.remove(ix);
         if self.tabs.is_empty() {
             self.tabs.push(Tab::Welcome);
@@ -599,7 +648,8 @@ impl Workspace {
             .and_then(|h| self.profiles.host(h))
             .map(|h| h.environment)
             .unwrap_or_default();
-        let t = cx.new(|_| TerminalTab::new(name, env, host.is_some()));
+        let core = self.core.clone();
+        let t = cx.new(|cx| TerminalTab::new(core, name, env, host, cx));
         self.tabs.push(Tab::Terminal(t));
         self.active = self.tabs.len() - 1;
         cx.notify();
@@ -996,7 +1046,12 @@ impl Workspace {
             }
             Tab::Terminal(t) => {
                 let t = t.read(cx);
-                ("SSH".into(), t.title.clone(), Some(t.env), false)
+                (
+                    if t.is_remote() { "SSH" } else { "SH" }.into(),
+                    t.title.clone(),
+                    Some(t.env),
+                    false,
+                )
             }
             Tab::Files(_) => ("FS".into(), "Files · local".into(), None, false),
         }
@@ -1332,7 +1387,7 @@ impl Workspace {
                     Some(t.env),
                     t.title.to_string(),
                     "terminal".into(),
-                    String::new(),
+                    t.status(),
                     None,
                 )
             }

@@ -30,6 +30,10 @@ actions!(
         ExportProfiles,
         ShowHistory,
         Dismiss,
+        TermCopy,
+        TermPaste,
+        TermFind,
+        TermSplit,
     ]
 );
 
@@ -60,6 +64,30 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-shift-h", ShowHistory, None),
         KeyBinding::new("escape", Dismiss, Some("Overlay")),
     ]);
+    // Inside a terminal, Ctrl+letter belongs to the shell (readline, vim, …). App
+    // shortcuts there use Cmd on macOS and Ctrl+Shift elsewhere.
+    let mac = cfg!(target_os = "macos");
+    let k = |mac_key: &'static str, other: &'static str| if mac { mac_key } else { other };
+    cx.bind_keys([
+        KeyBinding::new(k("cmd-c", "ctrl-shift-c"), TermCopy, Some("Terminal")),
+        KeyBinding::new(k("cmd-v", "ctrl-shift-v"), TermPaste, Some("Terminal")),
+        KeyBinding::new(k("cmd-f", "ctrl-shift-f"), TermFind, Some("Terminal")),
+        KeyBinding::new(k("cmd-d", "ctrl-shift-d"), TermSplit, Some("Terminal")),
+    ]);
+    if !mac {
+        cx.bind_keys(
+            [
+                "ctrl-p",
+                "ctrl-n",
+                "ctrl-b",
+                "ctrl-w",
+                "ctrl-.",
+                "ctrl-,",
+                "ctrl-alt-n",
+            ]
+            .map(|key| KeyBinding::new(key, gpui_kit::NoAction, Some("Terminal"))),
+        );
+    }
 }
 
 /// Something the palette can run.
