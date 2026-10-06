@@ -23,7 +23,7 @@ use switchyard_core::term::input::{
 };
 use switchyard_core::term::links::url_at;
 use switchyard_core::term::{CursorShape, Mark, Snapshot, TermColor, TermSize, Terminal};
-use switchyard_core::{Command, RuntimeHandle, TermId, TermTarget};
+use switchyard_core::{Command, RuntimeHandle, TermId, TermStatus, TermTarget};
 
 use crate::actions::{TermCopy, TermFind, TermPaste, TermSplit};
 use crate::app_state::next_id;
@@ -49,8 +49,27 @@ struct Geom {
 enum PaneState {
     Connecting,
     Live,
+    Reconnecting { attempt: u32, of: u32, in_secs: u64 },
     Exited(Option<u32>),
     Failed(String),
+    Blocked(Box<ChangedKey>),
+}
+
+/// A host key mismatch that blocks the connection.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChangedKey {
+    /// Host profile.
+    pub host_id: ProfileId,
+    /// Host label.
+    pub host: String,
+    /// `address:port`.
+    pub address: String,
+    /// Stored fingerprint.
+    pub stored: String,
+    /// Received fingerprint.
+    pub received: String,
+    /// `file:line` of the stored key.
+    pub location: String,
 }
 
 struct Pane {
@@ -128,8 +147,10 @@ impl TerminalTab {
                 format!("{} × {}", p.size.cols, p.size.rows)
             }
             Some(PaneState::Connecting) => "Connecting".into(),
+            Some(PaneState::Reconnecting { .. }) => "Reconnecting".into(),
             Some(PaneState::Exited(_)) => "Exited".into(),
             Some(PaneState::Failed(_)) => "Failed".into(),
+            Some(PaneState::Blocked(_)) => "Blocked".into(),
             None => String::new(),
         }
     }
@@ -179,14 +200,55 @@ impl TerminalTab {
         cx: &mut Context<Self>,
     ) {
         let active = self.panes.get(self.active).map(|p| p.id) == Some(term);
+        let remote = self.is_remote();
         if let Some(p) = self.pane_mut(term) {
             p.snapshot = Rc::new(terminal.snapshot());
             p.terminal = Some(terminal);
-            p.state = PaneState::Live;
+            // SSH terminals report Connected separately (after prompts and login).
+            if !remote {
+                p.state = PaneState::Live;
+            }
             p.description = description;
             if active {
                 p.focus.focus(window, cx);
             }
+        }
+        cx.notify();
+    }
+
+    /// Connection state of an SSH terminal.
+    pub fn on_status(&mut self, term: TermId, status: TermStatus, cx: &mut Context<Self>) {
+        if let Some(p) = self.pane_mut(term) {
+            match status {
+                TermStatus::Connecting => match &mut p.state {
+                    // Retrying now: keep the banner, drop the countdown.
+                    PaneState::Reconnecting { in_secs, .. } => *in_secs = 0,
+                    state => *state = PaneState::Connecting,
+                },
+                TermStatus::Connected { description } => {
+                    p.state = PaneState::Live;
+                    p.description = description;
+                }
+                TermStatus::Reconnecting {
+                    attempt,
+                    of,
+                    in_secs,
+                } => {
+                    p.state = PaneState::Reconnecting {
+                        attempt,
+                        of,
+                        in_secs,
+                    };
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// The server's host key changed; show the warning instead of the terminal.
+    pub fn on_host_key_changed(&mut self, term: TermId, key: ChangedKey, cx: &mut Context<Self>) {
+        if let Some(p) = self.pane_mut(term) {
+            p.state = PaneState::Blocked(Box::new(key));
         }
         cx.notify();
     }
@@ -223,6 +285,11 @@ impl TerminalTab {
         cx: &mut Context<Self>,
     ) {
         if let Some(p) = self.pane_mut(term) {
+            // The blocked-key screen stays up; the exit only confirms it.
+            if matches!(p.state, PaneState::Blocked(_)) {
+                cx.notify();
+                return;
+            }
             p.state = match message {
                 Some(m) => PaneState::Failed(m),
                 None => PaneState::Exited(code),
@@ -695,6 +762,7 @@ impl TerminalTab {
         let focus_handle = pane.focus.clone();
         let state = pane.state.clone();
         let search_pos = snap.search;
+        let pane_empty = snap.lines.iter().all(|l| l.text.trim().is_empty());
         let grid = canvas(
             move |bounds, window, cx| prepaint(bounds, &snap, &geom, term_id, weak, &p, window, cx),
             move |_bounds, frame, window, cx| paint(frame, focused, &p, window, cx),
@@ -812,7 +880,9 @@ impl TerminalTab {
             );
         }
         match state {
-            PaneState::Connecting => body.child(
+            PaneState::Reconnecting { .. } => body.opacity(0.55),
+            PaneState::Blocked(key) => body.child(self.render_blocked(ix, &key, &p, cx)),
+            PaneState::Connecting if pane_empty => body.child(
                 div()
                     .absolute()
                     .top(px(PAD_Y))
@@ -827,6 +897,134 @@ impl TerminalTab {
         .into_any_element()
     }
 
+    /// "Connection blocked" screen for a changed host key (design: hostKeyChanged).
+    fn render_blocked(
+        &self,
+        ix: usize,
+        key: &ChangedKey,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let file = key
+            .location
+            .rsplit_once(':')
+            .map_or(key.location.clone(), |(f, _)| f.to_owned());
+        let host_id = key.host_id.clone();
+        let received = key.received.clone();
+        div()
+            .absolute()
+            .inset_0()
+            .bg(p.bg)
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .w(px(540.))
+                    .border_1()
+                    .border_color(p.prod)
+                    .rounded(px(10.))
+                    .bg(p.surface)
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .px(px(20.))
+                            .py(px(14.))
+                            .bg(p.prod_bg)
+                            .border_b_1()
+                            .border_color(p.bd)
+                            .child(
+                                div()
+                                    .font_family(MONO)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_size(px(10.5))
+                                    .text_color(p.prod)
+                                    .mb(px(4.))
+                                    .child("CONNECTION BLOCKED"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(15.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(format!("The host key for {} has changed", key.host)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .px(px(20.))
+                            .py(px(16.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(12.))
+                            .child(div().text_size(px(12.5)).text_color(p.fg2).child(format!(
+                                "The server at {} presented a different key than the one in {}. This can mean the server was rebuilt — or that someone is intercepting the connection.",
+                                key.address, file
+                            )))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.))
+                                    .font_family(MONO)
+                                    .text_size(px(12.))
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .gap(px(10.))
+                                            .child(div().w(px(72.)).text_color(p.fg3).child("Stored"))
+                                            .child(div().line_through().text_color(p.fg2).child(key.stored.clone())),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .gap(px(10.))
+                                            .child(div().w(px(72.)).text_color(p.fg3).child("Received"))
+                                            .child(div().text_color(p.prod).child(key.received.clone())),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap(px(6.))
+                                    .justify_end()
+                                    .pt(px(4.))
+                                    .child(
+                                        ui::button("hk-replace", "Replace stored key…", Kind::Ghost, p)
+                                            .text_color(p.prod)
+                                            .on_click(cx.listener(move |this, _, w, cx| {
+                                                // Trust exactly the key the user just saw, then
+                                                // connect again.
+                                                this.core.send(Command::AcceptChangedHostKey {
+                                                    host: host_id.clone(),
+                                                    fingerprint: received.clone(),
+                                                });
+                                                this.reconnect(ix, cx);
+                                                this.refocus(w, cx);
+                                            })),
+                                    )
+                                    .child(
+                                        ui::button("hk-open", "Open known_hosts", Kind::Secondary, p)
+                                            .on_click(cx.listener(move |_, _, _, cx| {
+                                                cx.open_url(&format!("file://{file}"));
+                                            })),
+                                    )
+                                    .child(
+                                        ui::button("hk-stay", "Stay disconnected", Kind::Primary, p)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                if let Some(p) = this.panes.get_mut(ix) {
+                                                    p.state = PaneState::Failed(
+                                                        "Blocked: the host key has changed".into(),
+                                                    );
+                                                }
+                                                cx.notify();
+                                            })),
+                                    ),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn banner(&self, p: &Palette, cx: &mut Context<Self>) -> Option<gpui_kit::AnyElement> {
         let (title, text, color, bg) = match &self.panes.get(self.active)?.state {
             PaneState::Exited(code) => (
@@ -839,9 +1037,26 @@ impl TerminalTab {
                 p.prod_bg,
             ),
             PaneState::Failed(m) => ("Could not connect", m.clone(), p.prod, p.prod_bg),
+            PaneState::Reconnecting {
+                attempt,
+                of,
+                in_secs,
+            } => (
+                "Connection lost",
+                if *in_secs == 0 {
+                    format!("Reconnecting now · attempt {attempt} of {of} · scrollback kept")
+                } else {
+                    format!(
+                        "Reconnecting in {in_secs} s · attempt {attempt} of {of} · scrollback kept"
+                    )
+                },
+                p.stg,
+                p.stg_bg,
+            ),
             _ => return None,
         };
         let ix = self.active;
+        let retry_now = matches!(self.panes[ix].state, PaneState::Reconnecting { .. });
         Some(
             div()
                 .flex_none()
@@ -866,7 +1081,13 @@ impl TerminalTab {
                     ui::button("t-reconnect", "Reconnect now", Kind::Secondary, p)
                         .h(px(22.))
                         .on_click(cx.listener(move |this, _, w, cx| {
-                            this.reconnect(ix, cx);
+                            if retry_now {
+                                // Skip the backoff; the scrollback stays.
+                                let term = this.panes[ix].id;
+                                this.core.send(Command::ReconnectTerminal { term });
+                            } else {
+                                this.reconnect(ix, cx);
+                            }
                             this.refocus(w, cx);
                         })),
                 )
@@ -1124,8 +1345,10 @@ impl Render for TerminalTab {
         let (dot, label) = match pane.map(|p| &p.state) {
             Some(PaneState::Live) => (p.dev, "Connected".to_owned()),
             Some(PaneState::Connecting) => (p.stg, "Connecting".to_owned()),
+            Some(PaneState::Reconnecting { .. }) => (p.stg, "Reconnecting".to_owned()),
             Some(PaneState::Exited(_)) => (p.prod, "Disconnected".to_owned()),
             Some(PaneState::Failed(_)) => (p.prod, "Failed".to_owned()),
+            Some(PaneState::Blocked(_)) => (p.prod, "Blocked".to_owned()),
             None => (p.fg3, String::new()),
         };
         let panes: Vec<gpui_kit::AnyElement> = (0..self.panes.len())

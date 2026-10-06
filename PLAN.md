@@ -130,20 +130,25 @@ Exit: query the 1M-row table, scroll without dropped frames, cancel a long query
 
 Exit: one login to a Host opens a terminal and a tunneled PostgreSQL connection.
 
-- [ ] **M2-1 SSH sessions.** `russh` session manager: password, public key (Ed25519, ECDSA, RSA),
+- [x] **M2-1 SSH sessions.** `russh` session manager: password, public key (Ed25519, ECDSA, RSA),
   keyboard-interactive, keepalive, reconnect with backoff. One session per Host, reference-counted.
   Done when: integration tests for each auth method against the docker OpenSSH server.
-- [ ] **M2-2 Host keys.** Read `~/.ssh/known_hosts` plus Switchyard's store; unknown key prompt
+  Note: `remote::ssh::SshManager` (one session per Host, weak-shared, per-Host login lock); password, Ed25519/ECDSA/RSA keys (encrypted keys via keychain or prompt), keyboard-interactive, keepalive; terminals reconnect with 1-2-4-8-16 s backoff and keep scrollback. Integration tests run against local sshd servers (`scripts/ssh-test-servers.sh`, CI job `integration-ssh`) rather than the docker OpenSSH service.
+- [x] **M2-2 Host keys.** Read `~/.ssh/known_hosts` plus Switchyard's store; unknown key prompt
   with fingerprint via the event bus; changed key blocks with a warning.
   Done when: tests cover known, unknown (accept/reject) and changed keys.
-- [ ] **M2-3 Jump hosts.** ProxyJump chains via direct-tcpip channels.
+  Note: Tolerant known_hosts reader (hashed, wildcards, negation, @revoked); unknown keys prompt (Trust once / Trust and connect), changed keys block with the design's screen; 'Replace stored key' trusts exactly the shown fingerprint in Switchyard's file. Tests: `known_hosts.rs` units, `host_keys_known_unknown_and_changed`, and checked in the app.
+- [x] **M2-3 Jump hosts.** ProxyJump chains via direct-tcpip channels.
   Done when: connect through a two-hop chain in docker.
+  Note: Chains through direct-tcpip channels; jump sessions are shared too. `two_hop_jump_chain` (2222 → 2223 → 2224).
 - [ ] **M2-4 SSH config import.** Parse Host, HostName, User, Port, IdentityFile, ProxyJump into
   Host profiles; preview before import.
   Done when: snapshot test on a sample config.
+  Note: Partial: parser and snapshot test exist and the palette command imports Hosts, but there is no preview step before importing.
 - [ ] **M2-5 SSH agent.** Agent auth via `SSH_AUTH_SOCK` on Unix, OpenSSH agent pipe and Pageant
   on Windows.
   Done when: agent auth works on Linux and macOS in CI; Windows checked manually and noted.
+  Note: Partial: agent auth via SSH_AUTH_SOCK works on Linux (`agent_auth` test). macOS not run yet; Windows uses the OpenSSH agent pipe but is unchecked and Pageant is not wired.
 - [x] **M2-6 Terminal core.** `switchyard-term` wraps `alacritty_terminal`'s `Term`: byte feed,
   resize, scrollback (default 10,000 lines). Local shell via `portable-pty`.
   Done when: unit tests feed escape sequences and assert grid state.
