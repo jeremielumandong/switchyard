@@ -230,3 +230,20 @@ MSI is still needed (enterprise GPO deployment) or NSIS replaces it.
   not visible there; a log file is a follow-up.
 - The AppImage does not bundle GPUI's system libraries or glibc; build it on the oldest
   distro to support.
+
+## 2026-10-06 — gpui-fast (Retained Mode) under GPUI Kit; Rust 1.98.1
+
+At the user's request the app runs on [gpui-fast](https://github.com/longbridge/gpui-fast)
+(Apache-2.0), a GPUI fork that only redraws views that changed. It ships `gpui-pre`
+compat crates with the exact names and version GPUI Kit pins (`=0.3.8`), so the switch is a
+`[patch.crates-io]` of `gpui-pre`, `-platform`, `-macros`, `-sum-tree` and `-web`, pinned to
+rev `598306f`; no app code changed for it. When GPUI Kit moves to a newer `gpui-pre`, move
+the rev with it (Cargo warns "patch not used" until then).
+
+- The toolchain moved to Rust 1.98.1 to match gpui-fast.
+- `unicode-properties` is locked at 0.1.3 because gpui-fast's `gpui_web` pins `=0.1.3`.
+- Retained rendering does not see state a view reads outside entities. Two places read
+  the clock and now notify on a timer: the SQL tab's elapsed time while a query runs
+  (250 ms) and the workspace's relative times such as "Cached 3 min ago" (30 s).
+- Checked in the app: query streaming and timer, grid scrolling, terminal (`htop`), theme
+  switch. No frame-time comparison yet (the grid frame-time harness is still a follow-up).

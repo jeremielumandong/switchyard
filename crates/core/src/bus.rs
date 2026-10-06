@@ -11,7 +11,10 @@ use switchyard_db::{
 };
 use switchyard_drivers::Component;
 use switchyard_remote::FileEntry;
-use switchyard_store::{BufferState, DbConnection, HistoryEntry, Profile, ProfileId, Workspace};
+use switchyard_remote::ssh::{HostKeyDecision, HostKeyRequest, InteractiveRequest};
+use switchyard_store::{
+    BufferState, DbConnection, HistoryEntry, Host, Profile, ProfileId, Workspace,
+};
 use switchyard_term::{TermSize, Terminal};
 
 /// Identifies one UI request so its answer can be matched.
@@ -22,6 +25,38 @@ pub type SessionId = u64;
 pub type QueryId = u64;
 /// An open terminal (local shell or SSH channel).
 pub type TermId = u64;
+
+/// The user's answer to a runtime prompt.
+#[derive(Debug)]
+pub enum PromptAnswer {
+    /// Unknown host key.
+    HostKey(HostKeyDecision),
+    /// Password or passphrase (`None` = cancelled).
+    Secret(Option<SecretString>),
+    /// Keyboard-interactive answers (`None` = cancelled).
+    Interactive(Option<Vec<SecretString>>),
+}
+
+/// Connection state of an SSH terminal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TermStatus {
+    /// Connecting (or waiting on a prompt).
+    Connecting,
+    /// Connected; `description` is `user@host · method · via …`.
+    Connected {
+        /// Description.
+        description: String,
+    },
+    /// The connection dropped; retrying.
+    Reconnecting {
+        /// Attempt number (1-based).
+        attempt: u32,
+        /// Attempts before giving up.
+        of: u32,
+        /// Seconds until this attempt.
+        in_secs: u64,
+    },
+}
 
 /// What a terminal connects to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -108,6 +143,16 @@ pub enum Command {
         /// Profile under edit.
         connection: DbConnection,
         /// Password typed in the form (falls back to the stored one).
+        secret: Option<SecretString>,
+    },
+    /// Log in to a Host under edit (not necessarily saved) and report the result as
+    /// [`Event::TestResult`].
+    TestHost {
+        /// Request id.
+        request: RequestId,
+        /// Host under edit.
+        host: Host,
+        /// Password or passphrase typed in the form (falls back to the stored one).
         secret: Option<SecretString>,
     },
     /// Open a session for a saved connection.
@@ -260,6 +305,26 @@ pub enum Command {
     CloseTerminal {
         /// Terminal.
         term: TermId,
+    },
+    /// Retry a dropped SSH terminal now instead of waiting for the backoff.
+    ReconnectTerminal {
+        /// Terminal.
+        term: TermId,
+    },
+    /// Answer a prompt the runtime raised.
+    AnswerPrompt {
+        /// The prompt's request id.
+        request: RequestId,
+        /// The answer.
+        answer: PromptAnswer,
+    },
+    /// After a changed-key warning: trust exactly `fingerprint` for Host `host` on its next
+    /// connection (stored in Switchyard's known_hosts, never the user's file).
+    AcceptChangedHostKey {
+        /// Host profile.
+        host: ProfileId,
+        /// The new key's fingerprint, as shown to the user.
+        fingerprint: String,
     },
 }
 
@@ -434,6 +499,53 @@ pub enum Event {
         terminal: Terminal,
         /// Short description (`deploy@10.0.4.12 · ed25519`, `/bin/zsh`).
         description: String,
+    },
+    /// An SSH terminal's connection state changed.
+    TerminalStatus {
+        /// Terminal.
+        term: TermId,
+        /// State.
+        status: TermStatus,
+    },
+    /// The server's host key differs from the stored one; the connection is blocked.
+    HostKeyChanged {
+        /// Terminal that hit it, if any.
+        term: Option<TermId>,
+        /// Host profile.
+        host_id: ProfileId,
+        /// Host label.
+        host: String,
+        /// `address:port`.
+        address: String,
+        /// Stored fingerprint.
+        stored: String,
+        /// Received fingerprint.
+        received: String,
+        /// Where the stored key is (`file:line`).
+        location: String,
+    },
+    /// Unknown host key: trust it?
+    HostKeyPrompt {
+        /// Answer with this id.
+        request: RequestId,
+        /// The key.
+        key: HostKeyRequest,
+    },
+    /// A password or key passphrase is needed.
+    SecretPrompt {
+        /// Answer with this id.
+        request: RequestId,
+        /// Host label.
+        host: String,
+        /// Prompt text.
+        prompt: String,
+    },
+    /// Keyboard-interactive questions (MFA).
+    InteractivePrompt {
+        /// Answer with this id.
+        request: RequestId,
+        /// The questions.
+        req: InteractiveRequest,
     },
     /// A terminal could not be opened.
     TerminalFailed {

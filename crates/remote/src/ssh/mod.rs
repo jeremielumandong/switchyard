@@ -10,9 +10,11 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use russh::client::{self, Handle, KeyboardInteractiveAuthResponse, Msg};
+use russh::Disconnect;
+pub use russh::client::Msg;
+use russh::client::{self, Handle, KeyboardInteractiveAuthResponse};
 use russh::keys::{PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate, load_secret_key};
-use russh::{Channel, ChannelMsg, Disconnect};
+pub use russh::{Channel, ChannelMsg};
 use secrecy::{ExposeSecret, SecretString};
 use tracing::{debug, info};
 
@@ -179,6 +181,7 @@ struct KeyOutcome {
 
 struct ClientHandler {
     known: KnownHosts,
+    accept_changed: Option<String>,
     label: String,
     address: String,
     port: u16,
@@ -215,6 +218,17 @@ impl client::Handler for ClientHandler {
             HostKeyStatus::Revoked => {
                 record(&self.outcome, SshError::HostKeyRevoked(self.label.clone()));
                 Ok(false)
+            }
+            HostKeyStatus::Changed { .. }
+                if self.accept_changed.as_deref() == Some(fingerprint(key).as_str()) =>
+            {
+                // The user confirmed this exact new key after seeing the warning.
+                if let Err(e) = self.known.replace(&self.address, self.port, key) {
+                    record(&self.outcome, e);
+                    return Ok(false);
+                }
+                info!(host = %self.label, "replaced stored host key after confirmation");
+                Ok(true)
             }
             HostKeyStatus::Changed { stored, location } => {
                 record(
@@ -382,6 +396,7 @@ async fn connect_one(
     known: &KnownHosts,
     prompter: &Arc<dyn SshPrompter>,
     agent_socket: Option<&std::path::Path>,
+    accept_changed: Option<String>,
 ) -> Result<SshConn, SshError> {
     let keepalive = (!target.keepalive.is_zero()).then_some(target.keepalive);
     let config = Arc::new(client::Config {
@@ -393,6 +408,7 @@ async fn connect_one(
     let outcome: Arc<Mutex<KeyOutcome>> = Arc::default();
     let handler = ClientHandler {
         known: known.clone(),
+        accept_changed,
         label: target.label.clone(),
         address: target.address.clone(),
         port: target.port,
@@ -648,6 +664,7 @@ pub struct SshManager {
     prompter: Arc<dyn SshPrompter>,
     slots: Mutex<HashMap<String, Slot>>,
     agent_socket: Option<PathBuf>,
+    accepted: Mutex<HashMap<String, String>>,
 }
 
 impl SshManager {
@@ -658,7 +675,17 @@ impl SshManager {
             prompter,
             slots: Mutex::default(),
             agent_socket: None,
+            accepted: Mutex::default(),
         }
+    }
+
+    /// After the user confirmed a changed key, accept exactly `fingerprint` for Host `id`
+    /// on its next connection and store it in Switchyard's known_hosts.
+    pub fn accept_changed_key(&self, id: &str, fingerprint: &str) {
+        self.accepted
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id.to_owned(), fingerprint.to_owned());
     }
 
     /// Use this agent socket instead of `SSH_AUTH_SOCK` (tests).
@@ -697,6 +724,11 @@ impl SshManager {
                 Some(j) => Some(self.session(j).await?),
                 None => None,
             };
+            let accept = self
+                .accepted
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&target.id);
             let conn = Arc::new(
                 connect_one(
                     target,
@@ -704,6 +736,7 @@ impl SshManager {
                     &self.known,
                     &self.prompter,
                     self.agent_socket.as_deref(),
+                    accept,
                 )
                 .await?,
             );
