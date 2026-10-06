@@ -138,7 +138,7 @@ pin them in `[workspace.dependencies]`.
 | SQL tooling | `sqlparser`, tree-sitter + a SQL grammar (check what gpui-component bundles first) |
 | Storage | `rusqlite` (bundled), `keyring`, `secrecy`, `argon2` + `chacha20poly1305` (fallback vault) |
 | TLS / net | `rustls`, `reqwest` (rustls, for driver downloads), `minisign-verify` |
-| Platform | `directories`, `libloading` |
+| Platform | `directories`, `libloading`, `chrono` (`clock` only: local time) |
 | Serialization | `serde`, `serde_json` |
 | Errors / logs | `thiserror`, `anyhow`, `tracing`, `tracing-subscriber` |
 | Plans / CLI / MCP | `quick-xml` (showplan), `clap` (`swy`), `rmcp` (official Rust MCP SDK) |

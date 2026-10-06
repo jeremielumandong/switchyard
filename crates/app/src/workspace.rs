@@ -63,6 +63,10 @@ pub struct Workspace {
     pub(crate) collapsed: HashSet<String>,
     pub(crate) schema: SchemaState,
     pub(crate) inspector_open: bool,
+    /// Width of the right panel (drag its left edge; saved as `inspector.width`).
+    pub(crate) inspector_width: f32,
+    /// Dragging the right panel's edge: (mouse x, width) when it started.
+    pub(crate) inspector_drag: Option<(f32, f32)>,
     pub(crate) overlay: Option<Overlay>,
     pub(crate) toast: Option<SharedString>,
     toast_task: Option<Task<()>>,
@@ -133,6 +137,9 @@ impl Workspace {
         core.send(Command::LoadSetting {
             key: "theme".into(),
         });
+        core.send(Command::LoadSetting {
+            key: "inspector.width".into(),
+        });
         core.send(Command::DetectComponents);
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
@@ -160,6 +167,8 @@ impl Workspace {
             collapsed: HashSet::new(),
             schema: SchemaState::default(),
             inspector_open: window.bounds().size.width > px(1280.),
+            inspector_width: crate::sidebar::INSPECTOR_WIDTH,
+            inspector_drag: None,
             overlay: None,
             toast: None,
             toast_task: None,
@@ -367,6 +376,11 @@ impl Workspace {
                     && ed.read(cx).request() == Some(request)
                 {
                     ed.update(cx, |ed, cx| ed.set_error(field, message, cx));
+                }
+            }
+            Event::Setting { key, value } if key == "inspector.width" => {
+                if let Some(w) = value.as_ref().and_then(|v| v.as_f64()) {
+                    self.inspector_width = (w as f32).max(crate::sidebar::INSPECTOR_MIN);
                 }
             }
             Event::Setting { key, value } => {
@@ -1310,6 +1324,20 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Finish resizing the right panel and remember its width.
+    fn end_inspector_drag(&mut self) {
+        if self.inspector_drag.take().is_some() {
+            self.save_inspector_width();
+        }
+    }
+
+    pub(crate) fn save_inspector_width(&self) {
+        self.core.send(Command::SetSetting {
+            key: "inspector.width".into(),
+            value: (self.inspector_width.round() as i64).into(),
+        });
+    }
+
     pub(crate) fn set_theme(&mut self, id: ThemeId, window: &mut Window, cx: &mut Context<Self>) {
         theme::apply(id.palette(), Some(window), cx);
         self.core.send(Command::SetSetting {
@@ -2079,13 +2107,13 @@ impl Workspace {
 }
 
 fn greeting() -> &'static str {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    // Local time is not available without a time-zone database; UTC is close enough
-    // for a greeting.
-    match (secs / 3600) % 24 {
+    use chrono::Timelike as _;
+    greeting_for(chrono::Local::now().hour())
+}
+
+/// The greeting for an hour of the local day.
+fn greeting_for(hour: u32) -> &'static str {
+    match hour {
         5..=11 => "Good morning",
         12..=17 => "Good afternoon",
         _ => "Good evening",
@@ -2182,6 +2210,24 @@ impl Render for Workspace {
                 this.run_command(CommandId::ShowHistory, w, cx)
             }))
             .on_action(cx.listener(|this, _: &actions::Dismiss, w, cx| this.dismiss(w, cx)))
+            .on_mouse_move(cx.listener(|this, ev: &gpui_kit::MouseMoveEvent, w, cx| {
+                if let Some((x0, w0)) = this.inspector_drag {
+                    if ev.pressed_button == Some(gpui_kit::MouseButton::Left) {
+                        let x: f32 = ev.position.x.into();
+                        let max = (f32::from(w.bounds().size.width) - 420.)
+                            .max(crate::sidebar::INSPECTOR_MIN);
+                        this.inspector_width =
+                            (w0 - (x - x0)).clamp(crate::sidebar::INSPECTOR_MIN, max);
+                        cx.notify();
+                    } else {
+                        this.end_inspector_drag();
+                    }
+                }
+            }))
+            .on_mouse_up(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, _, _, _| this.end_inspector_drag()),
+            )
             .on_action(cx.listener(|this, _: &actions::SplitRight, w, cx| {
                 this.run_command(CommandId::SplitRight, w, cx)
             }))
@@ -2212,5 +2258,21 @@ impl Render for Workspace {
             )
             .child(status)
             .children(overlays)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn greeting_follows_the_hour() {
+        assert_eq!(greeting_for(4), "Good evening");
+        assert_eq!(greeting_for(5), "Good morning");
+        assert_eq!(greeting_for(11), "Good morning");
+        assert_eq!(greeting_for(12), "Good afternoon");
+        assert_eq!(greeting_for(17), "Good afternoon");
+        assert_eq!(greeting_for(18), "Good evening");
+        assert_eq!(greeting_for(23), "Good evening");
     }
 }
