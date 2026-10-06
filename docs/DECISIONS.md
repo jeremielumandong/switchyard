@@ -388,3 +388,22 @@ the rev with it (Cargo warns "patch not used" until then).
 - The Files tab's right pane can show any Host or this computer; dragging between panes
   and dropping from the OS copy into the folder on screen; existing targets ask Replace /
   Keep both / Skip.
+
+## 2026-10-06 — SSH agents beyond SSH_AUTH_SOCK: 1Password (user report)
+
+- The user's Host signs in through the 1Password SSH agent and Switchyard never asked it.
+  Cause: agent auth only used `SSH_AUTH_SOCK`, which a desktop-launched app often does not
+  have (or which points at the system agent), and `~/.ssh/config`'s `IdentityAgent` and
+  `.pub` `IdentityFile` lines were ignored.
+- Now a Host has an optional agent socket (`IdentityAgent`) and an optional public key
+  that picks the agent key (1Password holds many keys; servers stop after ~6 failed ones,
+  and each attempt may ask for approval). With no socket set, Switchyard tries
+  `SSH_AUTH_SOCK`, then 1Password's socket (`~/.1password/agent.sock`; on macOS
+  `~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock`). Windows uses the
+  `openssh-ssh-agent` pipe, which 1Password serves when its agent is on.
+- A key file that is a public key (`.pub`, or content starting `ssh-`) means "sign with
+  this key through the agent", as OpenSSH does.
+- `~/.ssh/config` import maps `IdentityAgent` to agent auth with that socket, and a `.pub`
+  `IdentityFile` to the key choice. The 1Password approval dialog is 1Password's own; the
+  status line names the agent ("1Password agent · ed25519") once signed in.
+- The Driver Manager's SSH agent component also counts the 1Password socket as present.

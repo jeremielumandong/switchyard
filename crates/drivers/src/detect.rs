@@ -218,6 +218,23 @@ pub fn detect(spec: &ComponentSpec, env: &DetectEnv) -> ComponentStatus {
         }
     }
 
+    for p in &spec.detect.paths {
+        let full = match p.strip_prefix("~/") {
+            Some(rest) => match (env.var)("HOME").or_else(|| (env.var)("USERPROFILE")) {
+                Some(home) => Path::new(&home).join(rest),
+                None => continue,
+            },
+            None => PathBuf::from(p),
+        };
+        if full.exists() {
+            return ComponentStatus::Installed {
+                version: None,
+                location: p.clone(),
+                source: Source::Environment,
+            };
+        }
+    }
+
     if !libs.is_empty() {
         for dir in &env.search_dirs {
             if let Some(found) = library_in(dir, libs) {
@@ -337,6 +354,15 @@ mod tests {
         let s = sock.display().to_string();
         e.var = Box::new(move |k| (k == "SSH_AUTH_SOCK").then(|| s.clone()));
         assert!(detect(&agent, &e).is_installed());
+
+        // No SSH_AUTH_SOCK, but 1Password's socket is there.
+        let home = t.path().join("home");
+        touch(&home.join(".1password/agent.sock"));
+        let h = home.display().to_string();
+        e.var = Box::new(move |k| (k == "HOME").then(|| h.clone()));
+        assert!(
+            matches!(detect(&agent, &e), ComponentStatus::Installed { location, .. } if location.contains("1password")),
+        );
     }
 
     #[test]
