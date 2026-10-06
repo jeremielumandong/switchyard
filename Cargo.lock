@@ -8331,7 +8331,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-agents"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -8340,7 +8340,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-app"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -8358,7 +8358,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -8371,7 +8371,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "futures",
  "reqwest",
@@ -8393,7 +8393,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-db"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "criterion",
  "data-encoding",
@@ -8419,7 +8419,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-drivers"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "data-encoding",
  "flate2",
@@ -8437,7 +8437,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-plan"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "futures",
  "insta",
@@ -8452,7 +8452,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-remote"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "data-encoding",
  "futures",
@@ -8471,7 +8471,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-store"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -8491,7 +8491,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-term"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "alacritty_terminal",
  "portable-pty",
