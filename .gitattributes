@@ -1,0 +1,2 @@
+# Signed fixtures: the signature covers exact bytes, so no CRLF conversion on checkout.
+crates/drivers/tests/fixtures/** -text
