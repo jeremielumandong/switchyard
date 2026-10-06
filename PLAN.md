@@ -20,10 +20,13 @@ Exit: the app opens with the full layout, profiles save to SQLite, secrets land 
   sample schema including one table with 1,000,000 rows.
   Done when: `docker compose up -d` starts all four and a smoke test connects to each.
   Note: Partial: compose file and seed scripts written (1M-row `orders`); only the PostgreSQL seed was verified (against a local PostgreSQL 16, no Docker in the build environment). No smoke test yet for SQL Server, SSH or FTP.
-- [ ] **M0-3 Window and layout.** GPUI app with gpui-component: title bar, collapsible left
+- [x] **M0-3 Window and layout.** GPUI app with gpui-component: title bar, collapsible left
   sidebar, center tab area with splits, optional right panel, status bar. Light and dark themes.
   Done when: layout matches SPEC "Main window layout"; theme toggle works; panels collapse.
-  Note: Partial: title bar, collapsible sidebar, tabs, right inspector panel, status bar, light/dark themes match the design. Split panes in the tab area are missing.
+  Note: title bar, collapsible sidebar, tabs, right inspector panel, status bar, themes. The
+  center area splits right or down (tab-strip buttons, Ctrl/⌘+\\ and Ctrl/⌘+Shift+\\, palette):
+  one tab strip, the focused pane follows clicks, the divider drags, closing tabs keeps the
+  split consistent. The split is not restored after a restart yet.
 - [x] **M0-4 Runtime bridge.** `switchyard-core` owns a multi-thread tokio runtime, exposes a
   `RuntimeHandle` to spawn work and an event bus (commands in, events out) the UI subscribes to.
   Done when: a test command sleeping 2 s on the runtime leaves the UI responsive and its result
@@ -354,7 +357,6 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 
 - Observe CI green on macOS, Windows and Linux (M0-1).
 - Smoke tests for the SQL Server, SSH and FTP containers (M0-2).
-- Split panes in the tab area (M0-3).
 - Drag-to-reorder connections in the sidebar (M0-9).
 - Verify multi-cursor and folding in the gpui-component editor (M1-6).
 - Grid range selection and multi-cell TSV copy (M1-10); grid frame-time harness (M1-16).
