@@ -1,0 +1,19 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&plan)
+---
+SqlServer Estimated
+#0 Compute Scalar est=3 act=- loops=-
+  #1 Hash Match (Aggregate) est=3 act=- loops=-
+    #2 Merge Join est=1000 act=- loops=-
+      Residual: [shop].[dbo].[plan_orders].[customer_id] as [o].[customer_id]=[shop].[dbo].[customers].[id] as [c].[id]
+      #3 Sort est=1000 act=- loops=-
+        #4 Hash Match (Aggregate) est=1000 act=- loops=-
+          #5 Clustered Index Scan on dbo.plan_orders.PK__plan_ord__3213E83F34834332 est=24916 act=- loops=-
+            Predicate: [shop].[dbo].[plan_orders].[total] as [o].[total]>(500.00)
+      #6 Clustered Index Scan on dbo.customers.PK__customer__3213E83F6E18541F est=1000 act=- loops=-
+        ! Columns with no statistics
+missing: CREATE INDEX ix_plan_orders_total ON [dbo].[plan_orders] ([total]) INCLUDE ([customer_id])
+findings:
+  High MissingIndex node=Some(5): Missing index on dbo.plan_orders | SQL Server estimates 47% improvement. | CREATE INDEX ix_plan_orders_total ON [dbo].[plan_orders] ([total]) INCLUDE ([customer_id])
+  High FullScan node=Some(5): Clustered Index Scan on dbo.plan_orders.PK__plan_ord__3213E83F34834332 | Reads 50,000 rows. | Add an index on the filtered or joined columns, or narrow the query.

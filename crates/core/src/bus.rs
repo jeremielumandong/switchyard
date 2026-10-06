@@ -286,6 +286,29 @@ pub enum Command {
         /// Bypass the cache.
         refresh: bool,
     },
+    /// Capture the query plan of one statement. An actual plan (`analyze`) executes the
+    /// statement inside a transaction that is rolled back.
+    Explain {
+        /// Session.
+        session: SessionId,
+        /// New query id chosen by the UI (cancel with [`Command::Cancel`]).
+        query: QueryId,
+        /// The statement.
+        sql: String,
+        /// Actual plan (`EXPLAIN ANALYZE`, `STATISTICS XML`) instead of an estimate.
+        analyze: bool,
+        /// The user confirmed an actual plan of a writing statement on Production.
+        confirmed: bool,
+        /// History tags.
+        tags: Vec<String>,
+    },
+    /// Load the plan stored with a history entry.
+    LoadPlan {
+        /// Request id.
+        request: RequestId,
+        /// History entry.
+        history_id: i64,
+    },
     /// Search query history.
     SearchHistory {
         /// Request id.
@@ -655,6 +678,26 @@ pub enum Event {
         result: Result<CatalogChunk, String>,
         /// When the data was fetched (ms since epoch).
         cached_at: i64,
+    },
+    /// A captured or loaded plan, with its findings.
+    Plan {
+        /// The [`Command::Explain`] query id or [`Command::LoadPlan`] request id.
+        request: u64,
+        /// History entry the plan is stored with, if history is on.
+        history_id: Option<i64>,
+        /// The plan.
+        plan: Arc<switchyard_plan::Plan>,
+        /// Findings, ranked.
+        findings: Vec<switchyard_plan::Finding>,
+    },
+    /// A plan could not be captured or loaded.
+    PlanFailed {
+        /// The [`Command::Explain`] query id or [`Command::LoadPlan`] request id.
+        request: u64,
+        /// What went wrong.
+        error: String,
+        /// An actual plan of a writing statement on Production needs confirmation first.
+        needs_confirmation: bool,
     },
     /// History search results.
     History {

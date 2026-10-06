@@ -1,0 +1,16 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&plan)
+---
+SqlServer Actual
+#0 Nested Loops est=1000 act=0 loops=1 self=0.0ms (0%)
+  #1 Clustered Index Scan on dbo.plan_orders.PK__plan_ord__3213E83F34834332 est=1 act=0 loops=1 self=3.0ms (75%)
+    Predicate: [shop].[dbo].[plan_orders].[total] as [o].[total]=(123.45)
+  #2 Clustered Index Seek on dbo.customers.PK__customer__3213E83F6E18541F est=1 act=0 loops=0 self=0.0ms (0%)
+    Seek: id = [shop].[dbo].[plan_orders].[customer_id] as [o].[customer_id]
+    ! Never executed
+missing: CREATE INDEX ix_plan_orders_total ON [dbo].[plan_orders] ([total])
+findings:
+  High MissingIndex node=Some(1): Missing index on dbo.plan_orders | SQL Server estimates 97% improvement. | CREATE INDEX ix_plan_orders_total ON [dbo].[plan_orders] ([total])
+  High FullScan node=Some(1): Clustered Index Scan on dbo.plan_orders.PK__plan_ord__3213E83F34834332 | Reads 50,000 rows. | Add an index on the filtered or joined columns, or narrow the query.
+  Low BadEstimate node=Some(0): Rows over-estimated 1000× at Nested Loops | Estimated 1,000 rows, got 0 per execution. | Refresh statistics on the tables involved.

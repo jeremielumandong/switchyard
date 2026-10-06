@@ -1,0 +1,10 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(& pg(stringify! (seq_scan_filter)))
+---
+Postgres Actual
+#0 Seq Scan on orders est=25566 act=25000 loops=1 self=113.5ms (99%)
+  Filter: ((total > '900'::numeric) AND (status = 'cancelled'::text))
+findings:
+  High FullScan node=Some(0): Seq Scan on orders | Reads 1,000,000 rows. | CREATE INDEX ON orders (status, total);
+  High RowsRemovedByFilter node=Some(0): Filter discards 98% of rows at orders | Read 1,000,000 rows to return 25,000. | An index on the filtered columns lets the scan skip those rows.

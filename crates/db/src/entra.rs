@@ -123,6 +123,9 @@ pub struct Interactive {
     /// Microsoft's sign-in page for this attempt.
     pub url: String,
     listener: TcpListener,
+    /// The same port on `::1`, when IPv6 loopback is available: browsers often resolve
+    /// `localhost` to `::1` first.
+    listener_v6: Option<TcpListener>,
     redirect_uri: String,
     verifier: SecretString,
     state: String,
@@ -320,8 +323,9 @@ impl Entra {
             .local_addr()
             .map_err(|e| DbError::Connect(e.to_string()))?
             .port();
-        // `localhost` is what the app registration allows with any port; the browser
-        // reaches the IPv4 listener.
+        // `localhost` is what the app registration allows with any port. Browsers may try
+        // `::1` before `127.0.0.1`, so listen on both where the system has IPv6 loopback.
+        let listener_v6 = TcpListener::bind(("::1", port)).await.ok();
         let redirect_uri = format!("http://localhost:{port}");
         let verifier = random_token(48)?;
         let state = random_token(16)?;
@@ -349,6 +353,7 @@ impl Entra {
         Ok(Interactive {
             url,
             listener,
+            listener_v6,
             redirect_uri,
             verifier: SecretString::from(verifier),
             state,
@@ -358,11 +363,14 @@ impl Entra {
     /// Wait for the browser to come back, then trade the code for tokens.
     pub async fn finish_interactive(&self, app: &EntraApp, flow: Interactive) -> Result<Token> {
         let code = loop {
-            let (mut sock, _) = flow
-                .listener
-                .accept()
-                .await
-                .map_err(|e| DbError::Connect(e.to_string()))?;
+            let accepted = match &flow.listener_v6 {
+                Some(v6) => tokio::select! {
+                    a = flow.listener.accept() => a,
+                    a = v6.accept() => a,
+                },
+                None => flow.listener.accept().await,
+            };
+            let (mut sock, _) = accepted.map_err(|e| DbError::Connect(e.to_string()))?;
             let Some(target) = read_request_target(&mut sock).await else {
                 continue;
             };
@@ -702,12 +710,16 @@ mod tests {
         let (state, challenge) = (get("state"), get("code_challenge"));
         let port: u16 = redirect.rsplit(':').next().unwrap().parse().unwrap();
 
-        // The browser: a stray request first, then the real redirect.
+        // The browser: a stray request first, then the real redirect over IPv6 loopback
+        // when the system has it (browsers often resolve `localhost` to `::1` first).
+        let real_host = if std::net::TcpListener::bind(("::1", 0)).is_ok() {
+            "::1"
+        } else {
+            "127.0.0.1"
+        };
         let browser = tokio::spawn(async move {
-            let get = |path: String| async move {
-                let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port))
-                    .await
-                    .unwrap();
+            let get = |path: String, host: &'static str| async move {
+                let mut s = tokio::net::TcpStream::connect((host, port)).await.unwrap();
                 s.write_all(format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
                     .await
                     .unwrap();
@@ -715,9 +727,9 @@ mod tests {
                 s.read_to_string(&mut out).await.unwrap();
                 out
             };
-            let stray = get("/favicon.ico".into()).await;
+            let stray = get("/favicon.ico".into(), "127.0.0.1").await;
             assert!(stray.starts_with("HTTP/1.1 404"));
-            let page = get(format!("/?code=CODE%2F1&state={state}")).await;
+            let page = get(format!("/?code=CODE%2F1&state={state}"), real_host).await;
             assert!(page.contains("You can close this tab"));
         });
         let token = entra.finish_interactive(&app(), flow).await.unwrap();

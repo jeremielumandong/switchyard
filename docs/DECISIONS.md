@@ -502,3 +502,26 @@ with `cargo metadata --locked`. The "Bump version" workflow (manual, on main) ru
 `bump/vX.Y.Z` branch and opens a PR instead of pushing to main: commits pushed with
 `GITHUB_TOKEN` trigger no workflows, and the release workflows require a push-event CI run
 on main for the exact commit, which merging the PR provides.
+
+## 2026-10-06 — M5: SPEC gaps, findings defaults, Emulsion's MCP and assistant code
+
+- PLAN's M5 tasks cite SPEC sections "Findings" and "MCP tools" that do not exist in
+  `docs/SPEC.md`. The rules come from PLAN M5-4's list; the MCP tools from CLAUDE.md's
+  agent safety rules (recorded with M5-10). Revisit if a fuller spec arrives.
+- Findings thresholds (`switchyard_plan::Thresholds`, all configurable): full scan ≥ 10,000
+  rows read; bad estimate ≥ 10× either way when either side ≥ 100 rows (over-estimates below
+  a LIMIT/TOP are expected and skipped); filter removing ≥ 90% and ≥ 1,000 rows; nested loop
+  whose inner side runs ≥ 1,000 times and is a scan or ≥ 30% of the plan; Key Lookup ≥ 100
+  executions; High severity at ≥ 40% of the plan's time (actual) or cost (estimated).
+- SQL Server counts executions per thread like SSMS does, so a parallel operator's rows are
+  per execution (the same as PostgreSQL's per-loop rows across workers).
+- The user asked to use Emulsion's code (MIT, same owner) for the CLI side: its hand-rolled
+  newline JSON-RPC MCP server and loopback relay (`emulsion-mcp`), and its coding-CLI
+  discovery, launch, stream parsing and process handling (`emulsion-assistant`). That replaces
+  the approved-but-unused `rmcp`. Ported without new dependencies: tokio channels instead of
+  `async-channel`, `std::sync::Mutex` instead of `parking_lot`, the relay token from `ring`'s
+  system RNG instead of `getrandom`, and the process-group kill through `kill(1)` instead of
+  `libc` (the workspace denies `unsafe_code`).
+- Not ported: Emulsion's Codex setup copies the user's `auth.json` into a scoped
+  `CODEX_HOME`, which CLAUDE.md forbids (never copy a coding CLI's credentials). Codex gets
+  Switchyard's MCP server through `-c mcp_servers.…` overrides on its own home instead.

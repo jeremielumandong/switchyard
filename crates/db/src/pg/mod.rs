@@ -277,8 +277,16 @@ impl PgSession {
             .take_while(|c| c.is_ascii_alphabetic())
             .collect::<String>()
             .to_ascii_uppercase();
+        // `ROLLBACK TO [SAVEPOINT] x` undoes to a savepoint; the transaction stays open.
+        let to_savepoint = || {
+            sql.trim_start()[first.len()..]
+                .split_whitespace()
+                .next()
+                .is_some_and(|w| w.eq_ignore_ascii_case("TO"))
+        };
         match first.as_str() {
             "BEGIN" | "START" => self.in_txn = true,
+            "ROLLBACK" if to_savepoint() => {}
             "COMMIT" | "ROLLBACK" | "END" | "ABORT" => self.in_txn = false,
             _ => {}
         }

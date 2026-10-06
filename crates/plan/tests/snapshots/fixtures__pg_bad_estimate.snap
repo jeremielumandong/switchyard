@@ -1,0 +1,10 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(& pg(stringify! (bad_estimate)))
+---
+Postgres Actual
+#0 Seq Scan on orders est=5000 act=1000000 loops=1 self=230.5ms (82%)
+  Filter: ((status <> 'x'::text) AND ((total * '0'::numeric) = '0'::numeric))
+findings:
+  High FullScan node=Some(0): Seq Scan on orders | Reads 1,000,000 rows. | Add an index on the filtered or joined columns, or narrow the query.
+  High BadEstimate node=Some(0): Rows under-estimated 200× at Seq Scan | Estimated 5,000 rows, got 1,000,000 per execution. | ANALYZE orders;

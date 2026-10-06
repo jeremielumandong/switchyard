@@ -1,0 +1,12 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(& pg(stringify! (cte)))
+---
+Postgres Actual
+#0 Limit est=10 act=10 loops=1 self=0.0ms (0%)
+  #1 Sort est=28294 act=10 loops=1 self=12.0ms (1%)
+    #2 CTE Scan on big est=28294 act=82672 loops=1 self=38.7ms (4%)
+      Filter: (s > '5000'::numeric)
+      #3 Aggregate est=84883 act=84000 loops=1 self=210.6ms (24%)
+        #4 Index Scan on orders.orders_customer_id_idx est=1000000 act=1000000 loops=1 self=624.5ms (70%)
+findings:

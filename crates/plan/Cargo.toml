@@ -11,9 +11,13 @@ switchyard-db.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+quick-xml.workspace = true
+futures.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
+tokio.workspace = true
+secrecy.workspace = true
 
 [lints]
 workspace = true
