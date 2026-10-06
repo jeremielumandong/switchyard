@@ -55,6 +55,11 @@ const MIGRATIONS: &[&str] = &[
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
     );",
+    // 2: query plans, stored with their history entry (JSON of `switchyard_plan::Plan`)
+    "CREATE TABLE plans (
+        history_id INTEGER PRIMARY KEY REFERENCES history(id) ON DELETE CASCADE,
+        plan TEXT NOT NULL
+    );",
 ];
 
 /// Milliseconds since the Unix epoch.
@@ -120,6 +125,9 @@ pub struct HistoryEntry {
     pub error: Option<String>,
     /// Tags (e.g. `agent:claude-code`).
     pub tags: Vec<String>,
+    /// A query plan is stored with this entry.
+    #[serde(default)]
+    pub has_plan: bool,
 }
 
 /// Exported profiles. Never contains secrets or secret references.
@@ -456,7 +464,9 @@ impl Store {
     ) -> Result<Vec<HistoryEntry>> {
         let mut sql = String::from(
             "SELECT id, connection_id, connection_name, sql, started_at, duration_ms, rows,
-                    affected, status, error, tags FROM history WHERE 1 = 1",
+                    affected, status, error, tags,
+                    EXISTS (SELECT 1 FROM plans p WHERE p.history_id = history.id)
+             FROM history WHERE 1 = 1",
         );
         let mut args: Vec<String> = Vec::new();
         if let Some(c) = connection {
@@ -494,9 +504,32 @@ impl Store {
                     .filter(|t| !t.is_empty())
                     .map(str::to_owned)
                     .collect(),
+                has_plan: r.get(11)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Store a plan (JSON) with history entry `history_id`, replacing an earlier one.
+    pub fn add_plan(&mut self, history_id: i64, plan_json: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO plans (history_id, plan) VALUES (?1, ?2)
+             ON CONFLICT (history_id) DO UPDATE SET plan = excluded.plan",
+            params![history_id, plan_json],
+        )?;
+        Ok(())
+    }
+
+    /// The plan (JSON) stored with history entry `history_id`.
+    pub fn plan(&self, history_id: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT plan FROM plans WHERE history_id = ?1",
+                params![history_id],
+                |r| r.get(0),
+            )
+            .optional()?)
     }
 
     /// Delete all history.
@@ -677,9 +710,23 @@ mod tests {
                 } else {
                     vec![]
                 },
+                has_plan: false,
             })
             .unwrap();
         }
+        // A plan stored with the first entry; replaced, read back, flagged in search.
+        let first = s.search_history("orders", None, 10).unwrap()[0].id;
+        s.add_plan(first, "{\"v\":1}").unwrap();
+        s.add_plan(first, "{\"v\":2}").unwrap();
+        assert_eq!(s.plan(first).unwrap().as_deref(), Some("{\"v\":2}"));
+        assert_eq!(s.plan(first + 100).unwrap(), None);
+        let flags: Vec<bool> = s
+            .search_history("", None, 10)
+            .unwrap()
+            .iter()
+            .map(|e| e.has_plan)
+            .collect();
+        assert_eq!(flags, [false, false, true]);
         assert_eq!(s.search_history("", None, 10).unwrap().len(), 3);
         assert_eq!(
             s.search_history("select", Some(&conn), 10).unwrap()[0].sql,
