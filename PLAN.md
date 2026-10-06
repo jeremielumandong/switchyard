@@ -10,11 +10,12 @@ Tick `[x]` and add a short note when finished.
 
 Exit: the app opens with the full layout, profiles save to SQLite, secrets land in the keychain.
 
-- [ ] **M0-1 Workspace scaffold.** Cargo workspace with the 10 crates, `rust-toolchain.toml`,
+- [x] **M0-1 Workspace scaffold.** Cargo workspace with the 10 crates, `rust-toolchain.toml`,
   `rustfmt.toml`, shared `[workspace.dependencies]`, GitHub Actions running fmt, clippy and tests
   on macOS, Windows and Linux.
   Done when: `cargo build --workspace` passes and CI is green on all three platforms.
-  Note: Partial: `cargo build --workspace`, fmt, clippy and tests pass locally on Linux; `.github/workflows/ci.yml` runs them on all three platforms but has not been observed green yet.
+  Note: CI (fmt, clippy `-D warnings`, tests) observed green on Linux, macOS and Windows
+  (PR run 41, 2026-10-06).
 - [ ] **M0-2 Test services.** `docker/compose.yml` with PostgreSQL 16, SQL Server 2022,
   an OpenSSH server (password + key auth), and an FTP server with FTPS. Seed scripts for a
   sample schema including one table with 1,000,000 rows.
@@ -169,7 +170,11 @@ Exit: one login to a Host opens a terminal and a tunneled PostgreSQL connection.
 - [ ] **M2-5 SSH agent.** Agent auth via `SSH_AUTH_SOCK` on Unix, OpenSSH agent pipe and Pageant
   on Windows.
   Done when: agent auth works on Linux and macOS in CI; Windows checked manually and noted.
-  Note: Partial: agent auth via SSH_AUTH_SOCK works on Linux (`agent_auth` test). macOS not run yet; Windows uses the OpenSSH agent pipe but is unchecked and Pageant is not wired.
+  Note: Partial: Windows tries a pipe in `SSH_AUTH_SOCK`, the OpenSSH agent service, then
+  Pageant (`pageant` in the Host's agent field picks it alone). `tests/agent.rs` signs in
+  through each agent against an in-process russh server; CI runs it with ssh-agent on Linux
+  and macOS and with the agent service and pinned Pageant 0.85 on Windows. Tick when those
+  CI steps are seen green.
 - [x] **M2-6 Terminal core.** `switchyard-term` wraps `alacritty_terminal`'s `Term`: byte feed,
   resize, scrollback (default 10,000 lines). Local shell via `portable-pty`.
   Done when: unit tests feed escape sequences and assert grid state.
@@ -373,7 +378,6 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 - Log file for release builds (Windows GUI subsystem hides stdout).
 - Real app icon to replace the generated placeholder in `packaging/icons/`.
 
-- Observe CI green on macOS, Windows and Linux (M0-1).
 - Smoke tests for the SQL Server, SSH and FTP containers (M0-2).
 - Grid frame-time harness (M1-16).
 - Driver Manager: fetch the signed manifest from the update server; zip archives (Oracle
