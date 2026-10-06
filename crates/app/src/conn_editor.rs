@@ -728,8 +728,17 @@ impl ConnEditor {
                     )
                 };
             }
-            (ConnKind::Ssh | ConnKind::Sftp, Ok(_)) => {
-                self.test = TestState::Failed("SSH sessions ship in milestone M2 (russh)".into())
+            (ConnKind::Ssh, Ok(Profile::Host(host))) => {
+                let request = next_id();
+                self.test = TestState::Testing(request);
+                self.core.send(Command::TestHost {
+                    request,
+                    host,
+                    secret: self.secret(cx),
+                });
+            }
+            (ConnKind::Sftp, Ok(_)) => {
+                self.test = TestState::Failed("SFTP ships in milestone M4 (russh-sftp)".into())
             }
             (ConnKind::Ftp, Ok(_)) => {
                 self.test = TestState::Failed("FTP/FTPS ships in milestone M4 (suppaftp)".into())

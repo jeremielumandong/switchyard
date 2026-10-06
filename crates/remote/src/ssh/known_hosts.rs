@@ -155,6 +155,14 @@ impl KnownHosts {
     /// resolved IP are both checked by the caller.
     pub fn check(&self, host: &str, port: u16, key: &PublicKey) -> HostKeyStatus {
         let entry = host_entry(host, port);
+        // A key the user explicitly trusted in Switchyard wins over an older entry in
+        // their own file (that is how "replace stored key" works without editing it).
+        if matching_lines(&self.app_file, &entry)
+            .iter()
+            .any(|l| !l.revoked && l.key.key_data() == key.key_data())
+        {
+            return HostKeyStatus::Known;
+        }
         let mut known = false;
         for file in self.files() {
             for line in matching_lines(file, &entry) {
@@ -292,6 +300,17 @@ mod tests {
         );
         assert_eq!(kh.check("db.corp", 22, &key(ED_A)), HostKeyStatus::Known);
         assert_eq!(kh.check("bad.corp", 22, &key(ED_A)), HostKeyStatus::Unknown);
+    }
+
+    #[test]
+    fn app_file_trust_overrides_the_user_file() {
+        let (_d, kh) = setup(&format!("prod ssh-ed25519 {ED_A}\n"));
+        assert!(matches!(
+            kh.check("prod", 22, &key(ED_B)),
+            HostKeyStatus::Changed { .. }
+        ));
+        kh.replace("prod", 22, &key(ED_B)).expect("replace");
+        assert_eq!(kh.check("prod", 22, &key(ED_B)), HostKeyStatus::Known);
     }
 
     #[test]

@@ -30,7 +30,7 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/jeremielumandong/switchyard"
-rust-version = "1.97"
+rust-version = "1.98"
 
 [workspace.dependencies]
 # internal
@@ -121,3 +121,12 @@ opt-level = 2
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# gpui-fast (Retained Mode rendering) in place of GPUI Kit's upstream `gpui-pre`
+# snapshots: same names, version and API. See docs/DECISIONS.md.
+[patch.crates-io]
+gpui-pre = { git = "https://github.com/longbridge/gpui-fast", rev = "598306fcbf77bff0f764b5a178a447344e72e132" }
+gpui-pre-platform = { git = "https://github.com/longbridge/gpui-fast", rev = "598306fcbf77bff0f764b5a178a447344e72e132" }
+gpui-pre-macros = { git = "https://github.com/longbridge/gpui-fast", rev = "598306fcbf77bff0f764b5a178a447344e72e132" }
+gpui-pre-sum-tree = { git = "https://github.com/longbridge/gpui-fast", rev = "598306fcbf77bff0f764b5a178a447344e72e132" }
+gpui-pre-web = { git = "https://github.com/longbridge/gpui-fast", rev = "598306fcbf77bff0f764b5a178a447344e72e132" }

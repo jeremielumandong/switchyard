@@ -154,6 +154,7 @@ impl Workspace {
             Some(Overlay::History(input)) => Some(self.render_history(input.clone(), p, cx)),
         };
         out.extend(overlay);
+        out.extend(self.render_ssh_prompt(p, cx));
         if let Some(t) = self.toast.clone() {
             out.push(
                 div()

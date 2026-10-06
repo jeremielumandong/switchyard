@@ -7,7 +7,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::bus::{TermId, TermTarget};
-use crate::terminals::{TermInput, Terminals};
+use crate::prompts::BusPrompter;
+use crate::terminals::{SshTerminalSpec, TermInput, Terminals};
 use futures::StreamExt;
 use secrecy::SecretString;
 use switchyard_db::d1::D1Driver;
@@ -17,10 +18,11 @@ use switchyard_db::{
     CancelHandle, DbConfig, DbError, DbSession, Driver, Engine, IntrospectScope, ResultEvent,
     dialect_for,
 };
+use switchyard_remote::ssh::{KnownHosts, SshAuthMethod, SshManager, SshTarget};
 use switchyard_remote::{LocalFs, RemoteFs};
 use switchyard_store::{
-    AppPaths, DbConnection, HistoryEntry, HistoryStatus, KeychainStore, MemoryStore, Profile,
-    ProfileId, SecretRef, SecretStore, Store, StoreError, VaultStore, now_ms,
+    AppPaths, DbConnection, HistoryEntry, HistoryStatus, Host, KeychainStore, MemoryStore, Profile,
+    ProfileId, SecretRef, SecretStore, SshAuth, Store, StoreError, VaultStore, now_ms,
 };
 use switchyard_term::{LocalShell, TermSize};
 use tokio::sync::mpsc;
@@ -50,6 +52,8 @@ pub struct ServiceConfig {
     pub secrets: SecretBackendChoice,
     /// Extra drivers (tests); the PostgreSQL driver is always registered.
     pub extra_drivers: Vec<(Engine, Arc<dyn Driver>)>,
+    /// Host key files.
+    pub known_hosts: KnownHosts,
 }
 
 impl ServiceConfig {
@@ -59,6 +63,11 @@ impl ServiceConfig {
             store_path: None,
             secrets: SecretBackendChoice::Memory,
             extra_drivers: Vec::new(),
+            known_hosts: KnownHosts {
+                user_file: None,
+                app_file: std::env::temp_dir()
+                    .join(format!("switchyard-known-hosts-{}", std::process::id())),
+            },
         }
     }
 
@@ -68,10 +77,15 @@ impl ServiceConfig {
             Ok("memory") => SecretBackendChoice::Memory,
             _ => SecretBackendChoice::Auto(paths.vault_file()),
         };
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
         Self {
             store_path: Some(paths.store_file()),
             secrets,
             extra_drivers: Vec::new(),
+            known_hosts: KnownHosts {
+                user_file: home.map(|h| PathBuf::from(h).join(".ssh").join("known_hosts")),
+                app_file: paths.data.join("known_hosts"),
+            },
         }
     }
 }
@@ -107,6 +121,8 @@ pub struct Service {
     sessions: Mutex<HashMap<SessionId, Arc<SessionSlot>>>,
     queries: Mutex<HashMap<QueryId, QueryControl>>,
     terminals: Arc<Terminals>,
+    ssh: Arc<SshManager>,
+    prompter: Arc<BusPrompter>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -136,6 +152,11 @@ impl Service {
                 }
             };
         info!(backend = secrets.backend(), "secret backend selected");
+        let prompter = BusPrompter::new(events.clone());
+        let ssh = Arc::new(SshManager::new(
+            config.known_hosts.clone(),
+            prompter.clone(),
+        ));
         let mut drivers: HashMap<Engine, Arc<dyn Driver>> = HashMap::new();
         drivers.insert(Engine::Postgres, Arc::new(PgDriver));
         drivers.insert(Engine::D1, Arc::new(D1Driver::default()));
@@ -151,6 +172,8 @@ impl Service {
             sessions: Mutex::default(),
             queries: Mutex::default(),
             terminals: Arc::default(),
+            ssh,
+            prompter,
         })
     }
 
@@ -167,6 +190,14 @@ impl Service {
                 }
                 Command::TerminalResize { term, size } => {
                     self.terminals.send(term, TermInput::Resize(size));
+                    continue;
+                }
+                Command::ReconnectTerminal { term } => {
+                    self.terminals.send(term, TermInput::Reconnect);
+                    continue;
+                }
+                Command::AnswerPrompt { request, answer } => {
+                    self.prompter.answer(request, answer);
                     continue;
                 }
                 other => other,
@@ -307,6 +338,17 @@ impl Service {
                     result: result.map_err(|e| e.to_string()),
                 });
             }
+            Command::TestHost {
+                request,
+                host,
+                secret,
+            } => {
+                let result = self.test_host(host, secret).await;
+                self.emit(Event::TestResult {
+                    request,
+                    result: result.map_err(|e| e.to_string()),
+                });
+            }
             Command::OpenSession {
                 session,
                 connection,
@@ -330,6 +372,13 @@ impl Service {
                 self.terminals.send(term, TermInput::Resize(size));
             }
             Command::CloseTerminal { term } => self.terminals.close(term),
+            Command::ReconnectTerminal { term } => {
+                self.terminals.send(term, TermInput::Reconnect);
+            }
+            Command::AnswerPrompt { request, answer } => self.prompter.answer(request, answer),
+            Command::AcceptChangedHostKey { host, fingerprint } => {
+                self.ssh.accept_changed_key(&host.0, &fingerprint);
+            }
             Command::CloseSession { session } => {
                 lock(&self.sessions).remove(&session);
             }
@@ -677,7 +726,23 @@ impl Service {
                     })
                     .map_err(|e| e.to_string())
             }
-            TermTarget::Host(_) => Err("SSH terminals are not available yet (milestone M2)".into()),
+            TermTarget::Host(host_id) => match self.ssh_target(&host_id).await {
+                Ok(target) => {
+                    let description = format!("{}@{}", target.user, target.address);
+                    let terminal = self.terminals.open_ssh(
+                        SshTerminalSpec {
+                            term,
+                            host_id,
+                            target,
+                            size,
+                        },
+                        self.ssh.clone(),
+                        self.events.clone(),
+                    );
+                    Ok((terminal, description))
+                }
+                Err(e) => Err(e.to_string()),
+            },
         };
         match result {
             Ok((terminal, description)) => self.emit(Event::TerminalOpened {
@@ -687,6 +752,84 @@ impl Service {
             }),
             Err(message) => self.emit(Event::TerminalFailed { term, message }),
         }
+    }
+
+    /// The SSH target for a Host, with its jump chain and keychain secrets.
+    pub(crate) async fn ssh_target(&self, id: &ProfileId) -> Result<SshTarget> {
+        let host = self.host(id).await?;
+        let mut chain = Vec::new();
+        for jid in host.jump_hosts.iter().take(8) {
+            if jid == id {
+                return Err(CoreError::Unsupported(
+                    "a Host cannot jump through itself".into(),
+                ));
+            }
+            chain.push(self.host(jid).await?);
+        }
+        let mut jump: Option<Box<SshTarget>> = None;
+        for h in chain {
+            let mut t = self.one_target(&h).await?;
+            t.jump = jump.take();
+            jump = Some(Box::new(t));
+        }
+        let mut t = self.one_target(&host).await?;
+        t.jump = jump;
+        Ok(t)
+    }
+
+    async fn test_host(&self, host: Host, secret: Option<SecretString>) -> Result<String> {
+        let mut target = self.one_target(&host).await?;
+        if secret.is_some() {
+            target.secret = secret;
+        }
+        let mut jump: Option<Box<SshTarget>> = None;
+        for jid in host.jump_hosts.iter().take(8) {
+            let mut t = self.one_target(&self.host(jid).await?).await?;
+            t.jump = jump.take();
+            jump = Some(Box::new(t));
+        }
+        target.jump = jump;
+        // A throwaway id: the test never reuses or replaces a live session.
+        target.id = format!("test:{}", host.id.0);
+        let conn = self
+            .ssh
+            .session(&target)
+            .await
+            .map_err(|e| CoreError::Unsupported(e.to_string()))?;
+        Ok(format!("Connected · {}", conn.description))
+    }
+
+    async fn host(&self, id: &ProfileId) -> Result<Host> {
+        let id2 = id.clone();
+        match self.with_store(move |s| s.profile(&id2)).await? {
+            Some(Profile::Host(h)) => Ok(h),
+            _ => Err(CoreError::NotFound(format!("Host {}", id.0))),
+        }
+    }
+
+    async fn one_target(&self, h: &Host) -> Result<SshTarget> {
+        let secret = match h.secret.clone() {
+            Some(key) => self.with_secrets(move |s| s.get(&key)).await?,
+            None => None,
+        };
+        Ok(SshTarget {
+            id: h.id.0.clone(),
+            label: h.name.clone(),
+            address: h.address.clone(),
+            port: h.port,
+            user: h.user.clone(),
+            auth: match &h.auth {
+                SshAuth::Password => SshAuthMethod::Password,
+                SshAuth::PublicKey { key_path } => SshAuthMethod::PublicKey {
+                    key_path: key_path.clone(),
+                },
+                SshAuth::KeyboardInteractive => SshAuthMethod::KeyboardInteractive,
+                SshAuth::Agent => SshAuthMethod::Agent,
+            },
+            secret,
+            keepalive: Duration::from_secs(u64::from(h.keepalive_secs)),
+            jump: None,
+        })
     }
 
     async fn db_config(&self, c: &DbConnection, secret: Option<SecretString>) -> Result<DbConfig> {
