@@ -101,9 +101,15 @@ async fn ssh_terminal_prompts_runs_and_reconnects() {
         "{description}"
     );
 
-    // The server-side user processes exist once the shell runs (it sets the title).
-    next(&mut rx, "TerminalTitle", 10, |e| {
-        matches!(e, Event::TerminalTitle { term: 9, .. }).then_some(())
+    // The server-side user processes exist once the shell runs. Have it set the title
+    // itself: whether its rc files do depends on the machine (CI runners' don't).
+    h.send(Command::TerminalInput {
+        term: 9,
+        bytes: b"printf '\\033]0;swy-ready\\007'\r".to_vec(),
+    });
+    next(&mut rx, "TerminalTitle", 10, |e| match e {
+        Event::TerminalTitle { term: 9, title } if title == "swy-ready" => Some(()),
+        _ => None,
     })
     .await;
 

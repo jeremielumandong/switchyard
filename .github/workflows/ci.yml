@@ -95,7 +95,7 @@ jobs:
       - name: Kerberos test realm
         run: |
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends krb5-kdc krb5-user
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends krb5-kdc krb5-admin-server krb5-user
           echo "127.0.0.1 db.switchyard.test" | sudo tee -a /etc/hosts
           # Through a file, not a pipe, so a failing script fails the step.
           scripts/kerberos-test-kdc.sh start > /tmp/krb5-env
