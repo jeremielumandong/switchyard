@@ -91,6 +91,16 @@ impl SchemaState {
         }
     }
 
+    /// Close and reopen the catalog session (after a failure or a changed profile).
+    pub fn reconnect(&mut self, core: &RuntimeHandle) {
+        let conn = self.connection.take();
+        if let Some(s) = self.session.take() {
+            core.send(Command::CloseSession { session: s });
+        }
+        *self = SchemaState::default();
+        self.bind(conn, core);
+    }
+
     /// The catalog session opened.
     pub fn on_open(&mut self, version: String, core: &RuntimeHandle) {
         self.state = SessionState2(Some(SessionState::Open { version }));
@@ -160,6 +170,10 @@ impl SchemaState {
 
     /// Reload everything from the server.
     pub fn refresh(&mut self, core: &RuntimeHandle) {
+        // A session that failed to open (wrong password, server down) is reopened.
+        if matches!(self.state.0, Some(SessionState::Failed(_))) {
+            return self.reconnect(core);
+        }
         let open: Vec<(String, ObjectKind)> = self
             .objects
             .iter()
@@ -302,6 +316,8 @@ pub enum CtxTarget {
     Object(String, String, ObjectKind),
     /// A saved profile.
     Profile(ProfileId),
+    /// A tab in the tab strip (by index).
+    Tab(usize),
 }
 
 /// An open context menu.
@@ -687,9 +703,23 @@ impl Workspace {
             ),
             _ => return,
         };
-        self.open_connection(&conn.id, window, cx);
-        if let Some(tab) = self.active_sql() {
+        // Templates (INSERT/UPDATE) go into the current tab when it is on this database;
+        // everything else opens its own tab, so the current query is never replaced.
+        let template = matches!(action, "insert" | "update");
+        let same_db = self.active_sql().is_some_and(|t| {
+            t.read(cx)
+                .connection
+                .as_ref()
+                .is_some_and(|c| c.id == conn.id)
+        });
+        let tab = if template && same_db {
+            self.active_sql()
+        } else {
+            Some(self.open_query_tab(&conn, &name, window, cx))
+        };
+        if let Some(tab) = tab {
             tab.update(cx, |t, cx| match action {
+                // Runs once the new tab's session has opened.
                 "open" | "truncate" | "drop" => t.set_text_and_run(&text, window, cx),
                 _ => t.insert_text(&text, window, cx),
             });

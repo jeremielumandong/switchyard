@@ -151,6 +151,10 @@ pub struct SqlTab {
     pub connection: Option<DbConnection>,
     pub session: Option<SessionId>,
     pub session_state: SessionState,
+    /// This tab's database color (set by the workspace: one color per open database).
+    pub accent: Option<Hsla>,
+    /// A run asked for while the session was still connecting; sent once it opens.
+    queued_run: Option<(PendingRun, bool)>,
     editor: Entity<EditorState>,
     editor_height: f32,
     drag: Option<(f32, f32)>,
@@ -243,6 +247,8 @@ impl SqlTab {
             connection: None,
             session: None,
             session_state: SessionState::None,
+            accent: None,
+            queued_run: None,
             editor,
             editor_height: 300.0,
             drag: None,
@@ -346,15 +352,27 @@ impl SqlTab {
 
     /// Session lifecycle updates from the workspace.
     pub fn on_session(&mut self, state: SessionState, cx: &mut Context<Self>) {
-        if matches!(state, SessionState::Open { .. })
-            && let Some(session) = self.session
-        {
+        let opened = matches!(state, SessionState::Open { .. });
+        if opened && let Some(session) = self.session {
             // Load every column once for completion (served from the cache when warm).
             self.core.send(Command::Introspect {
                 session,
                 scope: switchyard_core::db::IntrospectScope::AllColumns,
                 refresh: false,
             });
+        }
+        // A run queued while connecting goes now; a failed open drops it and says why.
+        if let Some((pending, confirmed)) = self.queued_run.take() {
+            if opened {
+                self.session_state = state;
+                self.execute(pending, confirmed, cx);
+                cx.emit(SqlTabEvent::Changed);
+                cx.notify();
+                return;
+            }
+            if let SessionState::Failed(why) = &state {
+                cx.emit(SqlTabEvent::Toast(format!("Could not connect: {why}")));
+            }
         }
         self.session_state = state;
         cx.emit(SqlTabEvent::Changed);
@@ -585,6 +603,23 @@ impl SqlTab {
 
     /// Send statements to the runtime.
     pub fn execute(&mut self, pending: PendingRun, confirmed: bool, cx: &mut Context<Self>) {
+        // The runtime handles commands concurrently: a run sent before the session has
+        // opened would find no session ("session closed"). Wait for it, and reconnect a
+        // failed one first.
+        match self.session_state {
+            SessionState::Connecting => {
+                self.queued_run = Some((pending, confirmed));
+                cx.notify();
+                return;
+            }
+            SessionState::Failed(_) if self.connection.is_some() => {
+                let conn = self.connection.clone();
+                self.set_connection(conn, cx);
+                self.queued_run = Some((pending, confirmed));
+                return;
+            }
+            _ => {}
+        }
         let Some(session) = self.session else {
             cx.emit(SqlTabEvent::PickConnection);
             return;
@@ -1219,7 +1254,7 @@ impl SqlTab {
             .map(|c| c.name.clone().into())
             .unwrap_or_else(|| "Choose connection".into());
         let pill_color = if self.connection.is_some() {
-            p.env(env)
+            self.accent.unwrap_or_else(|| p.env(env))
         } else {
             p.bd2
         };
@@ -1852,10 +1887,10 @@ impl Render for SqlTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         let env = self.environment();
-        let bar = if self.connection.is_some() && env != EnvironmentLabel::Local {
-            Some(p.env(env))
-        } else {
-            None
+        let bar = match (&self.connection, self.accent) {
+            (Some(_), Some(c)) => Some(c),
+            (Some(_), None) if env != EnvironmentLabel::Local => Some(p.env(env)),
+            _ => None,
         };
         let toolbar = self.render_toolbar(&p, cx);
         let results = self.render_results(&p, window, cx);
