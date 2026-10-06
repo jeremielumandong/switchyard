@@ -26,6 +26,15 @@ sudo apt install libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libxcb1-de
   libvulkan-dev libfontconfig-dev libfreetype-dev libssl-dev pkg-config
 ```
 
+## Packaging
+
+```bash
+./packaging/package.sh                      # macOS: dist/*.dmg + *.pkg (universal); Linux: dist/*.AppImage
+pwsh packaging/windows/build-windows.ps1    # Windows: dist/*-setup.exe (needs NSIS 3)
+```
+
+Each script lists its options and the signing environment variables in its header.
+
 Integration tests run against the services in `docker/compose.yml`:
 
 ```bash

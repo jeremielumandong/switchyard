@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# Build Switchyard.app and package it as a .dmg and a .pkg.
+#
+# Usage: packaging/macos/build-macos.sh [--arch universal|arm64|x86_64] [--no-dmg] [--no-pkg] [--skip-build]
+#
+# Optional signing / notarization (skipped when unset):
+#   MACOS_SIGN_IDENTITY       "Developer ID Application: Name (TEAMID)"  -> codesign app + dmg
+#   MACOS_INSTALLER_IDENTITY  "Developer ID Installer: Name (TEAMID)"    -> sign .pkg
+#   MACOS_NOTARY_PROFILE      keychain profile from `xcrun notarytool store-credentials`
+source "$(dirname "$0")/../lib.sh"
+
+ARCH="universal"
+MAKE_DMG=1
+MAKE_PKG=1
+SKIP_BUILD=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --arch) ARCH="$2"; shift 2 ;;
+    --no-dmg) MAKE_DMG=0; shift ;;
+    --no-pkg) MAKE_PKG=0; shift ;;
+    --skip-build) SKIP_BUILD=1; shift ;;
+    -h|--help) sed -n '2,11p' "$0"; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+[[ "$(uname -s)" == "Darwin" ]] || die "macOS packaging must run on macOS"
+need cargo "Install Rust from https://rustup.rs"
+need lipo "Install the Xcode command line tools: xcode-select --install"
+
+MIN_MACOS="${MIN_MACOS:-11.0}"
+export MACOSX_DEPLOYMENT_TARGET="$MIN_MACOS"
+
+case "$ARCH" in
+  universal) TARGETS=(aarch64-apple-darwin x86_64-apple-darwin) ;;
+  arm64)     TARGETS=(aarch64-apple-darwin) ;;
+  x86_64)    TARGETS=(x86_64-apple-darwin) ;;
+  *) die "--arch must be universal, arm64 or x86_64" ;;
+esac
+
+cd "$REPO_ROOT"
+
+if [[ $SKIP_BUILD -eq 0 ]]; then
+  for t in "${TARGETS[@]}"; do
+    rustup target add "$t" >/dev/null
+    log "cargo build --release --target $t"
+    cargo build --release --locked --target "$t" -p switchyard-app -p switchyard-cli
+  done
+fi
+
+WORK="$REPO_ROOT/target/package/macos"
+rm -rf "$WORK" && mkdir -p "$WORK" "$DIST_DIR"
+
+# --- binaries (lipo into universal when building both) -------------------------------------
+merge_bin() {
+  local name="$1" out="$2" inputs=()
+  for t in "${TARGETS[@]}"; do
+    local p="target/$t/release/$name"
+    [[ -f "$p" ]] || die "missing $p (run without --skip-build)"
+    inputs+=("$p")
+  done
+  if [[ ${#inputs[@]} -gt 1 ]]; then
+    lipo -create "${inputs[@]}" -output "$out"
+  else
+    cp "${inputs[0]}" "$out"
+  fi
+  chmod +x "$out"
+}
+
+# --- app bundle ----------------------------------------------------------------------------
+APP="$WORK/$APP_NAME.app"
+log "assembling $APP_NAME.app ($ARCH)"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+merge_bin "$APP_BIN" "$APP/Contents/MacOS/$APP_BIN"
+merge_bin "$CLI_BIN" "$APP/Contents/MacOS/$CLI_BIN"
+
+sed -e "s|@APP_NAME@|$APP_NAME|g" -e "s|@APP_BIN@|$APP_BIN|g" -e "s|@APP_ID@|$APP_ID|g" \
+    -e "s|@VERSION@|$VERSION|g" -e "s|@MIN_MACOS@|$MIN_MACOS|g" \
+    "$PACKAGING_DIR/macos/Info.plist.in" > "$APP/Contents/Info.plist"
+printf 'APPL????' > "$APP/Contents/PkgInfo"
+cp "$REPO_ROOT/crates/app/assets/fonts/OFL-Geist.txt" "$APP/Contents/Resources/"
+
+ICONSET="$WORK/$APP_NAME.iconset"
+mkdir -p "$ICONSET"
+SRC_ICON="$PACKAGING_DIR/icons/switchyard.png"
+for s in 16 32 128 256 512; do
+  sips -z $s $s "$SRC_ICON" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
+  sips -z $((s * 2)) $((s * 2)) "$SRC_ICON" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/$APP_NAME.icns"
+rm -rf "$ICONSET"
+
+# --- signing -------------------------------------------------------------------------------
+if [[ -n "${MACOS_SIGN_IDENTITY:-}" ]]; then
+  log "codesigning with '$MACOS_SIGN_IDENTITY'"
+  ENT="$PACKAGING_DIR/macos/entitlements.plist"
+  codesign --force --timestamp --options runtime --entitlements "$ENT" \
+    --sign "$MACOS_SIGN_IDENTITY" "$APP/Contents/MacOS/$CLI_BIN"
+  codesign --force --timestamp --options runtime --entitlements "$ENT" \
+    --sign "$MACOS_SIGN_IDENTITY" "$APP"
+  codesign --verify --strict --verbose=2 "$APP"
+else
+  log "MACOS_SIGN_IDENTITY not set: ad-hoc signing (local use only)"
+  codesign --force --deep --sign - "$APP"
+fi
+
+notarize() {
+  [[ -n "${MACOS_NOTARY_PROFILE:-}" ]] || return 0
+  log "notarizing $(basename "$1")"
+  xcrun notarytool submit "$1" --keychain-profile "$MACOS_NOTARY_PROFILE" --wait
+  xcrun stapler staple "$1"
+}
+
+BASENAME="$APP_NAME-$VERSION-macos-$ARCH"
+
+# --- dmg -----------------------------------------------------------------------------------
+if [[ $MAKE_DMG -eq 1 ]]; then
+  DMG="$DIST_DIR/$BASENAME.dmg"
+  log "creating $(basename "$DMG")"
+  STAGE="$WORK/dmg"
+  mkdir -p "$STAGE"
+  cp -R "$APP" "$STAGE/"
+  ln -s /Applications "$STAGE/Applications"
+  rm -f "$DMG"
+  hdiutil create -volname "$APP_NAME" -srcfolder "$STAGE" -fs HFS+ -format UDZO -ov "$DMG" >/dev/null
+  if [[ -n "${MACOS_SIGN_IDENTITY:-}" ]]; then
+    codesign --force --timestamp --sign "$MACOS_SIGN_IDENTITY" "$DMG"
+  fi
+  notarize "$DMG"
+fi
+
+# --- pkg -----------------------------------------------------------------------------------
+if [[ $MAKE_PKG -eq 1 ]]; then
+  PKG="$DIST_DIR/$BASENAME.pkg"
+  log "creating $(basename "$PKG")"
+  ROOT="$WORK/pkgroot"
+  mkdir -p "$ROOT/Applications"
+  cp -R "$APP" "$ROOT/Applications/"
+  # Install exactly to /Applications, even if another copy of the bundle exists elsewhere.
+  pkgbuild --analyze --root "$ROOT" "$WORK/component.plist" >/dev/null
+  plutil -replace 0.BundleIsRelocatable -bool NO "$WORK/component.plist"
+  sign_args=()
+  [[ -n "${MACOS_INSTALLER_IDENTITY:-}" ]] && sign_args=(--sign "$MACOS_INSTALLER_IDENTITY" --timestamp)
+  rm -f "$PKG"
+  pkgbuild --root "$ROOT" --component-plist "$WORK/component.plist" \
+    --identifier "$APP_ID" --version "$VERSION" --install-location / \
+    --scripts "$PACKAGING_DIR/macos/pkg-scripts" ${sign_args[@]+"${sign_args[@]}"} "$PKG" >/dev/null
+  notarize "$PKG"
+fi
+
+log "done -> $DIST_DIR"
+ls -lh "$DIST_DIR/$BASENAME".* 2>/dev/null || true
