@@ -9,6 +9,8 @@ pub enum Flavor {
     Postgres,
     /// T-SQL: `N'..'`, `"ident"`, `[ident]`, nested block comments.
     TSql,
+    /// SQLite (Cloudflare D1): `"ident"`, `[ident]`, `` `ident` ``, flat block comments.
+    Sqlite,
 }
 
 /// Kind of a lexical segment.
@@ -65,7 +67,11 @@ pub fn segments(sql: &str, flavor: Flavor) -> Vec<Segment> {
             let mut j = i;
             let mut end = n;
             while j < n {
-                if b[j] == b'/' && j + 1 < n && b[j + 1] == b'*' {
+                if b[j] == b'/'
+                    && j + 1 < n
+                    && b[j + 1] == b'*'
+                    && (depth == 0 || flavor != Flavor::Sqlite)
+                {
                     depth += 1;
                     j += 2;
                 } else if b[j] == b'*' && j + 1 < n && b[j + 1] == b'/' {
@@ -118,7 +124,23 @@ pub fn segments(sql: &str, flavor: Flavor) -> Vec<Segment> {
                 }
             }
             (SegKind::Ident, end)
-        } else if c == b'[' && flavor == Flavor::TSql {
+        } else if c == b'`' && flavor == Flavor::Sqlite {
+            let mut j = i + 1;
+            let mut end = n;
+            while j < n {
+                if b[j] == b'`' {
+                    if j + 1 < n && b[j + 1] == b'`' {
+                        j += 2;
+                    } else {
+                        end = j + 1;
+                        break;
+                    }
+                } else {
+                    j += 1;
+                }
+            }
+            (SegKind::Ident, end)
+        } else if c == b'[' && matches!(flavor, Flavor::TSql | Flavor::Sqlite) {
             let mut j = i + 1;
             let mut end = n;
             while j < n {

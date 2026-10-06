@@ -30,6 +30,8 @@ pub enum ConnKind {
     Postgres,
     /// SQL Server.
     SqlServer,
+    /// Cloudflare D1.
+    D1,
     /// SSH Host.
     Ssh,
     /// SFTP over a Host.
@@ -39,9 +41,10 @@ pub enum ConnKind {
 }
 
 impl ConnKind {
-    const ALL: [ConnKind; 5] = [
+    const ALL: [ConnKind; 6] = [
         ConnKind::Postgres,
         ConnKind::SqlServer,
+        ConnKind::D1,
         ConnKind::Ssh,
         ConnKind::Sftp,
         ConnKind::Ftp,
@@ -51,6 +54,7 @@ impl ConnKind {
         match self {
             ConnKind::Postgres => "PG",
             ConnKind::SqlServer => "MS",
+            ConnKind::D1 => "D1",
             ConnKind::Ssh => "SSH",
             ConnKind::Sftp => "SFTP",
             ConnKind::Ftp => "FTP",
@@ -61,15 +65,24 @@ impl ConnKind {
         match self {
             ConnKind::Postgres => "PostgreSQL",
             ConnKind::SqlServer => "SQL Server",
+            ConnKind::D1 => "Cloudflare D1",
             ConnKind::Ssh => "SSH Host",
             ConnKind::Sftp => "SFTP",
             ConnKind::Ftp => "FTP / FTPS",
         }
     }
 
+    fn is_db(self) -> bool {
+        matches!(
+            self,
+            ConnKind::Postgres | ConnKind::SqlServer | ConnKind::D1
+        )
+    }
+
     fn sub(self) -> &'static str {
         match self {
             ConnKind::Postgres | ConnKind::SqlServer => "Database",
+            ConnKind::D1 => "SQLite over HTTPS",
             ConnKind::Ssh => "Terminal + tunnels",
             ConnKind::Sftp => "Files over a Host",
             ConnKind::Ftp => "Files, own login",
@@ -158,6 +171,7 @@ impl ConnEditor {
     ) -> Self {
         let kind = match &existing {
             Some(Profile::Db(d)) if d.engine == Engine::SqlServer => ConnKind::SqlServer,
+            Some(Profile::Db(d)) if d.engine == Engine::D1 => ConnKind::D1,
             Some(Profile::Db(_)) => ConnKind::Postgres,
             Some(Profile::Host(_)) => ConnKind::Ssh,
             Some(Profile::File(f)) => match f.protocol {
@@ -198,7 +212,7 @@ impl ConnEditor {
 
     /// Whether to open the connection after saving.
     pub fn connect_after_save(&self) -> bool {
-        self.connect_after && matches!(self.kind, ConnKind::Postgres | ConnKind::SqlServer)
+        self.connect_after && self.kind.is_db()
     }
 
     fn host_options(&self, none_label: &str) -> Vec<(String, String)> {
@@ -306,6 +320,42 @@ impl ConnEditor {
                         ),
                     );
                 }
+            }
+            ConnKind::D1 => {
+                let d = match existing {
+                    Some(Profile::Db(d)) => d.clone(),
+                    _ => {
+                        let mut d = DbConnection::new("", Engine::D1);
+                        d.server.clear();
+                        d
+                    }
+                };
+                add(self, "name", &d.name, "edge_prod", false);
+                add(
+                    self,
+                    "server",
+                    &d.server,
+                    "0123456789abcdef0123456789abcdef",
+                    false,
+                );
+                add(
+                    self,
+                    "database",
+                    &d.database,
+                    "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
+                    false,
+                );
+                add(
+                    self,
+                    "password",
+                    "",
+                    if d.secret.is_some() {
+                        "•••••••• (stored)"
+                    } else {
+                        "API token with D1 Read or Edit"
+                    },
+                    true,
+                );
             }
             ConnKind::Ssh => {
                 let h = match existing {
@@ -538,6 +588,24 @@ impl ConnEditor {
                 d.history_enabled = self.history;
                 Profile::Db(d)
             }
+            ConnKind::D1 => {
+                let mut d = match existing {
+                    Some(Profile::Db(d)) => d.clone(),
+                    _ => DbConnection::new("", Engine::D1),
+                };
+                d.id = id;
+                d.engine = Engine::D1;
+                d.name = self.value("name", cx);
+                d.server = self.value("server", cx);
+                d.port = Engine::D1.default_port();
+                d.database = self.value("database", cx);
+                d.user.clear();
+                d.via_host = None;
+                d.environment = self.env;
+                d.read_only = self.read_only;
+                d.history_enabled = self.history;
+                Profile::Db(d)
+            }
             ConnKind::Ssh => {
                 let mut h = match existing {
                     Some(Profile::Host(h)) => h.clone(),
@@ -638,7 +706,7 @@ impl ConnEditor {
     fn test(&mut self, cx: &mut Context<Self>) {
         self.error = None;
         match (self.kind, self.build(cx)) {
-            (ConnKind::Postgres, Ok(Profile::Db(d))) => {
+            (ConnKind::Postgres | ConnKind::D1, Ok(Profile::Db(d))) => {
                 let request = next_id();
                 self.test = TestState::Testing(request);
                 self.core.send(Command::TestConnection {
@@ -895,6 +963,36 @@ impl ConnEditor {
                 v.push(self.field("ssl", "Encrypt", 3, false, None, p, cx));
                 v.push(self.field("via", "Connect via Host", 3, false, None, p, cx));
             }
+            ConnKind::D1 => {
+                v.push(self.field("name", "Name", 6, false, None, p, cx));
+                v.push(self.field(
+                    "server",
+                    "Account ID",
+                    6,
+                    true,
+                    Some("Cloudflare dashboard → Workers & Pages → Account details"),
+                    p,
+                    cx,
+                ));
+                v.push(self.field(
+                    "database",
+                    "Database ID",
+                    6,
+                    true,
+                    Some("From `wrangler d1 list` or the D1 database page"),
+                    p,
+                    cx,
+                ));
+                v.push(self.field(
+                    "password",
+                    "API token",
+                    6,
+                    false,
+                    Some("Stored in the OS keychain · needs the D1 Read or D1 Edit permission"),
+                    p,
+                    cx,
+                ));
+            }
             ConnKind::Ssh => {
                 v.push(self.field("name", "Name", 6, false, None, p, cx));
                 v.push(self.field("address", "Address", 4, true, None, p, cx));
@@ -1148,7 +1246,7 @@ impl Render for ConnEditor {
                         && !self.selects.contains_key(f.unwrap_or(""))
             })
             .map(|(_, m)| m.clone());
-        let is_db = matches!(self.kind, ConnKind::Postgres | ConnKind::SqlServer);
+        let is_db = self.kind.is_db();
         let _ = window;
         div()
             .id("conn-editor")

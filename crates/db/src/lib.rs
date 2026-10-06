@@ -7,6 +7,7 @@
 pub mod batch;
 pub mod catalog;
 pub mod complete;
+pub mod d1;
 pub mod diagnostics;
 pub mod dialect;
 pub mod driver;
@@ -17,6 +18,7 @@ pub mod guard;
 pub mod mock;
 pub mod pg;
 pub mod stream;
+pub mod tls;
 pub mod value;
 
 pub use batch::{BatchList, CellRef, Column, ColumnData, ColumnMeta, RowBatch, RowBatchBuilder};

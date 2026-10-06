@@ -138,3 +138,44 @@ Measured on the Linux build container (release profile, criterion):
 
 The grid frame-time harness is still missing (see PLAN Follow-ups); the numbers above cover
 decode and the per-frame formatting work only.
+
+## 2026-10-06 — Cloudflare D1 as a third engine (user request)
+
+The user asked for a client for Cloudflare D1 through the REST `raw` endpoint
+(`POST /accounts/{account_id}/d1/database/{database_id}/raw`). This extends the scope in
+CLAUDE.md (PostgreSQL, SQL Server) at the user's request.
+
+- `Engine::D1` with a SQLite dialect (`dialect/sqlite.rs`): `"ident"`, `[ident]` and
+  `` `ident` `` quoting, flat block comments, `CREATE TRIGGER … BEGIN …; END` kept whole,
+  and every placeholder (`?`, `?N`, `:name`) rewritten to `?N` because D1 binds positional
+  parameters only.
+- Profile mapping without new fields: `server` = account id, `database` = database id, the
+  keychain secret = API token. Validation skips host/user for cloud engines and rejects
+  "via Host".
+- HTTP goes through `reqwest` (approved for driver downloads) with `rustls-no-provider` and
+  the same ring + native-roots `rustls::ClientConfig` the PostgreSQL driver uses
+  (`db::tls::client_config`), so there is one TLS stack and verification is always on. The
+  token travels only in a header marked sensitive.
+- The API returns column names but no types; types are inferred per column from the JSON
+  values (integer, real, text, blob-as-byte-array, JSON, mixed → text).
+- D1 has no interactive transactions: `begin` returns `Unsupported` and the editor refuses
+  manual mode for engines where `Engine::supports_transactions()` is false.
+- Cancel abandons the HTTP request; D1 has no server-side cancel, so a statement that
+  already reached the database still finishes there.
+- Results carry no source-table ids, so inline editing is not offered for D1.
+- Each result adds a notice with rows read/written, database time and serving region (D1
+  bills by rows read).
+- Tested against a local stand-in for the endpoint (`crates/db/tests/d1.rs`). Against the
+  real API, a test connection with a fake token returned "Authentication error" and was
+  reported correctly (URL, TLS, envelope parsing verified); a successful query against a
+  real database still needs a real account.
+
+## 2026-10-06 — Azure SQL with Microsoft Entra ID (user request, pending M3)
+
+The user wants SQL Server connections to Azure SQL with Entra ID (Azure AD) login,
+including MFA. Plan for M3: tiberius `AuthMethod::AADToken` with tokens from the Microsoft
+identity platform over `reqwest` — interactive (authorization code + PKCE through the
+system browser and a loopback redirect) and device-code flows both satisfy MFA; password
+(no MFA) and service-principal flows for automation. Refresh tokens go to the keychain.
+**Open question:** which Entra application (client id) to use — a Switchyard app
+registration, or one the user supplies per connection.
