@@ -1,0 +1,12 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(& pg(stringify! (sort_spill)))
+---
+Postgres Actual
+#0 Limit est=50000 act=50000 loops=1 self=87.9ms (2%)
+  #1 Sort est=1000000 act=50000 loops=1 self=1414.1ms (34%)
+    ! Sort spilled to disk (50944 kB)
+    #2 Seq Scan on orders est=1000000 act=1000000 loops=1 self=84.8ms (2%)
+findings:
+  Medium Spill node=Some(1): Sort spilled to disk | Sort spilled to disk (50944 kB) | Raise work_mem for this query (SET LOCAL work_mem = '64MB'), or sort fewer rows.
+  Low FullScan node=Some(2): Seq Scan on orders | Reads 1,000,000 rows. | Add an index on the filtered or joined columns, or narrow the query.

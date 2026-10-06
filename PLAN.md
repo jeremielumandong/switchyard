@@ -283,19 +283,23 @@ Exit: from a slow query, Optimize produces a rewrite or index whose compared pla
 faster, and no agent call ever performed a write.
 
   Note: Remote files open in an editor tab (5 MB cap, text only); Ctrl/Cmd+S saves over SFTP after an mtime check; a conflict offers Overwrite or Discard and reload. Checked in the app and in `core/tests/ssh_files.rs`.
-- [ ] **M5-1 Plan model.** `switchyard-plan` crate with `PlanNode` (operation, object, estimated and
+- [x] **M5-1 Plan model.** `switchyard-plan` crate with `PlanNode` (operation, object, estimated and
   actual rows, loops, cost, self and total time, I/O, predicates, warnings) and `Plan` metadata.
   Done when: unit tests build trees by hand and compute self time correctly.
-- [ ] **M5-2 PostgreSQL plan capture.** `EXPLAIN (FORMAT JSON)` and
+  Note: `switchyard-plan::model`: `PlanNode` (operation, object, estimated/actual rows per execution, loops, cost, subtree time, I/O, predicates, warnings, details) and `Plan` (source, kind, timings, warnings, missing indexes); pre-order ids, self time, time/cost shares.
+- [x] **M5-2 PostgreSQL plan capture.** `EXPLAIN (FORMAT JSON)` and
   `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` parsed into `PlanNode`; DML wrapped and rolled back.
   Done when: insta snapshots for scans, joins, sorts, aggregates, CTEs; a DELETE leaves rows intact.
-- [ ] **M5-3 SQL Server plan capture.** `SHOWPLAN_XML` and `STATISTICS XML` parsed with `quick-xml`
+  Note: `pg::parse` and `capture::capture`; actual plans run in a transaction (or a savepoint inside the user's own) that is always rolled back. Materialized CTE bodies are moved under their CTE Scan so self times are not double counted. 11 fixtures captured from the seed with insta snapshots; live test: a DELETE leaves its rows, a failing statement leaves no transaction. Fixed `ROLLBACK TO SAVEPOINT` closing the PostgreSQL session's transaction flag.
+- [x] **M5-3 SQL Server plan capture.** `SHOWPLAN_XML` and `STATISTICS XML` parsed with `quick-xml`
   into `PlanNode`, including warnings and MissingIndexes.
   Done when: snapshot tests against plans captured from the docker SQL Server.
-- [ ] **M5-4 Findings engine.** Rules from SPEC "Findings" (full scan, bad estimate, rows removed
+  Note: `mssql::parse` with quick-xml: RelOp tree, per-thread run-time counters (rows per execution), objects, predicates (seeks as `col = value`), warnings (spills, conversions), Key Lookup naming, MissingIndexes; pass-through operators without counters take their input's. 10 showplans captured from SQL Server 2022 by `tests/capture.rs` (`SWITCHYARD_WRITE_FIXTURES=1`), snapshot-tested.
+- [x] **M5-4 Findings engine.** Rules from SPEC "Findings" (full scan, bad estimate, rows removed
   by filter, spill, expensive nested loop, key lookup, implicit conversion, missing index) with
   configurable thresholds; ranked output linked to node ids.
   Done when: each rule has a positive and a negative fixture.
+  Note: `findings::analyze` with `Thresholds` (serde, defaults in DECISIONS): full scan, bad estimate (not over-estimates below a LIMIT/TOP), rows removed by filter, spill, expensive nested loop (inner side's share), key lookup, implicit conversion, missing index (SQL Server's, or a PostgreSQL CREATE INDEX on a full scan's filter columns). Ranked by rule weight × time/cost share; each rule has a positive and a negative fixture.
 - [ ] **M5-5 Plan view UI.** Plan graph (color by share of self time, edge width by rows), flame
   view toggle, node detail panel, SQL highlight of the selected node, hotspot list, Explain and
   Explain Analyze actions in the editor.

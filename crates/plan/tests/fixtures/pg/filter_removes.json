@@ -1,0 +1,47 @@
+[
+  {
+    "Plan": {
+      "Node Type": "Seq Scan",
+      "Parallel Aware": false,
+      "Async Capable": false,
+      "Relation Name": "orders",
+      "Alias": "orders",
+      "Startup Cost": 0.00,
+      "Total Cost": 31121.00,
+      "Plan Rows": 12653,
+      "Plan Width": 36,
+      "Actual Startup Time": 0.021,
+      "Actual Total Time": 131.266,
+      "Actual Rows": 12500,
+      "Actual Loops": 1,
+      "Filter": "((total < '50'::numeric) AND (status = 'new'::text) AND (created_at > (now() - '3650 days'::interval)))",
+      "Rows Removed by Filter": 987500,
+      "Shared Hit Blocks": 8621,
+      "Shared Read Blocks": 0,
+      "Shared Dirtied Blocks": 0,
+      "Shared Written Blocks": 0,
+      "Local Hit Blocks": 0,
+      "Local Read Blocks": 0,
+      "Local Dirtied Blocks": 0,
+      "Local Written Blocks": 0,
+      "Temp Read Blocks": 0,
+      "Temp Written Blocks": 0
+    },
+    "Planning": {
+      "Shared Hit Blocks": 92,
+      "Shared Read Blocks": 0,
+      "Shared Dirtied Blocks": 0,
+      "Shared Written Blocks": 0,
+      "Local Hit Blocks": 0,
+      "Local Read Blocks": 0,
+      "Local Dirtied Blocks": 0,
+      "Local Written Blocks": 0,
+      "Temp Read Blocks": 0,
+      "Temp Written Blocks": 0
+    },
+    "Planning Time": 0.512,
+    "Triggers": [
+    ],
+    "Execution Time": 132.016
+  }
+]

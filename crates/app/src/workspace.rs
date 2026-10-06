@@ -35,6 +35,9 @@ use crate::sql_tab::{SqlTab, SqlTabEvent};
 use crate::terminal_tab::TerminalTab;
 use crate::theme::{self, MONO, Palette, SANS, ThemeId, palette};
 use crate::transfers::Transfers;
+
+/// Tab colors, one per open database (hues; red is left to Production).
+const DB_HUES: [f32; 8] = [212.0, 145.0, 38.0, 275.0, 178.0, 322.0, 85.0, 24.0];
 use crate::ui::{self, Kind};
 
 /// A tab in the work area.
@@ -356,6 +359,7 @@ impl Workspace {
                 }
             }
             Event::ProfileSaved { request, id } => {
+                self.reconnect_failed(&id, cx);
                 if let Some(Overlay::ConnEditor(ed)) = &self.overlay
                     && ed.read(cx).request() == Some(request)
                 {
@@ -531,6 +535,9 @@ impl Workspace {
                 cx.notify();
             }
             Event::Error { context, message } => self.toast(format!("{context}: {message}"), cx),
+            // The plan view (M5-5) consumes these; until it lands, failures still surface.
+            Event::Plan { .. } => {}
+            Event::PlanFailed { error, .. } => self.toast(format!("Plan: {error}"), cx),
         }
         if let Some(id) = self.pending_open.clone()
             && self.profiles.db(&id).is_some()
@@ -942,6 +949,33 @@ impl Workspace {
         self.sync_schema(cx);
     }
 
+    /// A new SQL tab on `conn`, titled `title`, made active.
+    pub(crate) fn open_query_tab(
+        &mut self,
+        conn: &DbConnection,
+        title: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<SqlTab> {
+        let n = self
+            .tabs
+            .iter()
+            .filter(|t| matches!(t, Tab::Sql(_)))
+            .count();
+        let buffer = BufferState {
+            id: format!("b{}", next_id()),
+            title: format!("{title}.sql"),
+            connection_id: Some(conn.id.clone()),
+            text: String::new(),
+            cursor: 0,
+        };
+        let tab = self.new_sql_tab(buffer, Some(conn.clone()), n as i64, window, cx);
+        self.active = self.tabs.len() - 1;
+        self.save_layout(cx);
+        self.sync_schema(cx);
+        tab
+    }
+
     fn new_query_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let conn = self
             .active_sql()
@@ -966,6 +1000,72 @@ impl Workspace {
         self.sync_schema(cx);
         let ed = tab.read(cx).editor().clone();
         ed.update(cx, |e, cx| e.focus(window, cx));
+    }
+
+    /// Close a group of tabs from the tab menu: `close`, `close_others`, `close_right`,
+    /// `close_left` or `close_all`, relative to tab `ix`. Each goes through
+    /// [`Self::close_tab`], so open transactions and unsaved files still hold their tab.
+    pub(crate) fn close_tabs(&mut self, action: &str, ix: usize, cx: &mut Context<Self>) {
+        let n = self.tabs.len();
+        if ix >= n {
+            return;
+        }
+        let doomed: Vec<usize> = match action {
+            "close" => vec![ix],
+            "close_others" => (0..n).filter(|&i| i != ix).collect(),
+            "close_right" => (ix + 1..n).collect(),
+            "close_left" => (0..ix).collect(),
+            "close_all" => (0..n).collect(),
+            _ => return,
+        };
+        // Highest first, so the remaining indices stay valid.
+        for i in doomed.into_iter().rev() {
+            self.close_tab(i, cx);
+        }
+        cx.notify();
+    }
+
+    /// After a connection is saved (a fixed password, host, …), sessions on it that had
+    /// failed reconnect with the new settings.
+    fn reconnect_failed(&mut self, id: &ProfileId, cx: &mut Context<Self>) {
+        let Some(conn) = self.profiles.db(id).cloned() else {
+            return;
+        };
+        if self.schema.connection.as_ref().is_some_and(|c| &c.id == id)
+            && matches!(self.schema.state.0, Some(SessionState::Failed(_)))
+        {
+            self.schema.connection = Some(conn.clone());
+            self.schema.reconnect(&self.core);
+        }
+        for t in &self.tabs {
+            if let Tab::Sql(tab) = t {
+                let failed = {
+                    let t = tab.read(cx);
+                    t.connection.as_ref().is_some_and(|c| &c.id == id)
+                        && matches!(t.session_state, SessionState::Failed(_))
+                };
+                if failed {
+                    let conn = conn.clone();
+                    tab.update(cx, |t, cx| t.set_connection(Some(conn), cx));
+                }
+            }
+        }
+    }
+
+    /// One color per open database: tabs on the same connection share it, and each other
+    /// connection takes the next color, in tab order.
+    fn connection_colors(&self, cx: &App) -> Vec<(ProfileId, Hsla)> {
+        let mut out: Vec<(ProfileId, Hsla)> = Vec::new();
+        for t in &self.tabs {
+            if let Tab::Sql(s) = t
+                && let Some(c) = &s.read(cx).connection
+                && !out.iter().any(|(id, _)| id == &c.id)
+            {
+                let hue = DB_HUES[out.len() % DB_HUES.len()];
+                out.push((c.id.clone(), gpui_kit::hsla(hue / 360.0, 0.62, 0.56, 1.0)));
+            }
+        }
+        out
     }
 
     fn close_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
@@ -1668,6 +1768,21 @@ impl Workspace {
                         .child("Unsplit"),
                 )
             });
+        let colors = self.connection_colors(cx);
+        let color_of = |tab: &Tab, cx: &App| -> Option<Hsla> {
+            let Tab::Sql(s) = tab else { return None };
+            let id = s.read(cx).connection.as_ref()?.id.clone();
+            colors.iter().find(|(c, _)| *c == id).map(|(_, h)| *h)
+        };
+        // The SQL tabs use the same color for their editor bar and connection pill.
+        for t in &self.tabs {
+            if let Tab::Sql(s) = t {
+                let c = color_of(t, cx);
+                if s.read(cx).accent != c {
+                    s.update(cx, |s, _| s.accent = c);
+                }
+            }
+        }
         let tabs = div()
             .id("tab-strip")
             .flex_1()
@@ -1680,8 +1795,17 @@ impl Workspace {
                 let active = i == self.active;
                 // Visible in the other pane of a split.
                 let shown = shown_other == Some(i);
-                let edge: Hsla = match env {
-                    Some(e) if e != EnvironmentLabel::Local || active => {
+                let db_color = color_of(tab, cx);
+                let production = env == Some(EnvironmentLabel::Production);
+                let edge: Hsla = match (db_color, env) {
+                    (Some(c), _) => {
+                        if active {
+                            c
+                        } else {
+                            c.opacity(0.55)
+                        }
+                    }
+                    (None, Some(e)) if e != EnvironmentLabel::Local || active => {
                         let c = p.env(e);
                         if active { c } else { c.opacity(0.45) }
                     }
@@ -1710,7 +1834,19 @@ impl Workspace {
                     })
                     .text_color(if active || shown { p.fg } else { p.fg2 })
                     .when(active, |d| d.mb(px(-1.)))
+                    // A faint wash of the database color on the active tab.
+                    .when_some(db_color.filter(|_| active), |d, c| d.bg(c.opacity(0.08)))
                     .on_click(cx.listener(move |this, _, _, cx| this.activate(i, cx)))
+                    .on_mouse_down(
+                        gpui_kit::MouseButton::Right,
+                        cx.listener(move |this, ev: &gpui_kit::MouseDownEvent, _, cx| {
+                            this.ctx = Some(crate::sidebar::CtxMenu {
+                                at: ev.position,
+                                target: crate::sidebar::CtxTarget::Tab(i),
+                            });
+                            cx.notify();
+                        }),
+                    )
                     .child(
                         div()
                             .absolute()
@@ -1734,6 +1870,22 @@ impl Workspace {
                             .line_height(px(14.))
                             .child(badge),
                     )
+                    // Production keeps its red marker whatever the database color.
+                    .when(production, |d| {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .px(px(3.))
+                                .rounded(px(3.))
+                                .bg(p.prod)
+                                .text_color(gpui_kit::white())
+                                .font_family(MONO)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_size(px(8.5))
+                                .line_height(px(13.))
+                                .child("P"),
+                        )
+                    })
                     .child(div().truncate().child(label))
                     .child(ui::dot(
                         if dirty {

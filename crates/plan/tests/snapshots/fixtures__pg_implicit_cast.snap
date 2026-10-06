@@ -1,0 +1,12 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(& pg(stringify! (implicit_cast)))
+---
+Postgres Actual
+#0 Seq Scan on customers est=420 act=1 loops=1 self=10.2ms (100%)
+  Filter: ((id)::text = '42'::text)
+findings:
+  High FullScan node=Some(0): Seq Scan on customers | Reads 84,000 rows. | Add an index on the filtered or joined columns, or narrow the query.
+  High RowsRemovedByFilter node=Some(0): Filter discards 100% of rows at customers | Read 84,000 rows to return 1. | An index on the filtered columns lets the scan skip those rows.
+  High BadEstimate node=Some(0): Rows over-estimated 420× at Seq Scan | Estimated 420 rows, got 1 per execution. | ANALYZE customers;
+  High ImplicitConversion node=Some(0): Column converted at customers | Filter: ((id)::text = '42'::text) | Compare the column with a value of its own type so an index can be used.

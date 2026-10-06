@@ -1,0 +1,10 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(& pg(stringify! (filter_removes)))
+---
+Postgres Actual
+#0 Seq Scan on orders est=12653 act=12500 loops=1 self=131.3ms (99%)
+  Filter: ((total < '50'::numeric) AND (status = 'new'::text) AND (created_at > (now() - '3650 days'::interval)))
+findings:
+  High FullScan node=Some(0): Seq Scan on orders | Reads 1,000,000 rows. | CREATE INDEX ON orders (status, total, created_at);
+  High RowsRemovedByFilter node=Some(0): Filter discards 99% of rows at orders | Read 1,000,000 rows to return 12,500. | An index on the filtered columns lets the scan skip those rows.

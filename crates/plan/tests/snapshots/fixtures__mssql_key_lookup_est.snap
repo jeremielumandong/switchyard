@@ -1,0 +1,12 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&plan)
+---
+SqlServer Estimated
+#0 Nested Loops est=50 act=- loops=-
+  #1 Index Seek on dbo.plan_orders.ix_plan_orders_customer est=50 act=- loops=-
+    Seek: customer_id = (42)
+  #2 Key Lookup on dbo.plan_orders.PK__plan_ord__3213E83F34834332 est=1 act=- loops=-
+    Seek: id = [shop].[dbo].[plan_orders].[id]
+findings:
+  High KeyLookup node=Some(2): Key Lookup on dbo.plan_orders.PK__plan_ord__3213E83F34834332 | Looks up the base row many times. | Add the looked-up columns to the index as INCLUDE columns.

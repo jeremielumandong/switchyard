@@ -1,0 +1,9 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(& pg(stringify! (aggregate)))
+---
+Postgres Actual
+#0 Aggregate est=4 act=4 loops=1 self=197.7ms (72%)
+  #1 Seq Scan on orders est=1000000 act=1000000 loops=1 self=76.5ms (28%)
+findings:
+  Medium FullScan node=Some(1): Seq Scan on orders | Reads 1,000,000 rows. | Add an index on the filtered or joined columns, or narrow the query.
