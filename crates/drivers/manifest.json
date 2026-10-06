@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "components": [
+    {
+      "id": "gssapi",
+      "name": "Kerberos / GSSAPI",
+      "needed_for": "SQL Server integrated (Active Directory) auth",
+      "required_by": ["mssql.integrated_auth"],
+      "license": { "name": "MIT" },
+      "detect": { "libraries": ["libgssapi_krb5.so.2", "libgssapi_krb5.so"] },
+      "platforms": {
+        "windows": { "strategy": "builtin" },
+        "macos": { "strategy": "builtin" },
+        "linux": {
+          "strategy": "package",
+          "size": "1.8 MB",
+          "packages": {
+            "apt": "libgssapi-krb5-2",
+            "dnf": "krb5-libs",
+            "pacman": "krb5",
+            "zypper": "krb5"
+          }
+        }
+      }
+    },
+    {
+      "id": "ssh-agent",
+      "name": "SSH agent",
+      "needed_for": "Agent-based SSH auth",
+      "required_by": ["ssh.agent_auth"],
+      "detect": { "env": ["SSH_AUTH_SOCK"] },
+      "platforms": {
+        "windows": {
+          "strategy": "manual",
+          "steps": [
+            "Open Services, set \"OpenSSH Authentication Agent\" to Automatic and start it,",
+            "or in an admin PowerShell: Get-Service ssh-agent | Set-Service -StartupType Automatic -PassThru | Start-Service",
+            "Pageant (PuTTY) also works when it is running."
+          ]
+        },
+        "macos": { "strategy": "builtin" },
+        "linux": {
+          "strategy": "manual",
+          "steps": [
+            "Start an agent for your session: eval \"$(ssh-agent -s)\"",
+            "Add your key: ssh-add ~/.ssh/id_ed25519",
+            "Most desktops (GNOME Keyring, KDE Wallet) start one at login; restart Switchyard from that session."
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use crate::bus::{TermId, TermTarget};
+use crate::components::MIRROR_SETTING;
 use crate::entra::EntraSignIn;
 use crate::prompts::BusPrompter;
 use crate::terminals::{SshTerminalSpec, TermInput, Terminals};
@@ -21,6 +22,8 @@ use switchyard_db::{
     CancelHandle, DbConfig, DbError, DbSession, Driver, Engine, IntrospectScope, ResultEvent,
     dialect_for,
 };
+use switchyard_drivers::Registry;
+use switchyard_drivers::install::CommandRunner;
 use switchyard_remote::ssh::{
     KnownHosts, SshAuthMethod, SshManager, SshTarget, Tunnel, TunnelInfo,
 };
@@ -59,6 +62,10 @@ pub struct ServiceConfig {
     pub extra_drivers: Vec<(Engine, Arc<dyn Driver>)>,
     /// Host key files.
     pub known_hosts: KnownHosts,
+    /// App-managed native components (`<data>/drivers`).
+    pub drivers_dir: PathBuf,
+    /// Package-manager runner (tests replace it).
+    pub package_runner: Option<Arc<dyn CommandRunner>>,
 }
 
 impl ServiceConfig {
@@ -73,6 +80,9 @@ impl ServiceConfig {
                 app_file: std::env::temp_dir()
                     .join(format!("switchyard-known-hosts-{}", std::process::id())),
             },
+            drivers_dir: std::env::temp_dir()
+                .join(format!("switchyard-drivers-{}", std::process::id())),
+            package_runner: None,
         }
     }
 
@@ -91,6 +101,8 @@ impl ServiceConfig {
                 user_file: home.map(|h| PathBuf::from(h).join(".ssh").join("known_hosts")),
                 app_file: paths.data.join("known_hosts"),
             },
+            drivers_dir: paths.drivers_dir(),
+            package_runner: None,
         }
     }
 }
@@ -135,6 +147,8 @@ pub struct Service {
     next_tunnel: std::sync::atomic::AtomicU64,
     prompter: Arc<BusPrompter>,
     entra: EntraSignIn,
+    components: Arc<Registry>,
+    package_runner: Arc<dyn CommandRunner>,
 }
 
 fn endpoint_of(t: &Tunnel) -> TunnelEndpoint {
@@ -176,6 +190,22 @@ impl Service {
             config.known_hosts.clone(),
             prompter.clone(),
         ));
+        let components = Arc::new(Registry::new(config.drivers_dir.clone()));
+        // Debug builds only: try the Driver Manager against a local, unsigned manifest.
+        if cfg!(debug_assertions)
+            && let Some(path) = std::env::var_os("SWITCHYARD_DEV_MANIFEST")
+        {
+            match std::fs::read(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|b| switchyard_drivers::Manifest::parse(&b).map_err(|e| e.to_string()))
+            {
+                Ok(m) => components.set_manifest(m),
+                Err(e) => warn!(error = %e, "SWITCHYARD_DEV_MANIFEST ignored"),
+            }
+        }
+        if let Ok(Some(mirror)) = store.setting::<String>(MIRROR_SETTING) {
+            components.set_mirror(Some(mirror));
+        }
         let mut drivers: HashMap<Engine, Arc<dyn Driver>> = HashMap::new();
         drivers.insert(Engine::Postgres, Arc::new(PgDriver));
         drivers.insert(Engine::D1, Arc::new(D1Driver::default()));
@@ -197,6 +227,11 @@ impl Service {
             tunnel_open: tokio::sync::Mutex::new(()),
             next_tunnel: std::sync::atomic::AtomicU64::new(1),
             entra: EntraSignIn::new(prompter.clone(), secrets.clone()),
+            components,
+            package_runner: config
+                .package_runner
+                .clone()
+                .unwrap_or_else(|| Arc::new(crate::components::system_runner())),
             prompter,
         })
     }
@@ -557,13 +592,84 @@ impl Service {
                     elapsed: started.elapsed(),
                 });
             }
-            Command::DetectComponents => {
-                let comps = tokio::task::spawn_blocking(switchyard_drivers::detect_all)
+            Command::DetectComponents => self.emit_components().await,
+            Command::InstallComponent { id, accept_license } => {
+                let r = crate::components::install(
+                    &self.components,
+                    &self.events,
+                    &id,
+                    accept_license,
+                    None,
+                    self.package_runner.as_ref(),
+                )
+                .await;
+                if let Err(e) = r {
+                    self.emit(crate::components::failure_event(&id, &e));
+                }
+                self.emit_components().await;
+            }
+            Command::InstallComponentFromFile { id, path } => {
+                let r = crate::components::install(
+                    &self.components,
+                    &self.events,
+                    &id,
+                    true,
+                    Some(path),
+                    self.package_runner.as_ref(),
+                )
+                .await;
+                if let Err(e) = r {
+                    self.emit(crate::components::failure_event(&id, &e));
+                }
+                self.emit_components().await;
+            }
+            Command::UseComponentPath { id, path } => {
+                let reg = self.components.clone();
+                let i = id.clone();
+                let r = tokio::task::spawn_blocking(move || reg.set_path(&i, &path))
                     .await
-                    .unwrap_or_default();
-                self.emit(Event::Components(comps));
+                    .map_err(|e| switchyard_drivers::DriverError::Io(e.to_string()))
+                    .and_then(|r| r);
+                match r {
+                    Ok(component) => self.emit(Event::ComponentInstalled { component }),
+                    Err(e) => self.emit(crate::components::failure_event(&id, &e)),
+                }
+                self.emit_components().await;
+            }
+            Command::RemoveComponent { id } => {
+                let reg = self.components.clone();
+                let i = id.clone();
+                let r = tokio::task::spawn_blocking(move || reg.remove(&i))
+                    .await
+                    .map_err(|e| switchyard_drivers::DriverError::Io(e.to_string()))
+                    .and_then(|r| r);
+                match r {
+                    Ok(c) => self.emit(Event::Toast(format!("Removed {}", c.name))),
+                    Err(e) => self.emit(crate::components::failure_event(&id, &e)),
+                }
+                self.emit_components().await;
+            }
+            Command::SetDriverMirror { url } => {
+                let url = url.map(|u| u.trim().to_owned()).filter(|u| !u.is_empty());
+                self.components.set_mirror(url.clone());
+                let saved = url.clone().unwrap_or_default();
+                if let Err(e) = self
+                    .with_store(move |s| s.set_setting(MIRROR_SETTING, &saved))
+                    .await
+                {
+                    self.error("Save mirror", e);
+                }
+                self.emit_components().await;
             }
         }
+    }
+
+    async fn emit_components(&self) {
+        let reg = self.components.clone();
+        let comps = tokio::task::spawn_blocking(move || reg.components())
+            .await
+            .unwrap_or_default();
+        self.emit(Event::Components(comps));
     }
 
     async fn import_ssh_config(&self) -> Result<usize> {

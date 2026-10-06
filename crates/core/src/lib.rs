@@ -3,6 +3,7 @@
 //! schema cache. The desktop app and the `swy` CLI share this crate.
 
 pub mod bus;
+pub mod components;
 mod entra;
 pub mod env;
 pub mod error;
