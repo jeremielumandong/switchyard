@@ -296,8 +296,13 @@ faster, and no agent call ever performed a write.
 Exit: every performance budget passes on all three platforms; signed builds published.
 
 - [ ] **M6-1 macOS.** Universal binary, app bundle, signing, notarization, DMG, Homebrew cask.
+  Partial: `packaging/macos/build-macos.sh` builds the universal app, `.dmg` and `.pkg`, with optional
+  signing/notarization via env vars (not yet exercised with a real Developer ID). Cask pending.
 - [ ] **M6-2 Windows.** Signed MSI, winget manifest.
+  Partial: NSIS installer via `packaging/windows/build-windows.ps1` (optional signtool signing).
+  MSI vs NSIS open, see DECISIONS 2026-10-05. winget manifest pending.
 - [ ] **M6-3 Linux.** AppImage, `.deb`, `.rpm`, AUR PKGBUILD; Wayland and X11 checked.
+  Partial: AppImage via `packaging/linux/build-appimage.sh`. `.deb`, `.rpm`, AUR pending.
 - [ ] **M6-4 Auto-update.** Signed updates on macOS and Windows; Linux defers to package managers.
 - [ ] **M6-5 Performance gates.** CI jobs that fail when a budget from CLAUDE.md is exceeded.
 - [ ] **M6-6 Crash reporting.** Opt-in, scrubbed of SQL text, hostnames and credentials;
@@ -312,6 +317,9 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 ## Follow-ups
 
 (Add items here instead of doing them mid-task.)
+- Release CI workflow that runs `packaging/` on a tag and uploads `dist/` to a GitHub release.
+- Log file for release builds (Windows GUI subsystem hides stdout).
+- Real app icon to replace the generated placeholder in `packaging/icons/`.
 
 - Observe CI green on macOS, Windows and Linux (M0-1).
 - Smoke tests for the SQL Server, SSH and FTP containers (M0-2).
