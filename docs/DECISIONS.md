@@ -263,3 +263,29 @@ the rev with it (Cargo warns "patch not used" until then).
   with a message naming the Host and port.
 - New SSH sessions stay up for 60 s even with no users, so "Test connection" followed by
   "Save and connect", or reopening a terminal, does not ask for a second MFA code.
+
+## 2026-10-06 — SQL Server driver (tiberius)
+
+- `tiberius` 0.13 with `tds80` and `rustls`. Its rustls feature also builds `aws-lc-rs`;
+  `db::tls::install_default_provider` makes ring the process-wide provider so every driver
+  uses one TLS stack. Per-connection trust is `DbConfig.trusted_ca_pem` (M3-8 adds the UI).
+- tiberius' result stream borrows the client mutably, so one task per session owns the
+  client and serves requests in order (queries, transaction batches, catalog). Results go
+  through a channel of 4 batches, so a paused grid slows the server down through TCP.
+  The first batch is 200 rows, then 1,000.
+- tiberius drops DONE row counts, so after a batch without result sets the driver runs
+  `SELECT CAST(@@ROWCOUNT AS bigint)` for "rows affected".
+- tiberius does not surface INFO tokens (`PRINT`, `RAISERROR` below severity 11), so SQL
+  Server notices are not shown yet. Follow-up: upstream patch.
+- **Cancel (M3-2).** Cancel sends the TDS attention (`cancel_query`). SQL Server 2022/2025
+  acknowledges it in a TDS message of its own after the message that ends the cancelled
+  batch. tiberius stops at the first message boundary and reports "Never got a DONE token
+  acknowledging the Attention signal", leaving the connection one response behind; its
+  public API has no way to read a message without sending a request. Chosen: send the
+  attention (so the server stops at once), then, if the acknowledgement was not read,
+  reconnect with the same config and tunnel endpoint, and emit a warning notice saying the
+  open transaction, temp tables and SET options were reset. The session's
+  `in_transaction()` clears. `WAITFOR DELAY '00:00:30'` stops in about 0.3 s after cancel.
+  Upstream fix (keep reading past the message boundary until the attention DONE) would
+  remove the reconnect; tracked in Follow-ups.
+- Azure SQL gateway redirects (`Routing`) are followed up to three times when not tunnelled.

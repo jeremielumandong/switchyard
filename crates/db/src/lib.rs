@@ -16,6 +16,7 @@ pub mod error;
 pub mod format;
 pub mod guard;
 pub mod mock;
+pub mod mssql;
 pub mod pg;
 pub mod stream;
 pub mod tls;

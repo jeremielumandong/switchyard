@@ -104,6 +104,9 @@ pub struct DbConfig {
     pub read_only: bool,
     /// Name reported to the server.
     pub application_name: String,
+    /// Extra certificate authority (PEM) trusted for this connection only, e.g. a
+    /// company CA or a pinned self-signed server certificate. Verification stays on.
+    pub trusted_ca_pem: Option<String>,
 }
 
 impl DbConfig {
@@ -121,6 +124,7 @@ impl DbConfig {
             connect_timeout: Duration::from_secs(10),
             read_only: false,
             application_name: "Switchyard".into(),
+            trusted_ca_pem: None,
         }
     }
 }

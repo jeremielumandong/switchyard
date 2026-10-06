@@ -1,0 +1,5 @@
+---
+source: crates/db/tests/mssql.rs
+expression: "snap.join(\"\\n\")"
+---
+Table customers

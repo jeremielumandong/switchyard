@@ -70,6 +70,20 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y openssh-server
       - name: Start SSH test servers
         run: sudo DIR=/tmp/switchyard-ssh scripts/ssh-test-servers.sh
-      - run: cargo test -p switchyard-db -p switchyard-core -p switchyard-remote -- --ignored --test-threads 1
+      - run: cargo test -p switchyard-db --lib --test pg --test d1 -- --ignored --test-threads 1
+      - run: cargo test -p switchyard-core -p switchyard-remote -- --ignored --test-threads 1
         env:
           SWITCHYARD_SSH_KEYS: /tmp/switchyard-ssh
+
+  integration-mssql:
+    name: integration (SQL Server)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Start SQL Server
+        run: DIR=/tmp/switchyard-mssql scripts/mssql-test-server.sh
+      - run: cargo test -p switchyard-db --test mssql -- --ignored --test-threads 1
+        env:
+          SWITCHYARD_MSSQL_CA: /tmp/switchyard-mssql/ca.pem
