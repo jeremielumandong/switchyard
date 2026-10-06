@@ -7,14 +7,16 @@ pub mod components;
 mod entra;
 pub mod env;
 pub mod error;
+pub mod files;
 pub mod prompts;
 pub mod runtime;
 pub mod service;
 pub mod terminals;
 
 pub use bus::{
-    Command, Event, FetchLimit, PromptAnswer, QueryEvent, QueryId, RequestId, SessionId,
-    StatementRequest, TermId, TermStatus, TermTarget,
+    Command, Event, FetchLimit, FsOp, FsRef, OnConflict, PromptAnswer, QueryEvent, QueryId,
+    RequestId, SaveError, SessionId, StatementRequest, TermId, TermStatus, TermTarget, TextFile,
+    TransferError,
 };
 pub use error::{CoreError, Result};
 pub use runtime::{Core, EventReceiver, EventSender, RuntimeHandle};

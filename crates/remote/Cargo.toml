@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 russh.workspace = true
+russh-sftp.workspace = true
 secrecy.workspace = true
 hmac.workspace = true
 sha1.workspace = true

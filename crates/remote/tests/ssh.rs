@@ -425,3 +425,68 @@ async fn tunnel_forwards_counts_and_stops() {
     assert!(tokio::net::TcpStream::connect(t.local()).await.is_err());
     assert_eq!(t.info().status, TunnelStatus::Stopped);
 }
+
+#[tokio::test]
+#[ignore = "needs ssh servers"]
+async fn sftp_file_system_suite() {
+    use switchyard_remote::{EntryKind, RemoteFs, SftpFs};
+    use tokio::io::AsyncReadExt as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let m = SshManager::new(known(&dir), Prompter::new(HostKeyDecision::TrustOnce));
+    let t = target("sftp", main_port(), key("id_ed25519"));
+    let conn = m.session(&t).await.unwrap();
+    let fs = SftpFs::open(conn.clone(), "sftp").await.unwrap();
+    assert_eq!(fs.home(), PathBuf::from(format!("/home/{}", t.user)));
+
+    let root = fs.home().join(format!("swy-sftp-{}", std::process::id()));
+    fs.mkdir(&root).await.unwrap();
+    fs.mkdir(&root.join("b_dir")).await.unwrap();
+    fs.write_file(&root.join("a.txt"), b"hello sftp")
+        .await
+        .unwrap();
+    fs.write_file(&root.join(".hidden"), b"").await.unwrap();
+    let list = fs.list(&root).await.unwrap();
+    let names: Vec<_> = list.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, ["b_dir", ".hidden", "a.txt"]);
+    assert_eq!(list[2].size, 10);
+    assert!(list[2].modified_ms.is_some());
+    assert_eq!(list[0].kind, EntryKind::Dir);
+
+    // Overwrite truncates; stat sees the new size.
+    fs.write_file(&root.join("a.txt"), b"hi").await.unwrap();
+    assert_eq!(fs.stat(&root.join("a.txt")).await.unwrap().size, 2);
+    assert_eq!(
+        fs.read_file(&root.join("a.txt"), 1024).await.unwrap(),
+        b"hi"
+    );
+    assert!(
+        fs.read_file(&root.join("a.txt"), 1).await.is_err(),
+        "size cap"
+    );
+
+    // A 3 MB file through the streams.
+    let big: Vec<u8> = (0..3_000_000u32).map(|i| (i % 251) as u8).collect();
+    fs.write_file(&root.join("big.bin"), &big).await.unwrap();
+    let mut back = Vec::new();
+    fs.open_read(&root.join("big.bin"))
+        .await
+        .unwrap()
+        .read_to_end(&mut back)
+        .await
+        .unwrap();
+    assert!(back == big, "round trip");
+
+    fs.rename(&root.join("a.txt"), &root.join("c.txt"))
+        .await
+        .unwrap();
+    for f in ["c.txt", ".hidden", "big.bin", "b_dir"] {
+        fs.delete(&root.join(f)).await.unwrap();
+    }
+    assert!(fs.list(&root).await.unwrap().is_empty());
+    fs.delete(&root).await.unwrap();
+    assert!(fs.stat(&root).await.is_err());
+
+    // Same SSH session as the terminal and tunnels.
+    assert!(Arc::ptr_eq(&conn, &m.session(&t).await.unwrap()));
+}

@@ -351,3 +351,21 @@ the rev with it (Cargo warns "patch not used" until then).
   from the background. New themes must pass it.
 - The choice is saved in the `theme` setting and applied when the app starts
   (`SWITCHYARD_THEME` still overrides it, for tests and screenshots).
+
+## 2026-10-06 — SSH files: explorer, transfers, remote editing (user request, M4 early)
+
+- The user asked for a file explorer tied to the SSH connection, copying from their
+  computer, and editing remote files, next to the terminal. Built ahead of the M4 order:
+  SFTP (`russh-sftp`) runs as a channel on the Host's shared SSH session, so the terminal,
+  tunnels and files share one login. One SFTP session per Host, reopened if the SSH session
+  dropped.
+- UI: with an SSH terminal (or a file from that Host) in front, the sidebar's second tab
+  reads **Files** instead of Schema and browses the Host. Upload by dropping files or
+  folders from the OS onto it or with Upload (system picker); download goes to
+  `~/Downloads` (keep both on name clash); delete asks for a second click. Uploads ask
+  before replacing (Replace / Keep both / Skip).
+- Editing: text files up to 5 MB (no NUL bytes, UTF-8) open in an editor tab. Save checks
+  the file's modification time first; if it changed on the server the tab offers
+  Overwrite or Discard and reload. Closing a tab with unsaved changes needs a second click.
+- Still to do in M4: transfer queue limits, pause and resume from offset, the dual-pane
+  Files tab, FTP/FTPS, chmod.
