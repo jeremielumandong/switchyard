@@ -28,7 +28,13 @@
       "name": "SSH agent",
       "needed_for": "Agent-based SSH auth",
       "required_by": ["ssh.agent_auth"],
-      "detect": { "env": ["SSH_AUTH_SOCK"] },
+      "detect": {
+        "env": ["SSH_AUTH_SOCK"],
+        "paths": [
+          "~/.1password/agent.sock",
+          "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+        ]
+      },
       "platforms": {
         "windows": {
           "strategy": "manual",

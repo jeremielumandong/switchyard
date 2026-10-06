@@ -1,4 +1,5 @@
-//! `~/.ssh/config` import: Host, HostName, User, Port, IdentityFile, ProxyJump.
+//! `~/.ssh/config` import: Host, HostName, User, Port, IdentityFile, IdentityAgent,
+//! ProxyJump.
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +16,8 @@ pub struct SshConfigHost {
     pub port: Option<u16>,
     /// First `IdentityFile`.
     pub identity_file: Option<String>,
+    /// `IdentityAgent` (an agent socket such as 1Password's; `none` is dropped).
+    pub identity_agent: Option<String>,
     /// `ProxyJump` chain, outermost first.
     pub proxy_jump: Vec<String>,
 }
@@ -94,6 +97,10 @@ pub fn parse_ssh_config(text: &str) -> Vec<SshConfigHost> {
                         "identityfile" if h.identity_file.is_none() => {
                             h.identity_file = Some(v.clone())
                         }
+                        "identityagent" if h.identity_agent.is_none() => {
+                            // `none` disables the agent; keep it as "no agent".
+                            h.identity_agent = Some(v.clone())
+                        }
                         "proxyjump" if h.proxy_jump.is_empty() && v != "none" => {
                             h.proxy_jump = v.split(',').map(|s| s.trim().to_owned()).collect()
                         }
@@ -140,5 +147,25 @@ Host *
     ServerAliveInterval 30
 "#;
         insta::assert_yaml_snapshot!(parse_ssh_config(cfg));
+    }
+
+    #[test]
+    fn one_password_style_config() {
+        let cfg = r#"
+Host *
+    IdentityAgent "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+
+Host prod
+    HostName prod.acme.dev
+    User deploy
+    IdentityFile ~/.ssh/prod.pub
+    IdentitiesOnly yes
+"#;
+        let h = &parse_ssh_config(cfg)[0];
+        assert_eq!(
+            h.identity_agent.as_deref(),
+            Some("~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock")
+        );
+        assert_eq!(h.identity_file.as_deref(), Some("~/.ssh/prod.pub"));
     }
 }

@@ -196,3 +196,6 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
 - GPUI: children of a scrolling flex column shrink to fit by default. A card with
   `overflow_hidden` inside one gets its bottom clipped instead of the column scrolling;
   give such children `flex_none()`. Text in a flex row needs `min_w_0()` to wrap.
+- SSH agents: desktop-launched apps often lack `SSH_AUTH_SOCK`. 1Password's agent lives at
+  `~/.1password/agent.sock` (macOS: `~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock`),
+  and OpenSSH configs point `IdentityFile` at a `.pub` to pick the agent key.
