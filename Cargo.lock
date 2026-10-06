@@ -8343,6 +8343,7 @@ name = "switchyard-app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "futures",
  "gpui-kit",
  "lsp-types",

@@ -473,3 +473,13 @@ the rev with it (Cargo warns "patch not used" until then).
   first line. They are applied with the diagnostics pass (debounced 250 ms after edits, and
   once when a tab opens). T-SQL folds by its own batch rules, which tree-sitter's SQL
   grammar would not.
+
+## 2026-10-06 — Local time via chrono; resizable value inspector
+
+- The welcome greeting was a fixed "Good afternoon". It now follows the local clock
+  (morning 05–11, afternoon 12–17, evening otherwise). `std` has no local-time API, so the
+  user approved `chrono` (default features off, `clock` only); it was already in the tree
+  through other crates. Added to the approved list in `CLAUDE.md`.
+- The right-hand value inspector can be resized by dragging its left edge (min 240 px, at
+  least 420 px left for the rest) and toggled between its default 300 px and half the
+  window with a header button. The width is saved as the `inspector.width` setting.
