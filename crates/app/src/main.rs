@@ -10,10 +10,12 @@ mod app_state;
 mod completion;
 mod conn_editor;
 mod drivers_page;
+mod editor_tab;
 mod files_tab;
 mod grid;
 mod overlays;
 mod palette;
+mod remote_files;
 mod sidebar;
 mod sql_tab;
 mod ssh_prompts;
@@ -71,16 +73,12 @@ fn main() -> Result<()> {
             load_fonts(cx);
             cx.set_global(CoreHolder(core));
             actions::init(cx);
-            let dark = !matches!(std::env::var("SWITCHYARD_THEME").as_deref(), Ok("light"));
-            theme::apply(
-                if dark {
-                    theme::Palette::dark()
-                } else {
-                    theme::Palette::light()
-                },
-                None,
-                cx,
-            );
+            editor_tab::init(cx);
+            // The saved theme arrives from the store once the workspace loads.
+            let start = std::env::var("SWITCHYARD_THEME")
+                .map(|k| theme::ThemeId::from_key(&k))
+                .unwrap_or(theme::ThemeId::SwitchyardDark);
+            theme::apply(start.palette(), None, cx);
             let bounds = Bounds::centered(None, size(px(1440.), px(900.)), cx);
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),

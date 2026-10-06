@@ -19,6 +19,66 @@ use switchyard_term::{TermSize, Terminal};
 
 /// Identifies one UI request so its answer can be matched.
 pub type RequestId = u64;
+
+/// Which file system a path belongs to.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum FsRef {
+    /// This computer.
+    Local,
+    /// A saved Host, over SFTP on its shared SSH session.
+    Host(ProfileId),
+}
+
+/// A file operation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FsOp {
+    /// Create a folder.
+    Mkdir(PathBuf),
+    /// Rename or move.
+    Rename(PathBuf, PathBuf),
+    /// Delete a file, or a folder with everything in it.
+    Delete(PathBuf),
+}
+
+/// What to do when a transfer's target already exists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OnConflict {
+    /// Stop and report [`TransferError::Exists`].
+    Ask,
+    /// Replace it.
+    Replace,
+    /// Keep both: `name (1).ext`.
+    KeepBoth,
+}
+
+/// Why a transfer did not finish.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TransferError {
+    /// The target exists (with [`OnConflict::Ask`]).
+    Exists(String),
+    /// Cancelled by the user.
+    Cancelled,
+    /// Anything else.
+    Failed(String),
+}
+
+/// A text file opened for editing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextFile {
+    /// Contents.
+    pub content: String,
+    /// Modification time when read (ms since epoch), for the conflict check on save.
+    pub modified_ms: Option<i64>,
+}
+
+/// Why a save did not happen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SaveError {
+    /// The file changed since it was opened (its new modification time).
+    Conflict(Option<i64>),
+    /// Anything else.
+    Failed(String),
+}
 /// An open database session.
 pub type SessionId = u64;
 /// A running query (one Run click; may contain several statements).
@@ -251,6 +311,74 @@ pub enum Command {
         key: String,
         /// JSON value.
         value: serde_json::Value,
+    },
+    /// Read a UI setting ([`Event::Setting`]).
+    LoadSetting {
+        /// Key.
+        key: String,
+    },
+    /// List a directory on any file system ([`Event::FsListing`]); `None` = home.
+    ListDir {
+        /// Request id.
+        request: RequestId,
+        /// File system.
+        fs: FsRef,
+        /// Directory.
+        path: Option<PathBuf>,
+    },
+    /// Copy a file or folder (recursively) into a folder, possibly across file systems.
+    Transfer {
+        /// Transfer id, for progress and cancel.
+        id: u64,
+        /// Source file system.
+        from: FsRef,
+        /// Source path.
+        path: PathBuf,
+        /// Target file system.
+        to: FsRef,
+        /// Target folder; `None` = the local Downloads folder.
+        dir: Option<PathBuf>,
+        /// Existing target policy.
+        on_conflict: OnConflict,
+    },
+    /// Stop a transfer.
+    CancelTransfer {
+        /// Transfer id.
+        id: u64,
+    },
+    /// Create, rename or delete ([`Event::FsOpDone`]).
+    FsOp {
+        /// Request id.
+        request: RequestId,
+        /// File system.
+        fs: FsRef,
+        /// Operation.
+        op: FsOp,
+    },
+    /// Open a text file for editing ([`Event::TextFileRead`]).
+    ReadTextFile {
+        /// Request id.
+        request: RequestId,
+        /// File system.
+        fs: FsRef,
+        /// File.
+        path: PathBuf,
+    },
+    /// Save an edited text file ([`Event::TextFileSaved`]). Refused with
+    /// [`SaveError::Conflict`] when the file changed since `expect_modified`, unless `force`.
+    WriteTextFile {
+        /// Request id.
+        request: RequestId,
+        /// File system.
+        fs: FsRef,
+        /// File.
+        path: PathBuf,
+        /// New contents.
+        content: String,
+        /// Modification time when it was opened.
+        expect_modified: Option<i64>,
+        /// Save even if it changed.
+        force: bool,
     },
     /// List a local directory.
     ListLocalDir {
@@ -519,6 +647,65 @@ pub enum Event {
         path: PathBuf,
         /// Entries or error.
         result: Result<Vec<FileEntry>, String>,
+    },
+    /// A directory listing for [`Command::ListDir`].
+    FsListing {
+        /// Request id.
+        request: RequestId,
+        /// File system.
+        fs: FsRef,
+        /// The directory listed (home resolved).
+        path: PathBuf,
+        /// Entries or error.
+        result: Result<Vec<FileEntry>, String>,
+    },
+    /// Transfer progress.
+    TransferProgress {
+        /// Transfer id.
+        id: u64,
+        /// What is being copied (top-level name).
+        name: String,
+        /// Bytes so far.
+        done: u64,
+        /// Total bytes, when known.
+        total: Option<u64>,
+    },
+    /// A transfer ended.
+    TransferDone {
+        /// Transfer id.
+        id: u64,
+        /// Where it went, or why not.
+        result: Result<PathBuf, TransferError>,
+    },
+    /// Result of [`Command::FsOp`].
+    FsOpDone {
+        /// Request id.
+        request: RequestId,
+        /// File system.
+        fs: FsRef,
+        /// Error, if any.
+        result: Result<(), String>,
+    },
+    /// Result of [`Command::ReadTextFile`].
+    TextFileRead {
+        /// Request id.
+        request: RequestId,
+        /// Contents or error.
+        result: Result<TextFile, String>,
+    },
+    /// Result of [`Command::WriteTextFile`]: the new modification time.
+    TextFileSaved {
+        /// Request id.
+        request: RequestId,
+        /// New modification time, or why not.
+        result: Result<Option<i64>, SaveError>,
+    },
+    /// A UI setting, answering [`Command::LoadSetting`].
+    Setting {
+        /// Key.
+        key: String,
+        /// JSON value, if set.
+        value: Option<serde_json::Value>,
     },
     /// Native component status.
     Components(Vec<Component>),

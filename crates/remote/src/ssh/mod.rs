@@ -360,6 +360,19 @@ impl SshConn {
         Ok(ch)
     }
 
+    /// A channel running the server's `sftp` subsystem.
+    pub async fn open_sftp(&self) -> Result<Channel<Msg>, SshError> {
+        let ch = self
+            .handle()?
+            .channel_open_session()
+            .await
+            .map_err(|e| SshError::Channel(e.to_string()))?;
+        ch.request_subsystem(true, "sftp")
+            .await
+            .map_err(|e| SshError::Channel(format!("sftp: {e}")))?;
+        Ok(ch)
+    }
+
     /// A `direct-tcpip` channel to `host:port` as seen from the server (tunnels, jumps).
     pub async fn direct_tcpip(&self, host: &str, port: u16) -> Result<Channel<Msg>, SshError> {
         self.handle()?
