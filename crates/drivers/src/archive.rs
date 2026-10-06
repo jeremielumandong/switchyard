@@ -295,8 +295,9 @@ pub(crate) mod tests {
         }
         // Writing through a link unpacked earlier (links are only created on Unix).
         #[cfg(unix)]
-        for entries in [vec![("d/l", b'2', &b".."[..]), ("d/l/x", b'0', &b"x"[..])]] {
+        {
             let t = tempfile::tempdir().unwrap();
+            let entries = [("d/l", b'2', &b".."[..]), ("d/l/x", b'0', &b"x"[..])];
             let err = extract_tar_gz(tar_gz(&entries).as_slice(), t.path()).unwrap_err();
             assert!(matches!(err, DriverError::Archive(_)), "{err}");
         }
