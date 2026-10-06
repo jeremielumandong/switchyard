@@ -1743,7 +1743,9 @@ impl Render for SqlTab {
             .child(
                 div()
                     .h(px(self.editor_height))
-                    .flex_none()
+                    // In a short split pane the editor gives way so the results stay visible.
+                    .flex_shrink(1.)
+                    .min_h(px(60.))
                     .flex()
                     .relative()
                     .overflow_hidden()
@@ -1783,7 +1785,14 @@ impl Render for SqlTab {
                     )
                     .child(div().w(px(28.)).h(px(2.)).rounded(px(2.)).bg(p.bd2)),
             )
-            .child(results)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(120.))
+                    .flex()
+                    .flex_col()
+                    .child(results),
+            )
     }
 }
 

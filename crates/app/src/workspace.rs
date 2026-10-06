@@ -92,6 +92,8 @@ pub struct Workspace {
     /// The sidebar asked for the Files tab with this Host.
     pending_files: Option<Option<ProfileId>>,
     rebind: Vec<(Entity<SqlTab>, Option<ProfileId>)>,
+    /// Two tabs on screen at once.
+    pub(crate) split: Option<crate::split::Split>,
     _events: Task<()>,
     _subs: Vec<Subscription>,
 }
@@ -188,6 +190,7 @@ impl Workspace {
             close_confirm: None,
             pending_files: None,
             rebind: Vec::new(),
+            split: None,
             _events: task,
             _subs: vec![search_sub],
         }
@@ -663,11 +666,193 @@ impl Workspace {
 
     pub(crate) fn activate(&mut self, ix: usize, cx: &mut Context<Self>) {
         if ix < self.tabs.len() {
+            // A tab already showing in the other pane: focus that pane instead.
+            if let Some(sp) = &mut self.split
+                && sp.other == ix
+            {
+                sp.other = self.active;
+                sp.second_focused = !sp.second_focused;
+            }
             self.active = ix;
             self.save_layout(cx);
             self.sync_schema(cx);
             cx.notify();
         }
+    }
+
+    /// Show a second tab next to (or under) the active one.
+    pub(crate) fn split_view(
+        &mut self,
+        dir: crate::split::SplitDir,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(sp) = &mut self.split {
+            sp.dir = dir;
+            cx.notify();
+            return;
+        }
+        let showable = |i: usize| !matches!(self.tabs.get(i), Some(Tab::Welcome) | None);
+        match crate::split::partner(self.active, self.tabs.len(), showable) {
+            Some(other) => {
+                // The active tab moves to the new (second) pane, its neighbour fills the first.
+                self.split = Some(crate::split::Split::new(dir, other, true));
+            }
+            None => {
+                // Only one tab: the new pane gets a fresh SQL tab.
+                let first = self.active;
+                self.new_query_tab(window, cx);
+                if self.active != first {
+                    self.split = Some(crate::split::Split::new(dir, first, true));
+                }
+            }
+        }
+        self.fix_split();
+        cx.notify();
+    }
+
+    /// Keep the split's other pane on a real tab that isn't the active one.
+    fn fix_split(&mut self) {
+        let Some(other) = self.split.as_ref().map(|s| s.other) else {
+            return;
+        };
+        let tabs = &self.tabs;
+        let showable = |i: usize| !matches!(tabs.get(i), Some(Tab::Welcome) | None);
+        match crate::split::fix_other(other, self.active, tabs.len(), showable) {
+            Some(o) => {
+                if let Some(sp) = &mut self.split {
+                    sp.other = o;
+                }
+            }
+            None => self.split = None,
+        }
+    }
+
+    /// The view of tab `ix`.
+    fn tab_view(&self, ix: usize, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        match self.tabs.get(ix) {
+            Some(Tab::Sql(t)) => t.clone().into_any_element(),
+            Some(Tab::Terminal(t)) => t.clone().into_any_element(),
+            Some(Tab::Files(f)) => f.clone().into_any_element(),
+            Some(Tab::Editor(e)) => e.clone().into_any_element(),
+            _ => self.render_welcome(p, cx),
+        }
+    }
+
+    /// The center area: one tab, or two in a split with a draggable divider.
+    fn render_center(&mut self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        use crate::split::SplitDir;
+        self.fix_split();
+        let Some(sp) = &self.split else {
+            return self.tab_view(self.active, p, cx);
+        };
+        let (dir, ratio, second_focused, bounds) =
+            (sp.dir, sp.ratio, sp.second_focused, sp.bounds.clone());
+        let (first_ix, second_ix) = if second_focused {
+            (sp.other, self.active)
+        } else {
+            (self.active, sp.other)
+        };
+        let pane = |this: &Self, ix: usize, second: bool, cx: &mut Context<Self>| {
+            let focused = second == second_focused;
+            div()
+                .id(("split-pane", second as usize))
+                .relative()
+                .min_w_0()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .overflow_hidden()
+                .map(|d| match dir {
+                    SplitDir::Right => d.h_full(),
+                    SplitDir::Down => d.w_full(),
+                })
+                .map(|d| {
+                    let share = if second { 1. - ratio } else { ratio };
+                    match dir {
+                        SplitDir::Right => d.w(gpui_kit::relative(share)),
+                        SplitDir::Down => d.h(gpui_kit::relative(share)),
+                    }
+                })
+                // Focus follows the mouse button, before the tab's own handlers run.
+                .capture_any_mouse_down(cx.listener(move |this, _, _, cx| {
+                    if let Some(sp) = &mut this.split
+                        && sp.second_focused != second
+                    {
+                        let ix = sp.other;
+                        this.activate(ix, cx);
+                    }
+                }))
+                .child(this.tab_view(ix, p, cx))
+                .child(
+                    // Marks the focused pane without shifting its content.
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .right_0()
+                        .h(px(2.))
+                        .when(focused, |d| d.bg(p.acc)),
+                )
+        };
+        let first = pane(self, first_ix, false, cx);
+        let second = pane(self, second_ix, true, cx);
+        let divider = div()
+            .id("split-divider")
+            .flex_none()
+            .bg(p.bd)
+            .hover(|s| s.bg(p.acc))
+            .map(|d| match dir {
+                SplitDir::Right => d.w(px(4.)).h_full().cursor_col_resize(),
+                SplitDir::Down => d.h(px(4.)).w_full().cursor_row_resize(),
+            })
+            .on_mouse_down(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    if let Some(sp) = &mut this.split {
+                        sp.dragging = true;
+                    }
+                    cx.stop_propagation();
+                }),
+            );
+        div()
+            .id("split")
+            .relative()
+            .size_full()
+            .flex()
+            .map(|d| match dir {
+                SplitDir::Right => d.flex_row(),
+                SplitDir::Down => d.flex_col(),
+            })
+            .on_mouse_move(cx.listener(|this, ev: &gpui_kit::MouseMoveEvent, _, cx| {
+                if let Some(sp) = &mut this.split
+                    && sp.dragging
+                {
+                    if ev.pressed_button == Some(gpui_kit::MouseButton::Left) {
+                        sp.drag_to(ev.position);
+                        cx.notify();
+                    } else {
+                        sp.dragging = false;
+                    }
+                }
+            }))
+            .on_mouse_up(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, _, _, _| {
+                    if let Some(sp) = &mut this.split {
+                        sp.dragging = false;
+                    }
+                }),
+            )
+            .child(
+                gpui_kit::canvas(move |b, _, _| bounds.set(b), |_, _, _, _| {})
+                    .absolute()
+                    .size_full(),
+            )
+            .child(first)
+            .child(divider)
+            .child(second)
+            .into_any_element()
     }
 
     fn save_layout(&self, cx: &App) {
@@ -792,7 +977,33 @@ impl Workspace {
         if self.tabs.is_empty() {
             self.tabs.push(Tab::Welcome);
         }
+        if let Some(sp) = &mut self.split {
+            let len = self.tabs.len();
+            if ix == sp.other {
+                // The other pane's tab closed: it shows another tab (or the split ends).
+                sp.other = usize::MAX;
+                if ix < self.active {
+                    self.active -= 1;
+                }
+            } else {
+                sp.tab_removed(ix);
+                if ix < self.active {
+                    self.active -= 1;
+                } else if ix == self.active {
+                    // The focused pane shows a neighbour that the other pane isn't showing.
+                    let near = ix.min(len - 1);
+                    self.active = (near..len)
+                        .chain((0..near).rev())
+                        .find(|&i| i != sp.other)
+                        .unwrap_or(sp.other);
+                    if self.active == sp.other {
+                        self.split = None;
+                    }
+                }
+            }
+        }
         self.active = self.active.min(self.tabs.len() - 1);
+        self.fix_split();
         self.save_layout(cx);
         self.sync_schema(cx);
         cx.notify();
@@ -1174,6 +1385,9 @@ impl Workspace {
                 .detach();
             }
             CommandId::ShowHistory => self.open_history(window, cx),
+            CommandId::SplitRight => self.split_view(crate::split::SplitDir::Right, window, cx),
+            CommandId::SplitDown => self.split_view(crate::split::SplitDir::Down, window, cx),
+            CommandId::Unsplit => self.split = None,
         }
         cx.notify();
     }
@@ -1342,19 +1556,84 @@ impl Workspace {
     }
 
     fn render_tab_strip(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        div()
-            .id("tab-strip")
-            .h(px(34.))
+        use crate::split::SplitDir;
+        let shown_other = self.split.as_ref().map(|s| s.other);
+        // A small two-pane glyph, drawn so it doesn't depend on the font.
+        let glyph = |dir: SplitDir, on: bool| {
+            let c = if on { p.acc } else { p.fg3 };
+            div()
+                .w(px(14.))
+                .h(px(11.))
+                .flex()
+                .border_1()
+                .border_color(c)
+                .rounded(px(2.))
+                .map(|d| match dir {
+                    SplitDir::Right => d.flex_row(),
+                    SplitDir::Down => d.flex_col(),
+                })
+                .child(div().flex_1())
+                .child(div().flex_none().bg(c).map(|d| match dir {
+                    SplitDir::Right => d.w(px(1.)).h_full(),
+                    SplitDir::Down => d.h(px(1.)).w_full(),
+                }))
+                .child(div().flex_1())
+        };
+        let current = self.split.as_ref().map(|s| s.dir);
+        let split_btn = |id: &'static str,
+                         dir: SplitDir,
+                         tip: &'static str,
+                         cx: &mut Context<Self>| {
+            div()
+                .id(id)
+                .flex()
+                .items_center()
+                .px(px(6.))
+                .rounded(px(4.))
+                .hover(|s| s.bg(p.hover))
+                .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip).build(w, cx))
+                .on_click(cx.listener(move |this, _, w, cx| this.split_view(dir, w, cx)))
+                .child(glyph(dir, current == Some(dir)))
+        };
+        let controls = div()
             .flex_none()
             .flex()
+            .items_center()
+            .gap(px(2.))
+            .px(px(6.))
+            .child(split_btn("split-right", SplitDir::Right, "Split right", cx))
+            .child(split_btn("split-down", SplitDir::Down, "Split down", cx))
+            .when(self.split.is_some(), |d| {
+                d.child(
+                    div()
+                        .id("unsplit")
+                        .px(px(6.))
+                        .rounded(px(4.))
+                        .text_size(px(11.5))
+                        .text_color(p.fg3)
+                        .hover(|s| s.bg(p.hover).text_color(p.fg))
+                        .tooltip(|w, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new("Close split").build(w, cx)
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.split = None;
+                            cx.notify();
+                        }))
+                        .child("Unsplit"),
+                )
+            });
+        let tabs = div()
+            .id("tab-strip")
+            .flex_1()
+            .min_w_0()
+            .flex()
             .items_stretch()
-            .bg(p.panel)
-            .border_b_1()
-            .border_color(p.bd)
             .overflow_x_scroll()
             .children(self.tabs.iter().enumerate().map(|(i, tab)| {
                 let (badge, label, env, dirty) = self.tab_info(tab, cx);
                 let active = i == self.active;
+                // Visible in the other pane of a split.
+                let shown = shown_other == Some(i);
                 let edge: Hsla = match env {
                     Some(e) if e != EnvironmentLabel::Local || active => {
                         let c = p.env(e);
@@ -1378,10 +1657,12 @@ impl Workspace {
                     .text_size(px(12.5))
                     .bg(if active {
                         p.surface
+                    } else if shown {
+                        p.surface.opacity(0.6)
                     } else {
                         gpui_kit::transparent_black()
                     })
-                    .text_color(if active { p.fg } else { p.fg2 })
+                    .text_color(if active || shown { p.fg } else { p.fg2 })
                     .when(active, |d| d.mb(px(-1.)))
                     .on_click(cx.listener(move |this, _, _, cx| this.activate(i, cx)))
                     .child(
@@ -1445,7 +1726,17 @@ impl Workspace {
                     .on_click(cx.listener(|this, _, w, cx| this.new_query_tab(w, cx)))
                     .child("+"),
             )
-            .child(div().flex_1())
+            .child(div().flex_1());
+        div()
+            .h(px(34.))
+            .flex_none()
+            .flex()
+            .items_stretch()
+            .bg(p.panel)
+            .border_b_1()
+            .border_color(p.bd)
+            .child(tabs)
+            .child(controls)
             .into_any_element()
     }
 
@@ -1809,13 +2100,7 @@ impl Render for Workspace {
             }
             self.sync_schema(cx);
         }
-        let center: AnyElement = match self.tabs.get(self.active) {
-            Some(Tab::Sql(t)) => t.clone().into_any_element(),
-            Some(Tab::Terminal(t)) => t.clone().into_any_element(),
-            Some(Tab::Files(f)) => f.clone().into_any_element(),
-            Some(Tab::Editor(e)) => e.clone().into_any_element(),
-            _ => self.render_welcome(&p, cx),
-        };
+        let center = self.render_center(&p, cx);
         let show_inspector =
             self.inspector_open && matches!(self.tabs.get(self.active), Some(Tab::Sql(_)));
         let sidebar = self
@@ -1879,6 +2164,15 @@ impl Render for Workspace {
                 this.run_command(CommandId::ShowHistory, w, cx)
             }))
             .on_action(cx.listener(|this, _: &actions::Dismiss, w, cx| this.dismiss(w, cx)))
+            .on_action(cx.listener(|this, _: &actions::SplitRight, w, cx| {
+                this.run_command(CommandId::SplitRight, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::SplitDown, w, cx| {
+                this.run_command(CommandId::SplitDown, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::Unsplit, w, cx| {
+                this.run_command(CommandId::Unsplit, w, cx)
+            }))
             .child(title)
             .child(
                 div()
