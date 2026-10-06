@@ -163,7 +163,8 @@ pub struct Host {
     #[serde(default)]
     pub secret: Option<SecretRef>,
     /// Agent socket for agent auth (OpenSSH `IdentityAgent`, e.g. 1Password's
-    /// `~/.1password/agent.sock`); `None` = `SSH_AUTH_SOCK`, then 1Password.
+    /// `~/.1password/agent.sock`, a Windows pipe, or `pageant`); `None` = `SSH_AUTH_SOCK`,
+    /// then 1Password (Windows: the OpenSSH agent service, then Pageant).
     #[serde(default)]
     pub identity_agent: Option<String>,
     /// Public key file picking which agent key to offer.

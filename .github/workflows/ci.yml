@@ -40,6 +40,29 @@ jobs:
             libxcb1-dev libvulkan-dev libfontconfig-dev libfreetype-dev libssl-dev pkg-config
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # SSH agent sign-in on each platform, against an in-process server (tests/agent.rs).
+      - name: SSH agent (ssh-agent socket)
+        if: runner.os != 'Windows'
+        run: cargo test -p switchyard-remote --test agent -- --ignored
+      - name: SSH agent (OpenSSH agent service, Pageant)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Set-Service ssh-agent -StartupType Manual
+          Start-Service ssh-agent
+          # PuTTY 0.85 Pageant, pinned to the SHA-256 PuTTY publishes in its sha256sums.
+          $exe = Join-Path $env:RUNNER_TEMP 'pageant.exe'
+          Invoke-WebRequest https://the.earth.li/~sgtatham/putty/0.85/w64/pageant.exe -OutFile $exe
+          $want = '3bd76b57fcd09acc948268c753ea2077b0c557ca435323301a9b572661f98ecd'
+          if ((Get-FileHash $exe -Algorithm SHA256).Hash -ne $want) { throw 'pageant.exe hash mismatch' }
+          $pageant = Start-Process $exe -PassThru
+          Start-Sleep -Seconds 2
+          try {
+            cargo test -p switchyard-remote --test agent -- --ignored --test-threads 1
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally {
+            Stop-Process -Id $pageant.Id -ErrorAction SilentlyContinue
+          }
 
   integration:
     name: integration (PostgreSQL, SSH, tunnels)
