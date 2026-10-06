@@ -12,6 +12,7 @@ use switchyard_db::{
 use switchyard_drivers::Component;
 use switchyard_remote::FileEntry;
 use switchyard_store::{BufferState, DbConnection, HistoryEntry, Profile, ProfileId, Workspace};
+use switchyard_term::{TermSize, Terminal};
 
 /// Identifies one UI request so its answer can be matched.
 pub type RequestId = u64;
@@ -19,6 +20,20 @@ pub type RequestId = u64;
 pub type SessionId = u64;
 /// A running query (one Run click; may contain several statements).
 pub type QueryId = u64;
+/// An open terminal (local shell or SSH channel).
+pub type TermId = u64;
+
+/// What a terminal connects to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TermTarget {
+    /// A local shell; `profile` picks a saved terminal profile.
+    Local {
+        /// Terminal profile (shell, environment), or the login shell.
+        profile: Option<ProfileId>,
+    },
+    /// A shell on a saved Host over SSH.
+    Host(ProfileId),
+}
 
 /// One statement to execute.
 #[derive(Clone, Debug)]
@@ -218,6 +233,34 @@ pub enum Command {
         /// UPDATE statements.
         statements: Vec<String>,
     },
+    /// Open a terminal.
+    OpenTerminal {
+        /// Terminal id chosen by the UI.
+        term: TermId,
+        /// Where it connects.
+        target: TermTarget,
+        /// Initial size in cells.
+        size: TermSize,
+    },
+    /// Send bytes to a terminal's program.
+    TerminalInput {
+        /// Terminal.
+        term: TermId,
+        /// Bytes.
+        bytes: Vec<u8>,
+    },
+    /// The terminal view changed size.
+    TerminalResize {
+        /// Terminal.
+        term: TermId,
+        /// New size in cells.
+        size: TermSize,
+    },
+    /// Close a terminal.
+    CloseTerminal {
+        /// Terminal.
+        term: TermId,
+    },
 }
 
 /// Events from a running query.
@@ -382,6 +425,55 @@ pub enum Event {
         result: Result<u64, String>,
         /// Time taken.
         elapsed: Duration,
+    },
+    /// A terminal is ready; the view draws from `terminal`.
+    TerminalOpened {
+        /// Terminal.
+        term: TermId,
+        /// Shared terminal state.
+        terminal: Terminal,
+        /// Short description (`deploy@10.0.4.12 · ed25519`, `/bin/zsh`).
+        description: String,
+    },
+    /// A terminal could not be opened.
+    TerminalFailed {
+        /// Terminal.
+        term: TermId,
+        /// Why.
+        message: String,
+    },
+    /// New output to draw (coalesced until the next snapshot).
+    TerminalWake {
+        /// Terminal.
+        term: TermId,
+    },
+    /// The program set the title.
+    TerminalTitle {
+        /// Terminal.
+        term: TermId,
+        /// Title (empty = reset).
+        title: String,
+    },
+    /// Bell.
+    TerminalBell {
+        /// Terminal.
+        term: TermId,
+    },
+    /// The program asked to copy text (OSC 52).
+    TerminalClipboard {
+        /// Terminal.
+        term: TermId,
+        /// Text.
+        text: String,
+    },
+    /// The program ended or the connection closed.
+    TerminalExited {
+        /// Terminal.
+        term: TermId,
+        /// Exit code, when known.
+        code: Option<u32>,
+        /// Why, when the connection failed rather than the program exiting.
+        message: Option<String>,
     },
     /// A short confirmation for a toast.
     Toast(String),

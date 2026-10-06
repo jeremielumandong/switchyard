@@ -306,3 +306,50 @@ async fn history_off_switch_records_nothing() {
     .await;
     assert!(entries.is_empty());
 }
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn local_terminal_round_trip() {
+    use switchyard_core::TermTarget;
+    use switchyard_core::term::TermSize;
+
+    let (core, mut rx) = start();
+    let h = core.handle();
+    h.send(Command::OpenTerminal {
+        term: 5,
+        target: TermTarget::Local { profile: None },
+        size: TermSize { cols: 60, rows: 10 },
+    });
+    let terminal = next_matching(&mut rx, |e| match e {
+        Event::TerminalOpened {
+            term: 5, terminal, ..
+        } => Some(terminal),
+        Event::TerminalFailed { message, .. } => panic!("{message}"),
+        _ => None,
+    })
+    .await;
+    // One command per byte: they must arrive in order.
+    for b in b"echo out-$((6*7)); exit 4\r" {
+        h.send(Command::TerminalInput {
+            term: 5,
+            bytes: vec![*b],
+        });
+    }
+    let code = next_matching(&mut rx, |e| match e {
+        Event::TerminalExited { term: 5, code, .. } => Some(code),
+        _ => None,
+    })
+    .await;
+    assert_eq!(code, Some(4));
+    let snap = terminal.snapshot();
+    assert!(
+        snap.lines
+            .iter()
+            .any(|l| l.text.trim_end().ends_with("out-42")),
+        "{:?}",
+        snap.lines
+            .iter()
+            .map(|l| l.text.trim_end())
+            .collect::<Vec<_>>()
+    );
+}

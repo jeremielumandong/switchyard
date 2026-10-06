@@ -158,6 +158,29 @@ impl Palette {
         }
     }
 
+    /// One of the 256 terminal colors. 0–15 follow the design's accents; 16–231 are the
+    /// xterm color cube and 232–255 the gray ramp.
+    pub fn ansi(&self, i: u8) -> Hsla {
+        if i < 16 {
+            let dark = [
+                0x2f2f35, 0xf05653, 0x5ec077, 0xebae42, 0x5aa3ec, 0xbd9ff2, 0x6ac5e8, 0xa1a1aa,
+                0x6e6e77, 0xff7a73, 0x7fd894, 0xf7c76a, 0x82bbf5, 0xd3bdf8, 0x8fd8f2, 0xe7e7ea,
+            ];
+            let light = [
+                0x18181b, 0xd02b31, 0x218a45, 0xa86500, 0x2971c6, 0x6e3ead, 0x00649e, 0x8a8a93,
+                0x53535c, 0xe0474c, 0x2e9f55, 0xc57800, 0x3d86da, 0x8556c4, 0x0a7cbf, 0xb0b0b8,
+            ];
+            return c(if self.dark { dark } else { light }[i as usize]);
+        }
+        if i >= 232 {
+            let v = 8 + 10 * (i as u32 - 232);
+            return c(v << 16 | v << 8 | v);
+        }
+        let n = i as u32 - 16;
+        let step = |x: u32| if x == 0 { 0 } else { 55 + 40 * x };
+        c(step(n / 36) << 16 | step((n / 6) % 6) << 8 | step(n % 6))
+    }
+
     /// Text color on a solid environment badge.
     pub fn env_on(&self, env: EnvironmentLabel) -> Hsla {
         match env {

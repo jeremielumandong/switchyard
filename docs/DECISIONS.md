@@ -179,3 +179,18 @@ system browser and a loopback redirect) and device-code flows both satisfy MFA; 
 (no MFA) and service-principal flows for automation. Refresh tokens go to the keychain.
 **Open question:** which Entra application (client id) to use — a Switchyard app
 registration, or one the user supplies per connection.
+
+## 2026-10-06 — Terminal architecture
+
+- `alacritty_terminal::Term` lives behind its `FairMutex`, shared by a `Feeder` (I/O side,
+  parses bytes) and `Terminal` (UI side, copies the visible screen into a `Snapshot`).
+  The UI is woken by one coalesced `TerminalWake` per batch of output, so a flood of
+  output costs at most one snapshot per frame.
+- Terminal input and resize commands are applied directly on the core command loop (not on
+  spawned tasks): spawned tasks reordered keystrokes.
+- Inside a terminal, Ctrl+letter goes to the program. App shortcuts there are Cmd+… on
+  macOS and Ctrl+Shift+… elsewhere (copy C, paste V, find F, split D); the global
+  Ctrl+P/N/B/W/./, bindings are unbound in the `Terminal` key context.
+- Keystrokes are never logged at any level (they can contain passwords typed at prompts).
+- OSC 52 clipboard writes from programs are honoured; clipboard reads are not offered.
+- The view is our own canvas element (no code from Zed's GPL terminal view).
