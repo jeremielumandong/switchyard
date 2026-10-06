@@ -198,6 +198,12 @@ impl Workspace {
     fn terminal_tab(&self, term: TermId, cx: &App) -> Option<Entity<TerminalTab>> {
         self.tabs.iter().find_map(|t| match t {
             Tab::Terminal(t) if t.read(cx).owns(term) => Some(t.clone()),
+            // The terminal under an editor.
+            Tab::Editor(e) => e
+                .read(cx)
+                .terminal
+                .clone()
+                .filter(|t| t.read(cx).owns(term)),
             _ => None,
         })
     }
@@ -779,6 +785,9 @@ impl Workspace {
             }
         }
         self.close_confirm = None;
+        if let Tab::Editor(e) = &self.tabs[ix] {
+            e.update(cx, |e, cx| e.shutdown(cx));
+        }
         self.tabs.remove(ix);
         if self.tabs.is_empty() {
             self.tabs.push(Tab::Welcome);
@@ -864,16 +873,16 @@ impl Workspace {
         {
             return self.activate(ix, cx);
         }
-        let name = match &fs {
+        let (name, env) = match &fs {
             FsRef::Host(h) => self
                 .profiles
                 .host(h)
-                .map(|h| h.name.clone())
+                .map(|h| (h.name.clone(), h.environment))
                 .unwrap_or_default(),
-            FsRef::Local => "this computer".into(),
+            FsRef::Local => ("this computer".into(), Default::default()),
         };
         let core = self.core.clone();
-        let tab = cx.new(|cx| EditorTab::new(core, fs, path, &name, window, cx));
+        let tab = cx.new(|cx| EditorTab::new(core, fs, path, &name, env, window, cx));
         self.tabs.push(Tab::Editor(tab));
         self.active = self.tabs.len() - 1;
         cx.notify();
