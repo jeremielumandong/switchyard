@@ -194,3 +194,21 @@ registration, or one the user supplies per connection.
 - Keystrokes are never logged at any level (they can contain passwords typed at prompts).
 - OSC 52 clipboard writes from programs are honoured; clipboard reads are not offered.
 - The view is our own canvas element (no code from Zed's GPL terminal view).
+
+## 2026-10-06 — SSH client details
+
+- `russh` is built with the `ring` backend (not its default `aws-lc-rs`), so the whole app
+  has one crypto provider.
+- Host keys: our own `known_hosts` reader (`remote/src/ssh/known_hosts.rs`) skips lines it
+  cannot parse instead of failing the whole lookup (russh's reader does the latter, which
+  would turn a changed-key block into an "unknown key" prompt). It handles hashed hosts
+  (`|1|salt|hash`), wildcards, negation and `@revoked`. The user's `~/.ssh/known_hosts` is
+  read only; trusted keys go to Switchyard's own file. This uses `hmac` 0.13 + `sha1` 0.11
+  + `data-encoding` (already in the tree through russh) — **needs approval**.
+- One session per Host: `SshManager` keeps a weak reference per Host id behind a per-Host
+  async lock, so two terminals opening at once share one login. Jump hosts are sessions
+  too, kept alive by the sessions that ride on them.
+- Host certificates (`@cert-authority`) are not supported yet; such servers are refused.
+- Windows agent support uses the OpenSSH agent named pipe; Pageant is not wired yet.
+- Integration tests run against local `sshd`s started by `scripts/ssh-test-servers.sh`
+  (also in CI). The docker `openssh` service is not used by them.

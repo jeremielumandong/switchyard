@@ -7,8 +7,13 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+russh.workspace = true
+secrecy.workspace = true
+hmac.workspace = true
+sha1.workspace = true
+data-encoding.workspace = true
 futures.workspace = true
-tokio = { workspace = true, features = ["fs"] }
+tokio = { workspace = true, features = ["fs", "net", "sync", "time", "macros", "io-util"] }
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
