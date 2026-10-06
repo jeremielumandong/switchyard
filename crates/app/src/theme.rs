@@ -58,7 +58,7 @@ fn ca(hex_rgba: u32) -> Hsla {
 }
 
 fn alpha(hex: u32, a: f32) -> Hsla {
-    let mut h: Hsla = Rgba::from(rgb(hex)).into();
+    let mut h: Hsla = rgb(hex).into();
     h.a = a;
     h
 }

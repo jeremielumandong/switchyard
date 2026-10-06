@@ -155,9 +155,7 @@ pub fn format_sql(sql: &str, flavor: Flavor) -> String {
                 if ch.is_whitespace() {
                     ws = true;
                 } else {
-                    if ws && !s.is_empty() {
-                        s.push(' ');
-                    } else if ws && s.is_empty() && !out.is_empty() && !at_line_start {
+                    if ws && (!s.is_empty() || (!out.is_empty() && !at_line_start)) {
                         s.push(' ');
                     }
                     ws = false;
@@ -259,12 +257,7 @@ pub fn format_sql(sql: &str, flavor: Flavor) -> String {
             i += 1;
         }
     }
-    let trimmed = out.trim().to_owned();
-    if sql.trim_end().ends_with(';') || trimmed.is_empty() {
-        trimmed
-    } else {
-        trimmed
-    }
+    out.trim().to_owned()
 }
 
 #[cfg(test)]

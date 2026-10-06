@@ -525,7 +525,7 @@ impl ConnEditor {
                     .find(|m| m.label() == self.chosen("ssl"))
                     .unwrap_or_default();
                 let via = self.chosen("via");
-                d.via_host = (!via.is_empty()).then(|| ProfileId(via));
+                d.via_host = (!via.is_empty()).then_some(ProfileId(via));
                 d.auth = if self.chosen("auth") == "integrated" {
                     DbAuthMethod::Integrated
                 } else {
@@ -706,6 +706,7 @@ impl ConnEditor {
         cx.notify();
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn field(
         &self,
         key: &'static str,

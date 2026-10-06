@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::highlighter::{Diagnostic, DiagnosticSeverity};
-use gpui_kit::component::input::{Editor, EditorState, InputEvent, Position};
+use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState, Position};
 use gpui_kit::component::table::{DataTable, TableEvent, TableState};
 use gpui_kit::component::{Sizable as _, Size};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -29,6 +29,9 @@ use crate::app_state::{SessionState, next_id};
 use crate::grid::GridDelegate;
 use crate::theme::{MONO, Palette, SANS, palette};
 use crate::ui::{self, Kind, thousands};
+
+/// A row as (column name, value, type) triples.
+pub type RowValues = Vec<(String, Value, DataType)>;
 
 /// Default rows fetched before pausing (SPEC: 10,000).
 pub const DEFAULT_FETCH_LIMIT: usize = 10_000;
@@ -160,6 +163,7 @@ pub struct SqlTab {
     autosave: Option<Task<()>>,
     lint: Option<Task<()>>,
     position: i64,
+    filter: Entity<InputState>,
     _subs: Vec<Subscription>,
 }
 
@@ -190,19 +194,21 @@ impl SqlTab {
                 .default_value(buffer.text.clone())
                 .placeholder("-- Write SQL here. ⌘↵ runs the statement at the cursor.")
         });
-        let sub = cx.subscribe_in(
-            &editor,
-            window,
-            |this, _, ev: &InputEvent, window, cx| match ev {
-                InputEvent::Change => {
-                    this.dirty = true;
-                    this.schedule_autosave(cx);
-                    this.schedule_lint(window, cx);
-                    cx.emit(SqlTabEvent::Changed);
-                }
-                _ => {}
-            },
-        );
+        let sub = cx.subscribe_in(&editor, window, |this, _, ev: &InputEvent, window, cx| {
+            if let InputEvent::Change = ev {
+                this.dirty = true;
+                this.schedule_autosave(cx);
+                this.schedule_lint(window, cx);
+                cx.emit(SqlTabEvent::Changed);
+            }
+        });
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter rows"));
+        let filter_sub = cx.subscribe(&filter, |this, input, ev: &InputEvent, cx| {
+            if let InputEvent::Change = ev {
+                let needle = input.read(cx).value().to_string();
+                this.apply_filter(&needle, cx);
+            }
+        });
         let mut tab = Self {
             core,
             buffer_id: buffer.id,
@@ -233,7 +239,8 @@ impl SqlTab {
             autosave: None,
             lint: None,
             position,
-            _subs: vec![sub],
+            filter,
+            _subs: vec![sub, filter_sub],
         };
         if let Some(c) = connection {
             tab.set_connection(Some(c), cx);
@@ -821,6 +828,17 @@ impl SqlTab {
         }
     }
 
+    fn apply_filter(&mut self, needle: &str, cx: &mut Context<Self>) {
+        if let Some(r) = self.results.get(self.active_result) {
+            r.table.update(cx, |t, cx| {
+                t.delegate_mut().set_filter(needle);
+                cx.notify();
+            });
+        }
+        self.selected = None;
+        cx.notify();
+    }
+
     /// Rows loaded in the active result set.
     pub fn loaded_rows(&self) -> usize {
         self.results.iter().map(|r| r.rows).sum()
@@ -880,7 +898,7 @@ impl SqlTab {
     }
 
     /// The selected row of the active result as (column, value) pairs.
-    pub fn selected_row(&self, cx: &App) -> Option<(usize, Vec<(String, Value, DataType)>)> {
+    pub fn selected_row(&self, cx: &App) -> Option<(usize, RowValues)> {
         let r = self.results.get(self.active_result)?;
         let (row, _) = self.selected?;
         let t = r.table.read(cx);
@@ -902,17 +920,6 @@ impl SqlTab {
                 })
                 .collect(),
         ))
-    }
-
-    /// The selected cell's value.
-    pub fn selected_cell(&self, cx: &App) -> Option<Value> {
-        let (row, col) = self.selected?;
-        self.selected_row(cx)
-            .and_then(|(_, cols)| cols.get(col).map(|(_, v, _)| v.clone()))
-            .or_else(|| {
-                let _ = row;
-                None
-            })
     }
 
     /// Copy the selected row in a format.
@@ -1230,6 +1237,25 @@ impl SqlTab {
                     .flex()
                     .items_center()
                     .gap(px(6.))
+                    .when(!self.results.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .w(px(150.))
+                                .h(px(22.))
+                                .flex()
+                                .items_center()
+                                .px(px(6.))
+                                .border_1()
+                                .border_color(p.bd)
+                                .rounded(px(5.))
+                                .bg(p.bg)
+                                .child(
+                                    Input::new(&self.filter)
+                                        .appearance(false)
+                                        .text_size(px(11.5)),
+                                ),
+                        )
+                    })
                     .child(
                         ui::button("fetch-all", "Fetch all", Kind::Ghost, p)
                             .h(px(22.))

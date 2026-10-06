@@ -57,16 +57,6 @@ impl GridDelegate {
         }
     }
 
-    /// Column metadata.
-    pub fn columns(&self) -> &Arc<[ColumnMeta]> {
-        &self.columns
-    }
-
-    /// The loaded rows.
-    pub fn data(&self) -> &BatchList {
-        &self.data
-    }
-
     /// Append a batch; widen text columns from the first rows seen.
     pub fn push(&mut self, batch: RowBatch) {
         if self.data.is_empty() {

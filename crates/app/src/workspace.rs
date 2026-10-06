@@ -67,7 +67,6 @@ pub struct Workspace {
     pub(crate) history: Vec<HistoryEntry>,
     pub(crate) focus: FocusHandle,
     pub(crate) overlay_focus: FocusHandle,
-    pub(crate) selected_profile: Option<ProfileId>,
     pub(crate) ctx: Option<crate::sidebar::CtxMenu>,
     pending_open: Option<ProfileId>,
     rebind: Vec<(Entity<SqlTab>, Option<ProfileId>)>,
@@ -125,7 +124,6 @@ impl Workspace {
             history: Vec::new(),
             focus,
             overlay_focus: cx.focus_handle(),
-            selected_profile: None,
             ctx: None,
             pending_open: None,
             rebind: Vec::new(),
@@ -409,7 +407,8 @@ impl Workspace {
         let dir = std::env::var_os("HOME")
             .map(std::path::PathBuf::from)
             .unwrap_or_default();
-        let rx = cx.prompt_for_new_path(&dir, Some("result.csv"));
+        let name = format!("result.{}", crate::sql_tab::ExportFormat::Csv.extension());
+        let rx = cx.prompt_for_new_path(&dir, Some(&name));
         let core = self.core.clone();
         cx.spawn(async move |this, cx| {
             if let Ok(Ok(Some(path))) = rx.await {
