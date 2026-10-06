@@ -204,10 +204,11 @@ Exit: integrated auth works on a Linux machine that started without Kerberos lib
 - [ ] **M3-8 Certificates.** Corporate CA import (OS stores and file) and per-connection
   certificate pinning.
   Done when: connects to a server with a self-signed cert only after pinning.
-- [ ] **M3-9 Azure SQL with Entra ID (user request).** Interactive (auth code + PKCE) and
+- [x] **M3-9 Azure SQL with Entra ID (user request).** Interactive (auth code + PKCE) and
   device-code sign-in with MFA, password and service principal; tokens passed to tiberius as
   `AADToken`; refresh tokens in the keychain. See DECISIONS 2026-10-06.
   Done when: connect to an Azure SQL database with an MFA-enabled account.
+  Note: Browser (PKCE + loopback), device code, password and service principal flows in `db::entra`; core caches access tokens and keeps refresh tokens in the keychain; sign-in dialogs in the prompt queue; editor fields for tenant and client-id override. Tested with a stand-in identity server and against login.microsoftonline.com up to app lookup. Not yet done: a real sign-in, which needs the Switchyard app registration (docs/entra-app.md).
 
 ## Extra — Cloudflare D1 (user request)
 

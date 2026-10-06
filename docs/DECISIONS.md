@@ -289,3 +289,27 @@ the rev with it (Cargo warns "patch not used" until then).
   Upstream fix (keep reading past the message boundary until the attention DONE) would
   remove the reconnect; tracked in Follow-ups.
 - Azure SQL gateway redirects (`Routing`) are followed up to three times when not tunnelled.
+
+## 2026-10-06 — Microsoft Entra ID sign-in (M3-9)
+
+- **Client id (user decision):** one built-in Switchyard app registration, multi-tenant
+  public client, set at build time (`SWITCHYARD_ENTRA_CLIENT_ID`, see `docs/entra-app.md`).
+  A connection can override it with its organization's own application id. Builds without
+  it say so and point to the override.
+- Flows, all against `login.microsoftonline.com/<tenant>/oauth2/v2.0`, scope
+  `https://database.windows.net//.default` (+ `offline_access` for user flows):
+  browser (authorization code + PKCE S256, loopback redirect `http://localhost:<port>`,
+  state checked, other requests to the port ignored), device code, password (ROPC, no MFA)
+  and client credentials (service principal). Tenant defaults to `organizations`.
+- The token goes to tiberius as `AADToken`. Access tokens are cached in memory per
+  connection until 5 minutes before expiry; refresh tokens are stored in the keychain/vault
+  under `<connection id>:entra-refresh` and tried before any prompt, so the browser only
+  opens when the refresh token has expired or been revoked. Deleting the connection
+  removes it. One sign-in at a time, so two tabs connecting together open one browser.
+- Prompts reuse the runtime prompt queue: `EntraSignIn` (the app opens the URL and shows
+  Cancel / Copy link / Open again) and `EntraDeviceCode` (code, Copy code, Open page);
+  `PromptClosed` withdraws them. 5-minute limit per sign-in.
+- **Needs approval:** `ring` as a direct dependency of `switchyard-db` for SHA-256 and the
+  CSPRNG (PKCE verifier, state). It is already in the build as rustls' crypto provider.
+- Known limit: a session reconnecting after a cancel (SQL Server) reuses the token it
+  connected with; after about an hour that reconnect fails and the tab must reconnect.

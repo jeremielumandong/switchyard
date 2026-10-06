@@ -91,6 +91,8 @@ tiberius = { version = "=0.13.0", default-features = false, features = ["tds80",
 hmac = "=0.13.0"
 sha1 = "=0.11.0"
 data-encoding = "2"
+# SHA-256 and CSPRNG for the Entra PKCE flow; already in the tree as rustls' provider.
+ring = "0.17"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 # editor completion items (must match gpui-component)

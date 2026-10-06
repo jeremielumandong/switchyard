@@ -94,6 +94,15 @@ fn tiberius_config(cfg: &DbConfig, host: &str, port: u16) -> Result<Config> {
                     .into(),
             ));
         }
+        DbAuthMethod::EntraInteractive
+        | DbAuthMethod::EntraDeviceCode
+        | DbAuthMethod::EntraPassword
+        | DbAuthMethod::EntraServicePrincipal => {
+            let token = cfg.access_token.as_ref().ok_or_else(|| {
+                DbError::Connect("Microsoft Entra sign-in did not produce a token".into())
+            })?;
+            c.authentication(AuthMethod::aad_token(token.expose_secret()));
+        }
     }
     Ok(c)
 }

@@ -8044,10 +8044,12 @@ name = "switchyard-db"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "data-encoding",
  "futures",
  "insta",
  "postgres-types",
  "reqwest",
+ "ring",
  "rustls",
  "rustls-native-certs",
  "secrecy",

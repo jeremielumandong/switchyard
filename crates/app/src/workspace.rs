@@ -247,6 +247,19 @@ impl Workspace {
             Event::InteractivePrompt { request, req } => {
                 self.push_interactive_prompt(request, req, window, cx)
             }
+            Event::EntraSignIn {
+                request,
+                connection,
+                url,
+            } => self.push_entra_prompt(request, connection, url, None, cx),
+            Event::EntraDeviceCode {
+                request,
+                connection,
+                code,
+                url,
+                message,
+            } => self.push_entra_prompt(request, connection, url, Some((code, message)), cx),
+            Event::PromptClosed { request } => self.close_prompt(request, window, cx),
             Event::TerminalClipboard { text, .. } => {
                 // OSC 52 copy: allowed (it only writes); reading the clipboard is never offered.
                 cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));

@@ -76,6 +76,47 @@ pub enum DbAuthMethod {
     Password,
     /// Integrated (Kerberos / Active Directory) authentication.
     Integrated,
+    /// Microsoft Entra ID: sign in through the system browser (MFA, conditional access).
+    EntraInteractive,
+    /// Microsoft Entra ID: enter a code at microsoft.com/devicelogin on any device (MFA).
+    EntraDeviceCode,
+    /// Microsoft Entra ID user name and password (no MFA).
+    EntraPassword,
+    /// Microsoft Entra ID service principal: application (client) id and client secret.
+    EntraServicePrincipal,
+}
+
+impl DbAuthMethod {
+    /// Whether this is a Microsoft Entra ID method (an access token is needed to connect).
+    pub fn is_entra(self) -> bool {
+        matches!(
+            self,
+            Self::EntraInteractive
+                | Self::EntraDeviceCode
+                | Self::EntraPassword
+                | Self::EntraServicePrincipal
+        )
+    }
+
+    /// Whether the method uses a stored password or client secret.
+    pub fn uses_secret(self) -> bool {
+        matches!(
+            self,
+            Self::Password | Self::EntraPassword | Self::EntraServicePrincipal
+        )
+    }
+
+    /// Label for the connection editor.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Password => "SQL login",
+            Self::Integrated => "Integrated (Kerberos / AD)",
+            Self::EntraInteractive => "Microsoft Entra · browser (MFA)",
+            Self::EntraDeviceCode => "Microsoft Entra · device code (MFA)",
+            Self::EntraPassword => "Microsoft Entra · password",
+            Self::EntraServicePrincipal => "Microsoft Entra · service principal",
+        }
+    }
 }
 
 /// Everything a driver needs to connect. Built by core from a saved profile and the
@@ -96,6 +137,9 @@ pub struct DbConfig {
     pub password: Option<SecretString>,
     /// Authentication method.
     pub auth: DbAuthMethod,
+    /// Microsoft Entra ID access token for the database, obtained by core for the
+    /// `Entra*` methods.
+    pub access_token: Option<SecretString>,
     /// TLS policy.
     pub ssl_mode: SslMode,
     /// Connect timeout.
@@ -120,6 +164,7 @@ impl DbConfig {
             user: String::new(),
             password: None,
             auth: DbAuthMethod::Password,
+            access_token: None,
             ssl_mode: SslMode::Prefer,
             connect_timeout: Duration::from_secs(10),
             read_only: false,

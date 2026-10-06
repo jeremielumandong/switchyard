@@ -34,6 +34,14 @@ impl BusPrompter {
     }
 
     fn ask(&self, make: impl FnOnce(RequestId) -> Event) -> oneshot::Receiver<PromptAnswer> {
+        self.ask_with_id(make).1
+    }
+
+    /// Raise a prompt; the id is needed to close it with [`BusPrompter::close`].
+    pub(crate) fn ask_with_id(
+        &self,
+        make: impl FnOnce(RequestId) -> Event,
+    ) -> (RequestId, oneshot::Receiver<PromptAnswer>) {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.pending
@@ -41,7 +49,16 @@ impl BusPrompter {
             .unwrap_or_else(|p| p.into_inner())
             .insert(id, tx);
         self.events.emit(make(id));
-        rx
+        (id, rx)
+    }
+
+    /// Withdraw a prompt the user no longer needs to answer.
+    pub(crate) fn close(&self, request: RequestId) {
+        self.pending
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&request);
+        self.events.emit(Event::PromptClosed { request });
     }
 
     /// Deliver the user's answer.
