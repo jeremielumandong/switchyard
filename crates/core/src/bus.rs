@@ -441,8 +441,13 @@ pub enum Command {
         /// Contents.
         contents: String,
     },
-    /// Import Hosts from `~/.ssh/config`.
-    ImportSshConfig,
+    /// Read `~/.ssh/config` and answer with [`Event::SshConfigPreview`]; nothing is saved.
+    PreviewSshConfig,
+    /// Import Hosts from `~/.ssh/config`: the entries named in `only`, or every new one.
+    ImportSshConfig {
+        /// Aliases to import; `None` imports every entry not saved yet.
+        only: Option<Vec<String>>,
+    },
     /// Apply staged inline edits in one transaction. Each statement must change exactly
     /// one row; otherwise everything is rolled back.
     ApplyEdits {
@@ -566,6 +571,13 @@ pub enum QueryEvent {
 /// Events for the UI.
 #[derive(Clone, Debug)]
 pub enum Event {
+    /// What importing `~/.ssh/config` would add (answer to `PreviewSshConfig`).
+    SshConfigPreview {
+        /// The file read.
+        path: PathBuf,
+        /// Every usable `Host` entry, saved ones marked.
+        hosts: Vec<crate::ssh_import::SshImportCandidate>,
+    },
     /// Answer to [`Command::Ping`].
     Pong {
         /// Request id.

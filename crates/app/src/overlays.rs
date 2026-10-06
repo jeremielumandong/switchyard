@@ -75,6 +75,18 @@ pub enum Overlay {
     Components,
     /// Query history.
     History(Entity<InputState>),
+    /// Hosts found in `~/.ssh/config`, to pick before importing.
+    SshImport(SshImportPreview),
+}
+
+/// The `~/.ssh/config` import preview.
+pub struct SshImportPreview {
+    /// File read.
+    pub path: std::path::PathBuf,
+    /// Entries.
+    pub hosts: Vec<switchyard_core::ssh_import::SshImportCandidate>,
+    /// Aliases ticked for import.
+    pub chosen: std::collections::HashSet<String>,
 }
 
 fn scrim(p: &Palette, top: bool) -> gpui_kit::Stateful<gpui_kit::Div> {
@@ -151,6 +163,7 @@ impl Workspace {
             Some(Overlay::Settings(page)) => Some(self.render_settings(*page, p, window, cx)),
             Some(Overlay::Components) => Some(self.render_components(p, cx)),
             Some(Overlay::History(input)) => Some(self.render_history(input.clone(), p, cx)),
+            Some(Overlay::SshImport(preview)) => Some(self.render_ssh_import(preview, p, cx)),
         };
         out.extend(overlay);
         out.extend(self.render_ssh_prompt(p, cx));
@@ -827,6 +840,223 @@ impl Workspace {
                             .p(px(4.))
                             .children(rows)
                             .when(empty, |d| d.child(div().p(px(24.)).text_color(p.fg3).text_size(px(12.5)).child("No history yet. Every executed statement is recorded here."))),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn render_ssh_import(
+        &self,
+        preview: &SshImportPreview,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let new_count = preview.hosts.iter().filter(|h| !h.exists).count();
+        let chosen = preview.chosen.len();
+        let rows: Vec<AnyElement> = preview
+            .hosts
+            .iter()
+            .enumerate()
+            .map(|(i, h)| {
+                let on = preview.chosen.contains(&h.alias);
+                let alias = h.alias.clone();
+                let via = (!h.via.is_empty()).then(|| format!("via {}", h.via.join(" → ")));
+                div()
+                    .id(("ssh-import", i))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .h(px(34.))
+                    .px(px(12.))
+                    .rounded(px(6.))
+                    .when(!h.exists, |d| {
+                        d.hover(|s| s.bg(p.sel))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(Overlay::SshImport(pr)) = &mut this.overlay
+                                    && !pr.chosen.remove(&alias)
+                                {
+                                    pr.chosen.insert(alias.clone());
+                                }
+                                cx.notify();
+                            }))
+                    })
+                    .when(h.exists, |d| d.opacity(0.55))
+                    .child(ui::checkbox(("ssh-import-check", i), on, "", p))
+                    .child(
+                        div()
+                            .w(px(150.))
+                            .flex_none()
+                            .truncate()
+                            .text_size(px(12.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(h.alias.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .font_family(MONO)
+                            .text_size(px(11.5))
+                            .text_color(p.fg2)
+                            .child(h.address.clone()),
+                    )
+                    .when_some(via, |d, v| {
+                        d.child(
+                            div()
+                                .flex_none()
+                                .font_family(MONO)
+                                .text_size(px(11.))
+                                .text_color(p.acc)
+                                .child(v),
+                        )
+                    })
+                    .child(
+                        div()
+                            .w(px(150.))
+                            .flex_none()
+                            .truncate()
+                            .text_size(px(11.5))
+                            .text_color(p.fg3)
+                            .child(if h.exists {
+                                "already saved".to_owned()
+                            } else {
+                                h.auth.clone()
+                            }),
+                    )
+                    .into_any_element()
+            })
+            .collect();
+        let all_new: Vec<String> = preview
+            .hosts
+            .iter()
+            .filter(|h| !h.exists)
+            .map(|h| h.alias.clone())
+            .collect();
+        let toggle_all = chosen < new_count;
+        scrim(p, true)
+            .key_context("Overlay")
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, w, cx| this.dismiss(w, cx)),
+            )
+            .child(
+                dialog(p, 760.)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .px(px(16.))
+                            .py(px(12.))
+                            .border_b_1()
+                            .border_color(p.bd)
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Import Hosts"),
+                            )
+                            .child(
+                                div()
+                                    .font_family(MONO)
+                                    .text_size(px(11.))
+                                    .text_color(p.fg3)
+                                    .child(format!(
+                                        "{} · {} entries, {new_count} new",
+                                        preview.path.display(),
+                                        preview.hosts.len()
+                                    )),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("ssh-import-list")
+                            .max_h(px(420.))
+                            .overflow_y_scroll()
+                            .p(px(4.))
+                            .children(rows)
+                            .when(preview.hosts.is_empty(), |d| {
+                                d.child(
+                                    div()
+                                        .p(px(24.))
+                                        .text_color(p.fg3)
+                                        .text_size(px(12.5))
+                                        .child("No Host entries (wildcard patterns are skipped)."),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .px(px(16.))
+                            .py(px(12.))
+                            .border_t_1()
+                            .border_color(p.bd)
+                            .child(
+                                ui::button(
+                                    "ssh-import-all",
+                                    if toggle_all {
+                                        "Select all new"
+                                    } else {
+                                        "Select none"
+                                    },
+                                    Kind::Ghost,
+                                    p,
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        if let Some(Overlay::SshImport(pr)) = &mut this.overlay {
+                                            pr.chosen = if toggle_all {
+                                                all_new.iter().cloned().collect()
+                                            } else {
+                                                Default::default()
+                                            };
+                                        }
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                            .child(div().flex_1())
+                            .child(
+                                ui::button("ssh-import-cancel", "Cancel", Kind::Ghost, p)
+                                    .on_click(cx.listener(|this, _, w, cx| this.dismiss(w, cx))),
+                            )
+                            .child(
+                                ui::button(
+                                    "ssh-import-go",
+                                    match chosen {
+                                        1 => "Import 1 Host".to_owned(),
+                                        n => format!("Import {n} Hosts"),
+                                    },
+                                    Kind::Primary,
+                                    p,
+                                )
+                                .when(chosen == 0, |b| b.opacity(0.5))
+                                .on_click(cx.listener(
+                                    move |this, _, w, cx| {
+                                        let Some(Overlay::SshImport(pr)) = &this.overlay else {
+                                            return;
+                                        };
+                                        if pr.chosen.is_empty() {
+                                            return;
+                                        }
+                                        // Keep the file's order.
+                                        let only: Vec<String> = pr
+                                            .hosts
+                                            .iter()
+                                            .filter(|h| pr.chosen.contains(&h.alias))
+                                            .map(|h| h.alias.clone())
+                                            .collect();
+                                        this.core.send(switchyard_core::Command::ImportSshConfig {
+                                            only: Some(only),
+                                        });
+                                        this.dismiss(w, cx);
+                                    },
+                                )),
+                            ),
                     ),
             )
             .into_any_element()

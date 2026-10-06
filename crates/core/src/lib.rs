@@ -11,6 +11,7 @@ pub mod files;
 pub mod prompts;
 pub mod runtime;
 pub mod service;
+pub mod ssh_import;
 pub mod terminals;
 
 pub use bus::{
