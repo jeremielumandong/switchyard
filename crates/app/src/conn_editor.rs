@@ -6,21 +6,23 @@ use std::collections::HashMap;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FontWeight,
+    AnyElement, AppContext as _, Context, Entity, EventEmitter, FontWeight,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window, deferred, div, px,
 };
 use secrecy::SecretString;
 use switchyard_core::db::{DbAuthMethod, Engine, SslMode};
-use switchyard_core::drivers::{Component, ComponentStatus};
+use switchyard_core::drivers::Component;
 use switchyard_core::store::{
     DbConnection, EnvironmentLabel, FileConnection, FileProtocol, FtpMode, FtpTls, Host, Profile,
     ProfileId, SshAuth,
 };
 use switchyard_core::{Command, RequestId, RuntimeHandle};
 
+mod driver_card;
+
 use crate::app_state::{Profiles, next_id};
-use crate::theme::{MONO, Palette, SANS, palette};
+use crate::theme::{MONO, Palette, palette};
 use crate::ui::{self, Kind};
 
 /// Connection types offered by the editor.
@@ -107,12 +109,6 @@ enum TestState {
     Missing,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DriverCard {
-    Missing,
-    Admin,
-}
-
 /// A select field: options (label, value) and the chosen index.
 struct Select {
     options: Vec<(String, String)>,
@@ -132,7 +128,8 @@ pub struct ConnEditor {
     read_only: bool,
     history: bool,
     test: TestState,
-    driver_card: DriverCard,
+    card: Option<driver_card::DriverCard>,
+    driver_path: Entity<InputState>,
     components: Vec<Component>,
     error: Option<(Option<&'static str>, String)>,
     request: Option<RequestId>,
@@ -195,7 +192,8 @@ impl ConnEditor {
             read_only: matches!(&existing, Some(Profile::Db(d)) if d.read_only),
             history: !matches!(&existing, Some(Profile::Db(d)) if !d.history_enabled),
             test: TestState::Idle,
-            driver_card: DriverCard::Missing,
+            card: None,
+            driver_path: driver_card::path_input(window, cx),
             components,
             error: None,
             request: None,
@@ -730,9 +728,12 @@ impl ConnEditor {
                 let gss_missing = self
                     .components
                     .iter()
-                    .any(|c| c.id == "gssapi" && c.status == ComponentStatus::Missing);
+                    .any(|c| c.id == "gssapi" && !c.status.is_installed());
                 if d.auth == DbAuthMethod::Integrated && gss_missing {
                     self.test = TestState::Missing;
+                    if self.card.as_ref().is_none_or(|c| c.id != "gssapi") {
+                        self.card = Some(driver_card::DriverCard::new("gssapi"));
+                    }
                 } else {
                     let request = next_id();
                     self.test = TestState::Testing(request);
@@ -1129,179 +1130,6 @@ impl ConnEditor {
             }
         }
         v
-    }
-
-    fn render_driver_card(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let (tag, tag_fg, tag_bg, title, body, meta) = match self.driver_card {
-            DriverCard::Missing => (
-                "MISSING",
-                p.stg,
-                p.stg_bg,
-                "Kerberos (GSSAPI) is not installed",
-                "Integrated authentication to SQL Server needs the system Kerberos library. Switchyard looked for libgssapi_krb5.so.2 and did not find it.",
-                "1.8 MB · MIT license · apt package libgssapi-krb5-2",
-            ),
-            DriverCard::Admin => (
-                "NEEDS ADMIN",
-                p.stg,
-                p.stg_bg,
-                "This one installs as a system package",
-                "Kerberos must come from your package manager. Run this command, then re-check:",
-                "Detected: Linux · apt",
-            ),
-        };
-        let cmd = "sudo apt install libgssapi-krb5-2";
-        div()
-            .border_1()
-            .border_color(p.stg)
-            .rounded(px(8.))
-            .bg(p.bg)
-            .overflow_hidden()
-            .child(
-                div()
-                    .flex()
-                    .gap(px(12.))
-                    .items_start()
-                    .px(px(14.))
-                    .py(px(12.))
-                    .child(
-                        div()
-                            .flex_none()
-                            .px(px(6.))
-                            .rounded(px(4.))
-                            .bg(tag_bg)
-                            .text_color(tag_fg)
-                            .font_family(MONO)
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_size(px(9.))
-                            .line_height(px(18.))
-                            .child(tag),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .flex()
-                            .flex_col()
-                            .gap(px(4.))
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_size(px(13.))
-                                    .child(title),
-                            )
-                            .child(div().text_size(px(12.)).text_color(p.fg2).child(body))
-                            .child(
-                                div()
-                                    .font_family(MONO)
-                                    .text_size(px(11.))
-                                    .text_color(p.fg3)
-                                    .child(meta),
-                            ),
-                    ),
-            )
-            .when(self.driver_card == DriverCard::Admin, |d| {
-                d.child(
-                    div()
-                        .mx(px(14.))
-                        .mb(px(12.))
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .px(px(10.))
-                        .py(px(7.))
-                        .border_1()
-                        .border_color(p.bd)
-                        .rounded(px(6.))
-                        .bg(p.surface)
-                        .font_family(MONO)
-                        .text_size(px(12.))
-                        .child(div().text_color(p.fg3).child("$"))
-                        .child(div().flex_1().child(cmd))
-                        .child(
-                            div()
-                                .id("copy-cmd")
-                                .font_family(SANS)
-                                .text_size(px(11.5))
-                                .text_color(p.acc)
-                                .on_click(cx.listener(move |_, _, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(
-                                        cmd.to_owned(),
-                                    ));
-                                    cx.emit(ConnEditorEvent::Toast("Command copied".into()));
-                                }))
-                                .child("Copy"),
-                        ),
-                )
-            })
-            .child(
-                div()
-                    .flex()
-                    .gap(px(6.))
-                    .px(px(14.))
-                    .py(px(10.))
-                    .border_t_1()
-                    .border_color(p.bd)
-                    .bg(p.panel)
-                    .when(self.driver_card == DriverCard::Missing, |d| {
-                        d.child(
-                            ui::button("drv-install", "Install automatically", Kind::Primary, p)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.driver_card = DriverCard::Admin;
-                                    cx.notify();
-                                })),
-                        )
-                        .child(ui::button(
-                            "drv-path",
-                            "Use existing path…",
-                            Kind::Secondary,
-                            p,
-                        ))
-                        .child(
-                            ui::button("drv-manual", "Show manual steps", Kind::Ghost, p).on_click(
-                                cx.listener(|this, _, _, cx| {
-                                    this.driver_card = DriverCard::Admin;
-                                    cx.notify();
-                                }),
-                            ),
-                        )
-                    })
-                    .when(self.driver_card == DriverCard::Admin, |d| {
-                        d.child(
-                            ui::button(
-                                "drv-recheck",
-                                "I ran it myself — re-check",
-                                Kind::Secondary,
-                                p,
-                            )
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.components = switchyard_core::drivers::detect_all();
-                                let still = this.components.iter().any(|c| {
-                                    c.id == "gssapi" && c.status == ComponentStatus::Missing
-                                });
-                                this.test = if still {
-                                    TestState::Missing
-                                } else {
-                                    TestState::Idle
-                                };
-                                if !still {
-                                    cx.emit(ConnEditorEvent::Toast(
-                                        "Kerberos found and registered".into(),
-                                    ));
-                                }
-                                cx.notify();
-                            })),
-                        )
-                        .child(
-                            ui::button("drv-cancel", "Cancel", Kind::Ghost, p).on_click(
-                                cx.listener(|this, _, _, cx| {
-                                    this.driver_card = DriverCard::Missing;
-                                    cx.notify();
-                                }),
-                            ),
-                        )
-                    }),
-            )
-            .into_any_element()
     }
 }
 

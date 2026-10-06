@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 switchyard-store.workspace = true
 switchyard-db.workspace = true
+reqwest.workspace = true
 switchyard-remote.workspace = true
 switchyard-term.workspace = true
 switchyard-drivers.workspace = true

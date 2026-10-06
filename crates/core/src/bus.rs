@@ -9,7 +9,7 @@ use switchyard_db::guard::Destructive;
 use switchyard_db::{
     CatalogChunk, ColumnMeta, Completion, DbError, IntrospectScope, Notice, RowBatch, Value,
 };
-use switchyard_drivers::Component;
+use switchyard_drivers::{Component, InstallProgress};
 use switchyard_remote::FileEntry;
 use switchyard_remote::ssh::{HostKeyDecision, HostKeyRequest, InteractiveRequest, TunnelInfo};
 use switchyard_store::{
@@ -259,8 +259,39 @@ pub enum Command {
         /// Directory.
         path: PathBuf,
     },
-    /// Detect optional native components.
+    /// Detect optional native components ([`Event::Components`]).
     DetectComponents,
+    /// Install a component with the strategy its manifest gives for this machine.
+    InstallComponent {
+        /// Component id.
+        id: String,
+        /// The user accepted the component's click-through license.
+        accept_license: bool,
+    },
+    /// Install a component from a pre-downloaded archive (checked against the manifest).
+    InstallComponentFromFile {
+        /// Component id.
+        id: String,
+        /// Archive.
+        path: PathBuf,
+    },
+    /// Use a library the user already has.
+    UseComponentPath {
+        /// Component id.
+        id: String,
+        /// Library file or folder.
+        path: PathBuf,
+    },
+    /// Remove what Switchyard installed (or forget a chosen path).
+    RemoveComponent {
+        /// Component id.
+        id: String,
+    },
+    /// Download component archives from an internal mirror (`None` = vendor URLs).
+    SetDriverMirror {
+        /// Base URL.
+        url: Option<String>,
+    },
     /// Write a text file (exports).
     WriteFile {
         /// Destination.
@@ -491,6 +522,27 @@ pub enum Event {
     },
     /// Native component status.
     Components(Vec<Component>),
+    /// An install is under way.
+    ComponentProgress {
+        /// Component id.
+        id: String,
+        /// Step.
+        progress: InstallProgress,
+    },
+    /// A component is ready (installed, found at a chosen path).
+    ComponentInstalled {
+        /// Its new state.
+        component: Component,
+    },
+    /// Installing, using a path, or removing failed.
+    ComponentFailed {
+        /// Component id.
+        id: String,
+        /// Why.
+        message: String,
+        /// The command to run in a terminal, when elevation is not available here.
+        command: Option<String>,
+    },
     /// Result of [`Command::ApplyEdits`]: rows changed, or why nothing was.
     EditsApplied {
         /// Request id.

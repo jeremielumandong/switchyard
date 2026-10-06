@@ -8,7 +8,6 @@ use gpui_kit::{
     IntoElement, MouseButton, ParentElement as _, SharedString, StatefulInteractiveElement as _,
     Styled as _, Window, div, px,
 };
-use switchyard_core::drivers::{BUILTIN_DRIVERS, ComponentStatus};
 use switchyard_core::store::{EnvironmentLabel, HistoryStatus};
 
 use crate::conn_editor::{ConnEditor, ConnKind};
@@ -837,11 +836,11 @@ impl Workspace {
         &mut self,
         page: SettingsPage,
         p: &Palette,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let body: AnyElement = match page {
-            SettingsPage::Drivers => self.render_drivers(p, cx),
+            SettingsPage::Drivers => self.render_drivers(p, window, cx),
             SettingsPage::Appearance => {
                 let dark = p.dark;
                 div()
@@ -1154,220 +1153,6 @@ impl Workspace {
                                     .child(body),
                             ),
                     ),
-            )
-            .into_any_element()
-    }
-
-    fn render_drivers(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let grid_row = |cells: Vec<AnyElement>| {
-            div()
-                .flex()
-                .items_center()
-                .gap(px(10.))
-                .min_h(px(46.))
-                .px(px(12.))
-                .py(px(6.))
-                .border_b_1()
-                .border_color(p.line)
-                .text_size(px(12.5))
-                .children(cells)
-        };
-        let rows: Vec<AnyElement> = self
-            .components
-            .iter()
-            .map(|c| {
-                let (status, color, location, action) = match &c.status {
-                    ComponentStatus::Installed { location, version } => (
-                        if version.is_some() {
-                            "Installed"
-                        } else {
-                            "Detected"
-                        },
-                        p.dev,
-                        location.clone(),
-                        "Details",
-                    ),
-                    ComponentStatus::Missing => ("Not installed", p.fg3, "—".to_owned(), "Install"),
-                };
-                let version = match &c.status {
-                    ComponentStatus::Installed {
-                        version: Some(v), ..
-                    } => v.clone(),
-                    _ => "—".into(),
-                };
-                grid_row(vec![
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(div().font_weight(FontWeight::MEDIUM).child(c.name.clone()))
-                        .child(
-                            div()
-                                .font_family(MONO)
-                                .text_size(px(10.5))
-                                .text_color(p.fg3)
-                                .truncate()
-                                .child(location),
-                        )
-                        .into_any_element(),
-                    div()
-                        .flex_1()
-                        .text_size(px(12.))
-                        .text_color(p.fg2)
-                        .child(c.needed_for.clone())
-                        .into_any_element(),
-                    div()
-                        .w(px(90.))
-                        .font_family(MONO)
-                        .text_size(px(11.5))
-                        .text_color(p.fg2)
-                        .child(version)
-                        .into_any_element(),
-                    div()
-                        .w(px(130.))
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .text_size(px(12.))
-                        .text_color(color)
-                        .child(ui::dot(color, 6.))
-                        .child(status)
-                        .into_any_element(),
-                    div()
-                        .w(px(96.))
-                        .flex()
-                        .justify_end()
-                        .child(
-                            ui::button(
-                                SharedString::from(format!("drv-{}", c.id)),
-                                action,
-                                Kind::Secondary,
-                                p,
-                            )
-                            .h(px(24.))
-                            .text_size(px(11.5)),
-                        )
-                        .into_any_element(),
-                ])
-                .into_any_element()
-            })
-            .chain(std::iter::once(
-                grid_row(vec![
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(
-                            div()
-                                .font_weight(FontWeight::MEDIUM)
-                                .child("Oracle Instant Client"),
-                        )
-                        .child(
-                            div()
-                                .font_family(MONO)
-                                .text_size(px(10.5))
-                                .text_color(p.fg3)
-                                .child("<data_dir>/switchyard/drivers/oracle"),
-                        )
-                        .into_any_element(),
-                    div()
-                        .flex_1()
-                        .text_size(px(12.))
-                        .text_color(p.fg2)
-                        .child("Oracle (after beta)")
-                        .into_any_element(),
-                    div()
-                        .w(px(90.))
-                        .font_family(MONO)
-                        .text_size(px(11.5))
-                        .text_color(p.fg2)
-                        .child("—")
-                        .into_any_element(),
-                    div()
-                        .w(px(130.))
-                        .flex()
-                        .items_center()
-                        .gap(px(6.))
-                        .text_size(px(12.))
-                        .text_color(p.fg3)
-                        .child(ui::dot(p.fg3, 6.))
-                        .child("Not available")
-                        .into_any_element(),
-                    div().w(px(96.)).into_any_element(),
-                ])
-                .into_any_element(),
-            ))
-            .collect();
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(16.))
-            .p(px(18.))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .child(div().text_size(px(12.5)).text_color(p.fg2).child("Built-in drivers need nothing installed. Optional native components are loaded at runtime — a missing one disables a single feature, never the app."))
-                    .child(div().flex().flex_wrap().gap(px(6.)).children(BUILTIN_DRIVERS.iter().map(|d| {
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .h(px(24.))
-                            .px(px(9.))
-                            .border_1()
-                            .border_color(p.bd)
-                            .rounded(px(12.))
-                            .text_size(px(11.5))
-                            .text_color(p.fg2)
-                            .child(ui::dot(if d.protocol == "PostgreSQL" { p.dev } else { p.fg3 }, 6.))
-                            .child(format!("{} · {}", d.protocol, d.implementation))
-                    }))),
-            )
-            .child(
-                div()
-                    .border_1()
-                    .border_color(p.bd)
-                    .rounded(px(8.))
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(10.))
-                            .h(px(30.))
-                            .px(px(12.))
-                            .bg(p.panel)
-                            .text_size(px(11.5))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(p.fg2)
-                            .border_b_1()
-                            .border_color(p.bd)
-                            .child(div().flex_1().child("Component"))
-                            .child(div().flex_1().child("Needed for"))
-                            .child(div().w(px(90.)).child("Version"))
-                            .child(div().w(px(130.)).child("Status"))
-                            .child(div().w(px(96.))),
-                    )
-                    .children(rows),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .text_size(px(12.))
-                    .text_color(p.fg2)
-                    .child(ui::button("drv-file", "Install from file…", Kind::Secondary, p))
-                    .child(ui::button("drv-check", "Check again", Kind::Secondary, p).on_click(cx.listener(|this, _, _, cx| {
-                        this.core.send(switchyard_core::Command::DetectComponents);
-                        this.toast("Checked components", cx);
-                    })))
-                    .child(div().flex_1())
-                    .child("Downloads come from a signed manifest (minisign)"),
             )
             .into_any_element()
     }
