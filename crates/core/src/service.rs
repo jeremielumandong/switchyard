@@ -516,6 +516,23 @@ impl Service {
                 scope,
                 refresh,
             } => self.introspect(session, scope, refresh).await,
+            Command::Explain {
+                session,
+                query,
+                sql,
+                analyze,
+                confirmed,
+                tags,
+            } => {
+                let span = info_span!("explain", query, session, analyze);
+                self.explain(session, query, sql, analyze, confirmed, tags)
+                    .instrument(span)
+                    .await
+            }
+            Command::LoadPlan {
+                request,
+                history_id,
+            } => self.load_plan(request, history_id).await,
             Command::SearchHistory {
                 request,
                 query,
@@ -1422,6 +1439,173 @@ impl Service {
         self.emit(Event::Query { query, event });
     }
 
+    fn plan_failed(&self, request: u64, error: impl std::fmt::Display, needs_confirmation: bool) {
+        self.emit(Event::PlanFailed {
+            request,
+            error: error.to_string(),
+            needs_confirmation,
+        });
+    }
+
+    /// Findings thresholds from Settings (`plan.thresholds`), else the defaults.
+    async fn thresholds(&self) -> switchyard_plan::Thresholds {
+        self.with_store(|s| s.setting::<switchyard_plan::Thresholds>("plan.thresholds"))
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+    }
+
+    async fn explain(
+        &self,
+        session: SessionId,
+        query: QueryId,
+        sql: String,
+        analyze: bool,
+        confirmed: bool,
+        mut tags: Vec<String>,
+    ) {
+        let Some(slot) = self.slot(session) else {
+            return self.plan_failed(query, DbError::Closed, false);
+        };
+        let conn = slot.connection.clone();
+        let dialect = dialect_for(conn.engine);
+        // An actual plan executes the statement (then rolls it back). Writes are refused on
+        // read-only connections and need confirmation on Production.
+        if analyze && !guard::classify(dialect, &sql).is_read_only() {
+            if conn.read_only {
+                return self.plan_failed(
+                    query,
+                    "this connection is locked read-only; an actual plan would run a write \
+                     (it is rolled back, but triggers and sequences still fire). Use Explain.",
+                    false,
+                );
+            }
+            if conn.environment.is_production() && !confirmed {
+                return self.plan_failed(
+                    query,
+                    "an actual plan runs this writing statement on Production (then rolls it back)",
+                    true,
+                );
+            }
+        }
+        let mut inner = slot.inner.lock().await;
+        let (resume_tx, _resume_rx) = mpsc::unbounded_channel();
+        lock(&self.queries).insert(
+            query,
+            QueryControl {
+                cancel: inner.session.cancel_handle(),
+                resume: resume_tx,
+            },
+        );
+        let started = Instant::now();
+        let started_at = now_ms();
+        let mode = if analyze {
+            switchyard_plan::capture::Mode::Actual
+        } else {
+            switchyard_plan::capture::Mode::Estimated
+        };
+        let result =
+            switchyard_plan::capture::capture(inner.session.as_mut(), conn.engine, &sql, mode)
+                .await;
+        drop(inner);
+        lock(&self.queries).remove(&query);
+        let elapsed = started.elapsed();
+        tags.push(
+            if analyze {
+                "explain-analyze"
+            } else {
+                "explain"
+            }
+            .into(),
+        );
+        match result {
+            Err(e) => {
+                let msg = e.to_string();
+                let st = StatementRequest {
+                    sql: sql.clone(),
+                    params: Vec::new(),
+                    offset: 0,
+                };
+                self.record(
+                    &conn,
+                    &st,
+                    started_at,
+                    elapsed,
+                    0,
+                    &(HistoryStatus::Error, Some(msg.clone()), None),
+                    &tags,
+                )
+                .await;
+                self.plan_failed(query, msg, false);
+            }
+            Ok(plan) => {
+                let findings = switchyard_plan::analyze(&plan, &self.thresholds().await);
+                let history_id = if conn.history_enabled {
+                    let entry = HistoryEntry {
+                        id: 0,
+                        connection_id: Some(conn.id.clone()),
+                        connection_name: conn.name.clone(),
+                        sql: sql.clone(),
+                        started_at,
+                        duration_ms: elapsed.as_millis() as i64,
+                        rows: plan.root.rows().map(|r| r as i64),
+                        affected: None,
+                        status: HistoryStatus::Ok,
+                        error: None,
+                        tags,
+                        has_plan: true,
+                    };
+                    let json = serde_json::to_string(&plan).unwrap_or_default();
+                    match self
+                        .with_store(move |s| {
+                            let id = s.add_history(&entry)?;
+                            s.add_plan(id, &json)?;
+                            Ok(id)
+                        })
+                        .await
+                    {
+                        Ok(id) => Some(id),
+                        Err(e) => {
+                            warn!(error = %e, "plan history write failed");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                };
+                self.emit(Event::Plan {
+                    request: query,
+                    history_id,
+                    plan: Arc::new(plan),
+                    findings,
+                });
+            }
+        }
+    }
+
+    async fn load_plan(&self, request: RequestId, history_id: i64) {
+        let json = match self.with_store(move |s| s.plan(history_id)).await {
+            Ok(Some(j)) => j,
+            Ok(None) => {
+                return self.plan_failed(request, "no plan is stored with this entry", false);
+            }
+            Err(e) => return self.plan_failed(request, e, false),
+        };
+        match serde_json::from_str::<switchyard_plan::Plan>(&json) {
+            Ok(plan) => {
+                let findings = switchyard_plan::analyze(&plan, &self.thresholds().await);
+                self.emit(Event::Plan {
+                    request,
+                    history_id: Some(history_id),
+                    plan: Arc::new(plan),
+                    findings,
+                });
+            }
+            Err(e) => self.plan_failed(request, format!("stored plan is unreadable: {e}"), false),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn execute(
         &self,
@@ -1693,6 +1877,7 @@ impl Service {
             status: outcome.0,
             error: outcome.1.clone(),
             tags: tags.to_vec(),
+            has_plan: false,
         };
         if let Err(e) = self.with_store(move |s| s.add_history(&entry)).await {
             warn!(error = %e, "history write failed");

@@ -29,6 +29,8 @@ pub use switchyard_db as db;
 pub use switchyard_db::TunnelEndpoint;
 /// Re-exported Driver Manager.
 pub use switchyard_drivers as drivers;
+/// Query plans, re-exported for the app.
+pub use switchyard_plan as plan;
 /// Re-exported remote layer.
 pub use switchyard_remote as remote;
 /// Re-exported store and model.

@@ -5,13 +5,16 @@
 //! * [`pg`], [`mssql`]: engine output → [`Plan`].
 //! * [`capture`]: run `EXPLAIN` / showplan on a session (actual plans are rolled back).
 //! * [`findings`]: ranked rules over a plan.
+//! * [`compare`]: totals and per-operator deltas between two plans.
 
 pub mod capture;
+pub mod compare;
 pub mod findings;
 pub mod model;
 pub mod mssql;
 pub mod pg;
 
+pub use compare::{Comparison, NodeDelta, Pair, compare};
 pub use findings::{Finding, Rule, Severity, Thresholds, analyze};
 pub use model::{Io, MissingIndex, Plan, PlanKind, PlanNode, PlanSource, Predicate};
 

@@ -54,7 +54,7 @@ fn statement(sql: &str) -> Result<&str> {
 async fn collect(
     session: &mut dyn DbSession,
     sql: &str,
-    want: impl Fn(&str) -> bool,
+    want: fn(&str) -> bool,
 ) -> Result<Vec<String>> {
     let mut stream = session.execute(sql, &[]).await?;
     let mut keep: Vec<usize> = Vec::new();
@@ -87,22 +87,27 @@ async fn collect(
 }
 
 async fn run(session: &mut dyn DbSession, sql: &str) -> Result<()> {
-    collect(session, sql, |_| false).await.map(|_| ())
+    fn none(_: &str) -> bool {
+        false
+    }
+    collect(session, sql, none).await.map(|_| ())
 }
 
-/// Run `body` inside a transaction (or savepoint) that is always rolled back.
-async fn rolled_back<T>(
+/// Run `sql` inside a transaction (or savepoint) that is always rolled back, collecting
+/// the cells of the columns `want` accepts.
+async fn collect_rolled_back(
     session: &mut dyn DbSession,
     savepoint: (&str, &str),
-    body: impl AsyncFnOnce(&mut dyn DbSession) -> Result<T>,
-) -> Result<T> {
+    sql: &str,
+    want: fn(&str) -> bool,
+) -> Result<Vec<String>> {
     let nested = session.in_transaction();
     if nested {
         run(session, savepoint.0).await?;
     } else {
         session.begin().await?;
     }
-    let result = body(&mut *session).await;
+    let result = collect(session, sql, want).await;
     let undone = if nested {
         run(session, savepoint.1).await
     } else {
@@ -121,11 +126,15 @@ async fn rolled_back<T>(
     }
 }
 
+fn any_column(_: &str) -> bool {
+    true
+}
+
 async fn postgres(session: &mut dyn DbSession, sql: &str, mode: Mode) -> Result<Plan> {
     let json = match mode {
         Mode::Estimated => {
             let explain = format!("EXPLAIN (FORMAT JSON) {sql}");
-            collect(session, &explain, |_| true).await?
+            collect(session, &explain, any_column).await?
         }
         Mode::Actual => {
             let explain = format!("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {sql}");
@@ -133,10 +142,7 @@ async fn postgres(session: &mut dyn DbSession, sql: &str, mode: Mode) -> Result<
                 format!("SAVEPOINT {SAVEPOINT}"),
                 format!("ROLLBACK TO SAVEPOINT {SAVEPOINT}"),
             );
-            rolled_back(session, (&sp.0, &sp.1), async |s| {
-                collect(s, &explain, |_| true).await
-            })
-            .await?
+            collect_rolled_back(session, (&sp.0, &sp.1), &explain, any_column).await?
         }
     };
     let text = json
@@ -167,11 +173,8 @@ async fn sql_server(session: &mut dyn DbSession, sql: &str, mode: Mode) -> Resul
                 format!("ROLLBACK TRANSACTION {SAVEPOINT}"),
             );
             run(session, "SET STATISTICS XML ON").await?;
-            let docs = rolled_back(session, (&sp.0, &sp.1), async |s| {
-                // The statement's own results arrive too; only the showplan is kept.
-                collect(s, sql, is_showplan).await
-            })
-            .await;
+            // The statement's own results arrive too; only the showplan is kept.
+            let docs = collect_rolled_back(session, (&sp.0, &sp.1), sql, is_showplan).await;
             let off = run(session, "SET STATISTICS XML OFF").await;
             let docs = docs?;
             off?;
