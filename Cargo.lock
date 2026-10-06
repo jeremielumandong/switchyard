@@ -8439,11 +8439,15 @@ dependencies = [
 name = "switchyard-plan"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "insta",
+ "quick-xml 0.42.0",
+ "secrecy",
  "serde",
  "serde_json",
  "switchyard-db",
  "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]

@@ -1,0 +1,9 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&plan)
+---
+SqlServer Estimated
+#0 Sort est=100 act=- loops=-
+  #1 Clustered Index Scan on dbo.plan_orders.PK__plan_ord__3213E83F34834332 est=50000 act=- loops=-
+findings:
+  Low FullScan node=Some(1): Clustered Index Scan on dbo.plan_orders.PK__plan_ord__3213E83F34834332 | Reads 50,000 rows. | Add an index on the filtered or joined columns, or narrow the query.

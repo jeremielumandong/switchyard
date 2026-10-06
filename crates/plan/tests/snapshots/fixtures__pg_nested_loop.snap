@@ -1,0 +1,13 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(& pg(stringify! (nested_loop)))
+---
+Postgres Actual
+#0 Nested Loop est=459 act=472 loops=1 self=1.6ms (16%)
+  #1 Bitmap Heap Scan on orders est=2293 act=2369 loops=1 self=5.4ms (54%)
+    Recheck Cond: (customer_id < 200)
+    #2 Bitmap Index Scan on orders_customer_id_idx est=2293 act=2369 loops=1 self=0.4ms (4%)
+      Index Cond: (customer_id < 200)
+  #3 Index Only Scan on order_items.order_items_pkey est=1 act=0 loops=2369 self=2.4ms (24%)
+    Index Cond: (order_id = o.id)
+findings:
