@@ -109,11 +109,16 @@ Exit: query the 1M-row table, scroll without dropped frames, cancel a long query
   selection: Shift+click or Shift+arrows; Ctrl/⌘+C copies the range as TSV (raw values, NULL
   empty), "Copy selection as" uses the range with column names. 1M rows × 10 int8 fit in
   < 150 MB (`batch.rs` test); scroll frame rate not yet measured (M1-16 harness).
-- [ ] **M1-11 Grid extras.** Value viewer (JSON, XML, text, hex, image), export CSV/JSON/
+- [x] **M1-11 Grid extras.** Value viewer (JSON, XML, text, hex, image), export CSV/JSON/
   Markdown/SQL INSERT, client-side sort and filter, multiple result-set tabs, status line,
   configurable fetch limit (default 10,000) with "Fetch all".
   Done when: each feature has a test or a documented manual check in the task note.
-  Note: Partial: JSON/text/hex viewer, CSV/JSON/Markdown/SQL INSERT export (tests in `sql_tab.rs`), sort, filter, result-set tabs, status line, fetch limit with "Fetch all" (`streams_with_fetch_limit_and_fetch_all`). XML and image viewers are missing.
+  Note: JSON / text (row), XML / hex / image (selected cell) viewers: XML indented and
+  coloured with a plain-text fallback, image by signature (PNG, JPEG, GIF, WebP, BMP, TIFF,
+  SVG), large values capped at 4,000 lines (`viewer.rs` tests; checked manually with an `xml`
+  and a `bytea` PNG column). CSV/JSON/Markdown/SQL INSERT export (tests in `sql_tab.rs`), sort,
+  filter, result-set tabs, status line, fetch limit with "Fetch all"
+  (`streams_with_fetch_limit_and_fetch_all`).
 - [x] **M1-12 Schema explorer.** Lazy tree, fuzzy object search, actions (open data, generate
   SELECT/INSERT/UPDATE, copy name, view DDL, truncate/drop with confirmation).
   Done when: tree expands without blocking on large schemas.
@@ -365,7 +370,6 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 - Smoke tests for the SQL Server, SSH and FTP containers (M0-2).
 - Verify multi-cursor and folding in the gpui-component editor (M1-6).
 - Grid frame-time harness (M1-16).
-- XML and image value viewers (M1-11).
 - Driver Manager: fetch the signed manifest from the update server; zip archives (Oracle
   Instant Client ships zip) once a zip reader is approved.
 - SQL Server: upstream tiberius patches for INFO tokens (notices) and reading the attention

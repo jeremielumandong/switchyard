@@ -135,8 +135,12 @@ pub enum ViewerFormat {
     Json,
     /// Column / value pairs.
     Text,
-    /// Hex dump.
+    /// The selected cell as indented, coloured XML.
+    Xml,
+    /// Hex dump of the selected cell.
     Hex,
+    /// The selected cell drawn as an image (PNG, JPEG, GIF, WebP, BMP, TIFF, SVG).
+    Image,
 }
 
 /// An SQL editor tab.
@@ -1113,6 +1117,19 @@ impl SqlTab {
                 cols.len()
             )));
         }
+    }
+
+    /// The selected cell of the active result: (view row, column name, value).
+    pub fn selected_cell_value(&self, cx: &App) -> Option<(usize, String, Value)> {
+        let r = self.results.get(self.active_result)?;
+        let (row, col) = self.selected?;
+        let d = r.table.read(cx).delegate();
+        let meta = r.columns.get(col)?;
+        let v = d
+            .cell(row, col)
+            .map(|c| c.to_value(meta.data_type))
+            .unwrap_or(Value::Null);
+        Some((row, meta.name.clone(), v))
     }
 
     /// Copy the selected range (or row) in a format, with column names.
