@@ -393,6 +393,22 @@ impl Service {
                     result,
                 });
             }
+            Command::WriteFile { path, contents } => {
+                match tokio::fs::write(&path, contents).await {
+                    Ok(()) => self.emit(Event::Toast(format!("Saved {}", path.display()))),
+                    Err(e) => self.error("Export", e),
+                }
+            }
+            Command::ImportSshConfig => match self.import_ssh_config().await {
+                Ok(0) => self.emit(Event::Toast("No new Hosts found in ~/.ssh/config".into())),
+                Ok(n) => {
+                    self.emit(Event::Toast(format!(
+                        "Imported {n} Hosts from ~/.ssh/config"
+                    )));
+                    self.emit_profiles().await;
+                }
+                Err(e) => self.error("Import ssh config", e),
+            },
             Command::DetectComponents => {
                 let comps = tokio::task::spawn_blocking(switchyard_drivers::detect_all)
                     .await
@@ -400,6 +416,63 @@ impl Service {
                 self.emit(Event::Components(comps));
             }
         }
+    }
+
+    async fn import_ssh_config(&self) -> Result<usize> {
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .ok_or_else(|| CoreError::NotFound("home directory".into()))?;
+        let path = PathBuf::from(home).join(".ssh").join("config");
+        let text = tokio::fs::read_to_string(&path)
+            .await
+            .map_err(|e| CoreError::Store(StoreError::Io(e)))?;
+        let parsed = switchyard_remote::parse_ssh_config(&text);
+        self.with_store(move |s| {
+            let existing = s.profiles()?;
+            let mut by_alias: HashMap<String, ProfileId> = existing
+                .iter()
+                .filter_map(|p| match p {
+                    Profile::Host(h) => Some((h.name.clone(), h.id.clone())),
+                    _ => None,
+                })
+                .collect();
+            // Create every new Host first, then wire ProxyJump references.
+            let mut created = Vec::new();
+            for h in &parsed {
+                if by_alias.contains_key(&h.alias) {
+                    continue;
+                }
+                let mut host = switchyard_store::Host::new(
+                    h.alias.clone(),
+                    h.hostname.clone(),
+                    h.user
+                        .clone()
+                        .unwrap_or_else(|| std::env::var("USER").unwrap_or_else(|_| "root".into())),
+                );
+                host.port = h.port.unwrap_or(22);
+                if let Some(key) = &h.identity_file {
+                    host.auth = switchyard_store::SshAuth::PublicKey {
+                        key_path: key.clone(),
+                    };
+                }
+                by_alias.insert(h.alias.clone(), host.id.clone());
+                created.push((host, h.proxy_jump.clone()));
+            }
+            for (host, _) in &created {
+                s.save_profile(&Profile::Host(host.clone()))?;
+            }
+            for (mut host, jumps) in created.clone() {
+                host.jump_hosts = jumps
+                    .iter()
+                    .filter_map(|j| by_alias.get(j).cloned())
+                    .collect();
+                if !host.jump_hosts.is_empty() {
+                    s.save_profile(&Profile::Host(host))?;
+                }
+            }
+            Ok(created.len())
+        })
+        .await
     }
 
     async fn save_profile(

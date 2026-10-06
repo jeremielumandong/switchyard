@@ -199,6 +199,15 @@ pub enum Command {
     },
     /// Detect optional native components.
     DetectComponents,
+    /// Write a text file (exports).
+    WriteFile {
+        /// Destination.
+        path: PathBuf,
+        /// Contents.
+        contents: String,
+    },
+    /// Import Hosts from `~/.ssh/config`.
+    ImportSshConfig,
 }
 
 /// Events from a running query.
