@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::bus::{TermId, TermTarget};
+use crate::terminals::{TermInput, Terminals};
 use futures::StreamExt;
 use secrecy::SecretString;
 use switchyard_db::d1::D1Driver;
@@ -20,6 +22,7 @@ use switchyard_store::{
     AppPaths, DbConnection, HistoryEntry, HistoryStatus, KeychainStore, MemoryStore, Profile,
     ProfileId, SecretRef, SecretStore, Store, StoreError, VaultStore, now_ms,
 };
+use switchyard_term::{LocalShell, TermSize};
 use tokio::sync::mpsc;
 use tracing::{Instrument, info, info_span, warn};
 
@@ -103,6 +106,7 @@ pub struct Service {
     drivers: HashMap<Engine, Arc<dyn Driver>>,
     sessions: Mutex<HashMap<SessionId, Arc<SessionSlot>>>,
     queries: Mutex<HashMap<QueryId, QueryControl>>,
+    terminals: Arc<Terminals>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -146,6 +150,7 @@ impl Service {
             drivers,
             sessions: Mutex::default(),
             queries: Mutex::default(),
+            terminals: Arc::default(),
         })
     }
 
@@ -153,6 +158,19 @@ impl Service {
     pub async fn run(self: Arc<Self>, mut commands: mpsc::UnboundedReceiver<Command>) {
         self.emit_secret_backend();
         while let Some(cmd) = commands.recv().await {
+            // Keystrokes must reach the program in the order they were typed, so terminal
+            // input is delivered here (it never blocks) instead of on a spawned task.
+            let cmd = match cmd {
+                Command::TerminalInput { term, bytes } => {
+                    self.terminals.send(term, TermInput::Data(bytes));
+                    continue;
+                }
+                Command::TerminalResize { term, size } => {
+                    self.terminals.send(term, TermInput::Resize(size));
+                    continue;
+                }
+                other => other,
+            };
             let this = self.clone();
             tokio::spawn(async move { this.handle(cmd).await });
         }
@@ -302,6 +320,16 @@ impl Service {
                     message: e.to_string(),
                 }),
             },
+            Command::OpenTerminal { term, target, size } => {
+                self.open_terminal(term, target, size).await
+            }
+            Command::TerminalInput { term, bytes } => {
+                self.terminals.send(term, TermInput::Data(bytes));
+            }
+            Command::TerminalResize { term, size } => {
+                self.terminals.send(term, TermInput::Resize(size));
+            }
+            Command::CloseTerminal { term } => self.terminals.close(term),
             Command::CloseSession { session } => {
                 lock(&self.sessions).remove(&session);
             }
@@ -606,6 +634,59 @@ impl Service {
             }),
         }
         self.emit_profiles().await;
+    }
+
+    async fn open_terminal(&self, term: TermId, target: TermTarget, size: TermSize) {
+        let result = match target {
+            TermTarget::Local { profile } => {
+                let profile = match profile {
+                    Some(id) => match self.with_store(move |s| s.profile(&id)).await {
+                        Ok(Some(Profile::Terminal(t))) => Some(t),
+                        _ => None,
+                    },
+                    None => None,
+                };
+                let shell = LocalShell {
+                    program: profile
+                        .as_ref()
+                        .map(|t| t.shell.trim().to_owned())
+                        .filter(|s| !s.is_empty()),
+                    env: profile.as_ref().map(|t| t.env.clone()).unwrap_or_default(),
+                    ..LocalShell::default()
+                };
+                let description = shell
+                    .program
+                    .clone()
+                    .or_else(|| std::env::var("SHELL").ok())
+                    .unwrap_or_else(|| "login shell".into());
+                let startup = profile.and_then(|t| t.startup_command);
+                self.terminals
+                    .open_local(
+                        term,
+                        shell,
+                        size,
+                        switchyard_term::DEFAULT_SCROLLBACK,
+                        self.events.clone(),
+                    )
+                    .map(|t| {
+                        if let Some(cmd) = startup {
+                            self.terminals
+                                .send(term, TermInput::Data(format!("{cmd}\r").into_bytes()));
+                        }
+                        (t, description)
+                    })
+                    .map_err(|e| e.to_string())
+            }
+            TermTarget::Host(_) => Err("SSH terminals are not available yet (milestone M2)".into()),
+        };
+        match result {
+            Ok((terminal, description)) => self.emit(Event::TerminalOpened {
+                term,
+                terminal,
+                description,
+            }),
+            Err(message) => self.emit(Event::TerminalFailed { term, message }),
+        }
     }
 
     async fn db_config(&self, c: &DbConnection, secret: Option<SecretString>) -> Result<DbConfig> {
