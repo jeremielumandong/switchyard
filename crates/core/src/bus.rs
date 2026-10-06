@@ -252,6 +252,11 @@ pub enum Command {
         /// JSON value.
         value: serde_json::Value,
     },
+    /// Read a UI setting ([`Event::Setting`]).
+    LoadSetting {
+        /// Key.
+        key: String,
+    },
     /// List a local directory.
     ListLocalDir {
         /// Request id.
@@ -519,6 +524,13 @@ pub enum Event {
         path: PathBuf,
         /// Entries or error.
         result: Result<Vec<FileEntry>, String>,
+    },
+    /// A UI setting, answering [`Command::LoadSetting`].
+    Setting {
+        /// Key.
+        key: String,
+        /// JSON value, if set.
+        value: Option<serde_json::Value>,
     },
     /// Native component status.
     Components(Vec<Component>),

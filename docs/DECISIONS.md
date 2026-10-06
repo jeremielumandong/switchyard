@@ -340,3 +340,14 @@ the rev with it (Cargo warns "patch not used" until then).
   **Needs approval:** `flate2` (gzip), already in the build through russh.
 - Debug builds only: `SWITCHYARD_DEV_MANIFEST=<file>` loads an unsigned manifest to try
   the archive flow locally.
+
+## 2026-10-06 — Themes (user request)
+
+- Ten built-in themes: Switchyard Dark/Light (the design), Nord, Dracula, Catppuccin Mocha
+  and Latte, Tokyo Night, Gruvbox Dark, Solarized Light and High Contrast. The community
+  palettes are MIT-licensed color values, adjusted where needed for contrast.
+- A unit test holds every theme to: text 7:1 on all backgrounds and on the selection,
+  secondary text 4.5:1, muted text 3:1, syntax colors 4.5:1, selection visibly different
+  from the background. New themes must pass it.
+- The choice is saved in the `theme` setting and applied when the app starts
+  (`SWITCHYARD_THEME` still overrides it, for tests and screenshots).

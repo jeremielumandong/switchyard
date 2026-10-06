@@ -552,6 +552,14 @@ impl Service {
                     self.error("Settings", e);
                 }
             }
+            Command::LoadSetting { key } => {
+                let k = key.clone();
+                let value = self
+                    .with_store(move |s| s.setting::<serde_json::Value>(&k))
+                    .await
+                    .unwrap_or(None);
+                self.emit(Event::Setting { key, value });
+            }
             Command::ListLocalDir { request, path } => {
                 let result = LocalFs.list(&path).await.map_err(|e| e.to_string());
                 self.emit(Event::DirListing {

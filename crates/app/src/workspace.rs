@@ -30,7 +30,7 @@ use crate::palette::{PaletteEvent, PaletteMode, PaletteView};
 use crate::sidebar::{SchemaState, SideTab};
 use crate::sql_tab::{SqlTab, SqlTabEvent};
 use crate::terminal_tab::TerminalTab;
-use crate::theme::{self, MONO, Palette, SANS, palette};
+use crate::theme::{self, MONO, Palette, SANS, ThemeId, palette};
 use crate::ui::{self, Kind};
 
 /// A tab in the work area.
@@ -106,6 +106,9 @@ impl Workspace {
         });
         core.send(Command::LoadProfiles);
         core.send(Command::LoadWorkspace);
+        core.send(Command::LoadSetting {
+            key: "theme".into(),
+        });
         core.send(Command::DetectComponents);
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
@@ -321,6 +324,18 @@ impl Workspace {
                     && ed.read(cx).request() == Some(request)
                 {
                     ed.update(cx, |ed, cx| ed.set_error(field, message, cx));
+                }
+            }
+            Event::Setting { key, value } => {
+                // SWITCHYARD_THEME (tests, screenshots) wins over the saved choice.
+                if key == "theme"
+                    && std::env::var_os("SWITCHYARD_THEME").is_none()
+                    && let Some(v) = value.as_ref().and_then(|v| v.as_str())
+                {
+                    let id = ThemeId::from_key(v);
+                    if id != palette(cx).id {
+                        theme::apply(id.palette(), Some(window), cx);
+                    }
                 }
             }
             Event::SecretBackend { name, locked } => {
@@ -895,19 +910,11 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(crate) fn set_theme(&mut self, dark: bool, window: &mut Window, cx: &mut Context<Self>) {
-        theme::apply(
-            if dark {
-                Palette::dark()
-            } else {
-                Palette::light()
-            },
-            Some(window),
-            cx,
-        );
+    pub(crate) fn set_theme(&mut self, id: ThemeId, window: &mut Window, cx: &mut Context<Self>) {
+        theme::apply(id.palette(), Some(window), cx);
         self.core.send(Command::SetSetting {
             key: "theme".into(),
-            value: (if dark { "dark" } else { "light" }).into(),
+            value: id.key().into(),
         });
         cx.notify();
     }
@@ -959,8 +966,12 @@ impl Workspace {
             CommandId::Settings => self.open_settings(SettingsPage::General, window, cx),
             CommandId::SettingsDrivers => self.open_settings(SettingsPage::Drivers, window, cx),
             CommandId::ToggleTheme => {
-                let dark = !palette(cx).dark;
-                self.set_theme(dark, window, cx);
+                let next = if palette(cx).dark {
+                    ThemeId::SwitchyardLight
+                } else {
+                    ThemeId::SwitchyardDark
+                };
+                self.set_theme(next, window, cx);
             }
             CommandId::ToggleInspector => self.inspector_open = !self.inspector_open,
             CommandId::ToggleSidebar => {
@@ -1090,7 +1101,14 @@ impl Workspace {
                             Kind::Ghost,
                             p,
                         )
-                        .on_click(cx.listener(move |this, _, w, cx| this.set_theme(!dark, w, cx))),
+                        .on_click(cx.listener(move |this, _, w, cx| {
+                            let next = if dark {
+                                ThemeId::SwitchyardLight
+                            } else {
+                                ThemeId::SwitchyardDark
+                            };
+                            this.set_theme(next, w, cx)
+                        })),
                     )
                     .child(
                         ui::button("tb-components", "Components", Kind::Ghost, p).on_click(
