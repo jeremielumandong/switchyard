@@ -429,3 +429,45 @@ async fn driver_manager_commands_report_on_the_bus() {
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn transfer_queue_runs_four_at_a_time() {
+    use switchyard_core::{FsRef, OnConflict};
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out");
+    std::fs::create_dir(&out).unwrap();
+    for i in 0..6 {
+        std::fs::write(dir.path().join(format!("f{i}.bin")), vec![1u8; 20_000_000]).unwrap();
+    }
+    let (core, mut rx) = Core::start(ServiceConfig::in_memory()).unwrap();
+    let h = core.handle();
+    for i in 0..6u64 {
+        h.send(Command::Transfer {
+            id: 100 + i,
+            from: FsRef::Local,
+            path: dir.path().join(format!("f{i}.bin")),
+            to: FsRef::Local,
+            dir: Some(out.clone()),
+            on_conflict: OnConflict::Ask,
+            resume: false,
+        });
+    }
+    let mut queued = 0;
+    let mut done = 0;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while done < 6 {
+            match rx.next().await.unwrap() {
+                Event::TransferQueued { .. } => queued += 1,
+                Event::TransferDone { result, .. } => {
+                    result.unwrap();
+                    done += 1;
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(queued, 2, "four run, two wait");
+    assert_eq!(std::fs::read_dir(&out).unwrap().count(), 6);
+}

@@ -56,8 +56,14 @@ pub enum OnConflict {
 pub enum TransferError {
     /// The target exists (with [`OnConflict::Ask`]).
     Exists(String),
-    /// Cancelled by the user.
+    /// An interrupted copy of this file (bytes so far) waits on the target, e.g. after the
+    /// app was closed mid-transfer: send `resume: true` to continue, or
+    /// [`OnConflict::Replace`] to start over.
+    Partial(u64),
+    /// Cancelled by the user (the partial file was deleted).
     Cancelled,
+    /// Paused by the user (the partial file is kept; resume continues from it).
+    Paused,
     /// Anything else.
     Failed(String),
 }
@@ -340,9 +346,17 @@ pub enum Command {
         dir: Option<PathBuf>,
         /// Existing target policy.
         on_conflict: OnConflict,
+        /// Continue an earlier, interrupted attempt from its last byte.
+        resume: bool,
     },
-    /// Stop a transfer.
+    /// Stop a transfer and delete its partial file.
     CancelTransfer {
+        /// Transfer id.
+        id: u64,
+    },
+    /// Stop a transfer, keeping its partial file; send the same `Transfer` with
+    /// `resume: true` to continue.
+    PauseTransfer {
         /// Transfer id.
         id: u64,
     },
@@ -658,6 +672,11 @@ pub enum Event {
         path: PathBuf,
         /// Entries or error.
         result: Result<Vec<FileEntry>, String>,
+    },
+    /// A transfer is waiting for a free slot (four run at once).
+    TransferQueued {
+        /// Transfer id.
+        id: u64,
     },
     /// Transfer progress.
     TransferProgress {

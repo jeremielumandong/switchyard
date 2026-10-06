@@ -180,6 +180,41 @@ impl RemoteFs for SftpFs {
         })
     }
 
+    fn open_read_from<'a>(
+        &'a self,
+        path: &'a Path,
+        offset: u64,
+    ) -> BoxFuture<'a, Result<FsReader, FsError>> {
+        Box::pin(async move {
+            use tokio::io::AsyncSeekExt as _;
+            let mut f = self.sftp.open(posix(path)).await.map_err(err)?;
+            f.seek(std::io::SeekFrom::Start(offset)).await?;
+            Ok(Box::new(f) as FsReader)
+        })
+    }
+
+    fn open_write_from<'a>(
+        &'a self,
+        path: &'a Path,
+        offset: u64,
+    ) -> BoxFuture<'a, Result<FsWriter, FsError>> {
+        Box::pin(async move {
+            use tokio::io::AsyncSeekExt as _;
+            let f = self
+                .sftp
+                .open_with_flags(posix(path), OpenFlags::CREATE | OpenFlags::WRITE)
+                .await
+                .map_err(err)?;
+            // Drop anything past the resume point (an interrupted write).
+            let mut attrs = FileAttributes::empty();
+            attrs.size = Some(offset);
+            f.set_metadata(attrs).await.map_err(err)?;
+            let mut f = f;
+            f.seek(std::io::SeekFrom::Start(offset)).await?;
+            Ok(Box::new(f) as FsWriter)
+        })
+    }
+
     fn create<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<FsWriter, FsError>> {
         Box::pin(async move {
             let f = self
