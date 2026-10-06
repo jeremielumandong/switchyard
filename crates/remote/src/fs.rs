@@ -15,7 +15,18 @@ pub enum FsError {
     /// Not supported by this backend.
     #[error("not supported: {0}")]
     Unsupported(&'static str),
+    /// The server refused or failed (SFTP status, connection lost).
+    #[error("{0}")]
+    Remote(String),
+    /// The file is larger than the caller allows (editing).
+    #[error("{0} is too large to open here ({1} bytes)")]
+    TooLarge(String, u64),
 }
+
+/// A file opened for reading.
+pub type FsReader = Box<dyn tokio::io::AsyncRead + Send + Unpin>;
+/// A file opened for writing.
+pub type FsWriter = Box<dyn tokio::io::AsyncWrite + Send + Unpin>;
 
 /// Kind of directory entry.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +100,81 @@ pub trait RemoteFs: Send + Sync {
     fn rename<'a>(&'a self, from: &'a Path, to: &'a Path) -> BoxFuture<'a, Result<(), FsError>>;
     /// Delete a file or empty directory.
     fn delete<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<(), FsError>>;
+    /// One entry's details (following links).
+    fn stat<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<FileEntry, FsError>>;
+    /// Open a file for reading.
+    fn open_read<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<FsReader, FsError>>;
+    /// Create (or truncate) a file for writing.
+    fn create<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<FsWriter, FsError>>;
+
+    /// Read a whole file, refusing files over `max` bytes.
+    fn read_file<'a>(
+        &'a self,
+        path: &'a Path,
+        max: u64,
+    ) -> BoxFuture<'a, Result<Vec<u8>, FsError>> {
+        Box::pin(async move {
+            use tokio::io::AsyncReadExt as _;
+            let meta = self.stat(path).await?;
+            if meta.size > max {
+                return Err(FsError::TooLarge(meta.name, meta.size));
+            }
+            let mut r = self.open_read(path).await?;
+            let mut out = Vec::with_capacity(meta.size as usize);
+            (&mut r).take(max + 1).read_to_end(&mut out).await?;
+            if out.len() as u64 > max {
+                return Err(FsError::TooLarge(meta.name, out.len() as u64));
+            }
+            Ok(out)
+        })
+    }
+
+    /// Replace a file's contents.
+    fn write_file<'a>(
+        &'a self,
+        path: &'a Path,
+        data: &'a [u8],
+    ) -> BoxFuture<'a, Result<(), FsError>> {
+        Box::pin(async move {
+            use tokio::io::AsyncWriteExt as _;
+            let mut w = self.create(path).await?;
+            w.write_all(data).await?;
+            w.shutdown().await?;
+            Ok(())
+        })
+    }
+}
+
+/// The last part of a path, as a display name.
+pub fn file_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+fn local_entry(path: &Path, meta: &std::fs::Metadata, kind: EntryKind) -> FileEntry {
+    #[cfg(unix)]
+    let mode = {
+        use std::os::unix::fs::PermissionsExt;
+        Some(meta.permissions().mode() & 0o777)
+    };
+    #[cfg(not(unix))]
+    let mode = None;
+    FileEntry {
+        name: file_name(path),
+        size: if kind == EntryKind::Dir {
+            0
+        } else {
+            meta.len()
+        },
+        kind,
+        modified_ms: meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64),
+        mode,
+    }
 }
 
 /// The local file system.
@@ -186,6 +272,26 @@ impl RemoteFs for LocalFs {
             }
             Ok(())
         })
+    }
+
+    fn stat<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<FileEntry, FsError>> {
+        Box::pin(async move {
+            let meta = tokio::fs::metadata(path).await?;
+            let kind = if meta.is_dir() {
+                EntryKind::Dir
+            } else {
+                EntryKind::File
+            };
+            Ok(local_entry(path, &meta, kind))
+        })
+    }
+
+    fn open_read<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<FsReader, FsError>> {
+        Box::pin(async move { Ok(Box::new(tokio::fs::File::open(path).await?) as FsReader) })
+    }
+
+    fn create<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<FsWriter, FsError>> {
+        Box::pin(async move { Ok(Box::new(tokio::fs::File::create(path).await?) as FsWriter) })
     }
 }
 

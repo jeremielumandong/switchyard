@@ -224,19 +224,22 @@ Exit: integrated auth works on a Linux machine that started without Kerberos lib
 
 Exit: resume an interrupted 1 GB upload.
 
-- [ ] **M4-1 RemoteFs trait.** List, stat, read/write streams, rename, delete, mkdir, chmod, with
+- [x] **M4-1 RemoteFs trait.** List, stat, read/write streams, rename, delete, mkdir, chmod, with
   implementations for local and SFTP (`russh-sftp` on the Host session).
   Done when: shared test suite passes for local and SFTP.
+  Note: `RemoteFs` gained stat, read/write streams and whole-file read/write; `SftpFs` (russh-sftp) runs on the Host's shared session. Shared suite: local unit test + SFTP integration test (listing, overwrite, size cap, 3 MB stream, rename, delete). chmod deferred.
 - [ ] **M4-2 FTP/FTPS.** `suppaftp` implementation of `RemoteFs`; explicit and implicit TLS;
   passive and active modes.
   Done when: shared test suite passes against the docker FTP server.
 - [ ] **M4-3 Transfer queue.** Parallel transfers (default 4), pause, resume, retry; resume from
   offset (SFTP) and REST (FTP); progress, speed, ETA events.
   Done when: a killed 1 GB upload resumes from its last byte.
+  Note: Partial (user request): transfers with progress, cancel (partial file removed), recursive folders, conflict policy (ask / replace / keep both). Queue limits, pause, resume from offset still to do.
 - [ ] **M4-4 Files tab UI.** Dual pane, breadcrumbs, sortable columns, hidden-file toggle, drag and
   drop between panes and from the OS, transfer drawer.
   Done when: all states from SPEC "Files tab" are reachable.
-- [ ] **M4-5 Remote edit.** Open remote file in the editor; save uploads after an mtime conflict
+  Note: Partial (user request): the sidebar's second tab becomes Files for the active SSH terminal or remote file (browse, hidden toggle, OS drop to upload, Upload picker, download to ~/Downloads, delete, transfers with progress). Dual-pane tab, sorting, breadcrumbs still to do.
+- [x] **M4-5 Remote edit.** Open remote file in the editor; save uploads after an mtime conflict
   check with a resolve dialog.
   Done when: conflict is detected when the remote file changes during editing.
 
@@ -245,6 +248,7 @@ Exit: resume an interrupted 1 GB upload.
 Exit: from a slow query, Optimize produces a rewrite or index whose compared plan is measurably
 faster, and no agent call ever performed a write.
 
+  Note: Remote files open in an editor tab (5 MB cap, text only); Ctrl/Cmd+S saves over SFTP after an mtime check; a conflict offers Overwrite or Discard and reload. Checked in the app and in `core/tests/ssh_files.rs`.
 - [ ] **M5-1 Plan model.** `switchyard-plan` crate with `PlanNode` (operation, object, estimated and
   actual rows, loops, cost, self and total time, I/O, predicates, warnings) and `Plan` metadata.
   Done when: unit tests build trees by hand and compute self time correctly.

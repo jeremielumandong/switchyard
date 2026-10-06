@@ -647,10 +647,22 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let side = self.side_tab;
-        let list: AnyElement = match side {
-            SideTab::Connections => self.render_conn_list(p, cx),
-            SideTab::Schema => self.render_schema(p, cx),
+        // With an SSH terminal in front, the second tab browses that Host's files.
+        let ssh = self.active_ssh_host(cx);
+        let list: AnyElement = match (side, &ssh) {
+            (SideTab::Connections, _) => self.render_conn_list(p, cx),
+            (SideTab::Schema, Some(host)) => {
+                let name = self
+                    .profiles
+                    .host(host)
+                    .map(|h| h.name.clone())
+                    .unwrap_or_default();
+                let panel = self.remote_files_for(host, cx);
+                panel.update(cx, |f, cx| f.render_panel(&name, cx))
+            }
+            (SideTab::Schema, None) => self.render_schema(p, cx),
         };
+        let second = if ssh.is_some() { "Files" } else { "Schema" };
         div()
             .w(px(264.))
             .flex_none()
@@ -678,7 +690,7 @@ impl Workspace {
                                 })),
                             ),
                             (
-                                "Schema".into(),
+                                second.into(),
                                 side == SideTab::Schema,
                                 Box::new(cx.listener(|this, _, _, cx| {
                                     this.side_tab = SideTab::Schema;

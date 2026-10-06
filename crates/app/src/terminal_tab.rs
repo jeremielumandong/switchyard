@@ -130,6 +130,15 @@ impl TerminalTab {
     }
 
     /// Whether the tab is an SSH terminal (vs. a local shell).
+    /// The Host this terminal is on, if remote.
+    pub fn host(&self) -> Option<&ProfileId> {
+        match &self.target {
+            TermTarget::Host(h) => Some(h),
+            TermTarget::Local { .. } => None,
+        }
+    }
+
+    /// Whether the shell runs on a Host.
     pub fn is_remote(&self) -> bool {
         matches!(self.target, TermTarget::Host(_))
     }
