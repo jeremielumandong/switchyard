@@ -483,3 +483,13 @@ the rev with it (Cargo warns "patch not used" until then).
 - The right-hand value inspector can be resized by dragging its left edge (min 240 px, at
   least 420 px left for the rest) and toggled between its default 300 px and half the
   window with a header button. The width is saved as the `inspector.width` setting.
+
+## 2026-10-06 — Windows installer is per-user (no administrator rights)
+
+User request: install without admin access. The NSIS installer now runs `asInvoker`
+(`RequestExecutionLevel user`), installs to `%LOCALAPPDATA%\Programs\Switchyard`, registers
+its uninstaller under `HKCU\...\Uninstall`, creates Start-menu and desktop shortcuts for the
+current user, and adds `swy` to the user PATH (`HKCU\Environment`, via `path.ps1`). If an
+all-users copy from an earlier per-machine installer exists (HKLM uninstall key), the installer
+says so and installs alongside it; removing that copy still needs an administrator. An
+all-users option (MSI for GPO, or an NSIS MultiUser mode) can come back with M6-2 if needed.
