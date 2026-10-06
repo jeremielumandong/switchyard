@@ -278,6 +278,8 @@ impl SqlTab {
         if let Some(c) = connection {
             tab.set_connection(Some(c), cx);
         }
+        // Folds (and diagnostics) for a restored buffer, which fires no change event.
+        tab.schedule_lint(window, cx);
         tab
     }
 
@@ -428,7 +430,9 @@ impl SqlTab {
     fn lint_now(&mut self, cx: &mut Context<Self>) {
         let text = self.editor.read(cx).value().to_string();
         let diags = parse_diagnostics(self.dialect(), &text);
+        let folds = crate::folds::sql_folds(self.dialect(), &text);
         self.editor.update(cx, |state, cx| {
+            state.apply_highlighter_fold_candidates(folds, cx);
             if let Some(set) = state.diagnostics_mut() {
                 set.clear();
                 for d in diags {
