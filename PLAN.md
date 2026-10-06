@@ -191,6 +191,17 @@ Exit: integrated auth works on a Linux machine that started without Kerberos lib
 - [ ] **M3-8 Certificates.** Corporate CA import (OS stores and file) and per-connection
   certificate pinning.
   Done when: connects to a server with a self-signed cert only after pinning.
+- [ ] **M3-9 Azure SQL with Entra ID (user request).** Interactive (auth code + PKCE) and
+  device-code sign-in with MFA, password and service principal; tokens passed to tiberius as
+  `AADToken`; refresh tokens in the keychain. See DECISIONS 2026-10-06.
+  Done when: connect to an Azure SQL database with an MFA-enabled account.
+
+## Extra — Cloudflare D1 (user request)
+
+- [x] **D1-1 Cloudflare D1 engine.** REST `raw` endpoint, SQLite dialect, type inference,
+  catalog, connection editor.
+  Note: tests run against a local stand-in (`crates/db/tests/d1.rs`); the real API was
+  reached and its auth error parsed, but no query has run against a real D1 database yet. No transactions or inline editing (see DECISIONS).
 
 ## M4 — File transfer
 

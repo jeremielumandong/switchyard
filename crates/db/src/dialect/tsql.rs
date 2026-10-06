@@ -278,6 +278,10 @@ impl Dialect for TSqlDialect {
     fn functions(&self) -> &'static [&'static str] {
         TSQL_FUNCTIONS
     }
+
+    fn default_schema(&self) -> &'static str {
+        "dbo"
+    }
 }
 
 #[cfg(test)]

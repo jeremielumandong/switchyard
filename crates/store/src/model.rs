@@ -494,6 +494,26 @@ impl Profile {
                     ));
                 }
             }
+            Profile::Db(d) if d.engine.is_cloud_api() => {
+                if d.server.trim().is_empty() {
+                    return Err(ValidationError::new("server", "Account ID is required"));
+                }
+                if d.database.trim().is_empty() {
+                    return Err(ValidationError::new("database", "Database ID is required"));
+                }
+                if d.via_host.is_some() {
+                    return Err(ValidationError::new(
+                        "via_host",
+                        "Cloud databases are reached over HTTPS, not through a Host",
+                    ));
+                }
+                if d.fetch_limit == Some(0) {
+                    return Err(ValidationError::new(
+                        "fetch_limit",
+                        "Fetch limit must be positive",
+                    ));
+                }
+            }
             Profile::Db(d) => {
                 if d.server.trim().is_empty() {
                     return Err(ValidationError::new("server", "Server is required"));
@@ -599,6 +619,16 @@ mod tests {
         h.auth = SshAuth::Agent;
         h.jump_hosts = vec![h.id.clone()];
         assert_eq!(Profile::Host(h).validate().unwrap_err().field, "jump_hosts");
+
+        let mut cf = DbConnection::new("edge", Engine::D1);
+        cf.server = "0123abcd".into();
+        cf.database.clear();
+        assert_eq!(
+            Profile::Db(cf.clone()).validate().unwrap_err().field,
+            "database"
+        );
+        cf.database = "9f1c-uuid".into();
+        assert!(Profile::Db(cf).validate().is_ok(), "D1 needs no user");
 
         let mut d = DbConnection::new("shop", Engine::Postgres);
         d.user = "app".into();

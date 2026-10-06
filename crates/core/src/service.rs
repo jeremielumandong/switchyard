@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use secrecy::SecretString;
+use switchyard_db::d1::D1Driver;
 use switchyard_db::guard;
 use switchyard_db::pg::PgDriver;
 use switchyard_db::{
@@ -133,6 +134,7 @@ impl Service {
         info!(backend = secrets.backend(), "secret backend selected");
         let mut drivers: HashMap<Engine, Arc<dyn Driver>> = HashMap::new();
         drivers.insert(Engine::Postgres, Arc::new(PgDriver));
+        drivers.insert(Engine::D1, Arc::new(D1Driver::default()));
         for (engine, d) in config.extra_drivers {
             drivers.insert(engine, d);
         }

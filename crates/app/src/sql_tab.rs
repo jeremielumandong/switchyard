@@ -646,6 +646,14 @@ impl SqlTab {
 
     /// Switch between auto-commit and manual transactions.
     pub fn set_manual(&mut self, manual: bool, cx: &mut Context<Self>) {
+        let engine = self.dialect().engine();
+        if manual && !engine.supports_transactions() {
+            cx.emit(SqlTabEvent::Toast(format!(
+                "{} runs every statement on its own; manual transactions are not available",
+                engine.display_name()
+            )));
+            return;
+        }
         if !manual && self.txn_open {
             cx.emit(SqlTabEvent::Toast(
                 "Commit or roll back the open transaction first".into(),
@@ -1774,10 +1782,7 @@ pub struct EditState {
 
 impl SqlTab {
     fn default_schema(&self) -> &'static str {
-        match self.connection.as_ref().map(|c| c.engine) {
-            Some(Engine::SqlServer) => "dbo",
-            _ => "public",
-        }
+        self.dialect().default_schema()
     }
 
     /// Start editing a cell (double click).
