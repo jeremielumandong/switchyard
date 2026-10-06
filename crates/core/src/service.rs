@@ -664,7 +664,11 @@ impl Service {
                     Err(e) => self.error("Export", e),
                 }
             }
-            Command::ImportSshConfig => match self.import_ssh_config().await {
+            Command::PreviewSshConfig => match self.preview_ssh_config().await {
+                Ok((path, hosts)) => self.emit(Event::SshConfigPreview { path, hosts }),
+                Err(e) => self.error("Read ssh config", e),
+            },
+            Command::ImportSshConfig { only } => match self.import_ssh_config(only).await {
                 Ok(0) => self.emit(Event::Toast("No new Hosts found in ~/.ssh/config".into())),
                 Ok(n) => {
                     self.emit(Event::Toast(format!(
@@ -872,7 +876,7 @@ impl Service {
         self.emit(Event::Components(comps));
     }
 
-    async fn import_ssh_config(&self) -> Result<usize> {
+    async fn read_ssh_config(&self) -> Result<(PathBuf, Vec<switchyard_remote::SshConfigHost>)> {
         let home = std::env::var_os("HOME")
             .or_else(|| std::env::var_os("USERPROFILE"))
             .ok_or_else(|| CoreError::NotFound("home directory".into()))?;
@@ -880,74 +884,49 @@ impl Service {
         let text = tokio::fs::read_to_string(&path)
             .await
             .map_err(|e| CoreError::Store(StoreError::Io(e)))?;
-        let parsed = switchyard_remote::parse_ssh_config(&text);
-        self.with_store(move |s| {
-            let existing = s.profiles()?;
-            let mut by_alias: HashMap<String, ProfileId> = existing
-                .iter()
+        Ok((path, switchyard_remote::parse_ssh_config(&text)))
+    }
+
+    fn default_ssh_user() -> String {
+        std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .unwrap_or_else(|_| "root".into())
+    }
+
+    async fn saved_host_names(&self) -> Result<HashMap<String, ProfileId>> {
+        self.with_store(|s| {
+            Ok(s.profiles()?
+                .into_iter()
                 .filter_map(|p| match p {
-                    Profile::Host(h) => Some((h.name.clone(), h.id.clone())),
+                    Profile::Host(h) => Some((h.name, h.id)),
                     _ => None,
                 })
-                .collect();
-            // Create every new Host first, then wire ProxyJump references.
-            let mut created = Vec::new();
-            for h in &parsed {
-                if by_alias.contains_key(&h.alias) {
-                    continue;
-                }
-                let mut host = switchyard_store::Host::new(
-                    h.alias.clone(),
-                    h.hostname.clone(),
-                    h.user
-                        .clone()
-                        .unwrap_or_else(|| std::env::var("USER").unwrap_or_else(|_| "root".into())),
-                );
-                host.port = h.port.unwrap_or(22);
-                let agent = h
-                    .identity_agent
-                    .clone()
-                    .filter(|a| !a.eq_ignore_ascii_case("none"));
-                match (&agent, &h.identity_file) {
-                    // An agent (1Password, …): the IdentityFile, a `.pub`, picks its key.
-                    (Some(a), key) => {
-                        host.auth = switchyard_store::SshAuth::Agent;
-                        host.identity_agent = Some(a.clone());
-                        host.agent_key = key.clone().map(|k| {
-                            if k.ends_with(".pub") {
-                                k
-                            } else {
-                                format!("{k}.pub")
-                            }
-                        });
-                    }
-                    (None, Some(key)) if key.ends_with(".pub") => {
-                        host.auth = switchyard_store::SshAuth::Agent;
-                        host.agent_key = Some(key.clone());
-                    }
-                    (None, Some(key)) => {
-                        host.auth = switchyard_store::SshAuth::PublicKey {
-                            key_path: key.clone(),
-                        };
-                    }
-                    (None, None) => {}
-                }
-                by_alias.insert(h.alias.clone(), host.id.clone());
-                created.push((host, h.proxy_jump.clone()));
+                .collect())
+        })
+        .await
+    }
+
+    async fn preview_ssh_config(
+        &self,
+    ) -> Result<(PathBuf, Vec<crate::ssh_import::SshImportCandidate>)> {
+        let (path, parsed) = self.read_ssh_config().await?;
+        let saved: std::collections::HashSet<String> =
+            self.saved_host_names().await?.into_keys().collect();
+        let hosts = crate::ssh_import::candidates(&parsed, &saved, &Self::default_ssh_user());
+        Ok((path, hosts))
+    }
+
+    async fn import_ssh_config(&self, only: Option<Vec<String>>) -> Result<usize> {
+        let (_, parsed) = self.read_ssh_config().await?;
+        let saved = self.saved_host_names().await?;
+        let only: Option<std::collections::HashSet<String>> = only.map(|o| o.into_iter().collect());
+        let hosts =
+            crate::ssh_import::plan(&parsed, &saved, only.as_ref(), &Self::default_ssh_user());
+        self.with_store(move |s| {
+            for h in &hosts {
+                s.save_profile(&Profile::Host(h.clone()))?;
             }
-            for (host, _) in &created {
-                s.save_profile(&Profile::Host(host.clone()))?;
-            }
-            for (mut host, jumps) in created.clone() {
-                host.jump_hosts = jumps
-                    .iter()
-                    .filter_map(|j| by_alias.get(j).cloned())
-                    .collect();
-                if !host.jump_hosts.is_empty() {
-                    s.save_profile(&Profile::Host(host))?;
-                }
-            }
-            Ok(created.len())
+            Ok(hosts.len())
         })
         .await
     }
