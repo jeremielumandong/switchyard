@@ -466,3 +466,71 @@ async fn catalog_of_the_sample_schema() {
             .any(|c| c.table == "customers" && c.name == "email")
     );
 }
+
+/// Records what the driver asked for and hands back a token the server can't accept.
+struct FakeKerberos(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+struct FakeStep(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl switchyard_db::SecurityContext for FakeStep {
+    fn step(&mut self, input: Option<&[u8]>) -> Result<Option<Vec<u8>>, String> {
+        self.0
+            .lock()
+            .unwrap()
+            .push(format!("step {}", input.map_or(0, <[u8]>::len)));
+        // An RFC 2743 initial-context token header around junk.
+        Ok(Some(vec![0x60, 0x06, 0x06, 0x01, 0x00, 0x00, 0x00, 0x00]))
+    }
+}
+
+impl switchyard_db::SecurityProvider for FakeKerberos {
+    fn start(&self, spn: &str) -> Result<Box<dyn switchyard_db::SecurityContext>, String> {
+        self.0.lock().unwrap().push(format!("start {spn}"));
+        Ok(Box::new(FakeStep(self.0.clone())))
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs SQL Server"]
+async fn integrated_auth_sends_the_providers_token_in_the_login() {
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut cfg = config("master");
+    cfg.auth = switchyard_db::DbAuthMethod::Integrated;
+    cfg.password = None;
+    cfg.security = Some(std::sync::Arc::new(FakeKerberos(seen.clone())));
+    let err = match MssqlDriver.connect(&cfg, None).await {
+        Ok(_) => panic!("a junk token must not sign in"),
+        Err(e) => e.to_string(),
+    };
+    let seen = seen.lock().unwrap().clone();
+    // The service name comes from the configured server, and the token went out in LOGIN7.
+    assert_eq!(
+        seen.first().map(String::as_str),
+        Some("start MSSQLSvc/localhost:1433")
+    );
+    assert_eq!(seen.get(1).map(String::as_str), Some("step 0"));
+    // The server answers with a login failure, not a protocol error or a hang.
+    let lower = err.to_lowercase();
+    assert!(
+        lower.contains("login") || lower.contains("sspi") || lower.contains("security"),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs SQL Server"]
+async fn windows_account_runs_ntlm_and_the_server_refuses_an_unknown_domain() {
+    let mut cfg = config("master");
+    cfg.auth = switchyard_db::DbAuthMethod::WindowsPassword;
+    cfg.user = "SWITCHYARD\\nobody".into();
+    cfg.password = Some(SecretString::from("not-a-real-password".to_owned()));
+    let err = match MssqlDriver.connect(&cfg, None).await {
+        Ok(_) => panic!("an unknown domain account must not sign in"),
+        Err(e) => e.to_string(),
+    };
+    let lower = err.to_lowercase();
+    assert!(
+        lower.contains("login") || lower.contains("domain") || lower.contains("sspi"),
+        "{err}"
+    );
+}

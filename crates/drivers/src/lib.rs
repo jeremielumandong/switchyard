@@ -8,6 +8,7 @@
 pub mod archive;
 pub mod detect;
 pub mod error;
+pub mod gssapi;
 pub mod install;
 pub mod manifest;
 pub mod registry;

@@ -131,7 +131,7 @@ pin them in `[workspace.dependencies]`.
 | UI | `gpui`, `gpui-component` (versions must match each other) |
 | Async | `tokio`, `tokio-util` (compat for tiberius), `futures` |
 | PostgreSQL | `tokio-postgres`, `tokio-postgres-rustls`, `postgres-types` |
-| SQL Server | `tiberius` (rustls feature) |
+| SQL Server | `tiberius` (vendored; rustls, `winauth`, `sspi-rs` features → `winauth`, `sspi`) |
 | SSH / SFTP | `russh`, `russh-sftp` |
 | FTP / FTPS | `suppaftp` (async + rustls) |
 | Terminal | `alacritty_terminal`, `portable-pty` |
@@ -184,8 +184,19 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
   matching `gpui` version before bumping either.
 - `tiberius` takes a `futures` AsyncRead/AsyncWrite stream: wrap tokio streams with
   `tokio_util::compat` (`compat_write()`).
-- `tiberius`'s `integrated-auth-gssapi` feature links GSSAPI at build time, which conflicts with
-  the runtime-loading rule. See PLAN task M3-7 before enabling it.
+- `tiberius` is vendored (`vendor/tiberius`, patched via `[patch.crates-io]`) for the
+  `AuthMethod::External` hook; read `vendor/tiberius/VENDORED.md` before updating it. Never
+  enable its `integrated-auth-gssapi` feature (links GSSAPI at build time); Kerberos goes
+  through `switchyard_drivers::gssapi`.
+- `sspi` 0.18 (tiberius's pin) conflicts with russh over a `crypto-bigint` pre-release, so the
+  vendored manifest uses 0.23; `picky-krb` 0.12.5 breaks `sspi` 0.23, so the lockfile pins 0.12.4.
+- Apple's GSS headers pack `gss_OID_desc` / `gss_buffer_desc` to 2 bytes; MIT's Linux headers
+  don't. The FFI structs in `drivers/src/gssapi.rs` follow that per platform.
+- Kerberos needs the server's real name: the SPN is `MSSQLSvc/<server>:<port>` from the
+  profile (not the tunnel's 127.0.0.1), so users must enter the FQDN, not an IP.
+- `cargo test` exports `SSL_CERT_DIR` (the system store) to tests; a test that passes under cargo
+  can fail TLS in the app or a bare binary. Point `SSL_CERT_FILE` at a test CA instead of
+  installing it system-wide (that breaks `untrusted_certificate_is_refused`).
 - PostgreSQL cancel opens a second connection to the server. Through an SSH tunnel it must use the
   same tunnel endpoint.
 - For SSH terminals, feed channel bytes into `alacritty_terminal`'s `Term` through its ANSI parser.

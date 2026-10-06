@@ -999,14 +999,49 @@ impl ConnEditor {
                 ));
             }
             ConnKind::SqlServer => {
+                let auth = auth_from_key(&self.chosen("auth"));
+                let server_hint = (auth == DbAuthMethod::Integrated).then_some(
+                    "Full host name (db.corp.example.com): Kerberos looks up MSSQLSvc/<server>:<port>",
+                );
                 v.push(self.field("name", "Name", 6, false, None, p, cx));
-                v.push(self.field("host", "Server", 4, true, None, p, cx));
+                v.push(self.field("host", "Server", 4, true, server_hint, p, cx));
                 v.push(self.field("port", "Port", 2, true, None, p, cx));
                 v.push(self.field("database", "Database", 3, false, None, p, cx));
-                v.push(self.field("auth", "Authentication", 3, false, None, p, cx));
-                let auth = auth_from_key(&self.chosen("auth"));
+                v.push(self.field(
+                    "auth",
+                    "Authentication",
+                    3,
+                    false,
+                    (auth == DbAuthMethod::Integrated).then_some(if cfg!(windows) {
+                        "Signs in as the current Windows user"
+                    } else {
+                        "Uses your Kerberos ticket (kinit or your desktop's sign-in)"
+                    }),
+                    p,
+                    cx,
+                ));
                 match auth {
                     DbAuthMethod::Integrated => {}
+                    DbAuthMethod::WindowsPassword => {
+                        v.push(self.field(
+                            "user",
+                            "Windows account",
+                            3,
+                            false,
+                            Some("DOMAIN\\user"),
+                            p,
+                            cx,
+                        ));
+                        v.push(self.field(
+                            "password",
+                            "Password",
+                            3,
+                            false,
+                            Some("Stored in the OS keychain"),
+                            p,
+                            cx,
+                        ));
+                    }
                     DbAuthMethod::EntraInteractive | DbAuthMethod::EntraDeviceCode => {
                         v.push(self.field(
                             "user",
@@ -1510,13 +1545,14 @@ impl Render for ConnEditor {
 }
 
 /// SQL Server authentication choices: (select key, method), in menu order.
-const MSSQL_AUTH: [(&str, DbAuthMethod); 6] = [
+const MSSQL_AUTH: [(&str, DbAuthMethod); 7] = [
     ("password", DbAuthMethod::Password),
     ("entra-interactive", DbAuthMethod::EntraInteractive),
     ("entra-device", DbAuthMethod::EntraDeviceCode),
     ("entra-password", DbAuthMethod::EntraPassword),
     ("entra-sp", DbAuthMethod::EntraServicePrincipal),
     ("integrated", DbAuthMethod::Integrated),
+    ("windows", DbAuthMethod::WindowsPassword),
 ];
 
 fn auth_key(m: DbAuthMethod) -> &'static str {

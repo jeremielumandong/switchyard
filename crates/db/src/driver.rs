@@ -74,8 +74,12 @@ pub enum DbAuthMethod {
     /// User name and password.
     #[default]
     Password,
-    /// Integrated (Kerberos / Active Directory) authentication.
+    /// Integrated authentication as the signed-in user: Windows SSPI, or Kerberos (a
+    /// `kinit` ticket) on Linux and macOS.
     Integrated,
+    /// A Windows / Active Directory account given as `DOMAIN\user` and password (SSPI on
+    /// Windows, NTLM elsewhere).
+    WindowsPassword,
     /// Microsoft Entra ID: sign in through the system browser (MFA, conditional access).
     EntraInteractive,
     /// Microsoft Entra ID: enter a code at microsoft.com/devicelogin on any device (MFA).
@@ -102,7 +106,10 @@ impl DbAuthMethod {
     pub fn uses_secret(self) -> bool {
         matches!(
             self,
-            Self::Password | Self::EntraPassword | Self::EntraServicePrincipal
+            Self::Password
+                | Self::WindowsPassword
+                | Self::EntraPassword
+                | Self::EntraServicePrincipal
         )
     }
 
@@ -110,13 +117,27 @@ impl DbAuthMethod {
     pub fn label(self) -> &'static str {
         match self {
             Self::Password => "SQL login",
-            Self::Integrated => "Integrated (Kerberos / AD)",
+            Self::Integrated => "Integrated (current user)",
+            Self::WindowsPassword => "Windows account (DOMAIN\\user)",
             Self::EntraInteractive => "Microsoft Entra · browser (MFA)",
             Self::EntraDeviceCode => "Microsoft Entra · device code (MFA)",
             Self::EntraPassword => "Microsoft Entra · password",
             Self::EntraServicePrincipal => "Microsoft Entra · service principal",
         }
     }
+}
+
+/// One client-side security handshake (e.g. Kerberos through GSSAPI): each step takes the
+/// server's last token, none at first, and returns the next token to send.
+pub trait SecurityContext: Send {
+    /// One step.
+    fn step(&mut self, input: Option<&[u8]>) -> std::result::Result<Option<Vec<u8>>, String>;
+}
+
+/// Starts security handshakes for a service principal name such as `MSSQLSvc/db:1433`.
+pub trait SecurityProvider: Send + Sync {
+    /// A new handshake with `spn`.
+    fn start(&self, spn: &str) -> std::result::Result<Box<dyn SecurityContext>, String>;
 }
 
 /// Everything a driver needs to connect. Built by core from a saved profile and the
@@ -151,6 +172,9 @@ pub struct DbConfig {
     /// Extra certificate authority (PEM) trusted for this connection only, e.g. a
     /// company CA or a pinned self-signed server certificate. Verification stays on.
     pub trusted_ca_pem: Option<String>,
+    /// Integrated authentication through a library loaded at runtime (Kerberos on Linux and
+    /// macOS); set by core for [`DbAuthMethod::Integrated`] where needed.
+    pub security: Option<std::sync::Arc<dyn SecurityProvider>>,
 }
 
 impl DbConfig {
@@ -170,6 +194,7 @@ impl DbConfig {
             read_only: false,
             application_name: "Switchyard".into(),
             trusted_ca_pem: None,
+            security: None,
         }
     }
 }

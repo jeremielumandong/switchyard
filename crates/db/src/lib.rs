@@ -30,7 +30,8 @@ pub use catalog::{
 };
 pub use dialect::{Dialect, ParamRef, ParamStyle, StatementSpan, dialect_for};
 pub use driver::{
-    CancelHandle, ComponentId, DbAuthMethod, DbConfig, DbSession, Driver, SslMode, TunnelEndpoint,
+    CancelHandle, ComponentId, DbAuthMethod, DbConfig, DbSession, Driver, SecurityContext,
+    SecurityProvider, SslMode, TunnelEndpoint,
 };
 pub use error::{DbError, ErrorPosition, Result, ServerError};
 pub use stream::{Completion, Notice, ResultEvent, ResultStream};

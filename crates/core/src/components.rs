@@ -74,6 +74,40 @@ impl Fetcher for HttpFetcher {
 }
 
 /// Outcome of an install, as the UI shows it.
+/// Kerberos through the Driver Manager's runtime-loaded GSSAPI, for SQL Server integrated
+/// auth on Linux and macOS.
+pub(crate) struct Kerberos(pub(crate) switchyard_drivers::gssapi::Gssapi);
+
+struct KerberosStep(switchyard_drivers::gssapi::KerberosContext);
+
+impl switchyard_db::SecurityContext for KerberosStep {
+    fn step(&mut self, input: Option<&[u8]>) -> Result<Option<Vec<u8>>, String> {
+        self.0.step(input)
+    }
+}
+
+impl switchyard_db::SecurityProvider for Kerberos {
+    fn start(&self, spn: &str) -> Result<Box<dyn switchyard_db::SecurityContext>, String> {
+        Ok(Box::new(KerberosStep(self.0.client(spn)?)))
+    }
+}
+
+/// GSSAPI from the Driver Manager, or why integrated auth can't be used here.
+pub(crate) async fn kerberos(
+    registry: &Arc<Registry>,
+) -> std::result::Result<Kerberos, switchyard_db::DbError> {
+    let reg = registry.clone();
+    let loaded = tokio::task::spawn_blocking(move || reg.gssapi())
+        .await
+        .map_err(|e| switchyard_db::DbError::Connect(e.to_string()))?;
+    loaded.map(Kerberos).map_err(|e| {
+        warn!(error = %e, "gssapi unavailable");
+        switchyard_db::DbError::Unsupported(format!(
+            "integrated authentication needs Kerberos (GSSAPI): {e}. Install it from Settings → Drivers."
+        ))
+    })
+}
+
 pub(crate) fn failure_event(id: &str, e: &DriverError) -> Event {
     Event::ComponentFailed {
         id: id.to_owned(),
