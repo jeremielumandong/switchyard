@@ -186,17 +186,20 @@ Exit: integrated auth works on a Linux machine that started without Kerberos lib
   error line mapping, `@name` parameters.
   Done when: splitter and catalog snapshot tests pass.
   Note: T-SQL dialect with `@name` → `@Pn` binding; catalog on sys views (folders, columns, PK/identity, indexes, FKs, constraints, triggers, generated DDL); insta snapshots for dbo objects and DDL. Core registers the driver; the connection editor tests SQL Server connections. CI job `integration (SQL Server)` via scripts/mssql-test-server.sh.
-- [ ] **M3-4 Driver Manager core.** Manifest format (see SPEC example), signed manifest
+- [x] **M3-4 Driver Manager core.** Manifest format (see SPEC example), signed manifest
   verification (`minisign-verify`), detection (paths, env vars, app dir, minimum version),
   app-managed directory, component registry, runtime loading via `libloading`.
   Done when: tests cover detect-present, detect-missing, bad signature, bad checksum.
-- [ ] **M3-5 Install strategies.** Archive download, verify, extract to
+  Note: Manifest (bundled, or minisign-verified download), detection (user path, app dir with minimum version, builtin, env vars, system dirs), registry with persisted paths, `libloading`. Tests: detect present/missing/too old, bad signature, other key, bad checksum, real library load. Deferred: fetching the manifest from the update server (needs the signing key and URL).
+- [x] **M3-5 Install strategies.** Archive download, verify, extract to
   `<data_dir>/switchyard/drivers/<component>/<version>/`; package-manager strategy showing the exact
   command and running it after confirmation with elevation; install from file; mirror setting.
   Done when: each strategy tested (package manager mocked in CI).
-- [ ] **M3-6 Driver UI.** Inline missing-component card in the connection editor (all states from
+  Note: Package (exact command, pkexec elevation, terminal fallback), archive (download with progress, SHA-256, safe tar.gz unpack, staging + rename), install from file, mirror setting. Package manager mocked in tests; archive flow also checked end to end in the app against a local server.
+- [x] **M3-6 Driver UI.** Inline missing-component card in the connection editor (all states from
   SPEC) and Settings → Drivers page.
   Done when: every state from the SPEC table is reachable and rendered.
+  Note: Card states: missing/outdated, license, needs admin (command + Copy), downloading with progress, verifying, unpacking, failed with retry, installed then automatic re-test; Use existing path and manual steps. Settings → Drivers lists status/version/location with Install, Remove, Show steps, Retry, install from file and mirror. Checked in the app (download progress only in tests: the local download finished too fast to capture).
 - [ ] **M3-7 Integrated auth.** Windows: SSPI via tiberius `winauth`. Linux/macOS: spike
   runtime-loaded GSSAPI versus tiberius `integrated-auth-gssapi` (build-time link); pick one,
   record it in `docs/DECISIONS.md`, implement with Driver Manager auto-setup on Linux.
@@ -339,6 +342,8 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 - Verify multi-cursor and folding in the gpui-component editor (M1-6).
 - Grid range selection and multi-cell TSV copy (M1-10); grid frame-time harness (M1-16).
 - XML and image value viewers (M1-11).
+- Driver Manager: fetch the signed manifest from the update server; zip archives (Oracle
+  Instant Client ships zip) once a zip reader is approved.
 - SQL Server: upstream tiberius patches for INFO tokens (notices) and reading the attention
   acknowledgement across a message boundary (would remove the reconnect after cancel).
 - Approval pending for `tokio-postgres-rustls`/`rustls-native-certs` and `lsp-types` (see DECISIONS).

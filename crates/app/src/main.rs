@@ -9,6 +9,7 @@ mod actions;
 mod app_state;
 mod completion;
 mod conn_editor;
+mod drivers_page;
 mod files_tab;
 mod grid;
 mod overlays;

@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "components": [
+    {
+      "id": "demo-client",
+      "name": "Demo client",
+      "needed_for": "Driver Manager tests",
+      "license": { "name": "Demo License", "accept_required": true },
+      "detect": { "libraries": ["libdemo.so"], "min_version": "2.0" },
+      "platforms": {
+        "linux": { "strategy": "archive", "version": "2.1", "url": "https://downloads.example.com/demo-2.1.tar.gz", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "size": 10, "lib_dir": "demo" }
+      }
+    }
+  ]
+}
