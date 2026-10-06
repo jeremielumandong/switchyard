@@ -343,6 +343,14 @@ impl Workspace {
                 ("-", "", false, "".into()),
                 ("drop", "Drop…", true, "".into()),
             ],
+            CtxTarget::Tab(_) => vec![
+                ("close", "Close", false, ui::keys("⌘W", "Ctrl+W")),
+                ("close_others", "Close others", false, "".into()),
+                ("close_right", "Close to the right", false, "".into()),
+                ("close_left", "Close to the left", false, "".into()),
+                ("-", "", false, "".into()),
+                ("close_all", "Close all", false, "".into()),
+            ],
             CtxTarget::Profile(_) => vec![
                 ("open", "Open", false, "↵".into()),
                 ("edit", "Edit…", false, "".into()),
@@ -429,6 +437,7 @@ impl Workspace {
             CtxTarget::Object(s, n, k) => {
                 self.object_action(action, s.clone(), n.clone(), *k, window, cx)
             }
+            CtxTarget::Tab(ix) => self.close_tabs(action, *ix, cx),
             CtxTarget::Profile(id) => match action {
                 "open" => self.open_profile(id, window, cx),
                 "edit" => {
