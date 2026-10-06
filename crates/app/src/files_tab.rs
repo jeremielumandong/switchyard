@@ -4,13 +4,13 @@
 
 use std::path::{Path, PathBuf};
 
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, AppContext as _, Context, Entity, EventEmitter, ExternalPaths, FocusHandle,
     Focusable, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _,
-    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window, deferred, div, px,
-    uniform_list,
+    Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+    deferred, div, px, uniform_list,
 };
 use switchyard_core::remote::{EntryKind, FileEntry};
 use switchyard_core::store::ProfileId;
@@ -171,6 +171,8 @@ pub struct FilesTab {
     hosts: Vec<(ProfileId, String)>,
     picker_open: bool,
     edit: Option<(usize, Edit, Entity<InputState>)>,
+    /// A pane's "go to folder" box while it is open.
+    goto: Option<(usize, Entity<InputState>, Subscription)>,
     confirm_delete: Option<usize>,
     op: Option<RequestId>,
     error: Option<String>,
@@ -214,6 +216,7 @@ impl FilesTab {
             hosts,
             picker_open: false,
             edit: None,
+            goto: None,
             confirm_delete: None,
             op: None,
             error: None,
@@ -301,6 +304,10 @@ impl FilesTab {
                         pane.path = Some(path.clone());
                         pane.entries = entries.clone();
                         pane.error = None;
+                    }
+                    // A folder that can't be opened leaves the current one on screen.
+                    Err(e) if pane.path.is_some() && pane.error.is_none() => {
+                        self.error = Some(format!("Can't open {}: {e}", path.to_string_lossy()));
                     }
                     Err(e) => pane.error = Some(e.clone()),
                 }
@@ -421,6 +428,56 @@ impl FilesTab {
         if let Some(up) = up {
             self.list(ix, Some(up), cx);
         }
+    }
+
+    fn open_goto(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.panes[ix]
+            .path
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Folder path, ~ or a subfolder")
+                .default_value(current)
+        });
+        let sub = cx.subscribe_in(
+            &input,
+            window,
+            move |this, input, ev: &InputEvent, _, cx| match ev {
+                InputEvent::PressEnter { .. } => {
+                    let typed = input.read(cx).value().trim().to_owned();
+                    this.goto = None;
+                    let pane = &this.panes[ix];
+                    let target = if typed.is_empty() {
+                        None
+                    } else if typed.starts_with('~')
+                        || typed.starts_with('/')
+                        || Path::new(&typed).is_absolute()
+                    {
+                        Some(PathBuf::from(&typed))
+                    } else {
+                        pane.path.as_deref().map(|d| pane.join(d, &typed))
+                    };
+                    if let Some(target) = target {
+                        this.error = None;
+                        this.list(ix, Some(target), cx);
+                    }
+                    cx.notify();
+                }
+                InputEvent::Blur => {
+                    this.goto = None;
+                    cx.notify();
+                }
+                _ => {}
+            },
+        );
+        input.update(cx, |i, cx| {
+            i.focus(window, cx);
+            i.select_all(window, cx);
+        });
+        self.goto = Some((ix, input, sub));
+        cx.notify();
     }
 
     fn start_edit(&mut self, ix: usize, rename: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -612,7 +669,13 @@ impl FilesTab {
                 )
             });
         let crumbs = pane.crumbs();
+        let goto = self
+            .goto
+            .as_ref()
+            .filter(|(i, ..)| *i == ix)
+            .map(|(_, input, _)| input.clone());
         let crumb_bar = div()
+            .id(SharedString::from(format!("f{ix}-path")))
             .h(px(26.))
             .flex_none()
             .px(px(10.))
@@ -624,25 +687,62 @@ impl FilesTab {
             .border_color(p.bd)
             .font_family(MONO)
             .text_size(px(11.))
-            .children(crumbs.into_iter().enumerate().map(|(i, (label, path))| {
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(2.))
-                    .when(i > 1, |d| d.child(div().text_color(p.fg3).child("/")))
+            .when_some(goto, |d, input| {
+                d.child(
+                    div()
+                        .flex_1()
+                        .h(px(20.))
+                        .flex()
+                        .items_center()
+                        .px(px(6.))
+                        .border_1()
+                        .border_color(p.acc)
+                        .rounded(px(4.))
+                        .child(Input::new(&input).appearance(false).text_size(px(11.5))),
+                )
+            })
+            .when(self.goto.as_ref().is_none_or(|(i, ..)| *i != ix), |d| {
+                d.cursor_text()
+                    .on_click(
+                        cx.listener(move |this, _, window, cx| this.open_goto(ix, window, cx)),
+                    )
+                    .children(crumbs.into_iter().enumerate().map(|(i, (label, path))| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(2.))
+                            .when(i > 1, |d| d.child(div().text_color(p.fg3).child("/")))
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("f{ix}-crumb-{i}")))
+                                    .px(px(3.))
+                                    .rounded(px(3.))
+                                    .text_color(p.fg2)
+                                    .hover(|s| s.bg(p.hover).text_color(p.fg))
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.list(ix, Some(path.clone()), cx)
+                                    }))
+                                    .child(label),
+                            )
+                    }))
+                    .child(div().flex_1().h_full())
                     .child(
                         div()
-                            .id(SharedString::from(format!("f{ix}-crumb-{i}")))
-                            .px(px(3.))
+                            .id(SharedString::from(format!("f{ix}-home")))
+                            .px(px(5.))
                             .rounded(px(3.))
-                            .text_color(p.fg2)
+                            .cursor_pointer()
+                            .text_color(p.fg3)
                             .hover(|s| s.bg(p.hover).text_color(p.fg))
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.list(ix, Some(path.clone()), cx)
+                                cx.stop_propagation();
+                                this.list(ix, Some(PathBuf::from("~")), cx)
                             }))
-                            .child(label),
+                            .child("~"),
                     )
-            }));
+            });
         let (by, asc) = pane.sort;
         let head = |id: &'static str, label: &'static str, col: SortBy| {
             let mark = if by == col {

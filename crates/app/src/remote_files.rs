@@ -4,11 +4,12 @@
 
 use std::path::{Path, PathBuf};
 
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, Context, Entity, EventEmitter, ExternalPaths, FontWeight, InteractiveElement as _,
-    IntoElement, ParentElement as _, PathPromptOptions, SharedString,
-    StatefulInteractiveElement as _, Styled as _, div, px, uniform_list,
+    AnyElement, AppContext as _, Context, Entity, EventEmitter, ExternalPaths, FontWeight,
+    InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px, uniform_list,
 };
 use switchyard_core::remote::{EntryKind, FileEntry};
 use switchyard_core::store::ProfileId;
@@ -48,6 +49,8 @@ pub struct RemoteFiles {
     confirm_delete: Option<String>,
     transfers: Entity<Transfers>,
     last_click: Option<(String, std::time::Instant)>,
+    /// The "go to folder" box while it is open.
+    goto: Option<(Entity<InputState>, Subscription)>,
 }
 
 impl EventEmitter<RemoteFilesEvent> for RemoteFiles {}
@@ -59,6 +62,32 @@ fn join(dir: &Path, name: &str) -> PathBuf {
     } else {
         format!("{d}/{name}")
     })
+}
+
+/// Where a typed folder points: absolute and `~` paths as typed (the runtime expands `~`
+/// and folds `..`), anything else relative to `dir`.
+pub(crate) fn typed_target(dir: Option<&Path>, typed: &str) -> Option<PathBuf> {
+    let t = typed.trim();
+    if t.is_empty() {
+        return None;
+    }
+    if t.starts_with('/') || t.starts_with('~') {
+        return Some(PathBuf::from(t));
+    }
+    Some(join(dir?, t))
+}
+
+/// `/`, `srv`, `app` with the path up to each (POSIX).
+fn crumbs(path: &Path) -> Vec<(String, PathBuf)> {
+    let s = path.to_string_lossy().replace('\\', "/");
+    let mut out = vec![("/".to_owned(), PathBuf::from("/"))];
+    let mut acc = String::new();
+    for part in s.split('/').filter(|p| !p.is_empty()) {
+        acc.push('/');
+        acc.push_str(part);
+        out.push((part.to_owned(), PathBuf::from(&acc)));
+    }
+    out
 }
 
 fn parent(dir: &Path) -> Option<PathBuf> {
@@ -111,6 +140,7 @@ impl RemoteFiles {
             confirm_delete: None,
             transfers,
             last_click: None,
+            goto: None,
         };
         this.list(None, cx);
         this
@@ -128,6 +158,44 @@ impl RemoteFiles {
             fs: self.fs(),
             path,
         });
+        cx.notify();
+    }
+
+    fn open_goto(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self
+            .path
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("/path, ~/folder or a subfolder")
+                .default_value(current)
+        });
+        let sub = cx.subscribe_in(
+            &input,
+            window,
+            |this, input, ev: &InputEvent, _, cx| match ev {
+                InputEvent::PressEnter { .. } => {
+                    let typed = input.read(cx).value().to_string();
+                    this.goto = None;
+                    if let Some(target) = typed_target(this.path.as_deref(), &typed) {
+                        this.list(Some(target), cx);
+                    }
+                    cx.notify();
+                }
+                InputEvent::Blur => {
+                    this.goto = None;
+                    cx.notify();
+                }
+                _ => {}
+            },
+        );
+        input.update(cx, |i, cx| {
+            i.focus(window, cx);
+            i.select_all(window, cx);
+        });
+        self.goto = Some((input, sub));
         cx.notify();
     }
 
@@ -182,6 +250,13 @@ impl RemoteFiles {
                         self.path = Some(path.clone());
                         self.entries = entries.clone();
                         self.error = None;
+                    }
+                    // A folder that can't be opened leaves the current one on screen.
+                    Err(e) if self.path.is_some() && self.error.is_none() => {
+                        cx.emit(RemoteFilesEvent::Toast(format!(
+                            "Can't open {}: {e}",
+                            path.to_string_lossy()
+                        )));
                     }
                     Err(e) => self.error = Some(e.clone()),
                 }
@@ -261,6 +336,70 @@ impl RemoteFiles {
             .as_ref()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| "connecting…".into());
+        let path_line: AnyElement = match (&self.goto, &self.path) {
+            (Some((input, _)), _) => div()
+                .h(px(22.))
+                .flex()
+                .items_center()
+                .px(px(6.))
+                .border_1()
+                .border_color(p.acc)
+                .rounded(px(4.))
+                .child(
+                    Input::new(input)
+                        .appearance(false)
+                        .font_family(MONO)
+                        .text_size(px(11.)),
+                )
+                .into_any_element(),
+            (None, Some(current)) => {
+                let crumbs = crumbs(current);
+                let last = crumbs.len().saturating_sub(1);
+                div()
+                    .id("rf-path")
+                    .tooltip(|w, cx| {
+                        gpui_kit::component::tooltip::Tooltip::new("Click to type a folder path")
+                            .build(w, cx)
+                    })
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .font_family(MONO)
+                    .text_size(px(10.5))
+                    .text_color(p.fg3)
+                    .rounded(px(3.))
+                    .cursor_text()
+                    .hover(|s| s.bg(p.hover))
+                    .on_click(cx.listener(|this, _, window, cx| this.open_goto(window, cx)))
+                    .children(crumbs.into_iter().enumerate().map(|(i, (label, target))| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .when(i > 1, |d| d.child("/"))
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("rf-crumb-{i}")))
+                                    .px(px(2.))
+                                    .rounded(px(3.))
+                                    .cursor_pointer()
+                                    .when(i == last, |d| d.text_color(p.fg2))
+                                    .hover(|s| s.text_color(p.fg).bg(p.sel))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        cx.stop_propagation();
+                                        this.list(Some(target.clone()), cx);
+                                    }))
+                                    .child(label),
+                            )
+                    }))
+                    .into_any_element()
+            }
+            (None, None) => div()
+                .font_family(MONO)
+                .text_size(px(10.5))
+                .text_color(p.fg3)
+                .child(path)
+                .into_any_element(),
+        };
         let icon_btn = |id: &'static str, label: &'static str, p: &Palette| {
             div()
                 .id(id)
@@ -303,6 +442,9 @@ impl RemoteFiles {
                                 }
                             },
                         )))
+                        .child(icon_btn("rf-home", "~", &p).on_click(
+                            cx.listener(|this, _, _, cx| this.list(Some(PathBuf::from("~")), cx)),
+                        ))
                         .child(
                             icon_btn("rf-refresh", "⟳", &p)
                                 .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
@@ -322,14 +464,7 @@ impl RemoteFiles {
                                 .on_click(cx.listener(|this, _, _, cx| this.pick_upload(cx))),
                         ),
                 )
-                .child(
-                    div()
-                        .font_family(MONO)
-                        .text_size(px(10.5))
-                        .text_color(p.fg3)
-                        .truncate()
-                        .child(path),
-                );
+                .child(path_line);
 
         let list: AnyElement = if let Some(e) = &self.error {
             div()
@@ -522,5 +657,24 @@ mod tests {
         assert_eq!(parent(Path::new("/srv")), Some(PathBuf::from("/")));
         assert_eq!(parent(Path::new("/")), None);
         assert_eq!(human(1536), "1.5 KB");
+    }
+
+    #[test]
+    fn typed_folders() {
+        let here = Some(Path::new("/srv/app"));
+        assert_eq!(
+            typed_target(here, "logs"),
+            Some(PathBuf::from("/srv/app/logs"))
+        );
+        assert_eq!(typed_target(here, " /etc "), Some(PathBuf::from("/etc")));
+        assert_eq!(typed_target(here, "~/x"), Some(PathBuf::from("~/x")));
+        assert_eq!(typed_target(here, "  "), None);
+        assert_eq!(typed_target(None, "logs"), None);
+        let c: Vec<_> = crumbs(Path::new("/srv/app"))
+            .into_iter()
+            .map(|c| c.0)
+            .collect();
+        assert_eq!(c, ["/", "srv", "app"]);
+        assert_eq!(crumbs(Path::new("/"))[0].1, PathBuf::from("/"));
     }
 }
