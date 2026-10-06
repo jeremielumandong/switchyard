@@ -5,13 +5,14 @@
 pub mod bus;
 pub mod env;
 pub mod error;
+pub mod prompts;
 pub mod runtime;
 pub mod service;
 pub mod terminals;
 
 pub use bus::{
-    Command, Event, FetchLimit, QueryEvent, QueryId, RequestId, SessionId, StatementRequest,
-    TermId, TermTarget,
+    Command, Event, FetchLimit, PromptAnswer, QueryEvent, QueryId, RequestId, SessionId,
+    StatementRequest, TermId, TermStatus, TermTarget,
 };
 pub use error::{CoreError, Result};
 pub use runtime::{Core, EventReceiver, EventSender, RuntimeHandle};

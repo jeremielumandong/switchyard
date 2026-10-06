@@ -71,6 +71,7 @@ pub struct Workspace {
     pub(crate) overlay_focus: FocusHandle,
     pub(crate) ctx: Option<crate::sidebar::CtxMenu>,
     pub(crate) schema_search: Entity<InputState>,
+    pub(crate) prompts: std::collections::VecDeque<crate::ssh_prompts::SshPrompt>,
     pending_open: Option<ProfileId>,
     rebind: Vec<(Entity<SqlTab>, Option<ProfileId>)>,
     _events: Task<()>,
@@ -152,6 +153,7 @@ impl Workspace {
             overlay_focus: cx.focus_handle(),
             ctx: None,
             schema_search,
+            prompts: std::collections::VecDeque::new(),
             pending_open: None,
             rebind: Vec::new(),
             _events: task,
@@ -197,6 +199,48 @@ impl Workspace {
                 }
             }
             Event::TerminalBell { .. } => {}
+            Event::TerminalStatus { term, status } => {
+                if let Some(t) = self.terminal_tab(term, cx) {
+                    t.update(cx, |t, cx| t.on_status(term, status, cx));
+                }
+            }
+            Event::HostKeyChanged {
+                term,
+                host_id,
+                host,
+                address,
+                stored,
+                received,
+                location,
+            } => {
+                let tab = term.and_then(|t| self.terminal_tab(t, cx).map(|tab| (t, tab)));
+                match tab {
+                    Some((term, tab)) => tab.update(cx, |t, cx| {
+                        t.on_host_key_changed(
+                            term,
+                            crate::terminal_tab::ChangedKey {
+                                host_id,
+                                host,
+                                address,
+                                stored,
+                                received,
+                                location,
+                            },
+                            cx,
+                        )
+                    }),
+                    None => self.toast(format!("Blocked: the host key for {host} has changed"), cx),
+                }
+            }
+            Event::HostKeyPrompt { request, key } => self.push_host_key_prompt(request, key, cx),
+            Event::SecretPrompt {
+                request,
+                host,
+                prompt,
+            } => self.push_secret_prompt(request, host, prompt, window, cx),
+            Event::InteractivePrompt { request, req } => {
+                self.push_interactive_prompt(request, req, window, cx)
+            }
             Event::TerminalClipboard { text, .. } => {
                 // OSC 52 copy: allowed (it only writes); reading the clipboard is never offered.
                 cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
@@ -817,6 +861,9 @@ impl Workspace {
     }
 
     pub(crate) fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.cancel_prompt(window, cx) {
+            return;
+        }
         self.overlay = None;
         self.tunnels_open = false;
         self.ctx = None;
