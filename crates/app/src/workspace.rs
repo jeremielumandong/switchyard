@@ -246,7 +246,9 @@ impl Workspace {
                     self.schema.on_catalog(scope, result, cached_at);
                 } else {
                     match result {
-                        Ok(chunk) => self.for_sql_session(session, cx, |t, _| t.on_catalog(chunk)),
+                        Ok(chunk) => {
+                            self.for_sql_session(session, cx, |t, cx| t.on_catalog(chunk, cx))
+                        }
                         Err(e) => tracing::warn!(error = %e, "catalog load failed"),
                     }
                 }
@@ -269,6 +271,21 @@ impl Workspace {
                 }
             }
             Event::Components(c) => self.components = c,
+            Event::EditsApplied {
+                request,
+                result,
+                elapsed,
+            } => {
+                for t in &self.tabs {
+                    if let Tab::Sql(tab) = t
+                        && tab.read(cx).owns_edit_request(request)
+                    {
+                        let tab = tab.clone();
+                        tab.update(cx, |t, cx| t.on_edits_applied(result, elapsed, window, cx));
+                        break;
+                    }
+                }
+            }
             Event::Toast(t) => self.toast(t, cx),
             Event::Error { context, message } => self.toast(format!("{context}: {message}"), cx),
         }
