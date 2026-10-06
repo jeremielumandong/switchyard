@@ -172,17 +172,20 @@ Exit: one login to a Host opens a terminal and a tunneled PostgreSQL connection.
 
 Exit: integrated auth works on a Linux machine that started without Kerberos libraries.
 
-- [ ] **M3-1 SQL Server driver.** `tiberius` with rustls and SQL login; type mapping (bit, int
+- [x] **M3-1 SQL Server driver.** `tiberius` with rustls and SQL login; type mapping (bit, int
   family, decimal/numeric, money, float/real, char/varchar/nvarchar, binary/varbinary,
   uniqueidentifier, date, time, datetime, datetime2, datetimeoffset, xml); streaming; multiple
   result sets; info messages as notices.
   Done when: integration tests per type and a multi-result-set batch.
-- [ ] **M3-2 SQL Server cancel.** Implement cancel via the TDS attention signal. If tiberius has
+  Note: tiberius 0.13 (tds80, rustls); every listed type decoded and tested against SQL Server 2025, multiple result sets, 200/1000 batches, rows affected via @@ROWCOUNT, errors with code and line. Deferred: info messages as notices (tiberius drops INFO tokens; see DECISIONS).
+- [x] **M3-2 SQL Server cancel.** Implement cancel via the TDS attention signal. If tiberius has
   no API for it, spike options (upstream patch, fork, or drop-and-reconnect) and record the choice.
   Done when: `WAITFOR DELAY '00:00:30'` is stopped within 1 s.
-- [ ] **M3-3 T-SQL dialect.** `GO` splitting, TOP, bracket quoting, catalog queries on `sys` views,
+  Note: Attention via `cancel_query`; SQL Server acknowledges in a separate message tiberius cannot read, so the session reconnects and warns (DECISIONS). WAITFOR 30 s stops in ~0.3 s; mid-stream cancel tested.
+- [x] **M3-3 T-SQL dialect.** `GO` splitting, TOP, bracket quoting, catalog queries on `sys` views,
   error line mapping, `@name` parameters.
   Done when: splitter and catalog snapshot tests pass.
+  Note: T-SQL dialect with `@name` → `@Pn` binding; catalog on sys views (folders, columns, PK/identity, indexes, FKs, constraints, triggers, generated DDL); insta snapshots for dbo objects and DDL. Core registers the driver; the connection editor tests SQL Server connections. CI job `integration (SQL Server)` via scripts/mssql-test-server.sh.
 - [ ] **M3-4 Driver Manager core.** Manifest format (see SPEC example), signed manifest
   verification (`minisign-verify`), detection (paths, env vars, app dir, minimum version),
   app-managed directory, component registry, runtime loading via `libloading`.
@@ -201,10 +204,11 @@ Exit: integrated auth works on a Linux machine that started without Kerberos lib
 - [ ] **M3-8 Certificates.** Corporate CA import (OS stores and file) and per-connection
   certificate pinning.
   Done when: connects to a server with a self-signed cert only after pinning.
-- [ ] **M3-9 Azure SQL with Entra ID (user request).** Interactive (auth code + PKCE) and
+- [x] **M3-9 Azure SQL with Entra ID (user request).** Interactive (auth code + PKCE) and
   device-code sign-in with MFA, password and service principal; tokens passed to tiberius as
   `AADToken`; refresh tokens in the keychain. See DECISIONS 2026-10-06.
   Done when: connect to an Azure SQL database with an MFA-enabled account.
+  Note: Browser (PKCE + loopback), device code, password and service principal flows in `db::entra`; core caches access tokens and keeps refresh tokens in the keychain; sign-in dialogs in the prompt queue; editor fields for tenant and client-id override. Tested with a stand-in identity server and against login.microsoftonline.com up to app lookup. Not yet done: a real sign-in, which needs the Switchyard app registration (docs/entra-app.md).
 
 ## Extra — Cloudflare D1 (user request)
 
@@ -335,4 +339,6 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 - Verify multi-cursor and folding in the gpui-component editor (M1-6).
 - Grid range selection and multi-cell TSV copy (M1-10); grid frame-time harness (M1-16).
 - XML and image value viewers (M1-11).
+- SQL Server: upstream tiberius patches for INFO tokens (notices) and reading the attention
+  acknowledgement across a message boundary (would remove the reconnect after cancel).
 - Approval pending for `tokio-postgres-rustls`/`rustls-native-certs` and `lsp-types` (see DECISIONS).

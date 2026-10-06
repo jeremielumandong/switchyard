@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use crate::bus::{TermId, TermTarget};
+use crate::entra::EntraSignIn;
 use crate::prompts::BusPrompter;
 use crate::terminals::{SshTerminalSpec, TermInput, Terminals};
 use futures::StreamExt;
@@ -14,6 +15,7 @@ use secrecy::SecretString;
 use switchyard_db::TunnelEndpoint;
 use switchyard_db::d1::D1Driver;
 use switchyard_db::guard;
+use switchyard_db::mssql::MssqlDriver;
 use switchyard_db::pg::PgDriver;
 use switchyard_db::{
     CancelHandle, DbConfig, DbError, DbSession, Driver, Engine, IntrospectScope, ResultEvent,
@@ -132,6 +134,7 @@ pub struct Service {
     tunnel_open: tokio::sync::Mutex<()>,
     next_tunnel: std::sync::atomic::AtomicU64,
     prompter: Arc<BusPrompter>,
+    entra: EntraSignIn,
 }
 
 fn endpoint_of(t: &Tunnel) -> TunnelEndpoint {
@@ -176,13 +179,14 @@ impl Service {
         let mut drivers: HashMap<Engine, Arc<dyn Driver>> = HashMap::new();
         drivers.insert(Engine::Postgres, Arc::new(PgDriver));
         drivers.insert(Engine::D1, Arc::new(D1Driver::default()));
+        drivers.insert(Engine::SqlServer, Arc::new(MssqlDriver));
         for (engine, d) in config.extra_drivers {
             drivers.insert(engine, d);
         }
         Ok(Self {
             events,
             store: Arc::new(Mutex::new(store)),
-            secrets,
+            secrets: secrets.clone(),
             vault,
             drivers,
             sessions: Mutex::default(),
@@ -192,6 +196,7 @@ impl Service {
             tunnels: Mutex::default(),
             tunnel_open: tokio::sync::Mutex::new(()),
             next_tunnel: std::sync::atomic::AtomicU64::new(1),
+            entra: EntraSignIn::new(prompter.clone(), secrets.clone()),
             prompter,
         })
     }
@@ -300,13 +305,25 @@ impl Service {
                 request,
                 profile,
                 secret,
-            } => self.save_profile(request, profile, secret).await,
+            } => {
+                // New user, tenant or method: the next connect asks Microsoft again
+                // (the stored refresh token is tried first).
+                if let Profile::Db(d) = &profile {
+                    self.entra.drop_cached(&d.id);
+                }
+                self.save_profile(request, profile, secret).await
+            }
             Command::DeleteProfile { id } => {
                 let removed = self.with_store(move |s| s.delete_profile(&id)).await;
                 match removed {
                     Ok(Some(p)) => {
                         if let Some(key) = p.secret().cloned() {
                             let _ = self.with_secrets(move |s| s.delete(&key)).await;
+                        }
+                        if let Profile::Db(d) = &p
+                            && d.auth.is_entra()
+                        {
+                            let _ = self.entra.forget(&d.id).await;
                         }
                         self.emit(Event::Toast(format!("Deleted {}", p.name())));
                     }
@@ -952,6 +969,9 @@ impl Service {
         cfg.user = c.user.clone();
         cfg.password = password;
         cfg.auth = c.auth;
+        if c.auth.is_entra() {
+            cfg.access_token = Some(self.entra.token(c, cfg.password.clone()).await?);
+        }
         cfg.ssl_mode = c.ssl_mode;
         cfg.read_only = c.read_only;
         Ok(cfg)

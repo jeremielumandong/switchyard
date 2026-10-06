@@ -1,0 +1,11 @@
+---
+source: crates/db/tests/mssql.rs
+expression: redact_generated_names(&detail.ddl)
+---
+CREATE TABLE [dbo].[customers] (
+    [id] int IDENTITY NOT NULL,
+    [email] nvarchar(200) NOT NULL,
+    [segment] nvarchar(20) NULL,
+    [created_at] datetime2 NOT NULL DEFAULT (sysutcdatetime()),
+    PRIMARY KEY ([id])
+);
