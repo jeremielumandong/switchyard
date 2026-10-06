@@ -407,3 +407,25 @@ the rev with it (Cargo warns "patch not used" until then).
   `IdentityFile` to the key choice. The 1Password approval dialog is 1Password's own; the
   status line names the agent ("1Password agent · ed25519") once signed in.
 - The Driver Manager's SSH agent component also counts the 1Password socket as present.
+
+## 2026-10-06 — Release workflows for Linux and Windows (user request: "same as Emulsion")
+
+- `release.yml` (Linux) and `release-windows.yml` follow the Emulsion pipeline: manual
+  dispatch on `main` only; blocked unless CI passed on that exact commit; one shared
+  concurrency group; both upload into one draft release `v<workspace version>` created by
+  `scripts/upload-release-assets.py`, which refuses a published release, a draft or tag on
+  another commit, and a checksum that doesn't match. Each asset also gets a stable name
+  (`Switchyard-linux-x86_64.AppImage`, `Switchyard-windows-x64-setup.exe`).
+- Linux builds on Ubuntu 22.04, not 24.04: glibc isn't bundled, so the build distro sets
+  the oldest one the AppImage runs on. appimagetool and the type-2 runtime are pinned by
+  version and SHA-256 instead of `continuous`.
+- Windows signs with Azure Trusted Signing over GitHub OIDC in the `windows-release`
+  environment (same variable names as Emulsion; the expected publisher may be named
+  `SWITCHYARD_SIGN_EXPECTED_SUBJECT` or `EMULSION_SIGN_EXPECTED_SUBJECT`). Switchyard keeps
+  its own NSIS script, so NSIS signs the uninstaller it embeds and the installer through
+  `!uninstfinalize` / `!finalize` (NSIS 3.08+). Signatures and publisher are verified before
+  upload. Azure login happens after compiling so the OIDC assertion doesn't expire.
+- The Windows release links the C runtime statically (`+crt-static`, set by
+  `build-windows.ps1`), so users need no VC++ redistributable and no DLLs are shipped.
+- `SWITCHYARD_ENTRA_CLIENT_ID` comes from a repository variable when set; empty values are
+  ignored at runtime.
