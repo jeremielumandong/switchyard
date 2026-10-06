@@ -409,6 +409,22 @@ impl Service {
                 }
                 Err(e) => self.error("Import ssh config", e),
             },
+            Command::ApplyEdits {
+                session,
+                request,
+                statements,
+            } => {
+                let started = Instant::now();
+                let result = self
+                    .apply_edits(session, statements)
+                    .await
+                    .map_err(|e| e.to_string());
+                self.emit(Event::EditsApplied {
+                    request,
+                    result,
+                    elapsed: started.elapsed(),
+                });
+            }
             Command::DetectComponents => {
                 let comps = tokio::task::spawn_blocking(switchyard_drivers::detect_all)
                     .await
@@ -473,6 +489,75 @@ impl Service {
             Ok(created.len())
         })
         .await
+    }
+
+    async fn apply_edits(&self, session: SessionId, statements: Vec<String>) -> Result<u64> {
+        let slot = self
+            .slot(session)
+            .ok_or_else(|| CoreError::NotFound("session".into()))?;
+        if slot.connection.read_only {
+            return Err(CoreError::Unsupported(
+                "this connection is locked read-only".into(),
+            ));
+        }
+        let mut inner = slot.inner.lock().await;
+        let own_txn = !inner.session.in_transaction();
+        if own_txn {
+            inner.session.begin().await?;
+        }
+        let mut total = 0u64;
+        for sql in &statements {
+            let outcome: Result<u64> = async {
+                let mut stream = inner.session.execute(sql, &[]).await?;
+                let mut affected = 0;
+                while let Some(ev) = stream.next().await {
+                    if let ResultEvent::Done(c) = ev? {
+                        affected = c.affected.unwrap_or(0);
+                    }
+                }
+                Ok(affected)
+            }
+            .await;
+            match outcome {
+                Ok(1) => total += 1,
+                Ok(n) => {
+                    if own_txn {
+                        let _ = inner.session.rollback().await;
+                    }
+                    return Err(CoreError::Unsupported(format!(
+                        "expected to change 1 row but changed {n}; nothing was saved"
+                    )));
+                }
+                Err(e) => {
+                    if own_txn {
+                        let _ = inner.session.rollback().await;
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        if own_txn {
+            inner.session.commit().await?;
+        }
+        let conn = slot.connection.clone();
+        for sql in &statements {
+            let st = StatementRequest {
+                sql: sql.clone(),
+                params: vec![],
+                offset: 0,
+            };
+            self.record(
+                &conn,
+                &st,
+                now_ms(),
+                Duration::ZERO,
+                0,
+                &(HistoryStatus::Ok, None, Some(1)),
+                &["edit".into()],
+            )
+            .await;
+        }
+        Ok(total)
     }
 
     async fn save_profile(

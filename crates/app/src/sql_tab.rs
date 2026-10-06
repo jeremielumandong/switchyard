@@ -22,13 +22,14 @@ use switchyard_core::db::{
 };
 use switchyard_core::store::{BufferState, DbConnection, EnvironmentLabel};
 use switchyard_core::{
-    Command, FetchLimit, QueryEvent, QueryId, RuntimeHandle, SessionId, StatementRequest,
+    Command, FetchLimit, QueryEvent, QueryId, RequestId, RuntimeHandle, SessionId, StatementRequest,
 };
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use switchyard_core::db::complete::CatalogIndex;
+use switchyard_core::db::edit::{EditTable, RowEdit, editable_table, update_statements};
 
 use crate::app_state::{SessionState, next_id};
 use crate::completion::{CompletionState, SqlCompletion};
@@ -121,6 +122,7 @@ pub struct ErrorView {
 pub struct ResultSet {
     table: Entity<TableState<GridDelegate>>,
     columns: Arc<[ColumnMeta]>,
+    sql: String,
     rows: usize,
     completion: Option<Completion>,
     _sub: Subscription,
@@ -158,6 +160,8 @@ pub struct SqlTab {
     messages: Vec<(Hsla, String)>,
     error: Option<ErrorView>,
     current_statements: Vec<StatementRequest>,
+    current_index: usize,
+    edit: Option<EditState>,
     pub dirty: bool,
     export_open: bool,
     pub viewer_format: ViewerFormat,
@@ -240,6 +244,8 @@ impl SqlTab {
             messages: Vec::new(),
             error: None,
             current_statements: Vec::new(),
+            current_index: 0,
+            edit: None,
             dirty: false,
             export_open: false,
             viewer_format: ViewerFormat::Json,
@@ -340,7 +346,11 @@ impl SqlTab {
     }
 
     /// A catalog chunk for this tab's session.
-    pub fn on_catalog(&mut self, chunk: switchyard_core::db::CatalogChunk) {
+    pub fn on_catalog(&mut self, chunk: switchyard_core::db::CatalogChunk, cx: &mut Context<Self>) {
+        if let switchyard_core::db::CatalogChunk::Detail(d) = &chunk {
+            self.on_table_detail(d, cx);
+            return;
+        }
         if let switchyard_core::db::CatalogChunk::AllColumns(cols) = chunk {
             tracing::debug!(columns = cols.len(), "completion catalog loaded");
             let mut st = self.completion.borrow_mut();
@@ -571,6 +581,8 @@ impl SqlTab {
         self.last_affected = None;
         self.export_open = false;
         self.current_statements = pending.statements.clone();
+        self.current_index = 0;
+        self.edit = None;
         self.run = RunState::Running {
             query,
             started: Instant::now(),
@@ -661,7 +673,7 @@ impl SqlTab {
     /// Handle a query event from the runtime.
     pub fn on_query(&mut self, event: QueryEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
-            QueryEvent::StatementStarted { .. } => {}
+            QueryEvent::StatementStarted { index } => self.current_index = index,
             QueryEvent::Columns(cols) => self.add_result(cols, window, cx),
             QueryEvent::Rows(batch) => self.add_rows(batch, cx),
             QueryEvent::Notice(n) => {
@@ -756,6 +768,7 @@ impl SqlTab {
                 this.selected = Some((*r, c.saturating_sub(1)));
                 cx.notify();
             }
+            TableEvent::DoubleClickedCell(r, c) => this.edit_cell(*r, *c, cx),
             TableEvent::SelectRow(r) => {
                 this.selected = Some((*r, this.selected.map_or(0, |s| s.1)));
                 cx.notify();
@@ -765,9 +778,15 @@ impl SqlTab {
         if self.results.is_empty() {
             self.active_result = 0;
         }
+        let sql = self
+            .current_statements
+            .get(self.current_index)
+            .map(|s| s.sql.clone())
+            .unwrap_or_default();
         self.results.push(ResultSet {
             table,
             columns: cols,
+            sql,
             rows: 0,
             completion: None,
             _sub: sub,
@@ -880,6 +899,18 @@ impl SqlTab {
     /// Status line text: (label, color, meta).
     pub fn status(&self, p: &Palette) -> (SharedString, Hsla, String, bool) {
         let rows = self.loaded_rows();
+        if let Some(e) = self.edit.as_ref().filter(|e| !e.staged.is_empty()) {
+            let target = match &e.table.schema {
+                Some(s) => format!("{s}.{}", e.table.table),
+                None => e.table.table.clone(),
+            };
+            return (
+                "Editing".into(),
+                p.stg,
+                format!("{} staged · {target}", e.staged.len()),
+                false,
+            );
+        }
         match &self.run {
             RunState::Idle => ("Ready".into(), p.fg3, String::new(), false),
             RunState::Running { started, .. } => (
@@ -1357,6 +1388,8 @@ impl SqlTab {
                 .into_any_element()
         } else if let Some(r) = self.results.get(self.active_result) {
             let cancelled = matches!(self.run, RunState::Cancelled { .. });
+            let edit_bar = self.render_edit_bar(p, cx);
+            let staged_panel = self.render_staged_panel(p, cx);
             let streaming = matches!(self.run, RunState::Running { .. });
             let (_, _, meta, _) = self.status(p);
             div()
@@ -1404,6 +1437,8 @@ impl SqlTab {
                             .with_size(Size::XSmall),
                     ),
                 )
+                .children(edit_bar)
+                .children(staged_panel)
                 .when(streaming, |d| {
                     d.child(
                         div()
@@ -1708,6 +1743,478 @@ impl Render for SqlTab {
                     .child(div().w(px(28.)).h(px(2.)).rounded(px(2.)).bg(p.bd2)),
             )
             .child(results)
+    }
+}
+
+/// Inline editing state for one result set.
+pub struct EditState {
+    result_ix: usize,
+    table: EditTable,
+    /// Indexes of primary-key columns in the result; `None` while the detail loads.
+    key_cols: Option<Vec<usize>>,
+    /// Staged values by (data row, column).
+    staged: Vec<((usize, usize), Value)>,
+    /// The cell being edited.
+    cell: Option<(usize, usize)>,
+    pending_cell: Option<(usize, usize)>,
+    input: Entity<InputState>,
+    request: Option<RequestId>,
+    _sub: Subscription,
+}
+
+impl SqlTab {
+    fn default_schema(&self) -> &'static str {
+        match self.connection.as_ref().map(|c| c.engine) {
+            Some(Engine::SqlServer) => "dbo",
+            _ => "public",
+        }
+    }
+
+    /// Start editing a cell (double click).
+    fn edit_cell(&mut self, view_row: usize, col_ix: usize, cx: &mut Context<Self>) {
+        if col_ix == 0 {
+            return;
+        }
+        let col = col_ix - 1;
+        let Some(r) = self.results.get(self.active_result) else {
+            return;
+        };
+        let data_row = r.table.read(cx).delegate().data_row(view_row);
+        if self.edit.as_ref().map(|e| e.result_ix) != Some(self.active_result) {
+            let Some(table) = editable_table(self.dialect(), &r.sql, &r.columns) else {
+                cx.emit(SqlTabEvent::Toast(
+                    "Only results from a single table can be edited in place".into(),
+                ));
+                return;
+            };
+            let Some(window) = cx.windows().first().copied() else {
+                return;
+            };
+            let input = match window.update(cx, |_, window, cx| {
+                cx.new(|cx| InputState::new(window, cx).placeholder("New value"))
+            }) {
+                Ok(i) => i,
+                Err(_) => return,
+            };
+            let sub = cx.subscribe(&input, |this, _, ev: &InputEvent, cx| {
+                if let InputEvent::PressEnter { .. } = ev {
+                    this.stage_current(false, cx);
+                }
+            });
+            if let Some(session) = self.session {
+                self.core.send(Command::Introspect {
+                    session,
+                    scope: switchyard_core::db::IntrospectScope::Detail {
+                        schema: table
+                            .schema
+                            .clone()
+                            .unwrap_or_else(|| self.default_schema().into()),
+                        name: table.table.clone(),
+                        kind: switchyard_core::db::ObjectKind::Table,
+                    },
+                    refresh: false,
+                });
+            }
+            self.edit = Some(EditState {
+                result_ix: self.active_result,
+                table,
+                key_cols: None,
+                staged: Vec::new(),
+                cell: None,
+                pending_cell: None,
+                input,
+                request: None,
+                _sub: sub,
+            });
+        }
+        if let Some(e) = self.edit.as_mut() {
+            e.pending_cell = Some((data_row, col));
+        }
+        self.begin_pending(cx);
+    }
+
+    fn on_table_detail(&mut self, d: &switchyard_core::db::ObjectDetail, cx: &mut Context<Self>) {
+        let Some(e) = self.edit.as_mut() else { return };
+        if !d.object.name.eq_ignore_ascii_case(&e.table.table) || e.key_cols.is_some() {
+            return;
+        }
+        let Some(r) = self.results.get(e.result_ix) else {
+            return;
+        };
+        let pk: Vec<&str> = d
+            .columns
+            .iter()
+            .filter(|c| c.is_primary_key)
+            .map(|c| c.name.as_str())
+            .collect();
+        let idx: Vec<usize> = pk
+            .iter()
+            .filter_map(|k| {
+                r.columns
+                    .iter()
+                    .position(|c| c.name.eq_ignore_ascii_case(k))
+            })
+            .collect();
+        if pk.is_empty() || idx.len() != pk.len() {
+            self.edit = None;
+            cx.emit(SqlTabEvent::Toast(if pk.is_empty() {
+                "This table has no primary key, so rows cannot be edited safely".into()
+            } else {
+                format!(
+                    "Include the primary key ({}) in the result to edit rows",
+                    pk.join(", ")
+                )
+            }));
+            cx.notify();
+            return;
+        }
+        if e.table.schema.is_none() {
+            e.table.schema = Some(d.object.schema.clone());
+        }
+        e.key_cols = Some(idx);
+        self.begin_pending(cx);
+    }
+
+    fn begin_pending(&mut self, cx: &mut Context<Self>) {
+        let Some(e) = self.edit.as_mut() else { return };
+        if e.key_cols.is_none() {
+            return;
+        }
+        let Some((row, col)) = e.pending_cell.take() else {
+            return;
+        };
+        if e.key_cols.as_ref().is_some_and(|k| k.contains(&col)) {
+            cx.emit(SqlTabEvent::Toast(
+                "Primary-key columns are not edited in place".into(),
+            ));
+            return;
+        }
+        let current = e
+            .staged
+            .iter()
+            .find(|(k, _)| *k == (row, col))
+            .map(|(_, v)| v.clone())
+            .or_else(|| {
+                let r = self.results.get(e.result_ix)?;
+                let t = r.table.read(cx);
+                t.delegate()
+                    .data()
+                    .cell(row, col)
+                    .map(|c| c.to_value(r.columns[col].data_type))
+            })
+            .unwrap_or(Value::Null);
+        e.cell = Some((row, col));
+        let text = if current.is_null() {
+            String::new()
+        } else {
+            current.to_display()
+        };
+        let input = e.input.clone();
+        if let Some(window) = cx.windows().first().copied() {
+            let _ = window.update(cx, |_, window, cx| {
+                input.update(cx, |i, cx| i.set_value(text, window, cx));
+                // Focus after the table finishes handling the double click.
+                window.defer(cx, move |window, cx| {
+                    input.update(cx, |i, cx| i.focus(window, cx))
+                });
+            });
+        }
+        cx.notify();
+    }
+
+    fn stage_current(&mut self, null: bool, cx: &mut Context<Self>) {
+        let Some(e) = self.edit.as_mut() else { return };
+        let Some((row, col)) = e.cell.take() else {
+            return;
+        };
+        let value = if null {
+            Value::Null
+        } else {
+            Value::Text(e.input.read(cx).value().to_string())
+        };
+        e.staged.retain(|(k, _)| *k != (row, col));
+        let display = if value.is_null() {
+            None
+        } else {
+            Some(SharedString::from(value.to_display()))
+        };
+        e.staged.push(((row, col), value));
+        if let Some(r) = self.results.get(e.result_ix) {
+            r.table.update(cx, |t, cx| {
+                t.delegate_mut().stage(row, col, display);
+                cx.notify();
+            });
+        }
+        cx.notify();
+    }
+
+    fn cancel_cell(&mut self, cx: &mut Context<Self>) {
+        if let Some(e) = self.edit.as_mut() {
+            e.cell = None;
+        }
+        cx.notify();
+    }
+
+    fn discard_edits(&mut self, cx: &mut Context<Self>) {
+        if let Some(e) = self.edit.take()
+            && let Some(r) = self.results.get(e.result_ix)
+        {
+            r.table.update(cx, |t, cx| {
+                t.delegate_mut().clear_staged();
+                cx.notify();
+            });
+        }
+        cx.notify();
+    }
+
+    fn edit_statements(&self, cx: &App) -> Vec<String> {
+        let Some(e) = &self.edit else {
+            return Vec::new();
+        };
+        let (Some(keys), Some(r)) = (&e.key_cols, self.results.get(e.result_ix)) else {
+            return Vec::new();
+        };
+        let t = r.table.read(cx);
+        let data = t.delegate().data();
+        let mut rows: Vec<usize> = e.staged.iter().map(|((row, _), _)| *row).collect();
+        rows.sort_unstable();
+        rows.dedup();
+        let edits: Vec<RowEdit> = rows
+            .into_iter()
+            .map(|row| RowEdit {
+                key: keys
+                    .iter()
+                    .map(|&k| {
+                        let v = data
+                            .cell(row, k)
+                            .map(|c| c.to_value(r.columns[k].data_type))
+                            .unwrap_or(Value::Null);
+                        (r.columns[k].name.clone(), v)
+                    })
+                    .collect(),
+                set: e
+                    .staged
+                    .iter()
+                    .filter(|((rr, _), _)| *rr == row)
+                    .map(|((_, c), v)| (r.columns[*c].name.clone(), v.clone()))
+                    .collect(),
+            })
+            .collect();
+        update_statements(self.dialect(), &e.table, &edits)
+    }
+
+    fn commit_edits(&mut self, cx: &mut Context<Self>) {
+        let statements = self.edit_statements(cx);
+        let (Some(session), Some(e)) = (self.session, self.edit.as_mut()) else {
+            return;
+        };
+        if statements.is_empty() {
+            return;
+        }
+        let request = next_id();
+        e.request = Some(request);
+        self.core.send(Command::ApplyEdits {
+            session,
+            request,
+            statements,
+        });
+        cx.notify();
+    }
+
+    /// Whether this tab is waiting for `request`.
+    pub fn owns_edit_request(&self, request: RequestId) -> bool {
+        self.edit.as_ref().and_then(|e| e.request) == Some(request)
+    }
+
+    /// The runtime applied (or refused) the staged edits.
+    pub fn on_edits_applied(
+        &mut self,
+        result: Result<u64, String>,
+        elapsed: Duration,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
+            Ok(n) => {
+                cx.emit(SqlTabEvent::Toast(format!(
+                    "Committed {n} change{} in 1 transaction · {}",
+                    if n == 1 { "" } else { "s" },
+                    ui::duration(elapsed)
+                )));
+                self.discard_edits(cx);
+                // Show the saved data.
+                let statements = self.current_statements.clone();
+                if !statements.is_empty() {
+                    let pending = PendingRun {
+                        params: statements.iter().map(|_| Vec::new()).collect(),
+                        statements,
+                        destructive: Vec::new(),
+                    };
+                    self.execute(pending, false, cx);
+                }
+                let _ = window;
+            }
+            Err(e) => {
+                if let Some(ed) = self.edit.as_mut() {
+                    ed.request = None;
+                }
+                cx.emit(SqlTabEvent::Toast(format!("Nothing saved: {e}")));
+            }
+        }
+        cx.notify();
+    }
+
+    fn render_edit_bar(&self, p: &Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let e = self.edit.as_ref()?;
+        let (row, col) = e.cell?;
+        let r = self.results.get(e.result_ix)?;
+        let name = r
+            .columns
+            .get(col)
+            .map(|c| c.name.clone())
+            .unwrap_or_default();
+        Some(
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .px(px(12.))
+                .py(px(6.))
+                .bg(p.panel)
+                .border_t_1()
+                .border_color(p.bd)
+                .text_size(px(12.))
+                .child(div().w(px(8.)).h(px(8.)).rounded(px(2.)).bg(p.stg))
+                .child(
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(format!("Edit {name}")),
+                )
+                .child(div().text_color(p.fg3).child(format!("row {}", row + 1)))
+                .child(
+                    div()
+                        .flex_1()
+                        .h(px(26.))
+                        .flex()
+                        .items_center()
+                        .px(px(6.))
+                        .border_1()
+                        .border_color(p.acc)
+                        .rounded(px(5.))
+                        .bg(p.bg)
+                        .font_family(MONO)
+                        .child(Input::new(&e.input).appearance(false).text_size(px(12.))),
+                )
+                .child(
+                    ui::button("edit-null", "Set NULL", Kind::Ghost, p)
+                        .on_click(cx.listener(|this, _, _, cx| this.stage_current(true, cx))),
+                )
+                .child(
+                    ui::button("edit-stage", "Stage ↵", Kind::Secondary, p)
+                        .on_click(cx.listener(|this, _, _, cx| this.stage_current(false, cx))),
+                )
+                .child(
+                    ui::button("edit-cancel", "Cancel", Kind::Ghost, p)
+                        .on_click(cx.listener(|this, _, _, cx| this.cancel_cell(cx))),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn render_staged_panel(&self, p: &Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let e = self.edit.as_ref()?;
+        if e.staged.is_empty() {
+            return None;
+        }
+        let statements = self.edit_statements(cx);
+        let n = e.staged.len();
+        let busy = e.request.is_some();
+        let target = match &e.table.schema {
+            Some(s) => format!("{s}.{}", e.table.table),
+            None => e.table.table.clone(),
+        };
+        Some(
+            div()
+                .flex_none()
+                .flex()
+                .gap(px(14.))
+                .items_start()
+                .px(px(12.))
+                .py(px(10.))
+                .border_t_1()
+                .border_color(p.bd)
+                .bg(p.panel)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .flex()
+                                .gap(px(8.))
+                                .items_center()
+                                .text_size(px(12.))
+                                .mb(px(6.))
+                                .child(div().w(px(8.)).h(px(8.)).rounded(px(2.)).bg(p.stg))
+                                .child(div().font_weight(FontWeight::SEMIBOLD).child(format!(
+                                    "{n} staged change{}",
+                                    if n == 1 { "" } else { "s" }
+                                )))
+                                .child(
+                                    div().text_color(p.fg3).child(format!(
+                                        "· {target} · committed in one transaction"
+                                    )),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("staged-sql")
+                                .max_h(px(110.))
+                                .overflow_y_scroll()
+                                .px(px(10.))
+                                .py(px(8.))
+                                .bg(p.bg)
+                                .border_1()
+                                .border_color(p.bd)
+                                .rounded(px(6.))
+                                .font_family(MONO)
+                                .text_size(px(11.5))
+                                .line_height(px(19.))
+                                .text_color(p.fg2)
+                                .children(
+                                    statements
+                                        .into_iter()
+                                        .map(|sql| div().whitespace_nowrap().child(sql)),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .pt(px(22.))
+                        .child(
+                            ui::button(
+                                "commit-edits",
+                                if busy {
+                                    "Committing…".to_owned()
+                                } else {
+                                    format!("Commit {n} change{}", if n == 1 { "" } else { "s" })
+                                },
+                                Kind::Primary,
+                                p,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| this.commit_edits(cx))),
+                        )
+                        .child(
+                            ui::button("discard-edits", "Discard", Kind::Secondary, p)
+                                .on_click(cx.listener(|this, _, _, cx| this.discard_edits(cx))),
+                        ),
+                )
+                .into_any_element(),
+        )
     }
 }
 

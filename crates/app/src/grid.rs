@@ -24,8 +24,8 @@ pub struct GridDelegate {
     data: BatchList,
     /// Sorted and/or filtered row order; `None` means natural order.
     view: Option<Arc<Vec<u32>>>,
-    /// Staged edits: (row, col) → new display text.
-    staged: Vec<(usize, usize)>,
+    /// Staged edits: (data row, col) → new display text (`None` = NULL).
+    staged: std::collections::HashMap<(usize, usize), Option<SharedString>>,
 }
 
 fn initial_width(meta: &ColumnMeta) -> f32 {
@@ -53,8 +53,13 @@ impl GridDelegate {
             widths,
             data: BatchList::default(),
             view: None,
-            staged: Vec::new(),
+            staged: Default::default(),
         }
+    }
+
+    /// The loaded rows.
+    pub fn data(&self) -> &BatchList {
+        &self.data
     }
 
     /// Append a batch; widen text columns from the first rows seen.
@@ -111,12 +116,14 @@ impl GridDelegate {
         self.data.cell(self.data_row(view_row), col)
     }
 
-    /// Mark a cell as staged (highlighted).
-    #[allow(dead_code)]
-    pub fn stage(&mut self, row: usize, col: usize) {
-        if !self.staged.contains(&(row, col)) {
-            self.staged.push((row, col));
-        }
+    /// Show a staged value for a cell (`None` displays NULL).
+    pub fn stage(&mut self, data_row: usize, col: usize, value: Option<SharedString>) {
+        self.staged.insert((data_row, col), value);
+    }
+
+    /// Drop every staged value.
+    pub fn clear_staged(&mut self) {
+        self.staged.clear();
     }
 
     /// Apply a client-side filter: keep rows where any cell contains `needle`.
@@ -307,7 +314,16 @@ impl TableDelegate for GridDelegate {
         let col = col_ix - 1;
         let numeric = self.columns[col].data_type.is_numeric();
         let data_row = self.data_row(row_ix);
-        let staged = self.staged.contains(&(data_row, col));
+        if let Some(staged) = self.staged.get(&(data_row, col)) {
+            let base = base.bg(p.staged).border_l_2().border_color(p.stg);
+            return match staged {
+                None => base.italic().text_color(p.fg3).child("NULL"),
+                Some(v) => base
+                    .when(numeric, |d| d.justify_end())
+                    .text_color(p.fg)
+                    .child(v.clone()),
+            };
+        }
         match self.data.cell(data_row, col) {
             None | Some(CellRef::Null) => base.italic().text_color(p.fg3).child("NULL"),
             Some(cell) => {
@@ -319,7 +335,6 @@ impl TableDelegate for GridDelegate {
                 }
                 base.when(numeric, |d| d.justify_end())
                     .text_color(p.fg)
-                    .when(staged, |d| d.bg(p.staged))
                     .child(SharedString::from(s))
             }
         }

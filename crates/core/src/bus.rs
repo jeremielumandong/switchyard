@@ -208,6 +208,16 @@ pub enum Command {
     },
     /// Import Hosts from `~/.ssh/config`.
     ImportSshConfig,
+    /// Apply staged inline edits in one transaction. Each statement must change exactly
+    /// one row; otherwise everything is rolled back.
+    ApplyEdits {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// UPDATE statements.
+        statements: Vec<String>,
+    },
 }
 
 /// Events from a running query.
@@ -364,6 +374,15 @@ pub enum Event {
     },
     /// Native component status.
     Components(Vec<Component>),
+    /// Result of [`Command::ApplyEdits`]: rows changed, or why nothing was.
+    EditsApplied {
+        /// Request id.
+        request: RequestId,
+        /// Rows changed or error.
+        result: Result<u64, String>,
+        /// Time taken.
+        elapsed: Duration,
+    },
     /// A short confirmation for a toast.
     Toast(String),
     /// A background failure.
