@@ -14,92 +14,117 @@ Exit: the app opens with the full layout, profiles save to SQLite, secrets land 
   `rustfmt.toml`, shared `[workspace.dependencies]`, GitHub Actions running fmt, clippy and tests
   on macOS, Windows and Linux.
   Done when: `cargo build --workspace` passes and CI is green on all three platforms.
+  Note: Partial: `cargo build --workspace`, fmt, clippy and tests pass locally on Linux; `.github/workflows/ci.yml` runs them on all three platforms but has not been observed green yet.
 - [ ] **M0-2 Test services.** `docker/compose.yml` with PostgreSQL 16, SQL Server 2022,
   an OpenSSH server (password + key auth), and an FTP server with FTPS. Seed scripts for a
   sample schema including one table with 1,000,000 rows.
   Done when: `docker compose up -d` starts all four and a smoke test connects to each.
+  Note: Partial: compose file and seed scripts written (1M-row `orders`); only the PostgreSQL seed was verified (against a local PostgreSQL 16, no Docker in the build environment). No smoke test yet for SQL Server, SSH or FTP.
 - [ ] **M0-3 Window and layout.** GPUI app with gpui-component: title bar, collapsible left
   sidebar, center tab area with splits, optional right panel, status bar. Light and dark themes.
   Done when: layout matches SPEC "Main window layout"; theme toggle works; panels collapse.
-- [ ] **M0-4 Runtime bridge.** `switchyard-core` owns a multi-thread tokio runtime, exposes a
+  Note: Partial: title bar, collapsible sidebar, tabs, right inspector panel, status bar, light/dark themes match the design. Split panes in the tab area are missing.
+- [x] **M0-4 Runtime bridge.** `switchyard-core` owns a multi-thread tokio runtime, exposes a
   `RuntimeHandle` to spawn work and an event bus (commands in, events out) the UI subscribes to.
   Done when: a test command sleeping 2 s on the runtime leaves the UI responsive and its result
   event updates a GPUI entity.
-- [ ] **M0-5 Domain model.** `Host`, `DbConnection`, `FileConnection`, `TerminalProfile`,
+  Note: `Core` owns the runtime; `crates/core/tests/flow.rs` covers a 2 s mock sleep; the UI awaits events with `cx.spawn_in`.
+- [x] **M0-5 Domain model.** `Host`, `DbConnection`, `FileConnection`, `TerminalProfile`,
   `EnvironmentLabel`, `Workspace` with serde and validation. Secrets referenced by id, never inline.
   Done when: unit tests cover validation and round-trip serialization.
-- [ ] **M0-6 Profile store.** `rusqlite` (bundled) with versioned migrations; CRUD for all profile
+  Note: `crates/store/src/model.rs` tests cover validation and serde round trips; secrets are `SecretRef`s.
+- [x] **M0-6 Profile store.** `rusqlite` (bundled) with versioned migrations; CRUD for all profile
   types; JSON export/import that strips secrets.
   Done when: tests prove export contains no secret material and import restores profiles.
-- [ ] **M0-7 Secrets.** Keychain wrapper over `keyring` using `SecretString`; fallback encrypted
+  Note: Migrations via `user_version`; `export_has_no_secret_material_and_import_restores`.
+- [x] **M0-7 Secrets.** Keychain wrapper over `keyring` using `SecretString`; fallback encrypted
   vault (argon2 + chacha20poly1305) with master password when no Secret Service exists.
   Done when: tests cover both backends; secrets never appear in logs (assert on captured tracing).
-- [ ] **M0-8 Actions and command palette.** Action registry, default keybindings from SPEC,
+  Note: Keychain (`keyring`), vault (argon2 + chacha20poly1305) and in-memory backends; tests cover the vault and the captured-tracing check. The OS keychain backend is not exercised in headless CI.
+- [x] **M0-8 Actions and command palette.** Action registry, default keybindings from SPEC,
   command palette (Ctrl/Cmd+Shift+P) and quick switcher (Ctrl/Cmd+P) with fuzzy matching.
   Done when: every action registered so far is reachable from the palette.
+  Note: `actions.rs` registry + `palette.rs`; every action is listed in `palette_commands`.
 - [ ] **M0-9 Connections sidebar and editor.** Sidebar tree grouped by Host or folder with
   environment dots; connection editor dialog with a form per type and environment label.
   "Test connection" is stubbed until drivers exist.
   Done when: create, edit, delete and reorder connections; changes persist across restarts.
+  Note: Partial: tree grouped by Host, environment dots, editor for every type with test connection (PostgreSQL real, others stubbed), create/edit/delete persist. Store keeps `sort_order` but there is no drag-to-reorder UI yet.
 
 ## M1 — PostgreSQL, editor, grid
 
 Exit: query the 1M-row table, scroll without dropped frames, cancel a long query.
 
-- [ ] **M1-1 DB contract.** In `switchyard-db`: `Value`, `ColumnMeta`, columnar `RowBatch`,
+- [x] **M1-1 DB contract.** In `switchyard-db`: `Value`, `ColumnMeta`, columnar `RowBatch`,
   `ResultStream` events, `Driver`, `DbSession`, `Dialect`, `CancelHandle`, `IntrospectScope`,
   `CatalogChunk`.
   Done when: traits compile with a mock driver used in unit tests.
-- [ ] **M1-2 PostgreSQL driver.** Connect with TLS (`tokio-postgres-rustls`), simple and extended
+  Note: `MockDriver` (`rows N`, `sleep MS`, `fail`) drives the core tests.
+- [x] **M1-2 PostgreSQL driver.** Connect with TLS (`tokio-postgres-rustls`), simple and extended
   protocol with parameters, streaming rows into `RowBatch`, notices as events. Type mapping: bool,
   int2/4/8, float4/8, numeric, text/varchar/char, bytea, uuid, json/jsonb, date, time, timestamp,
   timestamptz, interval; arrays and unknown types fall back to text.
   Done when: integration tests cover each type and a 1M-row stream with bounded memory.
-- [ ] **M1-3 Cancel.** Wire `CancelHandle` to tokio-postgres's cancel token; Stop button and
+  Note: rustls + native roots; binary decode; `crates/db/tests/pg.rs` (ignored, needs `SWITCHYARD_PG_URL`) covers every listed type and the 1M-row stream.
+- [x] **M1-3 Cancel.** Wire `CancelHandle` to tokio-postgres's cancel token; Stop button and
   Ctrl/Cmd+. call it.
   Done when: `SELECT pg_sleep(30)` is cancelled and the UI is idle within 1 s.
-- [ ] **M1-4 Transactions.** Auto-commit by default; manual mode with begin/commit/rollback, status
+  Note: `cancel_pg_sleep` integration test; Stop and Ctrl/Cmd+. wired.
+- [x] **M1-4 Transactions.** Auto-commit by default; manual mode with begin/commit/rollback, status
   bar indicator, warning when closing a tab with an open transaction.
   Done when: integration test verifies rollback discards changes.
-- [ ] **M1-5 PostgreSQL introspection.** Catalog queries for databases, schemas, tables, views,
+  Note: `rollback_discards_changes`; status bar shows the open transaction; closing such a tab warns.
+- [x] **M1-5 PostgreSQL introspection.** Catalog queries for databases, schemas, tables, views,
   materialized views, columns, indexes, constraints, foreign keys, functions, procedures,
   sequences, types. Lazy per scope; cached in the store.
   Done when: insta snapshots of catalog output against the seeded schema.
+  Note: insta snapshots in `crates/db/tests/snapshots`; cached in `schema_cache`.
 - [ ] **M1-6 Editor tab.** gpui-component editor with tree-sitter SQL highlighting, multi-cursor,
   find/replace, comment toggle, folding. Buffers autosave and restore after restart.
   Done when: kill the app mid-edit, relaunch, buffer content is intact.
-- [ ] **M1-7 Statement splitting and execution.** PostgreSQL dialect splitter handling strings,
+  Note: Partial: tree-sitter SQL highlighting, find, comment toggle and buffer autosave/restore (`buffers_survive_reopen`, checked manually by killing the app) work. Multi-cursor and folding are not verified.
+- [x] **M1-7 Statement splitting and execution.** PostgreSQL dialect splitter handling strings,
   comments and dollar-quoted bodies. Run statement at cursor, selection, whole script.
   Parameter prompts for `:name` and `$1`.
   Done when: table-driven tests cover tricky scripts; all three run modes work in the app.
-- [ ] **M1-8 Completion.** Keywords, schemas, tables, columns, functions from the cached catalog;
+  Note: Lexer-driven splitter with table tests (dollar quotes, comments, `GO`); statement/selection/script runs and `:name`/`$1` prompts checked in the app.
+- [x] **M1-8 Completion.** Keywords, schemas, tables, columns, functions from the cached catalog;
   alias resolution from FROM/JOIN; ranking by recent use.
   Done when: completion lists correct columns for an aliased table in a multi-join query.
-- [ ] **M1-9 Diagnostics.** `sqlparser` parse errors underlined live; server errors mapped to
+  Note: `complete.rs` tests cover aliased multi-join columns; tables referenced by executed statements rank first.
+- [x] **M1-9 Diagnostics.** `sqlparser` parse errors underlined live; server errors mapped to
   line and column using PostgreSQL's error position.
   Done when: both kinds show at the right location in tests and in the app.
+  Note: Live `sqlparser` diagnostics and server error positions (`diagnostics.rs` tests; checked in the app).
 - [ ] **M1-10 Results grid core.** Virtualized rows and columns, streaming append, NULL styling,
   right-aligned numbers, column resize/reorder/pin, cell and range selection, copy as TSV.
   Done when: 1M rows loaded, scrolling holds frame rate; memory within budget.
+  Note: Partial: `DataTable` virtualizes rows and columns, streams, styles NULLs, right-aligns numbers, resizes/reorders/pins columns, copies cells. Range selection and multi-cell TSV copy are missing; 1M rows × 10 int8 fit in < 150 MB (`batch.rs` test), frame rate not yet measured.
 - [ ] **M1-11 Grid extras.** Value viewer (JSON, XML, text, hex, image), export CSV/JSON/
   Markdown/SQL INSERT, client-side sort and filter, multiple result-set tabs, status line,
   configurable fetch limit (default 10,000) with "Fetch all".
   Done when: each feature has a test or a documented manual check in the task note.
-- [ ] **M1-12 Schema explorer.** Lazy tree, fuzzy object search, actions (open data, generate
+  Note: Partial: JSON/text/hex viewer, CSV/JSON/Markdown/SQL INSERT export (tests in `sql_tab.rs`), sort, filter, result-set tabs, status line, fetch limit with "Fetch all" (`streams_with_fetch_limit_and_fetch_all`). XML and image viewers are missing.
+- [x] **M1-12 Schema explorer.** Lazy tree, fuzzy object search, actions (open data, generate
   SELECT/INSERT/UPDATE, copy name, view DDL, truncate/drop with confirmation).
   Done when: tree expands without blocking on large schemas.
-- [ ] **M1-13 Query history.** Persist statement, connection, duration, row count; searchable
+  Note: Lazy, cached tree with fuzzy search box; context menu with open data, generate SELECT/INSERT/UPDATE, copy name, DDL, truncate/drop (guarded).
+- [x] **M1-13 Query history.** Persist statement, connection, duration, row count; searchable
   panel; per-connection off switch.
   Done when: history survives restart and respects the off switch.
-- [ ] **M1-14 Inline editing.** For single-table results with a primary key: staged edits with
+  Note: Stored in SQLite (`history_search`); History overlay; per-connection switch in the editor (`history_off_switch_records_nothing`).
+- [x] **M1-14 Inline editing.** For single-table results with a primary key: staged edits with
   highlight, SQL preview, commit in one transaction, discard.
   Done when: integration test commits edits and verifies the rows.
-- [ ] **M1-15 Production guards.** Destructive-statement detection with `sqlparser`, confirmation
+  Note: Staged edits with highlight, SQL preview, one transaction where each UPDATE must hit exactly one row; `crates/core/tests/pg_edits.rs`.
+- [x] **M1-15 Production guards.** Destructive-statement detection with `sqlparser`, confirmation
   dialog, read-only mode, red environment accent across tab, sidebar, status bar, editor border.
   Done when: tests cover DROP, TRUNCATE, DELETE/UPDATE without WHERE; read-only blocks writes.
+  Note: `guard.rs` tests (DROP, TRUNCATE, DELETE/UPDATE without WHERE), `production_requires_confirmation`, `read_only_blocks_writes`; red accent on tab, sidebar, status bar and editor border.
 - [ ] **M1-16 Benchmarks.** criterion benches for row decode into `RowBatch`; a grid frame-time
   harness with 1M rows; memory measurement script.
   Done when: numbers recorded in `docs/DECISIONS.md` against the budgets.
+  Note: Partial: criterion benches (`crates/db/benches/decode.rs`) and the memory test are recorded in `docs/DECISIONS.md`. The grid frame-time harness is missing.
 
 ## M2 — SSH, terminal, tunnels
 
@@ -273,3 +298,12 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 ## Follow-ups
 
 (Add items here instead of doing them mid-task.)
+
+- Observe CI green on macOS, Windows and Linux (M0-1).
+- Smoke tests for the SQL Server, SSH and FTP containers (M0-2).
+- Split panes in the tab area (M0-3).
+- Drag-to-reorder connections in the sidebar (M0-9).
+- Verify multi-cursor and folding in the gpui-component editor (M1-6).
+- Grid range selection and multi-cell TSV copy (M1-10); grid frame-time harness (M1-16).
+- XML and image value viewers (M1-11).
+- Approval pending for `tokio-postgres-rustls`/`rustls-native-certs` and `lsp-types` (see DECISIONS).

@@ -125,3 +125,16 @@ milestone delivers them.
 gpui-component's editor takes completions through its `CompletionProvider` trait, whose
 signature uses `lsp-types` (MIT) item types. The app depends on the same version
 gpui-component uses so completion items can be constructed.
+
+## 2026-10-06 — M1-16 benchmark numbers
+
+Measured on the Linux build container (release profile, criterion):
+
+| Measurement | Result | Budget (CLAUDE.md) |
+|---|---|---|
+| Decode 1,000 rows × 5 columns into `RowBatch` | ~99 µs | — |
+| Look up and format one screen (40 rows × 10 columns at row 500k of 1M) | ~16 µs | no dropped frames (16 ms) |
+| 1,000,000 rows × 10 `int8` columns held in `BatchList` | < 150 MB (asserted by test) | < 150 MB |
+
+The grid frame-time harness is still missing (see PLAN Follow-ups); the numbers above cover
+decode and the per-frame formatting work only.

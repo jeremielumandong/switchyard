@@ -23,9 +23,7 @@ pub fn editable_table(
     sql: &str,
     columns: &[ColumnMeta],
 ) -> Option<EditTable> {
-    let first = sql.split_whitespace()
-        .next()?
-        .to_ascii_uppercase();
+    let first = sql.split_whitespace().next()?.to_ascii_uppercase();
     if first != "SELECT" && first != "TABLE" {
         return None;
     }

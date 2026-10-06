@@ -715,6 +715,26 @@ mod tests {
     }
 
     #[test]
+    fn million_rows_ten_numeric_columns_fit_the_memory_budget() {
+        // Budget (SPEC): 1M rows × 10 numeric columns under 150 MB.
+        let types = [DataType::Int64; 10];
+        let mut list = BatchList::default();
+        for b in 0..1000i64 {
+            let mut builder = RowBatchBuilder::new(&types, 1000);
+            for r in 0..1000i64 {
+                for c in 0..10 {
+                    builder.push_i64(b * 1000 + r * c);
+                }
+            }
+            list.push(builder.finish());
+        }
+        assert_eq!(list.len(), 1_000_000);
+        let mb = list.heap_bytes() as f64 / (1024.0 * 1024.0);
+        assert!(mb < 150.0, "{mb:.1} MB");
+        assert!(mb > 70.0, "accounting looks wrong: {mb:.1} MB");
+    }
+
+    #[test]
     fn display_truncates_text() {
         let mut out = String::new();
         CellRef::Text("line one\nline two").write_display(&mut out, 6);

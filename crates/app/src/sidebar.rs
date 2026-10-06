@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use gpui_kit::component::input::Input;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, ClipboardItem, Context, FontWeight, InteractiveElement as _, IntoElement,
@@ -127,6 +128,35 @@ impl SchemaState {
             scope,
             refresh,
         });
+    }
+
+    /// Load every object folder of every user schema (for search).
+    pub fn load_all_folders(&mut self, core: &RuntimeHandle) {
+        let schemas: Vec<String> = match &self.schemas {
+            Loadable::Loaded(s) => s
+                .iter()
+                .filter(|s| !s.is_system)
+                .map(|s| s.name.clone())
+                .collect(),
+            _ => return,
+        };
+        for schema in schemas {
+            for kind in PG_FOLDERS {
+                if matches!(
+                    self.objects.get(&(schema.clone(), *kind)),
+                    None | Some(Loadable::NotLoaded)
+                ) {
+                    self.request(
+                        IntrospectScope::Objects {
+                            schema: schema.clone(),
+                            kind: *kind,
+                        },
+                        false,
+                        core,
+                    );
+                }
+            }
+        }
     }
 
     /// Reload everything from the server.
@@ -841,12 +871,6 @@ impl Workspace {
                 format!("Cached {mins} min ago")
             }
         });
-        let db_name = self
-            .schema
-            .connection
-            .as_ref()
-            .map(|c| c.name.clone())
-            .unwrap_or_default();
         if !has_conn {
             return div()
                 .flex_1()
@@ -881,16 +905,13 @@ impl Workspace {
                             .bg(p.bg)
                             .text_color(p.fg3)
                             .text_size(px(12.))
-                            .on_click(cx.listener(|this, _, w, cx| {
-                                this.open_palette(crate::palette::PaletteMode::Objects, w, cx)
-                            }))
-                            .child(div().flex_1().truncate().child(
-                                if self.schema.filter.is_empty() {
-                                    format!("Search objects in {db_name}")
-                                } else {
-                                    format!("Filter: {}", self.schema.filter)
-                                },
-                            ))
+                            .child(
+                                div().flex_1().child(
+                                    Input::new(&self.schema_search)
+                                        .appearance(false)
+                                        .text_size(px(12.)),
+                                ),
+                            )
                             .child(
                                 div()
                                     .font_family(MONO)

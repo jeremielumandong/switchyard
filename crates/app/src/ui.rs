@@ -241,6 +241,37 @@ pub fn segmented(
         )
 }
 
+/// A checkbox with a label.
+pub fn checkbox(
+    id: impl Into<ElementId>,
+    checked: bool,
+    label: impl Into<SharedString>,
+    p: &Palette,
+) -> Stateful<Div> {
+    div()
+        .id(id.into())
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .text_size(px(12.))
+        .text_color(p.fg2)
+        .child(
+            div()
+                .size(px(14.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .border_1()
+                .border_color(if checked { p.acc } else { p.bd2 })
+                .rounded(px(3.))
+                .bg(if checked { p.acc } else { p.surface })
+                .text_color(p.acc_fg)
+                .text_size(px(10.))
+                .child(if checked { "✓" } else { "" }),
+        )
+        .child(label.into())
+}
+
 /// Section caption in small caps style ("HOSTS", "RECENT").
 pub fn caption(text: impl Into<SharedString>, p: &Palette) -> Div {
     div()
