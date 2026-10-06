@@ -313,3 +313,30 @@ the rev with it (Cargo warns "patch not used" until then).
   CSPRNG (PKCE verifier, state). It is already in the build as rustls' crypto provider.
 - Known limit: a session reconnecting after a cancel (SQL Server) reuses the token it
   connected with; after about an hour that reconnect fails and the tab must reconnect.
+
+## 2026-10-06 — Driver Manager (M3-4 to M3-6)
+
+- **Manifest:** the SPEC format (`id`, `required_by`, `detect`, per-platform `strategy`),
+  plus `license` (`accept_required` for click-through terms) and `detect.env` /
+  `detect.min_version`. Strategies: `builtin`, `package` (per-manager names), `archive`
+  (version, URL, SHA-256, size, library folder) and `manual` (steps). The manifest compiled
+  into the app (`crates/drivers/manifest.json`) is trusted; a downloaded one is used only
+  when its minisign signature verifies against `SWITCHYARD_MANIFEST_PUBKEY` (build-time).
+  Only prehashed (current) minisign signatures are accepted. The update-server fetch is a
+  follow-up: it needs the maintainers' signing key and a URL.
+- **Detection order:** a path the user chose (`<drivers>/paths.json`), the app-managed
+  directory (`<data>/drivers/<id>/<version>/`, newest first, minimum version enforced),
+  built into the OS, environment variables, then system library directories.
+- **Install:** packages run through `pkexec` on Linux (the desktop's password dialog);
+  without it the card shows the exact `sudo …` command to run in a terminal and a Re-check.
+  Homebrew runs unelevated; winget elevates itself. Archives download with reqwest + the
+  app's rustls config, are hashed while on disk, refused on any SHA-256 mismatch, unpacked
+  into a staging folder and renamed into place. Install from file uses the same check.
+  A mirror setting (`drivers.mirror`) replaces the archive URL's origin, keeping the file
+  name. Loading uses `libloading` in one `#[allow(unsafe_code)]` function.
+- **Archive reader:** our own small ustar/GNU/pax reader rather than the `tar` crate (not
+  on the approved list). It refuses absolute paths, `..`, links leaving the folder, writes
+  through earlier links, hard links and devices, and caps the unpacked size at 4 GB.
+  **Needs approval:** `flate2` (gzip), already in the build through russh.
+- Debug builds only: `SWITCHYARD_DEV_MANIFEST=<file>` loads an unsigned manifest to try
+  the archive flow locally.

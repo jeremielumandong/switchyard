@@ -67,6 +67,7 @@ pub struct Workspace {
     pub(crate) workspace_name: String,
     pub(crate) secret_backend: (&'static str, bool),
     pub(crate) components: Vec<Component>,
+    pub(crate) drivers: crate::drivers_page::DriversPage,
     pub(crate) history: Vec<HistoryEntry>,
     pub(crate) focus: FocusHandle,
     pub(crate) overlay_focus: FocusHandle,
@@ -150,6 +151,7 @@ impl Workspace {
             workspace_name: "Default".into(),
             secret_backend: ("", false),
             components: Vec::new(),
+            drivers: Default::default(),
             history: Vec::new(),
             focus,
             overlay_focus: cx.focus_handle(),
@@ -406,7 +408,10 @@ impl Workspace {
                     }
                 }
             }
-            Event::Components(c) => self.components = c,
+            Event::Components(_)
+            | Event::ComponentProgress { .. }
+            | Event::ComponentInstalled { .. }
+            | Event::ComponentFailed { .. } => self.on_component_event(ev, cx),
             Event::EditsApplied {
                 request,
                 result,

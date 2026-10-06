@@ -353,3 +353,79 @@ async fn local_terminal_round_trip() {
             .collect::<Vec<_>>()
     );
 }
+
+#[tokio::test]
+async fn driver_manager_commands_report_on_the_bus() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = ServiceConfig::in_memory();
+    cfg.drivers_dir = dir.path().join("drivers");
+    let (core, mut rx) = Core::start(cfg).unwrap();
+    let h = core.handle();
+
+    h.send(Command::DetectComponents);
+    let comps = next_matching(&mut rx, |e| match e {
+        Event::Components(c) => Some(c),
+        _ => None,
+    })
+    .await;
+    let ids: Vec<_> = comps.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(ids, ["gssapi", "ssh-agent"]);
+
+    // A path without the library is refused with a reason.
+    h.send(Command::UseComponentPath {
+        id: "gssapi".into(),
+        path: dir.path().to_owned(),
+    });
+    let (id, message) = next_matching(&mut rx, |e| match e {
+        Event::ComponentFailed { id, message, .. } => Some((id, message)),
+        _ => None,
+    })
+    .await;
+    assert_eq!(id, "gssapi");
+    assert!(
+        message.contains("does not contain libgssapi_krb5.so.2"),
+        "{message}"
+    );
+
+    // A folder holding the library is accepted and remembered.
+    let lib = dir.path().join("krb/libgssapi_krb5.so.2");
+    std::fs::create_dir_all(lib.parent().unwrap()).unwrap();
+    std::fs::write(&lib, b"").unwrap();
+    h.send(Command::UseComponentPath {
+        id: "gssapi".into(),
+        path: lib.parent().unwrap().to_owned(),
+    });
+    let c = next_matching(&mut rx, |e| match e {
+        Event::ComponentInstalled { component } => Some(component),
+        _ => None,
+    })
+    .await;
+    assert!(
+        matches!(
+            &c.status,
+            switchyard_core::drivers::ComponentStatus::Installed {
+                source: switchyard_core::drivers::Source::UserPath,
+                ..
+            }
+        ),
+        "{:?}",
+        c.status
+    );
+    assert!(dir.path().join("drivers/paths.json").is_file());
+
+    // Manual-only components cannot be "installed".
+    h.send(Command::InstallComponent {
+        id: if cfg!(target_os = "macos") {
+            "nope"
+        } else {
+            "ssh-agent"
+        }
+        .into(),
+        accept_license: false,
+    });
+    next_matching(&mut rx, |e| match e {
+        Event::ComponentFailed { .. } => Some(()),
+        _ => None,
+    })
+    .await;
+}
