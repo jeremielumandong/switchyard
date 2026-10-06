@@ -263,3 +263,53 @@ the rev with it (Cargo warns "patch not used" until then).
   with a message naming the Host and port.
 - New SSH sessions stay up for 60 s even with no users, so "Test connection" followed by
   "Save and connect", or reopening a terminal, does not ask for a second MFA code.
+
+## 2026-10-06 — SQL Server driver (tiberius)
+
+- `tiberius` 0.13 with `tds80` and `rustls`. Its rustls feature also builds `aws-lc-rs`;
+  `db::tls::install_default_provider` makes ring the process-wide provider so every driver
+  uses one TLS stack. Per-connection trust is `DbConfig.trusted_ca_pem` (M3-8 adds the UI).
+- tiberius' result stream borrows the client mutably, so one task per session owns the
+  client and serves requests in order (queries, transaction batches, catalog). Results go
+  through a channel of 4 batches, so a paused grid slows the server down through TCP.
+  The first batch is 200 rows, then 1,000.
+- tiberius drops DONE row counts, so after a batch without result sets the driver runs
+  `SELECT CAST(@@ROWCOUNT AS bigint)` for "rows affected".
+- tiberius does not surface INFO tokens (`PRINT`, `RAISERROR` below severity 11), so SQL
+  Server notices are not shown yet. Follow-up: upstream patch.
+- **Cancel (M3-2).** Cancel sends the TDS attention (`cancel_query`). SQL Server 2022/2025
+  acknowledges it in a TDS message of its own after the message that ends the cancelled
+  batch. tiberius stops at the first message boundary and reports "Never got a DONE token
+  acknowledging the Attention signal", leaving the connection one response behind; its
+  public API has no way to read a message without sending a request. Chosen: send the
+  attention (so the server stops at once), then, if the acknowledgement was not read,
+  reconnect with the same config and tunnel endpoint, and emit a warning notice saying the
+  open transaction, temp tables and SET options were reset. The session's
+  `in_transaction()` clears. `WAITFOR DELAY '00:00:30'` stops in about 0.3 s after cancel.
+  Upstream fix (keep reading past the message boundary until the attention DONE) would
+  remove the reconnect; tracked in Follow-ups.
+- Azure SQL gateway redirects (`Routing`) are followed up to three times when not tunnelled.
+
+## 2026-10-06 — Microsoft Entra ID sign-in (M3-9)
+
+- **Client id (user decision):** one built-in Switchyard app registration, multi-tenant
+  public client, set at build time (`SWITCHYARD_ENTRA_CLIENT_ID`, see `docs/entra-app.md`).
+  A connection can override it with its organization's own application id. Builds without
+  it say so and point to the override.
+- Flows, all against `login.microsoftonline.com/<tenant>/oauth2/v2.0`, scope
+  `https://database.windows.net//.default` (+ `offline_access` for user flows):
+  browser (authorization code + PKCE S256, loopback redirect `http://localhost:<port>`,
+  state checked, other requests to the port ignored), device code, password (ROPC, no MFA)
+  and client credentials (service principal). Tenant defaults to `organizations`.
+- The token goes to tiberius as `AADToken`. Access tokens are cached in memory per
+  connection until 5 minutes before expiry; refresh tokens are stored in the keychain/vault
+  under `<connection id>:entra-refresh` and tried before any prompt, so the browser only
+  opens when the refresh token has expired or been revoked. Deleting the connection
+  removes it. One sign-in at a time, so two tabs connecting together open one browser.
+- Prompts reuse the runtime prompt queue: `EntraSignIn` (the app opens the URL and shows
+  Cancel / Copy link / Open again) and `EntraDeviceCode` (code, Copy code, Open page);
+  `PromptClosed` withdraws them. 5-minute limit per sign-in.
+- **Needs approval:** `ring` as a direct dependency of `switchyard-db` for SHA-256 and the
+  CSPRNG (PKCE verifier, state). It is already in the build as rustls' crypto provider.
+- Known limit: a session reconnecting after a cancel (SQL Server) reuses the token it
+  connected with; after about an hour that reconnect fails and the tab must reconnect.
