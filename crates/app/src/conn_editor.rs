@@ -391,6 +391,9 @@ impl ConnEditor {
                     {
                         "Automatic · 1Password found".to_owned()
                     }
+                    _ if cfg!(windows) => {
+                        "Automatic · OpenSSH agent service, then Pageant".to_owned()
+                    }
                     _ => "Automatic · SSH_AUTH_SOCK, then 1Password".to_owned(),
                 };
                 add(
@@ -1159,7 +1162,11 @@ impl ConnEditor {
                             "Agent socket",
                             3,
                             true,
-                            Some("1Password: ~/.1password/agent.sock (macOS: the Group Containers path)"),
+                            Some(if cfg!(windows) {
+                                "A named pipe (\\\\.\\pipe\\…), or pageant for PuTTY's Pageant"
+                            } else {
+                                "1Password: ~/.1password/agent.sock (macOS: the Group Containers path)"
+                            }),
                             p,
                             cx,
                         ));

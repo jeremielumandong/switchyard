@@ -109,8 +109,9 @@ pub struct SshTarget {
     pub keepalive: Duration,
     /// The hop before this one (ProxyJump); its own `jump` continues the chain.
     pub jump: Option<Box<SshTarget>>,
-    /// Agent socket (OpenSSH `IdentityAgent`); `None` tries `SSH_AUTH_SOCK`, then the
-    /// 1Password agent.
+    /// Agent socket (OpenSSH `IdentityAgent`; on Windows a pipe or `pageant`); `None` tries
+    /// `SSH_AUTH_SOCK`, then the 1Password agent (Windows: the OpenSSH agent service, then
+    /// Pageant).
     pub agent_socket: Option<String>,
     /// Public key file choosing which agent key to use (1Password holds many; servers
     /// stop after a few failed keys).
@@ -649,7 +650,34 @@ pub fn one_password_sockets() -> Vec<PathBuf> {
     ]
 }
 
-/// Agent sockets to try, in order.
+/// Where to reach an SSH agent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum AgentEndpoint {
+    /// A Unix socket, or a named pipe on Windows (OpenSSH's agent service, 1Password).
+    Socket(PathBuf),
+    /// PuTTY's Pageant (Windows only).
+    Pageant,
+}
+
+impl AgentEndpoint {
+    /// A short name for the status line.
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Pageant => "Pageant",
+            Self::Socket(p) => agent_name(p),
+        }
+    }
+
+    fn display(&self) -> String {
+        match self {
+            Self::Pageant => "Pageant".into(),
+            Self::Socket(p) => p.display().to_string(),
+        }
+    }
+}
+
+/// Agent sockets to try, in order (Unix).
+#[cfg(unix)]
 fn agent_candidates(explicit: Option<&str>, manager: Option<&std::path::Path>) -> Vec<PathBuf> {
     if let Some(e) = explicit.map(str::trim).filter(|e| !e.is_empty()) {
         // `IdentityAgent SSH_AUTH_SOCK` means the environment variable.
@@ -676,6 +704,74 @@ fn agent_candidates(explicit: Option<&str>, manager: Option<&std::path::Path>) -
     out
 }
 
+/// The OpenSSH for Windows agent service's pipe (1Password serves the same one).
+const OPENSSH_AGENT_PIPE: &str = r"\\.\pipe\openssh-ssh-agent";
+
+fn is_pipe(s: &str) -> bool {
+    let s = s.to_ascii_lowercase();
+    s.starts_with(r"\\.\pipe\") || s.starts_with("//./pipe/")
+}
+
+/// Agents to try on Windows, in order. `explicit` is the Host's agent field: a pipe
+/// path, `pageant`, or `SSH_AUTH_SOCK`; without one, a pipe in `SSH_AUTH_SOCK`, then the
+/// OpenSSH agent service, then Pageant.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_agent_candidates(
+    explicit: Option<&str>,
+    manager: Option<&std::path::Path>,
+    env_sock: Option<&str>,
+) -> Vec<AgentEndpoint> {
+    let env_pipe = env_sock
+        .map(str::trim)
+        .filter(|s| is_pipe(s))
+        .map(|s| AgentEndpoint::Socket(PathBuf::from(s)));
+    if let Some(e) = explicit.map(str::trim).filter(|e| !e.is_empty()) {
+        if e.eq_ignore_ascii_case("pageant") {
+            return vec![AgentEndpoint::Pageant];
+        }
+        if e == "SSH_AUTH_SOCK" || e == "$SSH_AUTH_SOCK" {
+            return env_pipe.into_iter().collect();
+        }
+        if is_pipe(e) {
+            return vec![AgentEndpoint::Socket(PathBuf::from(e))];
+        }
+        // A Unix socket path from an imported config means nothing here: fall through.
+    }
+    if let Some(m) = manager {
+        return vec![AgentEndpoint::Socket(m.to_owned())];
+    }
+    let mut out: Vec<AgentEndpoint> = env_pipe.into_iter().collect();
+    let service = AgentEndpoint::Socket(PathBuf::from(OPENSSH_AGENT_PIPE));
+    if !out.iter().any(|c| match c {
+        AgentEndpoint::Socket(p) => p.to_string_lossy().eq_ignore_ascii_case(OPENSSH_AGENT_PIPE),
+        AgentEndpoint::Pageant => false,
+    }) {
+        out.push(service);
+    }
+    out.push(AgentEndpoint::Pageant);
+    out
+}
+
+#[cfg(windows)]
+fn agent_candidates_platform(
+    explicit: Option<&str>,
+    manager: Option<&std::path::Path>,
+) -> Vec<AgentEndpoint> {
+    let env = std::env::var("SSH_AUTH_SOCK").ok();
+    windows_agent_candidates(explicit, manager, env.as_deref())
+}
+
+#[cfg(unix)]
+fn agent_candidates_platform(
+    explicit: Option<&str>,
+    manager: Option<&std::path::Path>,
+) -> Vec<AgentEndpoint> {
+    agent_candidates(explicit, manager)
+        .into_iter()
+        .map(AgentEndpoint::Socket)
+        .collect()
+}
+
 #[cfg(unix)]
 async fn connect_agent(
     socket: &std::path::Path,
@@ -698,27 +794,6 @@ async fn connect_agent(
         .map_err(|e| e.to_string())
 }
 
-#[cfg(windows)]
-fn agent_candidates_platform(
-    explicit: Option<&str>,
-    _manager: Option<&std::path::Path>,
-) -> Vec<PathBuf> {
-    vec![PathBuf::from(
-        explicit
-            .map(str::trim)
-            .filter(|e| e.starts_with(r"\\.\pipe\"))
-            .unwrap_or(r"\\.\pipe\openssh-ssh-agent"),
-    )]
-}
-
-#[cfg(unix)]
-fn agent_candidates_platform(
-    explicit: Option<&str>,
-    manager: Option<&std::path::Path>,
-) -> Vec<PathBuf> {
-    agent_candidates(explicit, manager)
-}
-
 /// A short name for the agent behind `socket`, for the status line.
 fn agent_name(socket: &std::path::Path) -> &'static str {
     if socket
@@ -730,6 +805,53 @@ fn agent_name(socket: &std::path::Path) -> &'static str {
     } else {
         "agent"
     }
+}
+
+/// Sign in with the keys `agent` holds (only `wanted`, when given). `Err` says why not.
+async fn sign_with_agent<S>(
+    handle: &mut Handle<ClientHandler>,
+    target: &SshTarget,
+    mut agent: russh::keys::agent::client::AgentClient<S>,
+    wanted: Option<&PublicKey>,
+    hash: Option<russh::keys::HashAlg>,
+    name: &str,
+) -> Result<String, String>
+where
+    S: russh::keys::agent::client::AgentStream + Send + Unpin + 'static,
+{
+    let ids = agent
+        .request_identities()
+        .await
+        .map_err(|e| e.to_string())?;
+    let keys: Vec<PublicKey> = ids
+        .into_iter()
+        .filter_map(|id| match id {
+            russh::keys::agent::AgentIdentity::PublicKey { key, .. } => Some(key),
+            _ => None,
+        })
+        .filter(|k| wanted.is_none_or(|w| w.key_data() == k.key_data()))
+        .collect();
+    if keys.is_empty() {
+        return Err(if wanted.is_some() {
+            "does not hold the chosen key".into()
+        } else {
+            "holds no keys".into()
+        });
+    }
+    // The agent may ask the user to approve (1Password shows its own dialog).
+    tracing::info!(host = %target.label, agent = name, keys = keys.len(), "agent sign-in");
+    for key in keys {
+        let kind = key_kind(&key);
+        let ok = handle
+            .authenticate_publickey_with(target.user.clone(), key, hash, &mut agent)
+            .await
+            .map(|r| r.success())
+            .unwrap_or(false);
+        if ok {
+            return Ok(format!("{name} · {kind}"));
+        }
+    }
+    Err("no key was accepted".into())
 }
 
 async fn agent_auth(
@@ -764,59 +886,31 @@ async fn agent_auth(
         .map_err(|e| auth_failed(target, e.to_string()))?
         .flatten();
     let mut tried = Vec::new();
-    for socket in candidates {
-        let name = agent_name(&socket);
-        let mut agent = match connect_agent(&socket).await {
-            Ok(a) => a,
-            Err(e) => {
-                tried.push(format!("{}: {e}", socket.display()));
-                continue;
-            }
-        };
-        let ids = match agent.request_identities().await {
-            Ok(ids) => ids,
-            Err(e) => {
-                tried.push(format!("{}: {e}", socket.display()));
-                continue;
-            }
-        };
-        let keys: Vec<PublicKey> = ids
-            .into_iter()
-            .filter_map(|id| match id {
-                russh::keys::agent::AgentIdentity::PublicKey { key, .. } => Some(key),
-                _ => None,
-            })
-            .filter(|k| wanted.as_ref().is_none_or(|w| w.key_data() == k.key_data()))
-            .collect();
-        if keys.is_empty() {
-            tried.push(format!(
-                "{} ({name}): {}",
-                socket.display(),
-                if wanted.is_some() {
-                    "does not hold the chosen key"
-                } else {
-                    "holds no keys"
+    for endpoint in candidates {
+        let name = endpoint.name();
+        let result = match &endpoint {
+            AgentEndpoint::Socket(socket) => match connect_agent(socket).await {
+                Ok(agent) => {
+                    sign_with_agent(handle, target, agent, wanted.as_ref(), hash, name).await
                 }
-            ));
-            continue;
-        }
-        // The agent may ask the user to approve (1Password shows its own dialog).
-        tracing::info!(host = %target.label, agent = name, keys = keys.len(), "agent sign-in");
-        for key in keys {
-            let kind = key_kind(&key);
-            let ok = handle
-                .authenticate_publickey_with(target.user.clone(), key, hash, &mut agent)
-                .await
-                .map(|r| r.success())
-                .unwrap_or(false);
-            if ok {
-                return Ok(format!("{name} · {kind}"));
+                Err(e) => Err(e),
+            },
+            #[cfg(windows)]
+            AgentEndpoint::Pageant => {
+                match russh::keys::agent::client::AgentClient::connect_pageant().await {
+                    Ok(agent) => {
+                        sign_with_agent(handle, target, agent, wanted.as_ref(), hash, name).await
+                    }
+                    Err(e) => Err(e.to_string()),
+                }
             }
+            #[cfg(not(windows))]
+            AgentEndpoint::Pageant => Err("Pageant is only available on Windows".into()),
+        };
+        match result {
+            Ok(method) => return Ok(method),
+            Err(e) => tried.push(format!("{} ({name}): {e}", endpoint.display())),
         }
-        tried.push(format!(
-            "{} ({name}): no key was accepted",
-            socket.display()
-        ));
     }
     Err(auth_failed(target, tried.join("; ")))
 }
@@ -973,5 +1067,62 @@ mod tests {
         let private = t.path().join("id_priv");
         std::fs::write(&private, "-----BEGIN OPENSSH PRIVATE KEY-----\n").unwrap();
         assert!(!is_public_key_file(&private));
+    }
+}
+
+#[cfg(test)]
+mod windows_agent_tests {
+    use super::*;
+
+    fn pipe(p: &str) -> AgentEndpoint {
+        AgentEndpoint::Socket(PathBuf::from(p))
+    }
+
+    #[test]
+    fn default_order_is_env_pipe_then_service_then_pageant() {
+        assert_eq!(
+            windows_agent_candidates(None, None, None),
+            [pipe(OPENSSH_AGENT_PIPE), AgentEndpoint::Pageant]
+        );
+        let custom = r"\\.\pipe\my-agent";
+        assert_eq!(
+            windows_agent_candidates(None, None, Some(custom)),
+            [
+                pipe(custom),
+                pipe(OPENSSH_AGENT_PIPE),
+                AgentEndpoint::Pageant
+            ]
+        );
+        // The service pipe in SSH_AUTH_SOCK is not tried twice; a Unix path there is ignored.
+        assert_eq!(
+            windows_agent_candidates(None, None, Some(r"\\.\PIPE\openssh-ssh-agent")),
+            [pipe(r"\\.\PIPE\openssh-ssh-agent"), AgentEndpoint::Pageant]
+        );
+        assert_eq!(
+            windows_agent_candidates(None, None, Some("/tmp/ssh-x/agent.1")),
+            [pipe(OPENSSH_AGENT_PIPE), AgentEndpoint::Pageant]
+        );
+    }
+
+    #[test]
+    fn the_host_field_picks_one_agent() {
+        assert_eq!(
+            windows_agent_candidates(Some(" Pageant "), None, None),
+            [AgentEndpoint::Pageant]
+        );
+        assert_eq!(
+            windows_agent_candidates(Some("//./pipe/agent"), None, None),
+            [pipe("//./pipe/agent")]
+        );
+        assert_eq!(
+            windows_agent_candidates(Some("SSH_AUTH_SOCK"), None, Some(r"\\.\pipe\a")),
+            [pipe(r"\\.\pipe\a")]
+        );
+        // An imported Unix socket (1Password on macOS) falls back to the defaults.
+        assert_eq!(
+            windows_agent_candidates(Some("~/.1password/agent.sock"), None, None),
+            [pipe(OPENSSH_AGENT_PIPE), AgentEndpoint::Pageant]
+        );
+        assert_eq!(AgentEndpoint::Pageant.name(), "Pageant");
     }
 }
