@@ -650,6 +650,7 @@ pub fn one_password_sockets() -> Vec<PathBuf> {
 }
 
 /// Agent sockets to try, in order.
+#[cfg(unix)]
 fn agent_candidates(explicit: Option<&str>, manager: Option<&std::path::Path>) -> Vec<PathBuf> {
     if let Some(e) = explicit.map(str::trim).filter(|e| !e.is_empty()) {
         // `IdentityAgent SSH_AUTH_SOCK` means the environment variable.
