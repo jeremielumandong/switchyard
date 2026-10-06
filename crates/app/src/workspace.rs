@@ -60,6 +60,8 @@ pub struct Workspace {
     pub(crate) overlay: Option<Overlay>,
     pub(crate) toast: Option<SharedString>,
     toast_task: Option<Task<()>>,
+    /// Keeps relative times ("Cached 3 min ago") current under retained rendering.
+    _clock: Task<()>,
     pub(crate) tunnels_open: bool,
     pub(crate) workspace_name: String,
     pub(crate) secret_backend: (&'static str, bool),
@@ -131,6 +133,16 @@ impl Workspace {
             overlay: None,
             toast: None,
             toast_task: None,
+            _clock: cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(Duration::from_secs(30))
+                        .await;
+                    if this.update(cx, |_, cx| cx.notify()).is_err() {
+                        break;
+                    }
+                }
+            }),
             tunnels_open: false,
             workspace_name: "Default".into(),
             secret_backend: ("", false),
