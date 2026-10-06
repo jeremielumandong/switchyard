@@ -197,6 +197,9 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
 - `cargo test` exports `SSL_CERT_DIR` (the system store) to tests; a test that passes under cargo
   can fail TLS in the app or a bare binary. Point `SSL_CERT_FILE` at a test CA instead of
   installing it system-wide (that breaks `untrusted_certificate_is_refused`).
+- gpui-kit's editor loses tree-sitter fold candidates for SQL while editing; the SQL tab sets
+  its own with `apply_highlighter_fold_candidates` (`app/src/folds.rs`). Any other editor
+  that needs folding must do the same.
 - PostgreSQL cancel opens a second connection to the server. Through an SSH tunnel it must use the
   same tunnel endpoint.
 - For SSH terminals, feed channel bytes into `alacritty_terminal`'s `Term` through its ANSI parser.

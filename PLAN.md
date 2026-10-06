@@ -48,11 +48,13 @@ Exit: the app opens with the full layout, profiles save to SQLite, secrets land 
   command palette (Ctrl/Cmd+Shift+P) and quick switcher (Ctrl/Cmd+P) with fuzzy matching.
   Done when: every action registered so far is reachable from the palette.
   Note: `actions.rs` registry + `palette.rs`; every action is listed in `palette_commands`.
-- [ ] **M0-9 Connections sidebar and editor.** Sidebar tree grouped by Host or folder with
+- [x] **M0-9 Connections sidebar and editor.** Sidebar tree grouped by Host or folder with
   environment dots; connection editor dialog with a form per type and environment label.
   "Test connection" is stubbed until drivers exist.
   Done when: create, edit, delete and reorder connections; changes persist across restarts.
-  Note: Partial: tree grouped by Host, environment dots, editor for every type with test connection (PostgreSQL real, others stubbed), create/edit/delete persist. Store keeps `sort_order` but there is no drag-to-reorder UI yet.
+  Note: tree grouped by Host, environment dots, editor for every type with test connection,
+  create/edit/delete persist. Drag a Host or connection to reorder it among its siblings
+  (Hosts among Hosts, connections within their Host or "Local & direct"); saved, survives restarts.
 
 ## M1 — PostgreSQL, editor, grid
 
@@ -82,10 +84,15 @@ Exit: query the 1M-row table, scroll without dropped frames, cancel a long query
   sequences, types. Lazy per scope; cached in the store.
   Done when: insta snapshots of catalog output against the seeded schema.
   Note: insta snapshots in `crates/db/tests/snapshots`; cached in `schema_cache`.
-- [ ] **M1-6 Editor tab.** gpui-component editor with tree-sitter SQL highlighting, multi-cursor,
+- [x] **M1-6 Editor tab.** gpui-component editor with tree-sitter SQL highlighting, multi-cursor,
   find/replace, comment toggle, folding. Buffers autosave and restore after restart.
   Done when: kill the app mid-edit, relaunch, buffer content is intact.
-  Note: Partial: tree-sitter SQL highlighting, find, comment toggle and buffer autosave/restore (`buffers_survive_reopen`, checked manually by killing the app) work. Multi-cursor and folding are not verified.
+  Note: tree-sitter SQL highlighting, find, comment toggle, buffer autosave/restore
+  (`buffers_survive_reopen`, checked by killing the app). Multi-cursor checked manually:
+  Alt+click and Shift+Alt+↑/↓ (gpui-kit's Ctrl+Alt+↑/↓ did not fire under X11 here).
+  Folding: the SQL tab supplies fold regions from the dialect lexer and splitter
+  (`folds.rs` tests): statements, parenthesised blocks and block comments of 3+ lines;
+  checked folding/unfolding and after a restart.
 - [x] **M1-7 Statement splitting and execution.** PostgreSQL dialect splitter handling strings,
   comments and dollar-quoted bodies. Run statement at cursor, selection, whole script.
   Parameter prompts for `:name` and `$1`.
@@ -102,12 +109,21 @@ Exit: query the 1M-row table, scroll without dropped frames, cancel a long query
 - [ ] **M1-10 Results grid core.** Virtualized rows and columns, streaming append, NULL styling,
   right-aligned numbers, column resize/reorder/pin, cell and range selection, copy as TSV.
   Done when: 1M rows loaded, scrolling holds frame rate; memory within budget.
-  Note: Partial: `DataTable` virtualizes rows and columns, streams, styles NULLs, right-aligns numbers, resizes/reorders/pins columns, copies cells. Range selection and multi-cell TSV copy are missing; 1M rows × 10 int8 fit in < 150 MB (`batch.rs` test), frame rate not yet measured.
-- [ ] **M1-11 Grid extras.** Value viewer (JSON, XML, text, hex, image), export CSV/JSON/
+  Note: Partial: `DataTable` virtualizes rows and columns, streams, styles NULLs, right-aligns
+  numbers, resizes/reorders/pins columns (the data now moves with a dragged header). Range
+  selection: Shift+click or Shift+arrows; Ctrl/⌘+C copies the range as TSV (raw values, NULL
+  empty), "Copy selection as" uses the range with column names. 1M rows × 10 int8 fit in
+  < 150 MB (`batch.rs` test); scroll frame rate not yet measured (M1-16 harness).
+- [x] **M1-11 Grid extras.** Value viewer (JSON, XML, text, hex, image), export CSV/JSON/
   Markdown/SQL INSERT, client-side sort and filter, multiple result-set tabs, status line,
   configurable fetch limit (default 10,000) with "Fetch all".
   Done when: each feature has a test or a documented manual check in the task note.
-  Note: Partial: JSON/text/hex viewer, CSV/JSON/Markdown/SQL INSERT export (tests in `sql_tab.rs`), sort, filter, result-set tabs, status line, fetch limit with "Fetch all" (`streams_with_fetch_limit_and_fetch_all`). XML and image viewers are missing.
+  Note: JSON / text (row), XML / hex / image (selected cell) viewers: XML indented and
+  coloured with a plain-text fallback, image by signature (PNG, JPEG, GIF, WebP, BMP, TIFF,
+  SVG), large values capped at 4,000 lines (`viewer.rs` tests; checked manually with an `xml`
+  and a `bytea` PNG column). CSV/JSON/Markdown/SQL INSERT export (tests in `sql_tab.rs`), sort,
+  filter, result-set tabs, status line, fetch limit with "Fetch all"
+  (`streams_with_fetch_limit_and_fetch_all`).
 - [x] **M1-12 Schema explorer.** Lazy tree, fuzzy object search, actions (open data, generate
   SELECT/INSERT/UPDATE, copy name, view DDL, truncate/drop with confirmation).
   Done when: tree expands without blocking on large schemas.
@@ -144,10 +160,12 @@ Exit: one login to a Host opens a terminal and a tunneled PostgreSQL connection.
 - [x] **M2-3 Jump hosts.** ProxyJump chains via direct-tcpip channels.
   Done when: connect through a two-hop chain in docker.
   Note: Chains through direct-tcpip channels; jump sessions are shared too. `two_hop_jump_chain` (2222 → 2223 → 2224).
-- [ ] **M2-4 SSH config import.** Parse Host, HostName, User, Port, IdentityFile, ProxyJump into
+- [x] **M2-4 SSH config import.** Parse Host, HostName, User, Port, IdentityFile, ProxyJump into
   Host profiles; preview before import.
   Done when: snapshot test on a sample config.
-  Note: Partial: parser and snapshot test exist and the palette command imports Hosts, but there is no preview step before importing.
+  Note: parser with snapshot test; "Import Hosts from ~/.ssh/config" opens a preview (alias,
+  user@host:port, auth, ProxyJump, already-saved entries greyed) and imports the ticked ones,
+  wiring ProxyJump to saved or imported Hosts (`ssh_import.rs` tests).
 - [ ] **M2-5 SSH agent.** Agent auth via `SSH_AUTH_SOCK` on Unix, OpenSSH agent pipe and Pageant
   on Windows.
   Done when: agent auth works on Linux and macOS in CI; Windows checked manually and noted.
@@ -357,10 +375,7 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 
 - Observe CI green on macOS, Windows and Linux (M0-1).
 - Smoke tests for the SQL Server, SSH and FTP containers (M0-2).
-- Drag-to-reorder connections in the sidebar (M0-9).
-- Verify multi-cursor and folding in the gpui-component editor (M1-6).
-- Grid range selection and multi-cell TSV copy (M1-10); grid frame-time harness (M1-16).
-- XML and image value viewers (M1-11).
+- Grid frame-time harness (M1-16).
 - Driver Manager: fetch the signed manifest from the update server; zip archives (Oracle
   Instant Client ships zip) once a zip reader is approved.
 - SQL Server: upstream tiberius patches for INFO tokens (notices) and reading the attention

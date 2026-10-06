@@ -459,3 +459,17 @@ the rev with it (Cargo warns "patch not used" until then).
   handshake test and a core test that sends a real service ticket to SQL Server (refused with
   18452 because the test KDC is not Active Directory). Not covered: a real AD domain, Windows
   SSPI at runtime, the macOS GSS framework at runtime.
+
+## 2026-10-06 — SQL editor fold regions come from the dialect, not gpui-kit (M1-6)
+
+- gpui-kit's editor gets fold candidates from tree-sitter, refreshed per edit. For SQL the
+  parse is fine (a `statement` node over all rows), yet no fold markers ever appeared while
+  typing or after loading; forcing a candidate through the public
+  `apply_highlighter_fold_candidates` showed that drawing and toggling work, so the
+  candidates are lost in the library's incremental update path.
+- Rather than patch gpui-kit, the SQL tab computes fold regions itself with the dialect's
+  lexer and statement splitter (strings, comments, dollar quotes and `GO` respected):
+  statements, parenthesised blocks and `/* */` comments spanning 3+ lines, one region per
+  first line. They are applied with the diagnostics pass (debounced 250 ms after edits, and
+  once when a tab opens). T-SQL folds by its own batch rules, which tree-sitter's SQL
+  grammar would not.

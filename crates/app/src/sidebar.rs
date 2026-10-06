@@ -5,8 +5,8 @@ use std::collections::{HashMap, HashSet};
 use gpui_kit::component::input::Input;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, ClipboardItem, Context, FontWeight, InteractiveElement as _, IntoElement,
-    MouseButton, MouseDownEvent, ParentElement as _, Pixels, Point, SharedString,
+    AnyElement, AppContext as _, ClipboardItem, Context, FontWeight, InteractiveElement as _,
+    IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Pixels, Point, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window, div, px, uniform_list,
 };
 use switchyard_core::db::{
@@ -251,6 +251,40 @@ struct ConnRow {
     live: bool,
     profile: Option<ProfileId>,
     action: ConnAction,
+    /// Can be dragged to reorder among the rows of the same group (`group`).
+    drag: Option<DraggedProfile>,
+}
+
+/// A profile being dragged to a new place in the sidebar.
+#[derive(Clone, Debug)]
+pub struct DraggedProfile {
+    id: ProfileId,
+    /// Siblings it may move among: `hosts`, `h:<host id>` or `g:direct`.
+    group: String,
+    label: SharedString,
+}
+
+/// `order` with `dragged` moved onto `target`: after it when moving down, before it when
+/// moving up (like dragging in any list).
+pub(crate) fn move_to(
+    order: &[ProfileId],
+    dragged: &ProfileId,
+    target: &ProfileId,
+) -> Vec<ProfileId> {
+    let mut v = order.to_vec();
+    let (Some(from), Some(to)) = (
+        v.iter().position(|i| i == dragged),
+        v.iter().position(|i| i == target),
+    ) else {
+        return v;
+    };
+    if from == to {
+        return v;
+    }
+    let item = v.remove(from);
+    let t = v.iter().position(|i| i == target).unwrap_or(v.len());
+    v.insert(if from < to { t + 1 } else { t }, item);
+    v
 }
 
 #[derive(Clone)]
@@ -290,6 +324,20 @@ impl Workspace {
         }
     }
 
+    /// Move `dragged` onto `target` in the sidebar and save the order.
+    fn reorder_profile(&mut self, dragged: &ProfileId, target: &ProfileId, cx: &mut Context<Self>) {
+        let order: Vec<ProfileId> = self.profiles.all.iter().map(|p| p.id().clone()).collect();
+        let ids = move_to(&order, dragged, target);
+        if ids == order {
+            return;
+        }
+        self.profiles
+            .all
+            .sort_by_key(|p| ids.iter().position(|i| i == p.id()).unwrap_or(usize::MAX));
+        self.core.send(Command::ReorderProfiles { ids });
+        cx.notify();
+    }
+
     fn conn_rows(&self, cx: &Context<Self>) -> Vec<ConnRow> {
         let live: HashSet<ProfileId> = self
             .tabs
@@ -305,7 +353,7 @@ impl Workspace {
             })
             .collect();
         let mut rows = Vec::new();
-        let leaf = |p: &Profile| -> ConnRow {
+        let leaf = |p: &Profile, group: &str| -> ConnRow {
             let (label, sub, action) = match p {
                 Profile::Db(d) => (
                     d.name.clone(),
@@ -328,16 +376,22 @@ impl Workspace {
                     ConnAction::Terminal(Some(h.id.clone())),
                 ),
             };
+            let label: SharedString = label.into();
             ConnRow {
                 is_group: false,
                 key: p.id().0.clone(),
                 badge: badge_of(p),
-                label: label.into(),
+                label: label.clone(),
                 sub: sub.into(),
                 env: None,
                 live: live.contains(p.id()),
                 profile: Some(p.id().clone()),
                 action,
+                drag: Some(DraggedProfile {
+                    id: p.id().clone(),
+                    group: group.to_owned(),
+                    label,
+                }),
             }
         };
         for h in self.profiles.hosts() {
@@ -355,6 +409,11 @@ impl Workspace {
                 live: any_live,
                 profile: Some(h.id.clone()),
                 action: ConnAction::Toggle,
+                drag: Some(DraggedProfile {
+                    id: h.id.clone(),
+                    group: "hosts".into(),
+                    label: h.name.clone().into(),
+                }),
             });
             if !collapsed {
                 rows.push(ConnRow {
@@ -367,8 +426,9 @@ impl Workspace {
                     live: false,
                     profile: Some(h.id.clone()),
                     action: ConnAction::Terminal(Some(h.id.clone())),
+                    drag: None,
                 });
-                rows.extend(kids.into_iter().map(leaf));
+                rows.extend(kids.into_iter().map(|k| leaf(k, &key)));
             }
         }
         let direct = self.profiles.direct();
@@ -383,6 +443,7 @@ impl Workspace {
             live: direct.iter().any(|k| live.contains(k.id())),
             profile: None,
             action: ConnAction::Toggle,
+            drag: None,
         });
         if !self.collapsed.contains(&key) {
             rows.push(ConnRow {
@@ -395,9 +456,10 @@ impl Workspace {
                 live: false,
                 profile: None,
                 action: ConnAction::Terminal(None),
+                drag: None,
             });
             rows.extend(direct.into_iter().map(|p| {
-                let mut r = leaf(p);
+                let mut r = leaf(p, "g:direct");
                 if let Profile::Db(d) = p {
                     r.env = Some(d.environment);
                 }
@@ -413,6 +475,7 @@ impl Workspace {
                 live: false,
                 profile: None,
                 action: ConnAction::Files,
+                drag: None,
             });
         }
         rows
@@ -782,8 +845,30 @@ impl Workspace {
         let profile = r.profile.clone();
         let collapsed = self.collapsed.contains(&r.key);
         let ctx_profile = r.profile.clone();
+        let drop_line = p.acc;
+        let drop_target = r.drag.clone();
+        let over_target = r.drag.clone();
         div()
             .id(("conn-row", i))
+            .when_some(r.drag.clone(), |d, drag| {
+                d.on_drag(drag, |d: &DraggedProfile, _, _, cx| {
+                    let label = d.label.to_string();
+                    cx.new(|_| crate::files_tab::DragPreview(label))
+                })
+            })
+            .drag_over::<DraggedProfile>(move |s, d, _, _| match &over_target {
+                Some(t) if t.group == d.group && t.id != d.id => {
+                    s.bg(drop_line.opacity(0.18)).border_color(drop_line)
+                }
+                _ => s,
+            })
+            .on_drop(cx.listener(move |this, d: &DraggedProfile, _, cx| {
+                if let Some(t) = &drop_target
+                    && t.group == d.group
+                {
+                    this.reorder_profile(&d.id, &t.id, cx);
+                }
+            }))
             .w_full()
             .h(px(26.))
             .flex()
@@ -1054,13 +1139,34 @@ impl Workspace {
         let Some(tab) = self.active_sql() else {
             return div().into_any_element();
         };
-        let (fmt, row) = {
+        let (fmt, row, cell) = {
             let t = tab.read(cx);
-            (t.viewer_format, t.selected_row(cx))
+            (
+                t.viewer_format,
+                t.selected_row(cx),
+                t.selected_cell_value(cx),
+            )
         };
+        let per_cell = matches!(
+            fmt,
+            ViewerFormat::Xml | ViewerFormat::Hex | ViewerFormat::Image
+        );
         let mut lines: Vec<Vec<(String, gpui_kit::Hsla)>> = Vec::new();
         let mut size_label = String::new();
+        let mut image: Option<AnyElement> = None;
+        if per_cell {
+            self.render_cell_view(
+                fmt,
+                cell.as_ref(),
+                tab.entity_id().as_u64(),
+                &mut lines,
+                &mut size_label,
+                &mut image,
+                p,
+            );
+        }
         match &row {
+            _ if per_cell => {}
             None => lines.push(vec![("Select a row in the results".into(), p.fg3)]),
             Some((_, cols)) => {
                 let obj: serde_json::Map<String, serde_json::Value> = cols
@@ -1097,31 +1203,16 @@ impl Workspace {
                             ]);
                         }
                     }
-                    ViewerFormat::Hex => {
-                        for (i, chunk) in json.as_bytes().chunks(8).take(400).enumerate() {
-                            let hex: Vec<String> =
-                                chunk.iter().map(|b| format!("{b:02x}")).collect();
-                            let ascii: String = chunk
-                                .iter()
-                                .map(|b| {
-                                    if (32..127).contains(b) {
-                                        *b as char
-                                    } else {
-                                        '.'
-                                    }
-                                })
-                                .collect();
-                            lines.push(vec![
-                                (format!("{:04x}  ", i * 8), p.fg3),
-                                (format!("{:<24}  ", hex.join(" ")), p.fg),
-                                (ascii, p.fg2),
-                            ]);
-                        }
-                    }
+                    ViewerFormat::Xml | ViewerFormat::Hex | ViewerFormat::Image => {}
                 }
             }
         }
         let row_no = row.as_ref().map(|(r, _)| r + 1);
+        let row_no = if per_cell {
+            cell.as_ref().map(|(r, _, _)| r + 1)
+        } else {
+            row_no
+        };
         let copy_text: String = lines
             .iter()
             .map(|l| l.iter().map(|(t, _)| t.as_str()).collect::<String>() + "\n")
@@ -1204,9 +1295,19 @@ impl Workspace {
                                 Box::new(set_fmt(ViewerFormat::Text, tab.clone())),
                             ),
                             (
+                                "XML".into(),
+                                fmt == ViewerFormat::Xml,
+                                Box::new(set_fmt(ViewerFormat::Xml, tab.clone())),
+                            ),
+                            (
                                 "Hex".into(),
                                 fmt == ViewerFormat::Hex,
                                 Box::new(set_fmt(ViewerFormat::Hex, tab.clone())),
+                            ),
+                            (
+                                "Image".into(),
+                                fmt == ViewerFormat::Image,
+                                Box::new(set_fmt(ViewerFormat::Image, tab.clone())),
                             ),
                         ],
                         20.,
@@ -1218,13 +1319,15 @@ impl Workspace {
                     .id("insp-body")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
+                    // Long XML or text lines scroll sideways instead of being cut.
+                    .overflow_scroll()
                     .px(px(12.))
                     .pt(px(4.))
                     .pb(px(12.))
                     .font_family(MONO)
                     .text_size(px(12.))
                     .line_height(px(19.))
+                    .children(image)
                     .children(lines.into_iter().map(|segs| {
                         div().flex().whitespace_nowrap().children(
                             segs.into_iter()
@@ -1256,6 +1359,134 @@ impl Workspace {
                     ),
             )
             .into_any_element()
+    }
+}
+
+impl Workspace {
+    /// The XML, hex or image view of the selected cell.
+    #[allow(clippy::too_many_arguments)]
+    fn render_cell_view(
+        &mut self,
+        fmt: ViewerFormat,
+        cell: Option<&(usize, String, switchyard_core::db::Value)>,
+        tab_id: u64,
+        lines: &mut Vec<Vec<(String, gpui_kit::Hsla)>>,
+        size_label: &mut String,
+        image: &mut Option<AnyElement>,
+        p: &Palette,
+    ) {
+        use crate::viewer::{self, Tok};
+        /// Lines shown before "showing the first …".
+        const MAX_LINES: usize = 4000;
+        let Some((row, name, value)) = cell else {
+            lines.push(vec![("Select a cell in the results".into(), p.fg3)]);
+            return;
+        };
+        if value.is_null() {
+            lines.push(vec![(format!("{name} is NULL"), p.fg3)]);
+            return;
+        }
+        let bytes = viewer::value_bytes(value);
+        *size_label = format!("{name} · {}", human_bytes(bytes.len()));
+        match fmt {
+            ViewerFormat::Xml => {
+                let text = String::from_utf8_lossy(&bytes);
+                match viewer::xml_lines(&text, MAX_LINES) {
+                    Ok((xml, cut)) => {
+                        lines.extend(xml.into_iter().map(|l| {
+                            l.into_iter()
+                                .map(|(s, t)| {
+                                    let c = match t {
+                                        Tok::Punct => p.fg3,
+                                        Tok::Tag => p.sx_kw,
+                                        Tok::Attr => p.sx_fn,
+                                        Tok::Value => p.sx_str,
+                                        Tok::Text => p.fg,
+                                        Tok::Meta => p.sx_cm,
+                                    };
+                                    (s, c)
+                                })
+                                .collect()
+                        }));
+                        if cut {
+                            lines.push(vec![(format!("… first {MAX_LINES} lines"), p.fg3)]);
+                        }
+                    }
+                    Err(e) => {
+                        lines.push(vec![(format!("Not XML ({e}); shown as text:"), p.stg)]);
+                        lines.extend(
+                            text.lines()
+                                .take(MAX_LINES)
+                                .map(|l| vec![(l.to_owned(), p.fg)]),
+                        );
+                    }
+                }
+            }
+            ViewerFormat::Hex => {
+                for (off, hex, ascii) in viewer::hex_rows(&bytes, MAX_LINES) {
+                    lines.push(vec![
+                        (format!("{off}  "), p.fg3),
+                        (format!("{hex:<24}  "), p.fg),
+                        (ascii, p.fg2),
+                    ]);
+                }
+                if bytes.len() > MAX_LINES * 8 {
+                    lines.push(vec![(
+                        format!(
+                            "… first {} of {}",
+                            human_bytes(MAX_LINES * 8),
+                            human_bytes(bytes.len())
+                        ),
+                        p.fg3,
+                    )]);
+                }
+            }
+            _ => match viewer::image_format(&bytes) {
+                None => lines.push(vec![(
+                    "Not an image (PNG, JPEG, GIF, WebP, BMP, TIFF or SVG)".into(),
+                    p.fg3,
+                )]),
+                Some(f) => {
+                    *size_label = format!(
+                        "{name} · {} · {}",
+                        viewer::format_name(f),
+                        human_bytes(bytes.len())
+                    );
+                    // Decode once per selected cell, not every frame.
+                    let key = {
+                        use std::hash::{Hash, Hasher};
+                        let mut h = std::collections::hash_map::DefaultHasher::new();
+                        (tab_id, row, name, bytes.len()).hash(&mut h);
+                        h.finish()
+                    };
+                    let img = match &self.viewer_image {
+                        Some((k, img)) if *k == key => img.clone(),
+                        _ => {
+                            let img = std::sync::Arc::new(gpui_kit::Image::from_bytes(f, bytes));
+                            self.viewer_image = Some((key, img.clone()));
+                            img
+                        }
+                    };
+                    *image = Some(
+                        div()
+                            .pt(px(6.))
+                            .flex()
+                            .justify_center()
+                            .child(gpui_kit::img(img).max_w(px(276.)).max_h(px(420.)))
+                            .into_any_element(),
+                    );
+                }
+            },
+        }
+    }
+}
+
+/// `1.2 KB`, `3.4 MB`.
+fn human_bytes(n: usize) -> String {
+    match n {
+        0..1024 => format!("{n} bytes"),
+        1024..1_048_576 => format!("{:.1} KB", n as f64 / 1024.0),
+        _ => format!("{:.1} MB", n as f64 / 1_048_576.0),
     }
 }
 
@@ -1315,5 +1546,35 @@ fn compact(n: i64) -> String {
         n if n >= 1_000_000 => format!("{:.1}M", n as f64 / 1_000_000.0),
         n if n >= 1_000 => format!("{:.1}K", n as f64 / 1_000.0).replace(".0K", "K"),
         n => n.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dragging_moves_after_going_down_and_before_going_up() {
+        let ids: Vec<ProfileId> = ["a", "b", "c", "d"].map(|s| ProfileId(s.into())).to_vec();
+        let id = |s: &str| ProfileId(s.into());
+        let names = |v: Vec<ProfileId>| v.into_iter().map(|i| i.0).collect::<Vec<_>>().join("");
+        assert_eq!(names(move_to(&ids, &id("a"), &id("c"))), "bcad");
+        assert_eq!(names(move_to(&ids, &id("d"), &id("b"))), "adbc");
+        assert_eq!(
+            names(move_to(&ids, &id("a"), &id("d"))),
+            "bcda",
+            "to the end"
+        );
+        assert_eq!(
+            names(move_to(&ids, &id("c"), &id("a"))),
+            "cabd",
+            "to the start"
+        );
+        assert_eq!(names(move_to(&ids, &id("b"), &id("b"))), "abcd");
+        assert_eq!(
+            names(move_to(&ids, &id("x"), &id("b"))),
+            "abcd",
+            "unknown id"
+        );
     }
 }

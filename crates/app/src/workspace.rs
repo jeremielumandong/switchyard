@@ -94,6 +94,8 @@ pub struct Workspace {
     rebind: Vec<(Entity<SqlTab>, Option<ProfileId>)>,
     /// Two tabs on screen at once.
     pub(crate) split: Option<crate::split::Split>,
+    /// The value viewer's decoded image, kept while the same cell stays selected.
+    pub(crate) viewer_image: Option<(u64, std::sync::Arc<gpui_kit::Image>)>,
     _events: Task<()>,
     _subs: Vec<Subscription>,
 }
@@ -191,6 +193,7 @@ impl Workspace {
             pending_files: None,
             rebind: Vec::new(),
             split: None,
+            viewer_image: None,
             _events: task,
             _subs: vec![search_sub],
         }
@@ -499,6 +502,20 @@ impl Workspace {
                 }
             }
             Event::Toast(t) => self.toast(t, cx),
+            Event::SshConfigPreview { path, hosts } => {
+                let chosen = hosts
+                    .iter()
+                    .filter(|h| !h.exists)
+                    .map(|h| h.alias.clone())
+                    .collect();
+                self.overlay = Some(Overlay::SshImport(crate::overlays::SshImportPreview {
+                    path,
+                    hosts,
+                    chosen,
+                }));
+                window.focus(&self.overlay_focus, cx);
+                cx.notify();
+            }
             Event::Error { context, message } => self.toast(format!("{context}: {message}"), cx),
         }
         if let Some(id) = self.pending_open.clone()
@@ -1392,9 +1409,10 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Read `~/.ssh/config`; the preview opens when the runtime answers.
     fn import_ssh_config(&mut self, cx: &mut Context<Self>) {
-        self.core.send(Command::ImportSshConfig);
-        self.toast("Importing Hosts from ~/.ssh/config…", cx);
+        self.core.send(Command::PreviewSshConfig);
+        self.toast("Reading ~/.ssh/config…", cx);
     }
 
     // --------------------------------------------------------------- render

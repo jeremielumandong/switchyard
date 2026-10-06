@@ -12,6 +12,7 @@ mod conn_editor;
 mod drivers_page;
 mod editor_tab;
 mod files_tab;
+mod folds;
 mod grid;
 mod overlays;
 mod palette;
@@ -24,6 +25,7 @@ mod terminal_tab;
 mod theme;
 mod transfers;
 mod ui;
+mod viewer;
 mod workspace;
 
 use std::borrow::Cow;

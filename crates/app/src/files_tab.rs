@@ -49,7 +49,7 @@ pub struct DraggedFiles {
 }
 
 /// What follows the pointer while dragging.
-pub struct DragPreview(String);
+pub struct DragPreview(pub String);
 
 impl Render for DragPreview {
     fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
