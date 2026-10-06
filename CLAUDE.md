@@ -213,3 +213,10 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
 - SSH agents: desktop-launched apps often lack `SSH_AUTH_SOCK`. 1Password's agent lives at
   `~/.1password/agent.sock` (macOS: `~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock`),
   and OpenSSH configs point `IdentityFile` at a `.pub` to pick the agent key.
+- Windows-only code can be type-checked from Linux per crate (not the whole workspace:
+  `aws-lc-sys` needs a real MSVC toolchain): `rustup target add x86_64-pc-windows-msvc`, then
+  `cargo clippy -p <crate> --target x86_64-pc-windows-msvc` with `CC_x86_64_pc_windows_msvc=clang`,
+  `AR_x86_64_pc_windows_msvc=llvm-lib` and `CFLAGS_x86_64_pc_windows_msvc=-isystem <dir>` where
+  `<dir>` holds stub `assert.h`/`string.h`/`stdlib.h` so `ring` compiles (check never links).
+- Pageant comes with russh on Windows (`AgentClient::connect_pageant`, `pageant` crate,
+  Apache-2.0); no feature flag.
