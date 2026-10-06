@@ -6,6 +6,7 @@
 
 pub mod batch;
 pub mod catalog;
+pub mod complete;
 pub mod diagnostics;
 pub mod dialect;
 pub mod driver;

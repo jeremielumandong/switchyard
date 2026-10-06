@@ -4,6 +4,7 @@ extern crate gpui_kit as gpui;
 
 mod actions;
 mod app_state;
+mod completion;
 mod conn_editor;
 mod files_tab;
 mod grid;
