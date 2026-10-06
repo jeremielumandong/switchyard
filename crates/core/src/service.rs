@@ -556,8 +556,11 @@ impl Service {
             }
             Command::ListDir { request, fs, path } => {
                 let result = match self.file_system(&fs).await {
-                    Ok((f, _)) => {
-                        let path = path.unwrap_or_else(|| f.home());
+                    Ok((f, posix)) => {
+                        let path = match path {
+                            Some(p) => crate::files::expand_path(&p, &f.home(), posix),
+                            None => f.home(),
+                        };
                         let r = f.list(&path).await.map_err(|e| e.to_string());
                         Ok((path, r))
                     }

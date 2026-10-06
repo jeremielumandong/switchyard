@@ -89,6 +89,40 @@ fn child(dir: &Path, name: &str, posix: bool) -> PathBuf {
     }
 }
 
+/// A folder path typed by the user: `~` and `~/…` start at `home`; on POSIX targets
+/// `.`, `..`, repeated and trailing slashes are folded away (lexically, like `cd`).
+pub(crate) fn expand_path(path: &Path, home: &Path, posix: bool) -> PathBuf {
+    let raw = path.to_string_lossy();
+    let raw = raw.trim();
+    let sep = if posix {
+        '/'
+    } else {
+        std::path::MAIN_SEPARATOR
+    };
+    let expanded = if raw == "~" {
+        home.to_string_lossy().into_owned()
+    } else if let Some(rest) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix("~\\")) {
+        let h = home.to_string_lossy();
+        format!("{}{sep}{rest}", h.trim_end_matches(['/', '\\']))
+    } else {
+        raw.to_owned()
+    };
+    if !posix {
+        return PathBuf::from(expanded);
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    for part in expanded.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            p => parts.push(p),
+        }
+    }
+    PathBuf::from(format!("/{}", parts.join("/")))
+}
+
 fn part_of(path: &Path) -> PathBuf {
     let mut s = path.as_os_str().to_owned();
     s.push(PART_SUFFIX);
@@ -389,6 +423,20 @@ mod tests {
 
     use super::*;
     use switchyard_remote::LocalFs;
+
+    #[test]
+    fn typed_paths() {
+        let home = Path::new("/home/swy");
+        let e = |p: &str| expand_path(Path::new(p), home, true);
+        assert_eq!(e("~"), PathBuf::from("/home/swy"));
+        assert_eq!(e("~/app/"), PathBuf::from("/home/swy/app"));
+        assert_eq!(
+            e("/srv//www/./site/../logs/"),
+            PathBuf::from("/srv/www/logs")
+        );
+        assert_eq!(e("/.."), PathBuf::from("/"));
+        assert_eq!(e("  /etc "), PathBuf::from("/etc"));
+    }
 
     #[test]
     fn names() {
