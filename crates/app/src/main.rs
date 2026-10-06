@@ -17,6 +17,7 @@ mod overlays;
 mod palette;
 mod remote_files;
 mod sidebar;
+mod split;
 mod sql_tab;
 mod ssh_prompts;
 mod terminal_tab;

@@ -34,6 +34,9 @@ actions!(
         TermPaste,
         TermFind,
         TermSplit,
+        SplitRight,
+        SplitDown,
+        Unsplit,
     ]
 );
 
@@ -62,6 +65,10 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-b", ToggleSidebar, None),
         KeyBinding::new("secondary-shift-f", FormatSql, Some("Workspace")),
         KeyBinding::new("secondary-shift-h", ShowHistory, None),
+        KeyBinding::new("secondary-\\", SplitRight, None),
+        KeyBinding::new("secondary-shift-\\", SplitDown, None),
+        // Linux reports Shift+\ as `|`.
+        KeyBinding::new("secondary-|", SplitDown, None),
         KeyBinding::new("escape", Dismiss, Some("Overlay")),
     ]);
     // Inside a terminal, Ctrl+letter belongs to the shell (readline, vim, …). App
@@ -115,6 +122,9 @@ pub enum CommandId {
     ImportSshConfig,
     ExportProfiles,
     ShowHistory,
+    SplitRight,
+    SplitDown,
+    Unsplit,
 }
 
 /// A palette entry.
@@ -192,6 +202,9 @@ pub fn palette_commands() -> Vec<PaletteCommand> {
             k("⇧⌘H", "Ctrl+Shift+H"),
         ),
         c(RefreshSchema, "Refresh Schema", "Schema", "".into()),
+        c(SplitRight, "Split Right", "View", k("⌘\\", "Ctrl+\\")),
+        c(SplitDown, "Split Down", "View", k("⇧⌘\\", "Ctrl+Shift+\\")),
+        c(Unsplit, "Close Split", "View", "".into()),
         c(
             NewTerminal,
             "New Terminal",
