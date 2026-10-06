@@ -1,0 +1,247 @@
+//! D1 catalog from `sqlite_master` and the table-valued `pragma_*` functions. D1 has one
+//! schema, shown as `main`; Cloudflare's internal `_cf_*` tables are hidden.
+
+use serde_json::Value as Json;
+
+use super::wire::{RawResult, Statement};
+use super::{D1Session, json_text};
+use crate::catalog::{
+    CatalogChunk, ColumnInfo, ForeignKeyInfo, IndexInfo, IntrospectScope, ObjectDetail, ObjectInfo,
+    ObjectKind, SchemaInfo,
+};
+use crate::error::{DbError, Result};
+
+const SCHEMA: &str = "main";
+
+const USER_OBJECTS: &str =
+    "m.name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND m.name NOT LIKE '\\_cf\\_%' ESCAPE '\\'";
+
+/// Column lookup by name in one result set.
+struct Table<'a> {
+    columns: &'a [String],
+    rows: &'a [Vec<Json>],
+}
+
+impl<'a> Table<'a> {
+    fn of(r: Option<&'a RawResult>) -> Self {
+        match r.and_then(|r| r.results.as_ref()) {
+            Some(x) => Self {
+                columns: &x.columns,
+                rows: &x.rows,
+            },
+            None => Self {
+                columns: &[],
+                rows: &[],
+            },
+        }
+    }
+
+    fn get(&self, row: &'a [Json], name: &str) -> &'a Json {
+        self.columns
+            .iter()
+            .position(|c| c == name)
+            .and_then(|i| row.get(i))
+            .unwrap_or(&Json::Null)
+    }
+
+    fn text(&self, row: &'a [Json], name: &str) -> String {
+        json_text(self.get(row, name))
+    }
+
+    fn int(&self, row: &'a [Json], name: &str) -> i64 {
+        match self.get(row, name) {
+            Json::Number(n) => n.as_i64().unwrap_or_default(),
+            Json::String(s) => s.parse().unwrap_or_default(),
+            Json::Bool(b) => i64::from(*b),
+            _ => 0,
+        }
+    }
+}
+
+fn column_info(t: &Table<'_>, row: &[Json], table: &str) -> ColumnInfo {
+    let default = t.get(row, "dflt_value");
+    ColumnInfo {
+        schema: SCHEMA.into(),
+        table: table.to_owned(),
+        name: t.text(row, "name"),
+        data_type: t.text(row, "type"),
+        nullable: t.int(row, "notnull") == 0,
+        default: (!default.is_null()).then(|| json_text(default)),
+        ordinal: t.int(row, "cid") as i32 + 1,
+        is_primary_key: t.int(row, "pk") > 0,
+    }
+}
+
+fn type_filter(kind: ObjectKind) -> Option<&'static str> {
+    match kind {
+        ObjectKind::Table => Some("table"),
+        ObjectKind::View => Some("view"),
+        _ => None,
+    }
+}
+
+pub(super) async fn introspect(s: &D1Session, scope: IntrospectScope) -> Result<CatalogChunk> {
+    match scope {
+        IntrospectScope::Databases => Ok(CatalogChunk::Databases(vec![SCHEMA.into()])),
+        IntrospectScope::Schemas => Ok(CatalogChunk::Schemas(vec![SchemaInfo {
+            name: SCHEMA.into(),
+            is_system: false,
+        }])),
+        IntrospectScope::Objects { kind, .. } => {
+            let Some(ty) = type_filter(kind) else {
+                return Ok(CatalogChunk::Objects(Vec::new()));
+            };
+            let sql = format!(
+                "SELECT m.name FROM sqlite_master m WHERE m.type = ?1 AND {USER_OBJECTS} ORDER BY m.name"
+            );
+            let results = s.query(&sql, vec![Json::from(ty)]).await?;
+            let t = Table::of(results.first());
+            Ok(CatalogChunk::Objects(
+                t.rows
+                    .iter()
+                    .map(|row| ObjectInfo {
+                        schema: SCHEMA.into(),
+                        name: t.text(row, "name"),
+                        kind,
+                        estimated_rows: None,
+                        detail: None,
+                    })
+                    .collect(),
+            ))
+        }
+        IntrospectScope::AllColumns => {
+            let sql = format!(
+                "SELECT m.name AS tbl, p.cid, p.name, p.type, p.\"notnull\", p.dflt_value, p.pk \
+                 FROM sqlite_master m JOIN pragma_table_info(m.name) p \
+                 WHERE m.type IN ('table', 'view') AND {USER_OBJECTS} ORDER BY m.name, p.cid"
+            );
+            let results = s.query(&sql, Vec::new()).await?;
+            let t = Table::of(results.first());
+            Ok(CatalogChunk::AllColumns(
+                t.rows
+                    .iter()
+                    .map(|row| column_info(&t, row, &t.text(row, "tbl")))
+                    .collect(),
+            ))
+        }
+        IntrospectScope::Detail { name, kind, .. } => {
+            let p = || vec![Json::from(name.as_str())];
+            let results = s
+                .batch(vec![
+                    Statement {
+                        sql: "SELECT type, sql FROM sqlite_master WHERE name = ?1",
+                        params: p(),
+                    },
+                    Statement {
+                        sql: "SELECT cid, name, type, \"notnull\", dflt_value, pk FROM pragma_table_info(?1) ORDER BY cid",
+                        params: p(),
+                    },
+                    Statement {
+                        sql: "SELECT il.name AS idx, il.\"unique\" AS uniq, il.origin, ii.name AS col, \
+                              (SELECT sql FROM sqlite_master WHERE name = il.name) AS def \
+                              FROM pragma_index_list(?1) il JOIN pragma_index_info(il.name) ii \
+                              ORDER BY il.name, ii.seqno",
+                        params: p(),
+                    },
+                    Statement {
+                        sql: "SELECT id, \"table\" AS ref, \"from\" AS col, \"to\" AS refcol \
+                              FROM pragma_foreign_key_list(?1) ORDER BY id, seq",
+                        params: p(),
+                    },
+                    Statement {
+                        sql: "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?1 ORDER BY name",
+                        params: p(),
+                    },
+                ])
+                .await?;
+            let master = Table::of(results.first());
+            let Some(obj) = master.rows.first() else {
+                return Err(DbError::Unsupported(format!("{name} no longer exists")));
+            };
+            let mut ddl = master.text(obj, "sql");
+
+            let cols = Table::of(results.get(1));
+            let columns: Vec<ColumnInfo> = cols
+                .rows
+                .iter()
+                .map(|row| column_info(&cols, row, &name))
+                .collect();
+
+            let idx = Table::of(results.get(2));
+            let mut indexes: Vec<IndexInfo> = Vec::new();
+            for row in idx.rows {
+                let iname = idx.text(row, "idx");
+                let col = idx.text(row, "col");
+                match indexes.iter_mut().find(|i| i.name == iname) {
+                    Some(i) => i.columns.push(col),
+                    None => {
+                        let def = idx.text(row, "def");
+                        if !def.is_empty() {
+                            ddl.push_str(";\n");
+                            ddl.push_str(&def);
+                        }
+                        indexes.push(IndexInfo {
+                            is_unique: idx.int(row, "uniq") != 0,
+                            is_primary: idx.text(row, "origin") == "pk",
+                            definition: if def.is_empty() {
+                                format!("automatic index for {}", idx.text(row, "origin"))
+                            } else {
+                                def
+                            },
+                            name: iname,
+                            columns: vec![col],
+                        });
+                    }
+                }
+            }
+
+            let fk = Table::of(results.get(3));
+            let mut foreign_keys: Vec<(i64, ForeignKeyInfo)> = Vec::new();
+            for row in fk.rows {
+                let id = fk.int(row, "id");
+                match foreign_keys.iter_mut().find(|(i, _)| *i == id) {
+                    Some((_, f)) => {
+                        f.columns.push(fk.text(row, "col"));
+                        f.referenced_columns.push(fk.text(row, "refcol"));
+                    }
+                    None => foreign_keys.push((
+                        id,
+                        ForeignKeyInfo {
+                            name: format!("fk_{name}_{id}"),
+                            columns: vec![fk.text(row, "col")],
+                            references: format!("{SCHEMA}.{}", fk.text(row, "ref")),
+                            referenced_columns: vec![fk.text(row, "refcol")],
+                        },
+                    )),
+                }
+            }
+
+            let trig = Table::of(results.get(4));
+            let mut triggers = Vec::new();
+            for row in trig.rows {
+                triggers.push(trig.text(row, "name"));
+                ddl.push_str(";\n");
+                ddl.push_str(&trig.text(row, "sql"));
+            }
+            if !ddl.is_empty() {
+                ddl.push(';');
+            }
+
+            Ok(CatalogChunk::Detail(Box::new(ObjectDetail {
+                object: ObjectInfo {
+                    schema: SCHEMA.into(),
+                    name: name.clone(),
+                    kind,
+                    estimated_rows: None,
+                    detail: None,
+                },
+                columns,
+                indexes,
+                constraints: Vec::new(),
+                foreign_keys: foreign_keys.into_iter().map(|(_, f)| f).collect(),
+                triggers,
+                ddl,
+            })))
+        }
+    }
+}

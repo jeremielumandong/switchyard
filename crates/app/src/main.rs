@@ -15,6 +15,7 @@ mod overlays;
 mod palette;
 mod sidebar;
 mod sql_tab;
+mod ssh_prompts;
 mod terminal_tab;
 mod theme;
 mod ui;

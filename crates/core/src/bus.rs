@@ -11,7 +11,11 @@ use switchyard_db::{
 };
 use switchyard_drivers::Component;
 use switchyard_remote::FileEntry;
-use switchyard_store::{BufferState, DbConnection, HistoryEntry, Profile, ProfileId, Workspace};
+use switchyard_remote::ssh::{HostKeyDecision, HostKeyRequest, InteractiveRequest, TunnelInfo};
+use switchyard_store::{
+    BufferState, DbConnection, HistoryEntry, Host, Profile, ProfileId, Workspace,
+};
+use switchyard_term::{TermSize, Terminal};
 
 /// Identifies one UI request so its answer can be matched.
 pub type RequestId = u64;
@@ -19,6 +23,52 @@ pub type RequestId = u64;
 pub type SessionId = u64;
 /// A running query (one Run click; may contain several statements).
 pub type QueryId = u64;
+/// An open terminal (local shell or SSH channel).
+pub type TermId = u64;
+
+/// The user's answer to a runtime prompt.
+#[derive(Debug)]
+pub enum PromptAnswer {
+    /// Unknown host key.
+    HostKey(HostKeyDecision),
+    /// Password or passphrase (`None` = cancelled).
+    Secret(Option<SecretString>),
+    /// Keyboard-interactive answers (`None` = cancelled).
+    Interactive(Option<Vec<SecretString>>),
+}
+
+/// Connection state of an SSH terminal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TermStatus {
+    /// Connecting (or waiting on a prompt).
+    Connecting,
+    /// Connected; `description` is `user@host · method · via …`.
+    Connected {
+        /// Description.
+        description: String,
+    },
+    /// The connection dropped; retrying.
+    Reconnecting {
+        /// Attempt number (1-based).
+        attempt: u32,
+        /// Attempts before giving up.
+        of: u32,
+        /// Seconds until this attempt.
+        in_secs: u64,
+    },
+}
+
+/// What a terminal connects to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TermTarget {
+    /// A local shell; `profile` picks a saved terminal profile.
+    Local {
+        /// Terminal profile (shell, environment), or the login shell.
+        profile: Option<ProfileId>,
+    },
+    /// A shell on a saved Host over SSH.
+    Host(ProfileId),
+}
 
 /// One statement to execute.
 #[derive(Clone, Debug)]
@@ -93,6 +143,16 @@ pub enum Command {
         /// Profile under edit.
         connection: DbConnection,
         /// Password typed in the form (falls back to the stored one).
+        secret: Option<SecretString>,
+    },
+    /// Log in to a Host under edit (not necessarily saved) and report the result as
+    /// [`Event::TestResult`].
+    TestHost {
+        /// Request id.
+        request: RequestId,
+        /// Host under edit.
+        host: Host,
+        /// Password or passphrase typed in the form (falls back to the stored one).
         secret: Option<SecretString>,
     },
     /// Open a session for a saved connection.
@@ -217,6 +277,61 @@ pub enum Command {
         request: RequestId,
         /// UPDATE statements.
         statements: Vec<String>,
+    },
+    /// Open a terminal.
+    OpenTerminal {
+        /// Terminal id chosen by the UI.
+        term: TermId,
+        /// Where it connects.
+        target: TermTarget,
+        /// Initial size in cells.
+        size: TermSize,
+    },
+    /// Send bytes to a terminal's program.
+    TerminalInput {
+        /// Terminal.
+        term: TermId,
+        /// Bytes.
+        bytes: Vec<u8>,
+    },
+    /// The terminal view changed size.
+    TerminalResize {
+        /// Terminal.
+        term: TermId,
+        /// New size in cells.
+        size: TermSize,
+    },
+    /// Close a terminal.
+    CloseTerminal {
+        /// Terminal.
+        term: TermId,
+    },
+    /// Retry a dropped SSH terminal now instead of waiting for the backoff.
+    ReconnectTerminal {
+        /// Terminal.
+        term: TermId,
+    },
+    /// Stop a tunnel; sessions using it end.
+    StopTunnel {
+        /// Tunnel id.
+        id: u64,
+    },
+    /// Report the live tunnels ([`Event::Tunnels`]).
+    ListTunnels,
+    /// Answer a prompt the runtime raised.
+    AnswerPrompt {
+        /// The prompt's request id.
+        request: RequestId,
+        /// The answer.
+        answer: PromptAnswer,
+    },
+    /// After a changed-key warning: trust exactly `fingerprint` for Host `host` on its next
+    /// connection (stored in Switchyard's known_hosts, never the user's file).
+    AcceptChangedHostKey {
+        /// Host profile.
+        host: ProfileId,
+        /// The new key's fingerprint, as shown to the user.
+        fingerprint: String,
     },
 }
 
@@ -382,6 +497,104 @@ pub enum Event {
         result: Result<u64, String>,
         /// Time taken.
         elapsed: Duration,
+    },
+    /// A terminal is ready; the view draws from `terminal`.
+    TerminalOpened {
+        /// Terminal.
+        term: TermId,
+        /// Shared terminal state.
+        terminal: Terminal,
+        /// Short description (`deploy@10.0.4.12 · ed25519`, `/bin/zsh`).
+        description: String,
+    },
+    /// An SSH terminal's connection state changed.
+    TerminalStatus {
+        /// Terminal.
+        term: TermId,
+        /// State.
+        status: TermStatus,
+    },
+    /// The server's host key differs from the stored one; the connection is blocked.
+    HostKeyChanged {
+        /// Terminal that hit it, if any.
+        term: Option<TermId>,
+        /// Host profile.
+        host_id: ProfileId,
+        /// Host label.
+        host: String,
+        /// `address:port`.
+        address: String,
+        /// Stored fingerprint.
+        stored: String,
+        /// Received fingerprint.
+        received: String,
+        /// Where the stored key is (`file:line`).
+        location: String,
+    },
+    /// Unknown host key: trust it?
+    HostKeyPrompt {
+        /// Answer with this id.
+        request: RequestId,
+        /// The key.
+        key: HostKeyRequest,
+    },
+    /// A password or key passphrase is needed.
+    SecretPrompt {
+        /// Answer with this id.
+        request: RequestId,
+        /// Host label.
+        host: String,
+        /// Prompt text.
+        prompt: String,
+    },
+    /// Keyboard-interactive questions (MFA).
+    InteractivePrompt {
+        /// Answer with this id.
+        request: RequestId,
+        /// The questions.
+        req: InteractiveRequest,
+    },
+    /// Live tunnels (sent when they open, stop, or their counters change).
+    Tunnels(Vec<TunnelInfo>),
+    /// A terminal could not be opened.
+    TerminalFailed {
+        /// Terminal.
+        term: TermId,
+        /// Why.
+        message: String,
+    },
+    /// New output to draw (coalesced until the next snapshot).
+    TerminalWake {
+        /// Terminal.
+        term: TermId,
+    },
+    /// The program set the title.
+    TerminalTitle {
+        /// Terminal.
+        term: TermId,
+        /// Title (empty = reset).
+        title: String,
+    },
+    /// Bell.
+    TerminalBell {
+        /// Terminal.
+        term: TermId,
+    },
+    /// The program asked to copy text (OSC 52).
+    TerminalClipboard {
+        /// Terminal.
+        term: TermId,
+        /// Text.
+        text: String,
+    },
+    /// The program ended or the connection closed.
+    TerminalExited {
+        /// Terminal.
+        term: TermId,
+        /// Exit code, when known.
+        code: Option<u32>,
+        /// Why, when the connection failed rather than the program exiting.
+        message: Option<String>,
     },
     /// A short confirmation for a toast.
     Toast(String),

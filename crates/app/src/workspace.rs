@@ -19,7 +19,7 @@ use switchyard_core::store::{
     BufferState, DbConnection, EnvironmentLabel, HistoryEntry, Profile, ProfileId,
     Workspace as SavedWorkspace,
 };
-use switchyard_core::{Command, Event, EventReceiver, RuntimeHandle};
+use switchyard_core::{Command, Event, EventReceiver, RuntimeHandle, TermId};
 
 use crate::actions::{self, CommandId};
 use crate::app_state::{Profiles, SessionState, badge_of, describe, next_id};
@@ -60,7 +60,10 @@ pub struct Workspace {
     pub(crate) overlay: Option<Overlay>,
     pub(crate) toast: Option<SharedString>,
     toast_task: Option<Task<()>>,
+    /// Keeps relative times ("Cached 3 min ago") current under retained rendering.
+    _clock: Task<()>,
     pub(crate) tunnels_open: bool,
+    pub(crate) tunnels: Vec<switchyard_core::remote::ssh::TunnelInfo>,
     pub(crate) workspace_name: String,
     pub(crate) secret_backend: (&'static str, bool),
     pub(crate) components: Vec<Component>,
@@ -69,6 +72,7 @@ pub struct Workspace {
     pub(crate) overlay_focus: FocusHandle,
     pub(crate) ctx: Option<crate::sidebar::CtxMenu>,
     pub(crate) schema_search: Entity<InputState>,
+    pub(crate) prompts: std::collections::VecDeque<crate::ssh_prompts::SshPrompt>,
     pending_open: Option<ProfileId>,
     rebind: Vec<(Entity<SqlTab>, Option<ProfileId>)>,
     _events: Task<()>,
@@ -131,7 +135,18 @@ impl Workspace {
             overlay: None,
             toast: None,
             toast_task: None,
+            _clock: cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(Duration::from_secs(30))
+                        .await;
+                    if this.update(cx, |_, cx| cx.notify()).is_err() {
+                        break;
+                    }
+                }
+            }),
             tunnels_open: false,
+            tunnels: Vec::new(),
             workspace_name: "Default".into(),
             secret_backend: ("", false),
             components: Vec::new(),
@@ -140,6 +155,7 @@ impl Workspace {
             overlay_focus: cx.focus_handle(),
             ctx: None,
             schema_search,
+            prompts: std::collections::VecDeque::new(),
             pending_open: None,
             rebind: Vec::new(),
             _events: task,
@@ -149,9 +165,101 @@ impl Workspace {
 
     // ---------------------------------------------------------------- events
 
+    fn terminal_tab(&self, term: TermId, cx: &App) -> Option<Entity<TerminalTab>> {
+        self.tabs.iter().find_map(|t| match t {
+            Tab::Terminal(t) if t.read(cx).owns(term) => Some(t.clone()),
+            _ => None,
+        })
+    }
+
     fn on_event(&mut self, ev: Event, window: &mut Window, cx: &mut Context<Self>) {
         match ev {
             Event::Pong { .. } => {}
+            Event::TerminalOpened {
+                term,
+                terminal,
+                description,
+            } => match self.terminal_tab(term, cx) {
+                Some(t) => t.update(cx, |t, cx| {
+                    t.on_opened(term, terminal, description, window, cx)
+                }),
+                None => self.core.send(Command::CloseTerminal { term }),
+            },
+            Event::TerminalFailed { term, message } => {
+                if let Some(t) = self.terminal_tab(term, cx) {
+                    t.update(cx, |t, cx| t.on_failed(term, message, cx));
+                }
+            }
+            Event::TerminalWake { term } => {
+                if let Some(t) = self.terminal_tab(term, cx) {
+                    t.update(cx, |t, cx| t.on_wake(term, cx));
+                }
+            }
+            Event::TerminalTitle { term, title } => {
+                if let Some(t) = self.terminal_tab(term, cx) {
+                    t.update(cx, |t, cx| t.on_title(term, title, cx));
+                }
+            }
+            Event::TerminalBell { .. } => {}
+            Event::Tunnels(list) => {
+                self.tunnels = list;
+                cx.notify();
+            }
+            Event::TerminalStatus { term, status } => {
+                if let Some(t) = self.terminal_tab(term, cx) {
+                    t.update(cx, |t, cx| t.on_status(term, status, cx));
+                }
+            }
+            Event::HostKeyChanged {
+                term,
+                host_id,
+                host,
+                address,
+                stored,
+                received,
+                location,
+            } => {
+                let tab = term.and_then(|t| self.terminal_tab(t, cx).map(|tab| (t, tab)));
+                match tab {
+                    Some((term, tab)) => tab.update(cx, |t, cx| {
+                        t.on_host_key_changed(
+                            term,
+                            crate::terminal_tab::ChangedKey {
+                                host_id,
+                                host,
+                                address,
+                                stored,
+                                received,
+                                location,
+                            },
+                            cx,
+                        )
+                    }),
+                    None => self.toast(format!("Blocked: the host key for {host} has changed"), cx),
+                }
+            }
+            Event::HostKeyPrompt { request, key } => self.push_host_key_prompt(request, key, cx),
+            Event::SecretPrompt {
+                request,
+                host,
+                prompt,
+            } => self.push_secret_prompt(request, host, prompt, window, cx),
+            Event::InteractivePrompt { request, req } => {
+                self.push_interactive_prompt(request, req, window, cx)
+            }
+            Event::TerminalClipboard { text, .. } => {
+                // OSC 52 copy: allowed (it only writes); reading the clipboard is never offered.
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
+            }
+            Event::TerminalExited {
+                term,
+                code,
+                message,
+            } => {
+                if let Some(t) = self.terminal_tab(term, cx) {
+                    t.update(cx, |t, cx| t.on_exited(term, code, message, cx));
+                }
+            }
             Event::Profiles(list) => {
                 self.profiles = Profiles { all: list };
                 self.profiles_loaded = true;
@@ -578,6 +686,9 @@ impl Workspace {
                 self.core.send(Command::CloseSession { session: s });
             }
         }
+        if let Tab::Terminal(t) = &self.tabs[ix] {
+            t.update(cx, |t, _| t.shutdown());
+        }
         self.tabs.remove(ix);
         if self.tabs.is_empty() {
             self.tabs.push(Tab::Welcome);
@@ -599,7 +710,8 @@ impl Workspace {
             .and_then(|h| self.profiles.host(h))
             .map(|h| h.environment)
             .unwrap_or_default();
-        let t = cx.new(|_| TerminalTab::new(name, env, host.is_some()));
+        let core = self.core.clone();
+        let t = cx.new(|cx| TerminalTab::new(core, name, env, host, cx));
         self.tabs.push(Tab::Terminal(t));
         self.active = self.tabs.len() - 1;
         cx.notify();
@@ -755,6 +867,9 @@ impl Workspace {
     }
 
     pub(crate) fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.cancel_prompt(window, cx) {
+            return;
+        }
         self.overlay = None;
         self.tunnels_open = false;
         self.ctx = None;
@@ -996,7 +1111,12 @@ impl Workspace {
             }
             Tab::Terminal(t) => {
                 let t = t.read(cx);
-                ("SSH".into(), t.title.clone(), Some(t.env), false)
+                (
+                    if t.is_remote() { "SSH" } else { "SH" }.into(),
+                    t.title.clone(),
+                    Some(t.env),
+                    false,
+                )
             }
             Tab::Files(_) => ("FS".into(), "Files · local".into(), None, false),
         }
@@ -1332,7 +1452,7 @@ impl Workspace {
                     Some(t.env),
                     t.title.to_string(),
                     "terminal".into(),
-                    String::new(),
+                    t.status(),
                     None,
                 )
             }
@@ -1406,7 +1526,10 @@ impl Workspace {
                         this.tunnels_open = !this.tunnels_open;
                         cx.notify();
                     }))
-                    .child("0 tunnels"),
+                    .child(match self.tunnels.len() {
+                        1 => "1 tunnel".to_owned(),
+                        n => format!("{n} tunnels"),
+                    }),
             )
             .child(div().flex_1())
             .child(

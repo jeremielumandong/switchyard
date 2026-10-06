@@ -12,6 +12,8 @@ pub enum Engine {
     Postgres,
     /// Microsoft SQL Server.
     SqlServer,
+    /// Cloudflare D1 (SQLite) over the Cloudflare REST API.
+    D1,
 }
 
 impl Engine {
@@ -20,14 +22,16 @@ impl Engine {
         match self {
             Engine::Postgres => "PostgreSQL",
             Engine::SqlServer => "SQL Server",
+            Engine::D1 => "Cloudflare D1",
         }
     }
 
-    /// Short monogram used in the UI (`PG`, `MS`).
+    /// Short monogram used in the UI (`PG`, `MS`, `D1`).
     pub fn badge(self) -> &'static str {
         match self {
             Engine::Postgres => "PG",
             Engine::SqlServer => "MS",
+            Engine::D1 => "D1",
         }
     }
 
@@ -36,7 +40,20 @@ impl Engine {
         match self {
             Engine::Postgres => 5432,
             Engine::SqlServer => 1433,
+            Engine::D1 => 443,
         }
+    }
+
+    /// Whether the engine supports interactive transactions (BEGIN ... COMMIT across
+    /// requests). D1's HTTP API runs every request on its own.
+    pub fn supports_transactions(self) -> bool {
+        !matches!(self, Engine::D1)
+    }
+
+    /// Whether the engine is reached through a cloud HTTP API (account and database ids
+    /// plus an API token) rather than host, port and user.
+    pub fn is_cloud_api(self) -> bool {
+        matches!(self, Engine::D1)
     }
 }
 
