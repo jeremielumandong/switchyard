@@ -106,6 +106,19 @@ pub trait RemoteFs: Send + Sync {
     fn open_read<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<FsReader, FsError>>;
     /// Create (or truncate) a file for writing.
     fn create<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<FsWriter, FsError>>;
+    /// Open a file for reading from byte `offset` (resuming a transfer).
+    fn open_read_from<'a>(
+        &'a self,
+        path: &'a Path,
+        offset: u64,
+    ) -> BoxFuture<'a, Result<FsReader, FsError>>;
+    /// Open a file for writing at byte `offset`, creating it if missing and keeping what is
+    /// before `offset` (resuming a transfer).
+    fn open_write_from<'a>(
+        &'a self,
+        path: &'a Path,
+        offset: u64,
+    ) -> BoxFuture<'a, Result<FsWriter, FsError>>;
 
     /// Read a whole file, refusing files over `max` bytes.
     fn read_file<'a>(
@@ -292,6 +305,39 @@ impl RemoteFs for LocalFs {
 
     fn create<'a>(&'a self, path: &'a Path) -> BoxFuture<'a, Result<FsWriter, FsError>> {
         Box::pin(async move { Ok(Box::new(tokio::fs::File::create(path).await?) as FsWriter) })
+    }
+
+    fn open_read_from<'a>(
+        &'a self,
+        path: &'a Path,
+        offset: u64,
+    ) -> BoxFuture<'a, Result<FsReader, FsError>> {
+        Box::pin(async move {
+            use tokio::io::AsyncSeekExt as _;
+            let mut f = tokio::fs::File::open(path).await?;
+            f.seek(std::io::SeekFrom::Start(offset)).await?;
+            Ok(Box::new(f) as FsReader)
+        })
+    }
+
+    fn open_write_from<'a>(
+        &'a self,
+        path: &'a Path,
+        offset: u64,
+    ) -> BoxFuture<'a, Result<FsWriter, FsError>> {
+        Box::pin(async move {
+            use tokio::io::AsyncSeekExt as _;
+            let mut f = tokio::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(path)
+                .await?;
+            // Anything past the resume point is from an interrupted write: drop it.
+            f.set_len(offset).await?;
+            f.seek(std::io::SeekFrom::Start(offset)).await?;
+            Ok(Box::new(f) as FsWriter)
+        })
     }
 }
 

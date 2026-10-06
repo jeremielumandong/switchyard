@@ -21,6 +21,7 @@ mod sql_tab;
 mod ssh_prompts;
 mod terminal_tab;
 mod theme;
+mod transfers;
 mod ui;
 mod workspace;
 

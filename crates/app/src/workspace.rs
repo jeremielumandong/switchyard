@@ -26,7 +26,7 @@ use crate::actions::{self, CommandId};
 use crate::app_state::{Profiles, SessionState, badge_of, describe, next_id};
 use crate::conn_editor::{ConnEditor, ConnEditorEvent};
 use crate::editor_tab::EditorTab;
-use crate::files_tab::FilesTab;
+use crate::files_tab::{FilesTab, FilesTabEvent};
 use crate::overlays::{Overlay, SettingsPage};
 use crate::palette::{PaletteEvent, PaletteMode, PaletteView};
 use crate::remote_files::{RemoteFiles, RemoteFilesEvent};
@@ -34,6 +34,7 @@ use crate::sidebar::{SchemaState, SideTab};
 use crate::sql_tab::{SqlTab, SqlTabEvent};
 use crate::terminal_tab::TerminalTab;
 use crate::theme::{self, MONO, Palette, SANS, ThemeId, palette};
+use crate::transfers::Transfers;
 use crate::ui::{self, Kind};
 
 /// A tab in the work area.
@@ -83,9 +84,13 @@ pub struct Workspace {
     pub(crate) prompts: std::collections::VecDeque<crate::ssh_prompts::SshPrompt>,
     pending_open: Option<ProfileId>,
     /// A remote file the Files panel asked to open (needs the window).
-    pending_editor: Option<(ProfileId, PathBuf)>,
+    pending_editor: Option<(FsRef, PathBuf)>,
+    /// The shared transfer queue (Files tab drawer, sidebar panel, status bar).
+    pub(crate) transfers: Entity<Transfers>,
     /// An editor tab with unsaved changes whose close was clicked once.
     close_confirm: Option<gpui_kit::EntityId>,
+    /// The sidebar asked for the Files tab with this Host.
+    pending_files: Option<Option<ProfileId>>,
     rebind: Vec<(Entity<SqlTab>, Option<ProfileId>)>,
     _events: Task<()>,
     _subs: Vec<Subscription>,
@@ -105,6 +110,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let transfers = {
+            let core = core.clone();
+            cx.new(|_| Transfers::new(core))
+        };
         let task = cx.spawn_in(window, async move |this, cx| {
             while let Some(ev) = events.next().await {
                 if this
@@ -175,7 +184,9 @@ impl Workspace {
             prompts: std::collections::VecDeque::new(),
             pending_open: None,
             pending_editor: None,
+            transfers,
             close_confirm: None,
+            pending_files: None,
             rebind: Vec::new(),
             _events: task,
             _subs: vec![search_sub],
@@ -295,6 +306,12 @@ impl Workspace {
             Event::Profiles(list) => {
                 self.profiles = Profiles { all: list };
                 self.profiles_loaded = true;
+                let hosts = self.host_list();
+                for t in &self.tabs {
+                    if let Tab::Files(f) = t {
+                        f.update(cx, |f, cx| f.set_hosts(hosts.clone(), cx));
+                    }
+                }
                 // Refresh connection details held by tabs.
                 for t in &self.tabs {
                     if let Tab::Sql(tab) = t {
@@ -426,10 +443,17 @@ impl Workspace {
             Event::Workspace(w) => self.restore(w, window, cx),
             Event::FsListing { .. }
             | Event::FsOpDone { .. }
+            | Event::TransferQueued { .. }
             | Event::TransferProgress { .. }
             | Event::TransferDone { .. } => {
+                self.transfers.update(cx, |t, cx| t.on_event(&ev, cx));
                 for panel in self.remote_files.values() {
                     panel.update(cx, |p, cx| p.on_event(&ev, cx));
+                }
+                for t in &self.tabs {
+                    if let Tab::Files(f) = t {
+                        f.update(cx, |f, cx| f.on_event(&ev, cx));
+                    }
                 }
             }
             Event::TextFileRead { .. } | Event::TextFileSaved { .. } => {
@@ -445,19 +469,7 @@ impl Workspace {
                     }
                 }
             }
-            Event::DirListing {
-                request,
-                path,
-                result,
-            } => {
-                for t in &self.tabs {
-                    if let Tab::Files(f) = t {
-                        f.update(cx, |f, cx| {
-                            f.on_listing(request, path.clone(), result.clone(), cx)
-                        });
-                    }
-                }
-            }
+            Event::DirListing { .. } => {}
             Event::Components(_)
             | Event::ComponentProgress { .. }
             | Event::ComponentInstalled { .. }
@@ -803,6 +815,7 @@ impl Workspace {
                 FsRef::Host(h) => Some(h.clone()),
                 FsRef::Local => None,
             },
+            Some(Tab::Files(f)) => f.read(cx).right_host().cloned(),
             _ => None,
         }
     }
@@ -818,10 +831,15 @@ impl Workspace {
         }
         let core = self.core.clone();
         let h = host.clone();
-        let panel = cx.new(|cx| RemoteFiles::new(core, h, cx));
+        let transfers = self.transfers.clone();
+        let panel = cx.new(|cx| RemoteFiles::new(core, h, transfers, cx));
         let sub = cx.subscribe(&panel, |this, _, ev: &RemoteFilesEvent, cx| match ev {
             RemoteFilesEvent::Open { host, path } => {
-                this.pending_editor = Some((host.clone(), path.clone()));
+                this.pending_editor = Some((FsRef::Host(host.clone()), path.clone()));
+                cx.notify();
+            }
+            RemoteFilesEvent::OpenTab(host) => {
+                this.pending_files = Some(Some(host.clone()));
                 cx.notify();
             }
             RemoteFilesEvent::Toast(t) => this.toast(t.clone(), cx),
@@ -834,12 +852,11 @@ impl Workspace {
     /// Open a file from a Host in an editor tab (or focus the one already open).
     pub(crate) fn open_remote_file(
         &mut self,
-        host: ProfileId,
+        fs: FsRef,
         path: PathBuf,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let fs = FsRef::Host(host.clone());
         if let Some(ix) = self
             .tabs
             .iter()
@@ -847,11 +864,14 @@ impl Workspace {
         {
             return self.activate(ix, cx);
         }
-        let name = self
-            .profiles
-            .host(&host)
-            .map(|h| h.name.clone())
-            .unwrap_or_default();
+        let name = match &fs {
+            FsRef::Host(h) => self
+                .profiles
+                .host(h)
+                .map(|h| h.name.clone())
+                .unwrap_or_default(),
+            FsRef::Local => "this computer".into(),
+        };
         let core = self.core.clone();
         let tab = cx.new(|cx| EditorTab::new(core, fs, path, &name, window, cx));
         self.tabs.push(Tab::Editor(tab));
@@ -859,12 +879,41 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(crate) fn open_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_files(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let host = self.active_ssh_host(cx);
+        self.open_files_for(host, cx);
+    }
+
+    fn host_list(&self) -> Vec<(ProfileId, String)> {
+        self.profiles
+            .hosts()
+            .map(|h| (h.id.clone(), h.name.clone()))
+            .collect()
+    }
+
+    /// The Files tab, with `host` on the right (or what it already shows).
+    pub(crate) fn open_files_for(&mut self, host: Option<ProfileId>, cx: &mut Context<Self>) {
         if let Some(ix) = self.tabs.iter().position(|t| matches!(t, Tab::Files(_))) {
+            if let (Some(h), Tab::Files(f)) = (host, &self.tabs[ix]) {
+                f.update(cx, |f, cx| {
+                    if f.right_host() != Some(&h) {
+                        f.show_host(Some(h), cx)
+                    }
+                });
+            }
             return self.activate(ix, cx);
         }
         let core = self.core.clone();
-        let f = cx.new(|cx| FilesTab::new(core, window, cx));
+        let transfers = self.transfers.clone();
+        let hosts = self.host_list();
+        let f = cx.new(|cx| FilesTab::new(core, transfers, hosts, host, cx));
+        let sub = cx.subscribe(&f, |this, _, ev: &FilesTabEvent, cx| match ev {
+            FilesTabEvent::Open { fs, path } => {
+                this.pending_editor = Some((fs.clone(), path.clone()));
+                cx.notify();
+            }
+        });
+        self._subs.push(sub);
         self.tabs.push(Tab::Files(f));
         self.active = self.tabs.len() - 1;
         cx.notify();
@@ -936,7 +985,12 @@ impl Workspace {
                 }
             }
             Some(Profile::Host(h)) => self.open_terminal(Some(h.id), cx),
-            Some(Profile::File(_)) => self.open_files(window, cx),
+            Some(Profile::File(f)) => match &f.protocol {
+                switchyard_core::store::FileProtocol::Sftp { host_id } => {
+                    self.open_files_for(Some(host_id.clone()), cx)
+                }
+                _ => self.open_files(window, cx),
+            },
             Some(Profile::Terminal(t)) => self.open_terminal(t.host_id, cx),
             None => {}
         }
@@ -1263,7 +1317,14 @@ impl Workspace {
                     false,
                 )
             }
-            Tab::Files(_) => ("FS".into(), "Files · local".into(), None, false),
+            Tab::Files(f) => {
+                let right = f
+                    .read(cx)
+                    .right_host()
+                    .and_then(|h| self.profiles.host(h))
+                    .map_or("local".to_owned(), |h| h.name.clone());
+                ("FS".into(), format!("Files · {right}").into(), None, false)
+            }
             Tab::Editor(e) => {
                 let e = e.read(cx);
                 ("ED".into(), e.title.clone().into(), None, e.dirty)
@@ -1605,13 +1666,7 @@ impl Workspace {
                     None,
                 )
             }
-            Some(Tab::Files(_)) => (
-                None,
-                "Local files".into(),
-                String::new(),
-                String::new(),
-                None,
-            ),
+            Some(Tab::Files(_)) => (None, "Files".into(), String::new(), String::new(), None),
             _ => (
                 None,
                 self.workspace_name.clone(),
@@ -1686,7 +1741,15 @@ impl Workspace {
                     .id("sb-transfers")
                     .hover(|s| s.text_color(p.fg))
                     .on_click(cx.listener(|this, _, w, cx| this.open_files(w, cx)))
-                    .child("↑↓ no transfers"),
+                    .child(match self.transfers.read(cx).summary() {
+                        Some((n, speed)) if speed > 1.0 => format!(
+                            "↑↓ {n} transfer{} · {}/s",
+                            if n == 1 { "" } else { "s" },
+                            crate::remote_files::human(speed as u64)
+                        ),
+                        Some((n, _)) => format!("↑↓ {n} transfer{}", if n == 1 { "" } else { "s" }),
+                        None => "↑↓ no transfers".into(),
+                    }),
             )
             .child(div().font_family(MONO).child(rows))
             .when_some(pos, |d, pos| {
@@ -1723,8 +1786,11 @@ fn shortcut_hint(label: &'static str, key: SharedString, p: &Palette) -> AnyElem
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
-        if let Some((host, path)) = self.pending_editor.take() {
-            self.open_remote_file(host, path, window, cx);
+        if let Some((fs, path)) = self.pending_editor.take() {
+            self.open_remote_file(fs, path, window, cx);
+        }
+        if let Some(host) = self.pending_files.take() {
+            self.open_files_for(host, cx);
         }
         // Bind restored tabs whose connection arrived after the workspace.
         if !self.rebind.is_empty() && self.profiles_loaded {
