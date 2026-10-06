@@ -90,6 +90,10 @@ done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/$APP_NAME.icns"
 rm -rf "$ICONSET"
 
+# Extended attributes (quarantine, provenance) break signatures and leak into the .pkg as ._ files.
+xattr -cr "$APP"
+export COPYFILE_DISABLE=1
+
 # --- signing -------------------------------------------------------------------------------
 if [[ -n "${MACOS_SIGN_IDENTITY:-}" ]]; then
   log "codesigning with '$MACOS_SIGN_IDENTITY'"
@@ -119,7 +123,7 @@ if [[ $MAKE_DMG -eq 1 ]]; then
   log "creating $(basename "$DMG")"
   STAGE="$WORK/dmg"
   mkdir -p "$STAGE"
-  cp -R "$APP" "$STAGE/"
+  ditto --norsrc --noextattr "$APP" "$STAGE/$APP_NAME.app"
   ln -s /Applications "$STAGE/Applications"
   rm -f "$DMG"
   hdiutil create -volname "$APP_NAME" -srcfolder "$STAGE" -fs HFS+ -format UDZO -ov "$DMG" >/dev/null
@@ -135,7 +139,10 @@ if [[ $MAKE_PKG -eq 1 ]]; then
   log "creating $(basename "$PKG")"
   ROOT="$WORK/pkgroot"
   mkdir -p "$ROOT/Applications"
-  cp -R "$APP" "$ROOT/Applications/"
+  ditto --norsrc --noextattr "$APP" "$ROOT/Applications/$APP_NAME.app"
+  # Drop quarantine and similar attributes. com.apple.provenance cannot be removed; pkgbuild stores
+  # it as ._ entries that the installer restores as attributes, so the signature still verifies.
+  xattr -cr "$ROOT" 2>/dev/null || true
   # Install exactly to /Applications, even if another copy of the bundle exists elsewhere.
   pkgbuild --analyze --root "$ROOT" "$WORK/component.plist" >/dev/null
   plutil -replace 0.BundleIsRelocatable -bool NO "$WORK/component.plist"
