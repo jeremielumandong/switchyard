@@ -52,7 +52,9 @@ Exit: the app opens with the full layout, profiles save to SQLite, secrets land 
   environment dots; connection editor dialog with a form per type and environment label.
   "Test connection" is stubbed until drivers exist.
   Done when: create, edit, delete and reorder connections; changes persist across restarts.
-  Note: Partial: tree grouped by Host, environment dots, editor for every type with test connection (PostgreSQL real, others stubbed), create/edit/delete persist. Store keeps `sort_order` but there is no drag-to-reorder UI yet.
+  Note: tree grouped by Host, environment dots, editor for every type with test connection,
+  create/edit/delete persist. Drag a Host or connection to reorder it among its siblings
+  (Hosts among Hosts, connections within their Host or "Local & direct"); saved, survives restarts.
 
 ## M1 — PostgreSQL, editor, grid
 
