@@ -502,6 +502,20 @@ impl Workspace {
                 }
             }
             Event::Toast(t) => self.toast(t, cx),
+            Event::SshConfigPreview { path, hosts } => {
+                let chosen = hosts
+                    .iter()
+                    .filter(|h| !h.exists)
+                    .map(|h| h.alias.clone())
+                    .collect();
+                self.overlay = Some(Overlay::SshImport(crate::overlays::SshImportPreview {
+                    path,
+                    hosts,
+                    chosen,
+                }));
+                window.focus(&self.overlay_focus, cx);
+                cx.notify();
+            }
             Event::Error { context, message } => self.toast(format!("{context}: {message}"), cx),
         }
         if let Some(id) = self.pending_open.clone()
@@ -1395,9 +1409,10 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Read `~/.ssh/config`; the preview opens when the runtime answers.
     fn import_ssh_config(&mut self, cx: &mut Context<Self>) {
-        self.core.send(Command::ImportSshConfig);
-        self.toast("Importing Hosts from ~/.ssh/config…", cx);
+        self.core.send(Command::PreviewSshConfig);
+        self.toast("Reading ~/.ssh/config…", cx);
     }
 
     // --------------------------------------------------------------- render

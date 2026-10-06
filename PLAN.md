@@ -155,10 +155,12 @@ Exit: one login to a Host opens a terminal and a tunneled PostgreSQL connection.
 - [x] **M2-3 Jump hosts.** ProxyJump chains via direct-tcpip channels.
   Done when: connect through a two-hop chain in docker.
   Note: Chains through direct-tcpip channels; jump sessions are shared too. `two_hop_jump_chain` (2222 → 2223 → 2224).
-- [ ] **M2-4 SSH config import.** Parse Host, HostName, User, Port, IdentityFile, ProxyJump into
+- [x] **M2-4 SSH config import.** Parse Host, HostName, User, Port, IdentityFile, ProxyJump into
   Host profiles; preview before import.
   Done when: snapshot test on a sample config.
-  Note: Partial: parser and snapshot test exist and the palette command imports Hosts, but there is no preview step before importing.
+  Note: parser with snapshot test; "Import Hosts from ~/.ssh/config" opens a preview (alias,
+  user@host:port, auth, ProxyJump, already-saved entries greyed) and imports the ticked ones,
+  wiring ProxyJump to saved or imported Hosts (`ssh_import.rs` tests).
 - [ ] **M2-5 SSH agent.** Agent auth via `SSH_AUTH_SOCK` on Unix, OpenSSH agent pipe and Pageant
   on Windows.
   Done when: agent auth works on Linux and macOS in CI; Windows checked manually and noted.
