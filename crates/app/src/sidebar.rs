@@ -1133,8 +1133,16 @@ impl Workspace {
             })
             .into_any_element()
     }
+}
 
+/// Default and smallest width of the right panel.
+pub(crate) const INSPECTOR_WIDTH: f32 = 300.;
+pub(crate) const INSPECTOR_MIN: f32 = 240.;
+
+impl Workspace {
     /// The right-hand value viewer.
+    ///
+    /// Its left edge drags to resize it; the header button toggles a wide view.
     pub(crate) fn render_inspector(&mut self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let Some(tab) = self.active_sql() else {
             return div().into_any_element();
@@ -1226,7 +1234,28 @@ impl Workspace {
             }
         };
         div()
-            .w(px(300.))
+            .w(px(self.inspector_width))
+            .relative()
+            .child(
+                // Drag the left edge to resize.
+                div()
+                    .id("insp-resize")
+                    .absolute()
+                    .left(px(-3.))
+                    .top_0()
+                    .bottom_0()
+                    .w(px(6.))
+                    .cursor_col_resize()
+                    .hover(|s| s.bg(p.acc.opacity(0.35)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                            this.inspector_drag =
+                                Some((ev.position.x.into(), this.inspector_width));
+                            cx.stop_propagation();
+                        }),
+                    ),
+            )
             .flex_none()
             .flex()
             .flex_col()
@@ -1261,6 +1290,35 @@ impl Workspace {
                         )
                     })
                     .child(div().flex_1())
+                    .child({
+                        let wide = self.inspector_width > INSPECTOR_WIDTH + 1.;
+                        div()
+                            .id("insp-expand")
+                            .px(px(6.))
+                            .py(px(2.))
+                            .rounded(px(4.))
+                            .text_color(p.fg3)
+                            .hover(|s| s.bg(p.hover).text_color(p.fg))
+                            .tooltip(move |w, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(if wide {
+                                    "Restore width"
+                                } else {
+                                    "Expand"
+                                })
+                                .build(w, cx)
+                            })
+                            .on_click(cx.listener(move |this, _, w, cx| {
+                                this.inspector_width = if wide {
+                                    INSPECTOR_WIDTH
+                                } else {
+                                    // About half the window, leaving room for the editor.
+                                    (f32::from(w.bounds().size.width) * 0.5).max(INSPECTOR_WIDTH)
+                                };
+                                this.save_inspector_width();
+                                cx.notify();
+                            }))
+                            .child(if wide { "⇥" } else { "⇤" })
+                    })
                     .child(
                         div()
                             .id("insp-close")
@@ -1472,7 +1530,11 @@ impl Workspace {
                             .pt(px(6.))
                             .flex()
                             .justify_center()
-                            .child(gpui_kit::img(img).max_w(px(276.)).max_h(px(420.)))
+                            .child(
+                                gpui_kit::img(img)
+                                    .max_w(px(self.inspector_width - 24.))
+                                    .max_h(px(420.)),
+                            )
                             .into_any_element(),
                     );
                 }
