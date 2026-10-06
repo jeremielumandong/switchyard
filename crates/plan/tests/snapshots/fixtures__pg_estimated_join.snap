@@ -1,0 +1,11 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(& pg(stringify! (estimated_join)))
+---
+Postgres Estimated
+#0 Aggregate est=84000 act=- loops=-
+  #1 Nested Loop est=1000000 act=- loops=-
+    #2 Index Scan on customers.customers_email_key est=84000 act=- loops=-
+    #3 Index Scan on orders.orders_customer_id_idx est=12 act=- loops=-
+      Index Cond: (customer_id = c.id)
+findings:

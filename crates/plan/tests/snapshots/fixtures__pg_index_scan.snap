@@ -1,0 +1,8 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(& pg(stringify! (index_scan)))
+---
+Postgres Actual
+#0 Index Scan on orders.orders_pkey est=1 act=1 loops=1 self=0.1ms (52%)
+  Index Cond: (id = 4242)
+findings:
