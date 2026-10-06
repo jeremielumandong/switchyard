@@ -14,17 +14,29 @@ use switchyard_core::{
     Command, Core, Event, EventReceiver, PromptAnswer, ServiceConfig, TermStatus, TermTarget,
 };
 
-async fn next<T>(rx: &mut EventReceiver, secs: u64, mut f: impl FnMut(Event) -> Option<T>) -> T {
-    tokio::time::timeout(Duration::from_secs(secs), async {
+/// Wait for the event `f` picks; on timeout, name the wait and list the events skipped.
+async fn next<T>(
+    rx: &mut EventReceiver,
+    what: &str,
+    secs: u64,
+    mut f: impl FnMut(Event) -> Option<T>,
+) -> T {
+    let mut skipped = Vec::new();
+    let found = tokio::time::timeout(Duration::from_secs(secs), async {
         loop {
             let ev = rx.next().await.expect("events");
+            let seen = format!("{ev:?}");
             if let Some(t) = f(ev) {
                 return t;
             }
+            skipped.push(seen.chars().take(200).collect::<String>());
         }
     })
-    .await
-    .expect("timed out waiting for event")
+    .await;
+    match found {
+        Ok(t) => t,
+        Err(_) => panic!("timed out waiting for {what}; skipped: {skipped:#?}"),
+    }
 }
 
 fn keys() -> String {
@@ -47,7 +59,7 @@ async fn ssh_terminal_prompts_runs_and_reconnects() {
         profile: Profile::Host(host),
         secret: None,
     });
-    next(&mut rx, 5, |e| {
+    next(&mut rx, "ProfileSaved", 5, |e| {
         matches!(e, Event::ProfileSaved { request: 1, .. }).then_some(())
     })
     .await;
@@ -57,14 +69,14 @@ async fn ssh_terminal_prompts_runs_and_reconnects() {
         target: TermTarget::Host(host_id),
         size: TermSize { cols: 80, rows: 24 },
     });
-    let terminal = next(&mut rx, 5, |e| match e {
+    let terminal = next(&mut rx, "TerminalOpened", 5, |e| match e {
         Event::TerminalOpened {
             term: 9, terminal, ..
         } => Some(terminal),
         _ => None,
     })
     .await;
-    let request = next(&mut rx, 10, |e| match e {
+    let request = next(&mut rx, "HostKeyPrompt", 10, |e| match e {
         Event::HostKeyPrompt { request, key } => {
             assert!(key.fingerprint.starts_with("SHA256:"));
             Some(request)
@@ -76,7 +88,7 @@ async fn ssh_terminal_prompts_runs_and_reconnects() {
         request,
         answer: PromptAnswer::HostKey(HostKeyDecision::TrustAndSave),
     });
-    let description = next(&mut rx, 10, |e| match e {
+    let description = next(&mut rx, "Connected", 10, |e| match e {
         Event::TerminalStatus {
             term: 9,
             status: TermStatus::Connected { description },
@@ -89,9 +101,15 @@ async fn ssh_terminal_prompts_runs_and_reconnects() {
         "{description}"
     );
 
-    // The server-side user processes exist once the shell runs (it sets the title).
-    next(&mut rx, 10, |e| {
-        matches!(e, Event::TerminalTitle { term: 9, .. }).then_some(())
+    // The server-side user processes exist once the shell runs. Have it set the title
+    // itself: whether its rc files do depends on the machine (CI runners' don't).
+    h.send(Command::TerminalInput {
+        term: 9,
+        bytes: b"printf '\\033]0;swy-ready\\007'\r".to_vec(),
+    });
+    next(&mut rx, "TerminalTitle", 10, |e| match e {
+        Event::TerminalTitle { term: 9, title } if title == "swy-ready" => Some(()),
+        _ => None,
     })
     .await;
 
@@ -107,7 +125,7 @@ async fn ssh_terminal_prompts_runs_and_reconnects() {
             .status()
             .unwrap();
     }
-    next(&mut rx, 15, |e| match e {
+    next(&mut rx, "Reconnecting 1/5", 15, |e| match e {
         Event::TerminalStatus {
             term: 9,
             status: TermStatus::Reconnecting {
@@ -117,7 +135,7 @@ async fn ssh_terminal_prompts_runs_and_reconnects() {
         _ => None,
     })
     .await;
-    next(&mut rx, 15, |e| match e {
+    next(&mut rx, "Connected again", 15, |e| match e {
         Event::TerminalStatus {
             term: 9,
             status: TermStatus::Connected { .. },
@@ -133,7 +151,7 @@ async fn ssh_terminal_prompts_runs_and_reconnects() {
             bytes: vec![*b],
         });
     }
-    let code = next(&mut rx, 10, |e| match e {
+    let code = next(&mut rx, "TerminalExited", 10, |e| match e {
         Event::TerminalExited { term: 9, code, .. } => Some(code),
         _ => None,
     })
