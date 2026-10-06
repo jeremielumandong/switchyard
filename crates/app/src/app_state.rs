@@ -2,9 +2,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use switchyard_core::store::{
-    DbConnection, EnvironmentLabel, FileProtocol, Host, Profile, ProfileId,
-};
+use switchyard_core::store::{DbConnection, FileProtocol, Host, Profile, ProfileId};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -72,13 +70,6 @@ impl Profiles {
     /// Whether nothing is saved yet.
     pub fn is_empty(&self) -> bool {
         self.all.is_empty()
-    }
-
-    /// Environment of a database connection (Local if unknown).
-    pub fn env_of(&self, id: Option<&ProfileId>) -> EnvironmentLabel {
-        id.and_then(|id| self.db(id))
-            .map(|d| d.environment)
-            .unwrap_or_default()
     }
 
     /// Children of a Host: (badge, label, sub, profile) for terminals, files and databases.
