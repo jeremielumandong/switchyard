@@ -43,6 +43,14 @@ fn stmt(sql: &str) -> StatementRequest {
 }
 
 async fn setup(env: EnvironmentLabel, read_only: bool) -> (Core, EventReceiver) {
+    setup_with(env, read_only, true).await
+}
+
+async fn setup_with(
+    env: EnvironmentLabel,
+    read_only: bool,
+    history: bool,
+) -> (Core, EventReceiver) {
     let (core, mut rx) = start();
     let h = core.handle();
     let mut c = DbConnection::new("shop", Engine::Postgres);
@@ -50,6 +58,7 @@ async fn setup(env: EnvironmentLabel, read_only: bool) -> (Core, EventReceiver) 
     c.database = "shop".into();
     c.environment = env;
     c.read_only = read_only;
+    c.history_enabled = history;
     let id = c.id.clone();
     h.send(Command::SaveProfile {
         request: 1,
@@ -257,4 +266,43 @@ async fn invalid_profile_reports_field() {
     })
     .await;
     assert_eq!(field, Some("name"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn history_off_switch_records_nothing() {
+    let (core, mut rx) = setup_with(EnvironmentLabel::Development, false, false).await;
+    let h = core.handle();
+    h.send(Command::Execute {
+        session: 7,
+        query: 1,
+        statements: vec![stmt("rows 3")],
+        tags: vec![],
+        confirmed_destructive: false,
+        fetch_limit: FetchLimit::Rows(10_000),
+    });
+    next_matching(&mut rx, |e| {
+        matches!(
+            e,
+            Event::Query {
+                event: QueryEvent::Finished { .. },
+                ..
+            }
+        )
+        .then_some(())
+    })
+    .await;
+    h.send(Command::SearchHistory {
+        request: 9,
+        query: String::new(),
+        connection: None,
+    });
+    let entries = next_matching(&mut rx, |e| {
+        if let Event::History { entries, .. } = e {
+            Some(entries)
+        } else {
+            None
+        }
+    })
+    .await;
+    assert!(entries.is_empty());
 }

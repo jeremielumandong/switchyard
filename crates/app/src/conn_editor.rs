@@ -117,6 +117,7 @@ pub struct ConnEditor {
     open_select: Option<&'static str>,
     env: EnvironmentLabel,
     read_only: bool,
+    history: bool,
     test: TestState,
     driver_card: DriverCard,
     components: Vec<Component>,
@@ -178,6 +179,7 @@ impl ConnEditor {
                 .map(|p| p.environment())
                 .unwrap_or(EnvironmentLabel::Development),
             read_only: matches!(&existing, Some(Profile::Db(d)) if d.read_only),
+            history: !matches!(&existing, Some(Profile::Db(d)) if !d.history_enabled),
             test: TestState::Idle,
             driver_card: DriverCard::Missing,
             components,
@@ -533,6 +535,7 @@ impl ConnEditor {
                 };
                 d.environment = self.env;
                 d.read_only = self.read_only;
+                d.history_enabled = self.history;
                 Profile::Db(d)
             }
             ConnKind::Ssh => {
@@ -1360,6 +1363,22 @@ impl Render for ConnEditor {
                                         )
                                     }),
                             )
+                            .when(is_db, |d| {
+                                d.child(
+                                    ui::checkbox(
+                                        "history",
+                                        self.history,
+                                        "Record executed statements in query history",
+                                        &p,
+                                    )
+                                    .on_click(cx.listener(
+                                        |this, _, _, cx| {
+                                            this.history = !this.history;
+                                            cx.notify();
+                                        },
+                                    )),
+                                )
+                            })
                             .when(self.test == TestState::Missing, |d| {
                                 d.child(self.render_driver_card(&p, cx))
                             })

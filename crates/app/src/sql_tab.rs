@@ -582,6 +582,16 @@ impl SqlTab {
         self.export_open = false;
         self.current_statements = pending.statements.clone();
         self.current_index = 0;
+        {
+            // Tables that were just used rank first in completion.
+            let dialect = self.dialect();
+            let mut st = self.completion.borrow_mut();
+            for s in &pending.statements {
+                for t in switchyard_core::db::complete::table_refs(dialect, &s.sql) {
+                    st.index.touch(&t.name);
+                }
+            }
+        }
         self.edit = None;
         self.run = RunState::Running {
             query,

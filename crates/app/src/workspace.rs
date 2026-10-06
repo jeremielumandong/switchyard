@@ -68,6 +68,7 @@ pub struct Workspace {
     pub(crate) focus: FocusHandle,
     pub(crate) overlay_focus: FocusHandle,
     pub(crate) ctx: Option<crate::sidebar::CtxMenu>,
+    pub(crate) schema_search: Entity<InputState>,
     pending_open: Option<ProfileId>,
     rebind: Vec<(Entity<SqlTab>, Option<ProfileId>)>,
     _events: Task<()>,
@@ -103,6 +104,19 @@ impl Workspace {
         core.send(Command::DetectComponents);
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        let schema_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search objects"));
+        let search_sub = cx.subscribe(
+            &schema_search,
+            |this, input, ev: &gpui_kit::component::input::InputEvent, cx| {
+                if let gpui_kit::component::input::InputEvent::Change = ev {
+                    this.schema.filter = input.read(cx).value().trim().to_owned();
+                    if !this.schema.filter.is_empty() {
+                        this.schema.load_all_folders(&this.core);
+                    }
+                    cx.notify();
+                }
+            },
+        );
         Self {
             core,
             profiles: Profiles::default(),
@@ -125,10 +139,11 @@ impl Workspace {
             focus,
             overlay_focus: cx.focus_handle(),
             ctx: None,
+            schema_search,
             pending_open: None,
             rebind: Vec::new(),
             _events: task,
-            _subs: Vec::new(),
+            _subs: vec![search_sub],
         }
     }
 
