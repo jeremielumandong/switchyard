@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use switchyard_remote::fs::file_name;
@@ -16,38 +16,61 @@ use crate::bus::{OnConflict, SaveError, TextFile, TransferError};
 pub const MAX_EDIT_BYTES: u64 = 5 * 1024 * 1024;
 const CHUNK: usize = 256 * 1024;
 
-/// Open SFTP file systems (one per Host) and running transfers.
-#[derive(Default)]
+/// Transfers running at once; the rest wait their turn.
+pub const PARALLEL_TRANSFERS: usize = 4;
+/// Suffix of a file being written; renamed into place when complete.
+pub const PART_SUFFIX: &str = ".swypart";
+
+const RUN: u8 = 0;
+const CANCEL: u8 = 1;
+const PAUSE: u8 = 2;
+
+/// A transfer's control flag, flipped by Pause and Cancel.
+pub(crate) type Control = Arc<AtomicU8>;
+
+/// Open SFTP file systems (one per Host) and the transfer queue.
 pub(crate) struct Files {
     pub(crate) sftp: tokio::sync::Mutex<HashMap<String, Arc<SftpFs>>>,
-    cancels: Mutex<HashMap<u64, Arc<AtomicBool>>>,
+    controls: Mutex<HashMap<u64, Control>>,
+    pub(crate) slots: Arc<tokio::sync::Semaphore>,
+}
+
+impl Default for Files {
+    fn default() -> Self {
+        Self {
+            sftp: tokio::sync::Mutex::default(),
+            controls: Mutex::default(),
+            slots: Arc::new(tokio::sync::Semaphore::new(PARALLEL_TRANSFERS)),
+        }
+    }
 }
 
 impl Files {
-    pub(crate) fn start(&self, id: u64) -> Arc<AtomicBool> {
-        let flag = Arc::new(AtomicBool::new(false));
-        self.cancels
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(id, flag.clone());
+    fn controls(&self) -> std::sync::MutexGuard<'_, HashMap<u64, Control>> {
+        self.controls.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    pub(crate) fn start(&self, id: u64) -> Control {
+        let flag = Arc::new(AtomicU8::new(RUN));
+        self.controls().insert(id, flag.clone());
         flag
     }
 
     pub(crate) fn finish(&self, id: u64) {
-        self.cancels
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&id);
+        self.controls().remove(&id);
     }
 
+    /// Stop and delete the partial file.
     pub(crate) fn cancel(&self, id: u64) {
-        if let Some(f) = self
-            .cancels
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(&id)
-        {
-            f.store(true, Ordering::SeqCst);
+        if let Some(f) = self.controls().get(&id) {
+            f.store(CANCEL, Ordering::SeqCst);
+        }
+    }
+
+    /// Stop and keep the partial file for a later resume.
+    pub(crate) fn pause(&self, id: u64) {
+        if let Some(f) = self.controls().get(&id) {
+            f.store(PAUSE, Ordering::SeqCst);
         }
     }
 }
@@ -64,6 +87,12 @@ fn child(dir: &Path, name: &str, posix: bool) -> PathBuf {
     } else {
         dir.join(name)
     }
+}
+
+fn part_of(path: &Path) -> PathBuf {
+    let mut s = path.as_os_str().to_owned();
+    s.push(PART_SUFFIX);
+    PathBuf::from(s)
 }
 
 /// `report (1).pdf`, `report (2).pdf`, …
@@ -105,46 +134,88 @@ struct Copy<'a> {
     dst: &'a dyn RemoteFs,
     src_posix: bool,
     dst_posix: bool,
-    cancel: &'a AtomicBool,
+    control: &'a AtomicU8,
     done: u64,
     report: &'a (dyn Fn(u64) + Send + Sync),
+    /// Skip files already copied in full by an earlier attempt.
+    resuming: bool,
 }
 
 impl Copy<'_> {
-    async fn file(&mut self, from: &Path, to: &Path) -> Result<(), TransferError> {
+    fn stopped(&self) -> Option<TransferError> {
+        match self.control.load(Ordering::SeqCst) {
+            CANCEL => Some(TransferError::Cancelled),
+            PAUSE => Some(TransferError::Paused),
+            _ => None,
+        }
+    }
+
+    /// Copy one file through `<to>.swypart`, continuing a partial one, then rename it.
+    async fn file(&mut self, from: &Path, to: &Path, size: u64) -> Result<(), TransferError> {
         let fail = |e: FsError| TransferError::Failed(e.to_string());
-        let mut r = self.src.open_read(from).await.map_err(fail)?;
-        let mut w = self.dst.create(to).await.map_err(fail)?;
+        let io = |e: std::io::Error| TransferError::Failed(e.to_string());
+        // A complete copy from an earlier attempt (folder resume): skip it.
+        if let Ok(t) = self.dst.stat(to).await
+            && !t.is_dir()
+            && t.size == size
+            && self.resuming
+        {
+            self.done += size;
+            (self.report)(self.done);
+            return Ok(());
+        }
+        let part = part_of(to);
+        // Only a resume continues a partial file: a fresh transfer of a changed source
+        // must not keep stale bytes.
+        let offset = match self.dst.stat(&part).await {
+            Ok(p) if self.resuming && p.size <= size => p.size,
+            _ => 0,
+        };
+        self.done += offset;
+        (self.report)(self.done);
+        let mut r = self.src.open_read_from(from, offset).await.map_err(fail)?;
+        let mut w = self
+            .dst
+            .open_write_from(&part, offset)
+            .await
+            .map_err(fail)?;
         let mut buf = vec![0u8; CHUNK];
         loop {
-            if self.cancel.load(Ordering::SeqCst) {
+            if let Some(stop) = self.stopped() {
+                let _ = w.flush().await;
                 drop(w);
-                // Do not leave half a file behind.
-                let _ = self.dst.delete(to).await;
-                return Err(TransferError::Cancelled);
+                if stop == TransferError::Cancelled {
+                    // Do not leave half a file behind.
+                    let _ = self.dst.delete(&part).await;
+                }
+                return Err(stop);
             }
-            let n = r
-                .read(&mut buf)
-                .await
-                .map_err(|e| TransferError::Failed(e.to_string()))?;
+            let n = r.read(&mut buf).await.map_err(io)?;
             if n == 0 {
                 break;
             }
-            w.write_all(&buf[..n])
-                .await
-                .map_err(|e| TransferError::Failed(e.to_string()))?;
+            w.write_all(&buf[..n]).await.map_err(io)?;
             self.done += n as u64;
             (self.report)(self.done);
         }
-        w.shutdown()
-            .await
-            .map_err(|e| TransferError::Failed(e.to_string()))?;
+        w.shutdown().await.map_err(io)?;
+        drop(w);
+        // SFTP rename does not replace: remove the old file first.
+        if exists(self.dst, to).await {
+            self.dst.delete(to).await.map_err(fail)?;
+        }
+        self.dst.rename(&part, to).await.map_err(fail)?;
         Ok(())
     }
 
-    async fn tree(&mut self, from: &Path, to: &Path, is_dir: bool) -> Result<(), TransferError> {
-        if !is_dir {
-            return self.file(from, to).await;
+    async fn tree(
+        &mut self,
+        from: &Path,
+        to: &Path,
+        entry: &FileEntry,
+    ) -> Result<(), TransferError> {
+        if !entry.is_dir() {
+            return self.file(from, to, entry.size).await;
         }
         if !exists(self.dst, to).await {
             self.dst
@@ -163,13 +234,18 @@ impl Copy<'_> {
                 child(from, &e.name, self.src_posix),
                 child(to, &e.name, self.dst_posix),
             );
-            Box::pin(self.tree(&f, &t, e.is_dir())).await?;
+            Box::pin(self.tree(&f, &t, &e)).await?;
         }
         Ok(())
     }
 }
 
 /// Copy `path` (file or folder) from `src` into the folder `dir` on `dst`.
+///
+/// Files are written as `<name>.swypart` and renamed when complete. Pausing or failing
+/// keeps the partial file; `resume` continues from it (and skips files already copied),
+/// so an interrupted transfer — even one from a previous run of the app — picks up at
+/// its last byte. Cancelling deletes it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn transfer(
     src: &dyn RemoteFs,
@@ -179,7 +255,8 @@ pub(crate) async fn transfer(
     dst_posix: bool,
     dir: &Path,
     on_conflict: OnConflict,
-    cancel: &AtomicBool,
+    resume: bool,
+    control: &AtomicU8,
     progress: &(dyn Fn(u64, Option<u64>) + Send + Sync),
 ) -> Result<PathBuf, TransferError> {
     let entry = src
@@ -188,7 +265,16 @@ pub(crate) async fn transfer(
         .map_err(|e| TransferError::Failed(e.to_string()))?;
     let name = file_name(path);
     let mut target = child(dir, &name, dst_posix);
-    if exists(dst, &target).await {
+    if !resume
+        && on_conflict == OnConflict::Ask
+        && !entry.is_dir()
+        && let Ok(part) = dst.stat(&part_of(&target)).await
+        && part.size > 0
+        && part.size <= entry.size
+    {
+        return Err(TransferError::Partial(part.size));
+    }
+    if !resume && exists(dst, &target).await {
         match on_conflict {
             OnConflict::Ask => return Err(TransferError::Exists(name)),
             OnConflict::Replace => {}
@@ -216,13 +302,14 @@ pub(crate) async fn transfer(
         dst,
         src_posix,
         dst_posix,
-        cancel,
+        control,
         done: 0,
         report: &report,
+        resuming: resume,
     };
-    copy.tree(path, &target, entry.is_dir()).await?;
-    progress(total, Some(total));
-    Ok(target)
+    let r = copy.tree(path, &target, &entry).await;
+    progress(copy.done, Some(total));
+    r.map(|()| target)
 }
 
 /// Delete a file, or a folder and everything in it.
@@ -314,6 +401,10 @@ mod tests {
         );
     }
 
+    fn run() -> AtomicU8 {
+        AtomicU8::new(RUN)
+    }
+
     #[tokio::test]
     async fn copies_folders_with_conflict_policies_and_cancel() {
         let t = tempfile::tempdir().unwrap();
@@ -324,34 +415,90 @@ mod tests {
         let out = t.path().join("out");
         std::fs::create_dir(&out).unwrap();
         let fs = LocalFs;
-        let no = AtomicBool::new(false);
         let seen = Mutex::new(Vec::new());
         let progress = |d: u64, t: Option<u64>| seen.lock().unwrap().push((d, t));
+        let go = |path: PathBuf, dir: PathBuf, c: OnConflict, ctl: AtomicU8| {
+            let progress = &progress;
+            async move {
+                let fs = LocalFs;
+                transfer(
+                    &fs, false, &path, &fs, false, &dir, c, false, &ctl, progress,
+                )
+                .await
+            }
+        };
 
-        let to = transfer(
-            &fs,
-            false,
-            &src,
-            &fs,
-            false,
-            &out,
-            OnConflict::Ask,
-            &no,
-            &progress,
-        )
-        .await
-        .unwrap();
+        let to = go(src.clone(), out.clone(), OnConflict::Ask, run())
+            .await
+            .unwrap();
         assert_eq!(to, out.join("src"));
         assert_eq!(
             std::fs::read(out.join("src/sub/b.txt")).unwrap().len(),
             3_000_000
+        );
+        assert!(
+            !out.join("src/sub/b.txt.swypart").exists(),
+            "renamed into place"
         );
         assert_eq!(
             seen.lock().unwrap().last(),
             Some(&(3_000_003, Some(3_000_003)))
         );
 
-        let again = transfer(
+        let again = go(src.clone(), out.clone(), OnConflict::Ask, run()).await;
+        assert_eq!(again, Err(TransferError::Exists("src".into())));
+        let a = src.join("a.txt");
+        assert_eq!(
+            go(a.clone(), out.clone(), OnConflict::KeepBoth, run())
+                .await
+                .unwrap(),
+            out.join("a.txt")
+        );
+        assert_eq!(
+            go(a.clone(), out.clone(), OnConflict::KeepBoth, run())
+                .await
+                .unwrap(),
+            out.join("a (1).txt")
+        );
+        // Replace swaps the file in.
+        std::fs::write(&a, b"new").unwrap();
+        go(a.clone(), out.clone(), OnConflict::Replace, run())
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(out.join("a.txt")).unwrap(), b"new");
+
+        let r = go(
+            src.join("sub/b.txt"),
+            out.join("src"),
+            OnConflict::Replace,
+            AtomicU8::new(CANCEL),
+        )
+        .await;
+        assert_eq!(r, Err(TransferError::Cancelled));
+        assert!(
+            !out.join("src/b.txt.swypart").exists(),
+            "partial file removed"
+        );
+
+        delete_tree(&fs, &out.join("src"), false).await.unwrap();
+        assert!(!out.join("src").exists());
+    }
+
+    /// A transfer killed part-way (state on disk only) resumes from its last byte.
+    #[tokio::test]
+    async fn resumes_from_the_last_byte() {
+        let t = tempfile::tempdir().unwrap();
+        let data: Vec<u8> = (0..5_000_000u32).map(|i| (i % 253) as u8).collect();
+        let src = t.path().join("big.bin");
+        std::fs::write(&src, &data).unwrap();
+        let out = t.path().join("out");
+        std::fs::create_dir(&out).unwrap();
+        // What a killed process leaves behind: the first 2 MB in the partial file.
+        std::fs::write(out.join("big.bin.swypart"), &data[..2_000_000]).unwrap();
+        let fs = LocalFs;
+        let seen = Mutex::new(Vec::new());
+        let progress = |d: u64, _t: Option<u64>| seen.lock().unwrap().push(d);
+        transfer(
             &fs,
             false,
             &src,
@@ -359,58 +506,131 @@ mod tests {
             false,
             &out,
             OnConflict::Ask,
-            &no,
+            true,
+            &run(),
             &progress,
+        )
+        .await
+        .unwrap();
+        assert!(
+            std::fs::read(out.join("big.bin")).unwrap() == data,
+            "identical"
+        );
+        assert!(!out.join("big.bin.swypart").exists());
+        // Reported 0, then jumped to the resume point: nothing before it was read again.
+        {
+            let seen = seen.lock().unwrap();
+            assert_eq!(seen[0], 0);
+            assert!(seen[1] >= 2_000_000, "{:?}", &seen[..3]);
+        }
+
+        // Pause keeps the part; resume finishes it.
+        std::fs::remove_file(out.join("big.bin")).unwrap();
+        let paused = transfer(
+            &fs,
+            false,
+            &src,
+            &fs,
+            false,
+            &out,
+            OnConflict::Ask,
+            false,
+            &AtomicU8::new(PAUSE),
+            &|_, _| {},
         )
         .await;
-        assert_eq!(again, Err(TransferError::Exists("src".into())));
-        let both = transfer(
+        assert_eq!(paused, Err(TransferError::Paused));
+        assert!(out.join("big.bin.swypart").exists(), "partial file kept");
+        transfer(
             &fs,
             false,
-            &src.join("a.txt"),
-            &fs,
-            false,
-            &out,
-            OnConflict::KeepBoth,
-            &no,
-            &progress,
-        )
-        .await
-        .unwrap();
-        assert_eq!(both, out.join("a.txt"));
-        let both = transfer(
-            &fs,
-            false,
-            &src.join("a.txt"),
+            &src,
             &fs,
             false,
             &out,
-            OnConflict::KeepBoth,
-            &no,
-            &progress,
+            OnConflict::Ask,
+            true,
+            &run(),
+            &|_, _| {},
         )
         .await
         .unwrap();
-        assert_eq!(both, out.join("a (1).txt"));
+        assert!(std::fs::read(out.join("big.bin")).unwrap() == data);
+    }
 
-        let stop = AtomicBool::new(true);
+    /// A fresh transfer that finds an interrupted one asks before discarding it.
+    #[tokio::test]
+    async fn leftover_partial_is_offered_for_resume() {
+        let t = tempfile::tempdir().unwrap();
+        let src = t.path().join("db.dump");
+        std::fs::write(&src, vec![9u8; 1000]).unwrap();
+        let out = t.path().join("out");
+        std::fs::create_dir(&out).unwrap();
+        std::fs::write(out.join("db.dump.swypart"), vec![9u8; 400]).unwrap();
+        let fs = LocalFs;
         let r = transfer(
             &fs,
             false,
-            &src.join("sub/b.txt"),
+            &src,
             &fs,
             false,
-            &t.path().join("out/src"),
-            OnConflict::Replace,
-            &stop,
-            &progress,
+            &out,
+            OnConflict::Ask,
+            false,
+            &run(),
+            &|_, _| {},
         )
         .await;
-        assert_eq!(r, Err(TransferError::Cancelled));
-        assert!(!out.join("src/b.txt").exists(), "partial file removed");
+        assert_eq!(r, Err(TransferError::Partial(400)));
+        // Start over: Replace ignores (truncates) the partial file.
+        transfer(
+            &fs,
+            false,
+            &src,
+            &fs,
+            false,
+            &out,
+            OnConflict::Replace,
+            false,
+            &run(),
+            &|_, _| {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read(out.join("db.dump")).unwrap().len(), 1000);
+    }
 
-        delete_tree(&fs, &out.join("src"), false).await.unwrap();
-        assert!(!out.join("src").exists());
+    /// Resuming a folder skips files that were already complete.
+    #[tokio::test]
+    async fn folder_resume_skips_finished_files() {
+        let t = tempfile::tempdir().unwrap();
+        let src = t.path().join("site");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("done.txt"), b"12345").unwrap();
+        std::fs::write(src.join("half.txt"), b"abcdefgh").unwrap();
+        let out = t.path().join("out");
+        std::fs::create_dir_all(out.join("site")).unwrap();
+        std::fs::write(out.join("site/done.txt"), b"12345").unwrap();
+        std::fs::write(out.join("site/half.txt.swypart"), b"abcd").unwrap();
+        let fs = LocalFs;
+        let ok = transfer(
+            &fs,
+            false,
+            &src,
+            &fs,
+            false,
+            &out,
+            OnConflict::Ask,
+            true,
+            &run(),
+            &|_, _| {},
+        )
+        .await;
+        assert_eq!(ok, Ok(out.join("site")));
+        assert_eq!(
+            std::fs::read(out.join("site/half.txt")).unwrap(),
+            b"abcdefgh"
+        );
     }
 
     #[tokio::test]

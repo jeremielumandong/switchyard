@@ -369,3 +369,22 @@ the rev with it (Cargo warns "patch not used" until then).
   Overwrite or Discard and reload. Closing a tab with unsaved changes needs a second click.
 - Still to do in M4: transfer queue limits, pause and resume from offset, the dual-pane
   Files tab, FTP/FTPS, chmod.
+
+## 2026-10-06 — Transfer queue and resume (M4-3), dual-pane Files tab (M4-4)
+
+- Files are written to `<name>.swypart` and renamed into place when complete (SFTP rename
+  does not replace, so an existing target is removed first). Pause and failures keep the
+  partial file; cancel deletes it. Resume reopens it at its size (`open_read_from` /
+  `open_write_from`, which truncates anything past the resume point) and, for folders,
+  skips files whose target already has the full size. Only an explicit resume continues
+  a partial file; a fresh transfer that finds one reports `Partial(bytes)` so the user
+  chooses Resume or Start over — that is how a transfer killed with the app resumes,
+  since the queue itself is not persisted.
+- Four transfers run at once (a semaphore in core); the rest report `TransferQueued` and
+  wait. Pause and cancel work while queued.
+- One transfer queue in the app (an entity shared by the Files tab drawer, the sidebar
+  panel and the status bar). Speed is smoothed (70/30) and ignores the jump to a resume
+  point.
+- The Files tab's right pane can show any Host or this computer; dragging between panes
+  and dropping from the OS copy into the folder on screen; existing targets ask Replace /
+  Keep both / Skip.

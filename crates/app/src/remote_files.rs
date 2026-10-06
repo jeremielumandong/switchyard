@@ -6,19 +6,17 @@ use std::path::{Path, PathBuf};
 
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, Context, EventEmitter, ExternalPaths, FontWeight, InteractiveElement as _,
+    AnyElement, Context, Entity, EventEmitter, ExternalPaths, FontWeight, InteractiveElement as _,
     IntoElement, ParentElement as _, PathPromptOptions, SharedString,
-    StatefulInteractiveElement as _, Styled as _, div, px, relative, uniform_list,
+    StatefulInteractiveElement as _, Styled as _, div, px, uniform_list,
 };
 use switchyard_core::remote::{EntryKind, FileEntry};
 use switchyard_core::store::ProfileId;
-use switchyard_core::{
-    Command, Event, FsOp, FsRef, OnConflict, RequestId, RuntimeHandle, TransferError,
-};
+use switchyard_core::{Command, Event, FsOp, FsRef, OnConflict, RequestId, RuntimeHandle};
 
 use crate::app_state::next_id;
 use crate::theme::{MONO, Palette, palette};
-use crate::ui::{self, Kind};
+use crate::transfers::Transfers;
 
 /// What the panel asks the workspace to do.
 pub enum RemoteFilesEvent {
@@ -31,29 +29,8 @@ pub enum RemoteFilesEvent {
     },
     /// Show a message.
     Toast(String),
-}
-
-#[derive(Clone, Debug, PartialEq)]
-enum TransferState {
-    Running {
-        done: u64,
-        total: Option<u64>,
-    },
-    Done(PathBuf),
-    Failed(String),
-    /// Target exists: ask Replace / Keep both / Skip.
-    Exists,
-}
-
-#[derive(Clone, Debug)]
-struct Transfer {
-    id: u64,
-    name: String,
-    upload: bool,
-    /// The command, to re-send with a conflict policy.
-    from: PathBuf,
-    dir: Option<PathBuf>,
-    state: TransferState,
+    /// Open the dual-pane Files tab with this Host.
+    OpenTab(ProfileId),
 }
 
 /// Files of one Host.
@@ -69,7 +46,7 @@ pub struct RemoteFiles {
     selected: Option<String>,
     /// Row whose Delete was clicked once (click again to confirm).
     confirm_delete: Option<String>,
-    transfers: Vec<Transfer>,
+    transfers: Entity<Transfers>,
     last_click: Option<(String, std::time::Instant)>,
 }
 
@@ -115,7 +92,12 @@ pub(crate) fn human(bytes: u64) -> String {
 
 impl RemoteFiles {
     /// A panel for `host`, listing its home folder.
-    pub fn new(core: RuntimeHandle, host: ProfileId, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        core: RuntimeHandle,
+        host: ProfileId,
+        transfers: Entity<Transfers>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut this = Self {
             core,
             host,
@@ -127,7 +109,7 @@ impl RemoteFiles {
             show_hidden: false,
             selected: None,
             confirm_delete: None,
-            transfers: Vec::new(),
+            transfers,
             last_click: None,
         };
         this.list(None, cx);
@@ -172,60 +154,13 @@ impl RemoteFiles {
         on_conflict: OnConflict,
         cx: &mut Context<Self>,
     ) {
-        let id = next_id();
-        let name = from
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
         let (src, dst) = if upload {
             (FsRef::Local, self.fs())
         } else {
             (self.fs(), FsRef::Local)
         };
-        self.core.send(Command::Transfer {
-            id,
-            from: src,
-            path: from.clone(),
-            to: dst,
-            dir: dir.clone(),
-            on_conflict,
-        });
-        self.transfers.push(Transfer {
-            id,
-            name,
-            upload,
-            from,
-            dir,
-            state: TransferState::Running {
-                done: 0,
-                total: None,
-            },
-        });
-        // Keep the list short: finished transfers beyond the last 6 go away.
-        let finished = self
-            .transfers
-            .iter()
-            .filter(|t| matches!(t.state, TransferState::Done(_)))
-            .count();
-        if finished > 6
-            && let Some(i) = self
-                .transfers
-                .iter()
-                .position(|t| matches!(t.state, TransferState::Done(_)))
-        {
-            self.transfers.remove(i);
-        }
-        cx.notify();
-    }
-
-    fn resolve(&mut self, id: u64, policy: Option<OnConflict>, cx: &mut Context<Self>) {
-        let Some(i) = self.transfers.iter().position(|t| t.id == id) else {
-            return;
-        };
-        let t = self.transfers.remove(i);
-        if let Some(policy) = policy {
-            self.start(t.upload, t.from, t.dir, policy, cx);
-        }
+        self.transfers
+            .update(cx, |t, cx| t.start(src, from, dst, dir, on_conflict, cx));
         cx.notify();
     }
 
@@ -260,31 +195,10 @@ impl RemoteFiles {
                 }
                 self.refresh(cx);
             }
-            Event::TransferProgress {
-                id, done, total, ..
-            } => {
-                if let Some(t) = self.transfers.iter_mut().find(|t| t.id == *id) {
-                    t.state = TransferState::Running {
-                        done: *done,
-                        total: *total,
-                    };
-                }
-            }
-            Event::TransferDone { id, result } => {
-                let Some(t) = self.transfers.iter_mut().find(|t| t.id == *id) else {
-                    return;
-                };
-                let upload = t.upload;
-                t.state = match result {
-                    Ok(p) => TransferState::Done(p.clone()),
-                    Err(TransferError::Exists(_)) => TransferState::Exists,
-                    Err(TransferError::Cancelled) => TransferState::Failed("Cancelled".into()),
-                    Err(TransferError::Failed(e)) => TransferState::Failed(e.clone()),
-                };
-                if upload && result.is_ok() {
-                    self.refresh(cx);
-                }
-            }
+            // Changed from the Files tab: show it here too.
+            Event::FsOpDone { fs, .. } if *fs == self.fs() => self.refresh(cx),
+            // Uploads land in the folder on screen.
+            Event::TransferDone { result: Ok(_), .. } => self.refresh(cx),
             _ => return,
         }
         cx.notify();
@@ -360,58 +274,62 @@ impl RemoteFiles {
                 .hover(|s| s.bg(p.hover))
                 .child(label)
         };
-        let header = div()
-            .flex_none()
-            .px(px(8.))
-            .pb(px(6.))
-            .flex()
-            .flex_col()
-            .gap(px(4.))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(2.))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .text_size(px(12.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .truncate()
-                            .child(host_name.to_owned()),
-                    )
-                    .child(
-                        icon_btn("rf-up", "↑", &p).on_click(cx.listener(|this, _, _, cx| {
-                            if let Some(up) = this.path.as_deref().and_then(parent) {
-                                this.list(Some(up), cx);
-                            }
-                        })),
-                    )
-                    .child(
-                        icon_btn("rf-refresh", "⟳", &p)
-                            .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
-                    )
-                    .child(
-                        icon_btn("rf-hidden", if self.show_hidden { "●" } else { "○" }, &p)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.show_hidden = !this.show_hidden;
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        icon_btn("rf-upload", "Upload", &p)
-                            .on_click(cx.listener(|this, _, _, cx| this.pick_upload(cx))),
-                    ),
-            )
-            .child(
-                div()
-                    .font_family(MONO)
-                    .text_size(px(10.5))
-                    .text_color(p.fg3)
-                    .truncate()
-                    .child(path),
-            );
+        let header =
+            div()
+                .flex_none()
+                .px(px(8.))
+                .pb(px(6.))
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(2.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(px(12.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .truncate()
+                                .child(host_name.to_owned()),
+                        )
+                        .child(icon_btn("rf-up", "↑", &p).on_click(cx.listener(
+                            |this, _, _, cx| {
+                                if let Some(up) = this.path.as_deref().and_then(parent) {
+                                    this.list(Some(up), cx);
+                                }
+                            },
+                        )))
+                        .child(
+                            icon_btn("rf-refresh", "⟳", &p)
+                                .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+                        )
+                        .child(
+                            icon_btn("rf-hidden", if self.show_hidden { "●" } else { "○" }, &p)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.show_hidden = !this.show_hidden;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(icon_btn("rf-tab", "⇆", &p).on_click(cx.listener(
+                            |this, _, _, cx| cx.emit(RemoteFilesEvent::OpenTab(this.host.clone())),
+                        )))
+                        .child(
+                            icon_btn("rf-upload", "Upload", &p)
+                                .on_click(cx.listener(|this, _, _, cx| this.pick_upload(cx))),
+                        ),
+                )
+                .child(
+                    div()
+                        .font_family(MONO)
+                        .text_size(px(10.5))
+                        .text_color(p.fg3)
+                        .truncate()
+                        .child(path),
+                );
 
         let list: AnyElement = if let Some(e) = &self.error {
             div()
@@ -541,11 +459,20 @@ impl RemoteFiles {
             .into_any_element()
         };
 
-        let transfers: Vec<AnyElement> = self
-            .transfers
-            .iter()
-            .map(|t| self.render_transfer(t, &p, cx))
-            .collect();
+        let fs = self.fs();
+        let transfers: Vec<AnyElement> = self.transfers.update(cx, |t, cx| {
+            let mine: Vec<_> = t
+                .items
+                .iter()
+                .filter(|i| i.from == fs || i.to == fs)
+                .rev()
+                .take(6)
+                .cloned()
+                .collect();
+            mine.iter()
+                .map(|i| t.render_item(i, true, &p, cx))
+                .collect()
+        });
 
         div()
             .id("remote-files")
@@ -580,127 +507,6 @@ impl RemoteFiles {
                     .text_color(p.fg3)
                     .child("Drop files here to upload · double-click to open"),
             )
-            .into_any_element()
-    }
-
-    fn render_transfer(&self, t: &Transfer, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let id = t.id;
-        let arrow = if t.upload { "↑" } else { "↓" };
-        let (status, color, frac): (String, _, Option<f32>) = match &t.state {
-            TransferState::Running { done, total } => match total {
-                Some(tot) if *tot > 0 => (
-                    format!("{} / {}", human(*done), human(*tot)),
-                    p.fg2,
-                    Some((*done as f32 / *tot as f32).min(1.0)),
-                ),
-                _ => ("starting…".into(), p.fg3, Some(0.0)),
-            },
-            TransferState::Done(path) => (
-                if t.upload {
-                    "uploaded".into()
-                } else {
-                    format!("saved to {}", path.display())
-                },
-                p.dev,
-                None,
-            ),
-            TransferState::Failed(e) => (e.clone(), p.prod, None),
-            TransferState::Exists => ("already exists".into(), p.stg, None),
-        };
-        let small = |id: String, label: &'static str, kind: Kind| {
-            ui::button(SharedString::from(id), label, kind, p)
-                .h(px(20.))
-                .px(px(6.))
-                .text_size(px(11.))
-        };
-        div()
-            .px(px(8.))
-            .py(px(3.))
-            .flex()
-            .flex_col()
-            .gap(px(3.))
-            .text_size(px(11.5))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .child(div().text_color(p.fg3).child(arrow))
-                    .child(div().flex_1().min_w_0().truncate().child(t.name.clone()))
-                    .when(matches!(t.state, TransferState::Running { .. }), |d| {
-                        d.child(
-                            div()
-                                .id(SharedString::from(format!("tx-x-{id}")))
-                                .px(px(4.))
-                                .text_color(p.fg3)
-                                .hover(|s| s.text_color(p.fg))
-                                .on_click(cx.listener(move |this, _, _, _| {
-                                    this.core.send(Command::CancelTransfer { id });
-                                }))
-                                .child("✕"),
-                        )
-                    })
-                    .when(
-                        matches!(t.state, TransferState::Done(_) | TransferState::Failed(_)),
-                        |d| {
-                            d.child(
-                                div()
-                                    .id(SharedString::from(format!("tx-rm-{id}")))
-                                    .px(px(4.))
-                                    .text_color(p.fg3)
-                                    .on_click(
-                                        cx.listener(move |this, _, _, cx| {
-                                            this.resolve(id, None, cx)
-                                        }),
-                                    )
-                                    .child("×"),
-                            )
-                        },
-                    ),
-            )
-            .when_some(frac, |d, f| {
-                d.child(
-                    div()
-                        .h(px(3.))
-                        .rounded(px(2.))
-                        .bg(p.bd)
-                        .child(div().h_full().rounded(px(2.)).bg(p.acc).w(relative(f))),
-                )
-            })
-            .child(
-                div()
-                    .font_family(MONO)
-                    .text_size(px(10.5))
-                    .text_color(color)
-                    .truncate()
-                    .child(status),
-            )
-            .when(t.state == TransferState::Exists, |d| {
-                d.child(
-                    div()
-                        .flex()
-                        .gap(px(4.))
-                        .child(
-                            small(format!("tx-rep-{id}"), "Replace", Kind::Secondary).on_click(
-                                cx.listener(move |this, _, _, cx| {
-                                    this.resolve(id, Some(OnConflict::Replace), cx)
-                                }),
-                            ),
-                        )
-                        .child(
-                            small(format!("tx-both-{id}"), "Keep both", Kind::Secondary).on_click(
-                                cx.listener(move |this, _, _, cx| {
-                                    this.resolve(id, Some(OnConflict::KeepBoth), cx)
-                                }),
-                            ),
-                        )
-                        .child(
-                            small(format!("tx-skip-{id}"), "Skip", Kind::Ghost).on_click(
-                                cx.listener(move |this, _, _, cx| this.resolve(id, None, cx)),
-                            ),
-                        ),
-                )
-            })
             .into_any_element()
     }
 }
