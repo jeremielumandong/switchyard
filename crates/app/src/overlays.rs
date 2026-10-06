@@ -184,7 +184,7 @@ impl Workspace {
             .absolute()
             .left(px(250.))
             .bottom(px(30.))
-            .w(px(460.))
+            .w(px(540.))
             .bg(p.elev)
             .rounded(px(8.))
             .shadow(ui::shadow(p))
@@ -212,14 +212,95 @@ impl Workspace {
                             .child("×"),
                     ),
             )
-            .child(
+            .when(self.tunnels.is_empty(), |d| {
+                d.child(
+                    div()
+                        .px(px(12.))
+                        .py(px(14.))
+                        .text_size(px(12.))
+                        .text_color(p.fg2)
+                        .child("No active tunnels. A database connection set to “Connect via Host” opens one on an ephemeral local port when it connects."),
+                )
+            })
+            .children(self.tunnels.iter().map(|t| {
+                use switchyard_core::remote::ssh::TunnelStatus;
+                let (label, color) = match &t.status {
+                    TunnelStatus::Active => ("Active".to_owned(), p.dev),
+                    TunnelStatus::Reconnecting => ("Reconnecting".to_owned(), p.stg),
+                    TunnelStatus::Failed(_) => ("Failed".to_owned(), p.prod),
+                    TunnelStatus::Stopped => ("Stopped".to_owned(), p.fg3),
+                };
+                let tooltip = match &t.status {
+                    TunnelStatus::Failed(e) => e.clone(),
+                    _ => format!(
+                        "{} connection{} · ↑ {} ↓ {}",
+                        t.connections,
+                        if t.connections == 1 { "" } else { "s" },
+                        ui::bytes(t.bytes_up),
+                        ui::bytes(t.bytes_down)
+                    ),
+                };
+                let id = t.id;
                 div()
+                    .id(("tunnel", id as usize))
+                    .h(px(32.))
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
                     .px(px(12.))
-                    .py(px(14.))
-                    .text_size(px(12.))
-                    .text_color(p.fg2)
-                    .child("No active tunnels. Database connections set to “Connect via Host” open one automatically once SSH lands (milestone M2)."),
-            )
+                    .border_b_1()
+                    .border_color(p.line)
+                    .font_family(MONO)
+                    .text_size(px(11.5))
+                    .child(div().w(px(54.)).flex_none().child(format!(":{}", t.local_port)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(p.fg2)
+                            .child(format!("{} → {}", t.host, t.remote)),
+                    )
+                    .child(
+                        div()
+                            .id(("tunnel-status", id as usize))
+                            .w(px(92.))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(px(5.))
+                            .font_family(SANS)
+                            .text_color(color)
+                            .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()).build(w, cx))
+                            .child(ui::dot(color, 6.))
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .w(px(60.))
+                            .flex_none()
+                            .flex()
+                            .justify_end()
+                            .text_color(p.fg3)
+                            .child(ui::bytes(t.bytes_up + t.bytes_down)),
+                    )
+                    .child(
+                        div()
+                            .id(("tunnel-stop", id as usize))
+                            .w(px(36.))
+                            .flex_none()
+                            .flex()
+                            .justify_end()
+                            .font_family(SANS)
+                            .text_color(p.fg3)
+                            .hover(|s| s.text_color(p.prod))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.core.send(switchyard_core::Command::StopTunnel { id });
+                                cx.notify();
+                            }))
+                            .child("Stop"),
+                    )
+            }))
             .into_any_element()
     }
 

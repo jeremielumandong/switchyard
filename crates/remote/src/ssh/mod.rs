@@ -3,6 +3,7 @@
 //! shared session per Host (terminals, tunnels and SFTP all ride on it).
 
 pub mod known_hosts;
+pub mod tunnel;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -19,6 +20,7 @@ use secrecy::{ExposeSecret, SecretString};
 use tracing::{debug, info};
 
 pub use known_hosts::{HostKeyStatus, KnownHosts, fingerprint};
+pub use tunnel::{Tunnel, TunnelInfo, TunnelStatus};
 
 /// Why an SSH operation failed.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -658,6 +660,9 @@ async fn agent_auth(
 
 type Slot = Arc<tokio::sync::Mutex<Weak<SshConn>>>;
 
+/// How long a new session stays up without users.
+const SESSION_LINGER: Duration = Duration::from_secs(60);
+
 /// Shares one session per Host. Sessions close when the last user drops them.
 pub struct SshManager {
     known: KnownHosts,
@@ -741,6 +746,14 @@ impl SshManager {
                 .await?,
             );
             *guard = Arc::downgrade(&conn);
+            // Keep a fresh session for a minute even when nothing uses it yet, so a test
+            // followed by "connect", or reopening a terminal, does not log in (and ask for
+            // an MFA code) again.
+            let linger = conn.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(SESSION_LINGER).await;
+                drop(linger);
+            });
             Ok(conn)
         })
     }

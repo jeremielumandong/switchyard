@@ -360,3 +360,68 @@ async fn interactive_shell() {
     assert!(text.contains("marker-42"), "{text}");
     assert_eq!(code, Some(7));
 }
+
+#[tokio::test]
+#[ignore = "needs ssh servers"]
+async fn tunnel_forwards_counts_and_stops() {
+    use switchyard_remote::ssh::{Tunnel, TunnelStatus};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // An echo server the SSH server can reach.
+    let echo = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let echo_port = echo.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = echo.accept().await {
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                while let Ok(n) = s.read(&mut buf).await {
+                    if n == 0 || s.write_all(&buf[..n]).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let m = Arc::new(SshManager::new(
+        known(&dir),
+        Prompter::new(HostKeyDecision::TrustOnce),
+    ));
+    let t = Tunnel::open(
+        1,
+        m.clone(),
+        target("tun", main_port(), key("id_ed25519")),
+        "127.0.0.1".into(),
+        echo_port,
+    )
+    .await
+    .unwrap();
+    assert_ne!(t.local().port(), echo_port);
+
+    // Two connections at once share the tunnel.
+    let mut a = tokio::net::TcpStream::connect(t.local()).await.unwrap();
+    let mut b = tokio::net::TcpStream::connect(t.local()).await.unwrap();
+    a.write_all(b"hello through ssh").await.unwrap();
+    b.write_all(b"second").await.unwrap();
+    let mut buf = [0u8; 64];
+    let n = a.read(&mut buf).await.unwrap();
+    assert_eq!(&buf[..n], b"hello through ssh");
+    let n = b.read(&mut buf).await.unwrap();
+    assert_eq!(&buf[..n], b"second");
+
+    let info = t.info();
+    assert_eq!(info.status, TunnelStatus::Active);
+    assert_eq!(info.connections, 2);
+    assert_eq!(info.bytes_up, 23);
+    assert_eq!(info.bytes_down, 23);
+    assert_eq!(info.remote, format!("127.0.0.1:{echo_port}"));
+
+    // Stopping cuts live connections and refuses new ones.
+    t.stop();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let n = a.read(&mut buf).await.unwrap_or(0);
+    assert_eq!(n, 0, "existing connection closed");
+    assert!(tokio::net::TcpStream::connect(t.local()).await.is_err());
+    assert_eq!(t.info().status, TunnelStatus::Stopped);
+}

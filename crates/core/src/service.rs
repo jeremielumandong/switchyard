@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use crate::bus::{TermId, TermTarget};
@@ -11,6 +11,7 @@ use crate::prompts::BusPrompter;
 use crate::terminals::{SshTerminalSpec, TermInput, Terminals};
 use futures::StreamExt;
 use secrecy::SecretString;
+use switchyard_db::TunnelEndpoint;
 use switchyard_db::d1::D1Driver;
 use switchyard_db::guard;
 use switchyard_db::pg::PgDriver;
@@ -18,7 +19,9 @@ use switchyard_db::{
     CancelHandle, DbConfig, DbError, DbSession, Driver, Engine, IntrospectScope, ResultEvent,
     dialect_for,
 };
-use switchyard_remote::ssh::{KnownHosts, SshAuthMethod, SshManager, SshTarget};
+use switchyard_remote::ssh::{
+    KnownHosts, SshAuthMethod, SshManager, SshTarget, Tunnel, TunnelInfo,
+};
 use switchyard_remote::{LocalFs, RemoteFs};
 use switchyard_store::{
     AppPaths, DbConnection, HistoryEntry, HistoryStatus, Host, KeychainStore, MemoryStore, Profile,
@@ -109,6 +112,8 @@ struct SessionInner {
 struct SessionSlot {
     connection: DbConnection,
     inner: tokio::sync::Mutex<SessionInner>,
+    /// Keeps the SSH tunnel open while the session uses it.
+    tunnel: Option<Arc<Tunnel>>,
 }
 
 /// The core service.
@@ -122,7 +127,18 @@ pub struct Service {
     queries: Mutex<HashMap<QueryId, QueryControl>>,
     terminals: Arc<Terminals>,
     ssh: Arc<SshManager>,
+    tunnels: Mutex<Vec<Weak<Tunnel>>>,
+    /// Serializes tunnel creation so concurrent sessions share one tunnel.
+    tunnel_open: tokio::sync::Mutex<()>,
+    next_tunnel: std::sync::atomic::AtomicU64,
     prompter: Arc<BusPrompter>,
+}
+
+fn endpoint_of(t: &Tunnel) -> TunnelEndpoint {
+    TunnelEndpoint {
+        host: t.local().ip().to_string(),
+        port: t.local().port(),
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -173,6 +189,9 @@ impl Service {
             queries: Mutex::default(),
             terminals: Arc::default(),
             ssh,
+            tunnels: Mutex::default(),
+            tunnel_open: tokio::sync::Mutex::new(()),
+            next_tunnel: std::sync::atomic::AtomicU64::new(1),
             prompter,
         })
     }
@@ -180,6 +199,21 @@ impl Service {
     /// Process commands until the channel closes.
     pub async fn run(self: Arc<Self>, mut commands: mpsc::UnboundedReceiver<Command>) {
         self.emit_secret_backend();
+        // Tunnel byte counters change without any command; report them once a second
+        // while something changed.
+        let weak = Arc::downgrade(&self);
+        tokio::spawn(async move {
+            let mut last = Vec::new();
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let Some(this) = weak.upgrade() else { break };
+                let now = this.tunnel_infos();
+                if now != last {
+                    this.emit(Event::Tunnels(now.clone()));
+                    last = now;
+                }
+            }
+        });
         while let Some(cmd) = commands.recv().await {
             // Keystrokes must reach the program in the order they were typed, so terminal
             // input is delivered here (it never blocks) instead of on a spawned task.
@@ -379,6 +413,8 @@ impl Service {
             Command::AcceptChangedHostKey { host, fingerprint } => {
                 self.ssh.accept_changed_key(&host.0, &fingerprint);
             }
+            Command::StopTunnel { id } => self.stop_tunnel(id),
+            Command::ListTunnels => self.emit(Event::Tunnels(self.tunnel_infos())),
             Command::CloseSession { session } => {
                 lock(&self.sessions).remove(&session);
             }
@@ -832,12 +868,78 @@ impl Service {
         })
     }
 
-    async fn db_config(&self, c: &DbConnection, secret: Option<SecretString>) -> Result<DbConfig> {
-        if c.via_host.is_some() {
-            return Err(CoreError::Unsupported(
-                "connecting through a Host needs SSH tunnels, which are not available yet".into(),
-            ));
+    fn tunnel_infos(&self) -> Vec<TunnelInfo> {
+        let mut list = lock(&self.tunnels);
+        list.retain(|w| w.strong_count() > 0);
+        list.iter()
+            .filter_map(Weak::upgrade)
+            .filter(|t| !t.is_stopped())
+            .map(|t| t.info())
+            .collect()
+    }
+
+    /// The live tunnel to `host:port` through Host `host_id`, or a new one. Tunnels are
+    /// shared by every session that needs the same target.
+    async fn tunnel_for(&self, host_id: &ProfileId, host: &str, port: u16) -> Result<Arc<Tunnel>> {
+        let _creating = self.tunnel_open.lock().await;
+        let existing = lock(&self.tunnels)
+            .iter()
+            .filter_map(Weak::upgrade)
+            .find(|t| !t.is_stopped() && t.host_id() == host_id.0 && t.remote() == (host, port));
+        if let Some(t) = existing {
+            return Ok(t);
         }
+        let target = self.ssh_target(host_id).await?;
+        let id = self
+            .next_tunnel
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let t = Arc::new(
+            Tunnel::open(id, self.ssh.clone(), target, host.to_owned(), port)
+                .await
+                .map_err(|e| CoreError::Unsupported(e.to_string()))?,
+        );
+        lock(&self.tunnels).push(Arc::downgrade(&t));
+        self.emit(Event::Tunnels(self.tunnel_infos()));
+        Ok(t)
+    }
+
+    /// The endpoint a connection should use: a tunnel when it goes through a Host.
+    async fn endpoint(&self, c: &DbConnection) -> Result<Option<Arc<Tunnel>>> {
+        match &c.via_host {
+            Some(h) => Ok(Some(self.tunnel_for(h, &c.server, c.port).await?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Stop a tunnel; sessions that used it end with a message saying why.
+    fn stop_tunnel(&self, id: u64) {
+        let tunnel = lock(&self.tunnels)
+            .iter()
+            .filter_map(Weak::upgrade)
+            .find(|t| t.id() == id);
+        let Some(t) = tunnel else { return };
+        t.stop();
+        let message = format!(
+            "The tunnel through {} on port {} was stopped · reconnect to continue",
+            t.info().host,
+            t.local().port()
+        );
+        let ended: Vec<SessionId> = lock(&self.sessions)
+            .iter()
+            .filter(|(_, slot)| slot.tunnel.as_ref().is_some_and(|s| s.id() == id))
+            .map(|(id, _)| *id)
+            .collect();
+        for session in ended {
+            lock(&self.sessions).remove(&session);
+            self.emit(Event::SessionFailed {
+                session,
+                message: message.clone(),
+            });
+        }
+        self.emit(Event::Tunnels(self.tunnel_infos()));
+    }
+
+    async fn db_config(&self, c: &DbConnection, secret: Option<SecretString>) -> Result<DbConfig> {
         let password = match secret {
             Some(s) => Some(s),
             None => match c.secret.clone() {
@@ -871,11 +973,15 @@ impl Service {
     ) -> Result<String> {
         let driver = self.driver(c.engine)?;
         let cfg = self.db_config(&c, secret).await?;
+        let tunnel = self.endpoint(&c).await?;
         let started = Instant::now();
-        let session = driver.connect(&cfg, None).await?;
+        let session = driver
+            .connect(&cfg, tunnel.as_deref().map(endpoint_of))
+            .await?;
         let ms = started.elapsed().as_millis();
+        let via = if tunnel.is_some() { " via tunnel" } else { "" };
         Ok(format!(
-            "Connected · {} · {ms} ms",
+            "Connected · {} · {ms} ms{via}",
             session.server_version()
         ))
     }
@@ -887,7 +993,10 @@ impl Service {
         };
         let driver = self.driver(conn.engine)?;
         let cfg = self.db_config(&conn, None).await?;
-        let s = driver.connect(&cfg, None).await?;
+        let tunnel = self.endpoint(&conn).await?;
+        let s = driver
+            .connect(&cfg, tunnel.as_deref().map(endpoint_of))
+            .await?;
         let version = s.server_version();
         lock(&self.sessions).insert(
             session,
@@ -897,6 +1006,7 @@ impl Service {
                     session: s,
                     txn_statements: 0,
                 }),
+                tunnel,
             }),
         );
         Ok(version)
