@@ -12,7 +12,7 @@ use gpui_kit::{
 };
 use secrecy::SecretString;
 use switchyard_core::db::{DbAuthMethod, Engine, SslMode};
-use switchyard_core::drivers::Component;
+use switchyard_core::drivers::{Component, ComponentStatus};
 use switchyard_core::store::{
     DbConnection, EnvironmentLabel, FileConnection, FileProtocol, FtpMode, FtpTls, Host, Profile,
     ProfileId, SshAuth,
@@ -379,6 +379,34 @@ impl ConnEditor {
                     _ => "~/.ssh/id_ed25519".into(),
                 };
                 add(self, "key", &key, "~/.ssh/id_ed25519", false);
+                // Agents: which socket (1Password's or another) and which key.
+                let agent_hint = match self
+                    .components
+                    .iter()
+                    .find(|c| c.id == "ssh-agent")
+                    .map(|c| &c.status)
+                {
+                    Some(ComponentStatus::Installed { location, .. })
+                        if location.to_lowercase().contains("1password") =>
+                    {
+                        "Automatic · 1Password found".to_owned()
+                    }
+                    _ => "Automatic · SSH_AUTH_SOCK, then 1Password".to_owned(),
+                };
+                add(
+                    self,
+                    "agent_socket",
+                    h.identity_agent.as_deref().unwrap_or_default(),
+                    &agent_hint,
+                    false,
+                );
+                add(
+                    self,
+                    "agent_key",
+                    h.agent_key.as_deref().unwrap_or_default(),
+                    "Any key the agent holds",
+                    false,
+                );
                 add(
                     self,
                     "keepalive",
@@ -410,7 +438,7 @@ impl ConnEditor {
                             ("Public key".into(), "key".into()),
                             ("Password".into(), "password".into()),
                             ("Keyboard-interactive".into(), "kbd".into()),
-                            ("SSH agent".into(), "agent".into()),
+                            ("SSH agent (1Password, OpenSSH)".into(), "agent".into()),
                         ],
                         if existing.is_some() { auth } else { "key" },
                     ),
@@ -633,6 +661,9 @@ impl ConnEditor {
                         key_path: self.value("key", cx),
                     },
                 };
+                let opt = |v: String| (!v.is_empty()).then_some(v);
+                h.identity_agent = opt(self.value("agent_socket", cx));
+                h.agent_key = opt(self.value("agent_key", cx));
                 h.keepalive_secs = self.value("keepalive", cx).parse().unwrap_or(30);
                 let jump = self.chosen("jump");
                 h.jump_hosts = if jump.is_empty() {
@@ -1087,6 +1118,26 @@ impl ConnEditor {
                 v.push(self.field("user", "User", 3, false, None, p, cx));
                 v.push(self.field("auth", "Auth", 3, false, None, p, cx));
                 match self.chosen("auth").as_str() {
+                    "agent" => {
+                        v.push(self.field(
+                            "agent_socket",
+                            "Agent socket",
+                            3,
+                            true,
+                            Some("1Password: ~/.1password/agent.sock (macOS: the Group Containers path)"),
+                            p,
+                            cx,
+                        ));
+                        v.push(self.field(
+                            "agent_key",
+                            "Public key (optional)",
+                            3,
+                            true,
+                            Some("Offer only this key, e.g. ~/.ssh/prod.pub; 1Password asks you to approve"),
+                            p,
+                            cx,
+                        ));
+                    }
                     "key" => {
                         v.push(self.field(
                             "key",
