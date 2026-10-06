@@ -308,16 +308,26 @@ impl ConnEditor {
                     self.selects.insert(
                         "auth",
                         sel(
-                            vec![
-                                ("SQL login".into(), "password".into()),
-                                ("Integrated (Kerberos / AD)".into(), "integrated".into()),
-                            ],
-                            if d.auth == DbAuthMethod::Integrated {
-                                "integrated"
-                            } else {
-                                "password"
-                            },
+                            MSSQL_AUTH
+                                .iter()
+                                .map(|(key, m)| (m.label().into(), (*key).into()))
+                                .collect(),
+                            auth_key(d.auth),
                         ),
+                    );
+                    add(
+                        self,
+                        "tenant",
+                        d.tenant.as_deref().unwrap_or_default(),
+                        "contoso.onmicrosoft.com",
+                        false,
+                    );
+                    add(
+                        self,
+                        "client_id",
+                        d.entra_client_id.as_deref().unwrap_or_default(),
+                        "Switchyard's own",
+                        false,
                     );
                 }
             }
@@ -578,11 +588,12 @@ impl ConnEditor {
                     .unwrap_or_default();
                 let via = self.chosen("via");
                 d.via_host = (!via.is_empty()).then_some(ProfileId(via));
-                d.auth = if self.chosen("auth") == "integrated" {
-                    DbAuthMethod::Integrated
-                } else {
-                    DbAuthMethod::Password
-                };
+                d.auth = auth_from_key(&self.chosen("auth"));
+                let opt = |v: String| (!v.is_empty()).then_some(v);
+                if engine == Engine::SqlServer {
+                    d.tenant = opt(self.value("tenant", cx));
+                    d.entra_client_id = opt(self.value("client_id", cx));
+                }
                 d.environment = self.env;
                 d.read_only = self.read_only;
                 d.history_enabled = self.history;
@@ -961,17 +972,79 @@ impl ConnEditor {
                 v.push(self.field("port", "Port", 2, true, None, p, cx));
                 v.push(self.field("database", "Database", 3, false, None, p, cx));
                 v.push(self.field("auth", "Authentication", 3, false, None, p, cx));
-                if self.chosen("auth") != "integrated" {
-                    v.push(self.field("user", "User", 3, false, None, p, cx));
-                    v.push(self.field(
-                        "password",
-                        "Password",
-                        3,
-                        false,
-                        Some("Stored in the OS keychain"),
-                        p,
-                        cx,
-                    ));
+                let auth = auth_from_key(&self.chosen("auth"));
+                match auth {
+                    DbAuthMethod::Integrated => {}
+                    DbAuthMethod::EntraInteractive | DbAuthMethod::EntraDeviceCode => {
+                        v.push(self.field(
+                            "user",
+                            "Account (optional)",
+                            3,
+                            false,
+                            Some("Pre-fills the Microsoft sign-in, e.g. name@company.com"),
+                            p,
+                            cx,
+                        ));
+                        v.push(self.field(
+                            "tenant",
+                            "Tenant (optional)",
+                            3,
+                            true,
+                            Some("Directory id or domain; blank = any work or school account"),
+                            p,
+                            cx,
+                        ));
+                        v.push(self.field(
+                            "client_id",
+                            "Application (client) id",
+                            3,
+                            true,
+                            Some("Only if your organization requires its own app registration"),
+                            p,
+                            cx,
+                        ));
+                    }
+                    DbAuthMethod::EntraServicePrincipal => {
+                        v.push(self.field("user", "Application (client) id", 3, true, None, p, cx));
+                        v.push(self.field(
+                            "password",
+                            "Client secret",
+                            3,
+                            false,
+                            Some("Stored in the OS keychain"),
+                            p,
+                            cx,
+                        ));
+                        v.push(self.field("tenant", "Tenant", 3, true, None, p, cx));
+                    }
+                    DbAuthMethod::Password | DbAuthMethod::EntraPassword => {
+                        let user = if auth == DbAuthMethod::EntraPassword {
+                            "Microsoft account"
+                        } else {
+                            "User"
+                        };
+                        v.push(self.field("user", user, 3, false, None, p, cx));
+                        v.push(self.field(
+                            "password",
+                            "Password",
+                            3,
+                            false,
+                            Some("Stored in the OS keychain"),
+                            p,
+                            cx,
+                        ));
+                        if auth == DbAuthMethod::EntraPassword {
+                            v.push(self.field(
+                                "tenant",
+                                "Tenant (optional)",
+                                3,
+                                true,
+                                Some("No MFA with this method; use browser sign-in for MFA"),
+                                p,
+                                cx,
+                            ));
+                        }
+                    }
                 }
                 v.push(self.field("ssl", "Encrypt", 3, false, None, p, cx));
                 v.push(self.field("via", "Connect via Host", 3, false, None, p, cx));
@@ -1555,4 +1628,28 @@ impl Render for ConnEditor {
                     ),
             )
     }
+}
+
+/// SQL Server authentication choices: (select key, method), in menu order.
+const MSSQL_AUTH: [(&str, DbAuthMethod); 6] = [
+    ("password", DbAuthMethod::Password),
+    ("entra-interactive", DbAuthMethod::EntraInteractive),
+    ("entra-device", DbAuthMethod::EntraDeviceCode),
+    ("entra-password", DbAuthMethod::EntraPassword),
+    ("entra-sp", DbAuthMethod::EntraServicePrincipal),
+    ("integrated", DbAuthMethod::Integrated),
+];
+
+fn auth_key(m: DbAuthMethod) -> &'static str {
+    MSSQL_AUTH
+        .iter()
+        .find(|(_, a)| *a == m)
+        .map_or("password", |(k, _)| k)
+}
+
+fn auth_from_key(key: &str) -> DbAuthMethod {
+    MSSQL_AUTH
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map_or(DbAuthMethod::Password, |(_, a)| *a)
 }

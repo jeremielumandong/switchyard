@@ -239,6 +239,14 @@ pub struct DbConnection {
     /// Password.
     #[serde(default)]
     pub secret: Option<SecretRef>,
+    /// Microsoft Entra tenant (directory id or domain) for the `Entra*` methods; empty
+    /// means any work or school account.
+    #[serde(default)]
+    pub tenant: Option<String>,
+    /// Entra application (client) id replacing Switchyard's built-in one, for organizations
+    /// that require their own app registration.
+    #[serde(default)]
+    pub entra_client_id: Option<String>,
 }
 
 fn yes() -> bool {
@@ -266,6 +274,8 @@ impl DbConnection {
             fetch_limit: None,
             folder: None,
             secret: None,
+            tenant: None,
+            entra_client_id: None,
         }
     }
 }
@@ -524,6 +534,32 @@ impl Profile {
                 if d.auth == DbAuthMethod::Password && d.user.trim().is_empty() {
                     return Err(ValidationError::new("user", "User is required"));
                 }
+                if d.auth.is_entra() && d.engine != Engine::SqlServer {
+                    return Err(ValidationError::new(
+                        "auth",
+                        "Microsoft Entra sign-in is for SQL Server and Azure SQL",
+                    ));
+                }
+                if matches!(
+                    d.auth,
+                    DbAuthMethod::EntraPassword | DbAuthMethod::EntraServicePrincipal
+                ) && d.user.trim().is_empty()
+                {
+                    let msg = if d.auth == DbAuthMethod::EntraPassword {
+                        "User (name@company.com) is required"
+                    } else {
+                        "Application (client) id is required"
+                    };
+                    return Err(ValidationError::new("user", msg));
+                }
+                if d.auth == DbAuthMethod::EntraServicePrincipal
+                    && d.tenant.as_deref().is_none_or(|t| t.trim().is_empty())
+                {
+                    return Err(ValidationError::new(
+                        "tenant",
+                        "A service principal needs its tenant (directory) id",
+                    ));
+                }
                 if d.fetch_limit == Some(0) {
                     return Err(ValidationError::new(
                         "fetch_limit",
@@ -619,6 +655,33 @@ mod tests {
         h.auth = SshAuth::Agent;
         h.jump_hosts = vec![h.id.clone()];
         assert_eq!(Profile::Host(h).validate().unwrap_err().field, "jump_hosts");
+
+        let mut az = DbConnection::new("azure", Engine::SqlServer);
+        az.server = "contoso.database.windows.net".into();
+        az.auth = DbAuthMethod::EntraInteractive;
+        assert!(
+            Profile::Db(az.clone()).validate().is_ok(),
+            "account is optional"
+        );
+        az.auth = DbAuthMethod::EntraServicePrincipal;
+        assert_eq!(
+            Profile::Db(az.clone()).validate().unwrap_err().field,
+            "user"
+        );
+        az.user = "app-id".into();
+        assert_eq!(
+            Profile::Db(az.clone()).validate().unwrap_err().field,
+            "tenant"
+        );
+        az.tenant = Some("contoso.com".into());
+        assert!(Profile::Db(az.clone()).validate().is_ok());
+        az.engine = Engine::Postgres;
+        assert_eq!(Profile::Db(az).validate().unwrap_err().field, "auth");
+        // Profiles saved before Entra support still load.
+        let old = r#"{"id":"p1","name":"x","engine":"sqlserver","server":"s","port":1433,
+            "database":"","user":"sa","environment":"local"}"#;
+        let d: DbConnection = serde_json::from_str(old).unwrap();
+        assert_eq!((d.tenant, d.entra_client_id), (None, None));
 
         let mut cf = DbConnection::new("edge", Engine::D1);
         cf.server = "0123abcd".into();

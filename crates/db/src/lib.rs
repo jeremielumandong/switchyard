@@ -12,6 +12,7 @@ pub mod diagnostics;
 pub mod dialect;
 pub mod driver;
 pub mod edit;
+pub mod entra;
 pub mod error;
 pub mod format;
 pub mod guard;
