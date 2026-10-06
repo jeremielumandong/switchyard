@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Throwaway MIT Kerberos realm for the GSSAPI integration test (no system config touched).
 #
-#   sudo apt-get install -y krb5-kdc krb5-user      # Debian/Ubuntu
+#   sudo apt-get install -y krb5-kdc krb5-admin-server krb5-user   # Debian/Ubuntu (kadmin.local)
 #   eval "$(scripts/kerberos-test-kdc.sh start)"     # prints the env vars to export
 #   cargo test -p switchyard-drivers --test gssapi -- --ignored --test-threads 1
 #   scripts/kerberos-test-kdc.sh stop
@@ -26,7 +26,7 @@ esac
 
 for tool in krb5kdc kdb5_util kadmin.local kinit; do
   command -v "$tool" >/dev/null || PATH="$PATH:/usr/sbin"
-  command -v "$tool" >/dev/null || { echo "$tool not found (install krb5-kdc krb5-user)" >&2; exit 1; }
+  command -v "$tool" >/dev/null || { echo "$tool not found (install krb5-kdc krb5-admin-server krb5-user)" >&2; exit 1; }
 done
 
 if [[ -f "$DIR/kdc.pid" ]]; then kill "$(cat "$DIR/kdc.pid")" 2>/dev/null || true; fi
