@@ -123,14 +123,16 @@ impl Driver for D1Driver {
                 version: String::new(),
                 closed: false,
             };
-            let sqlite = session
-                .scalar("SELECT sqlite_version()")
+            // D1 refuses most SQLite introspection functions (`sqlite_version()` among
+            // them), so the credentials are checked with a plain query.
+            session
+                .scalar("SELECT 1")
                 .await
                 .map_err(|e| match e {
                     DbError::Server(s) => DbError::Connect(s.message),
                     other => other,
                 })?;
-            session.version = format!("Cloudflare D1 · SQLite {sqlite}");
+            session.version = "Cloudflare D1".into();
             Ok(Box::new(session) as Box<dyn DbSession>)
         })
     }

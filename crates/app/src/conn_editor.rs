@@ -970,7 +970,7 @@ impl ConnEditor {
                     "Account ID",
                     6,
                     true,
-                    Some("Cloudflare dashboard → Workers & Pages → Account details"),
+                    Some("Cloudflare dashboard → Workers & Pages overview (right column), or the dashboard URL"),
                     p,
                     cx,
                 ));
