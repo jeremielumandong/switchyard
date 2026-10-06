@@ -104,7 +104,11 @@ Exit: query the 1M-row table, scroll without dropped frames, cancel a long query
 - [ ] **M1-10 Results grid core.** Virtualized rows and columns, streaming append, NULL styling,
   right-aligned numbers, column resize/reorder/pin, cell and range selection, copy as TSV.
   Done when: 1M rows loaded, scrolling holds frame rate; memory within budget.
-  Note: Partial: `DataTable` virtualizes rows and columns, streams, styles NULLs, right-aligns numbers, resizes/reorders/pins columns, copies cells. Range selection and multi-cell TSV copy are missing; 1M rows × 10 int8 fit in < 150 MB (`batch.rs` test), frame rate not yet measured.
+  Note: Partial: `DataTable` virtualizes rows and columns, streams, styles NULLs, right-aligns
+  numbers, resizes/reorders/pins columns (the data now moves with a dragged header). Range
+  selection: Shift+click or Shift+arrows; Ctrl/⌘+C copies the range as TSV (raw values, NULL
+  empty), "Copy selection as" uses the range with column names. 1M rows × 10 int8 fit in
+  < 150 MB (`batch.rs` test); scroll frame rate not yet measured (M1-16 harness).
 - [ ] **M1-11 Grid extras.** Value viewer (JSON, XML, text, hex, image), export CSV/JSON/
   Markdown/SQL INSERT, client-side sort and filter, multiple result-set tabs, status line,
   configurable fetch limit (default 10,000) with "Fetch all".
@@ -360,7 +364,7 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 - Observe CI green on macOS, Windows and Linux (M0-1).
 - Smoke tests for the SQL Server, SSH and FTP containers (M0-2).
 - Verify multi-cursor and folding in the gpui-component editor (M1-6).
-- Grid range selection and multi-cell TSV copy (M1-10); grid frame-time harness (M1-16).
+- Grid frame-time harness (M1-16).
 - XML and image value viewers (M1-11).
 - Driver Manager: fetch the signed manifest from the update server; zip archives (Oracle
   Instant Client ships zip) once a zip reader is approved.

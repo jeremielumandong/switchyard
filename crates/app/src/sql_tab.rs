@@ -166,6 +166,10 @@ pub struct SqlTab {
     export_open: bool,
     pub viewer_format: ViewerFormat,
     pub selected: Option<(usize, usize)>,
+    /// Where a Shift-extended range starts: (view row, table column).
+    anchor: Option<(usize, usize)>,
+    /// The next cell selection extends the range (Shift+arrow).
+    extending: bool,
     fetch_limit: usize,
     notices: usize,
     last_affected: Option<u64>,
@@ -253,6 +257,8 @@ impl SqlTab {
             export_open: false,
             viewer_format: ViewerFormat::Json,
             selected: None,
+            anchor: None,
+            extending: false,
             fetch_limit: DEFAULT_FETCH_LIMIT,
             notices: 0,
             last_affected: None,
@@ -804,18 +810,42 @@ impl SqlTab {
                 .col_resizable(true)
                 .sortable(true)
         });
-        let sub = cx.subscribe(&table, |this, _, ev: &TableEvent, cx| match ev {
-            TableEvent::SelectCell(r, c) => {
-                this.selected = Some((*r, c.saturating_sub(1)));
-                cx.notify();
-            }
-            TableEvent::DoubleClickedCell(r, c) => this.edit_cell(*r, *c, cx),
-            TableEvent::SelectRow(r) => {
-                this.selected = Some((*r, this.selected.map_or(0, |s| s.1)));
-                cx.notify();
-            }
-            _ => {}
-        });
+        let sub = cx.subscribe_in(
+            &table,
+            window,
+            |this, table, ev: &TableEvent, window, cx| {
+                let shift = window.modifiers().shift || std::mem::take(&mut this.extending);
+                match ev {
+                    TableEvent::SelectCell(r, c) => {
+                        // Shift+click or Shift+arrows extend a rectangle from the anchor.
+                        let range = match this.anchor {
+                            Some(a) if shift => Some((a, (*r, *c))),
+                            _ => {
+                                this.anchor = Some((*r, *c));
+                                None
+                            }
+                        };
+                        let col = table.update(cx, |t, _| {
+                            let d = t.delegate_mut();
+                            d.set_range(range);
+                            d.data_col(*c).unwrap_or(0)
+                        });
+                        this.selected = Some((*r, col));
+                        cx.notify();
+                    }
+                    TableEvent::DoubleClickedCell(r, c) => this.edit_cell(*r, *c, cx),
+                    TableEvent::SelectRow(r) => {
+                        this.selected = Some((*r, this.selected.map_or(0, |s| s.1)));
+                        cx.notify();
+                    }
+                    TableEvent::ClearSelection | TableEvent::MoveColumn(..) => {
+                        this.anchor = None;
+                        table.update(cx, |t, _| t.delegate_mut().set_range(None));
+                    }
+                    _ => {}
+                }
+            },
+        );
         if self.results.is_empty() {
             self.active_result = 0;
         }
@@ -1027,9 +1057,101 @@ impl SqlTab {
         ))
     }
 
-    /// Copy the selected row in a format.
+    /// Shift+arrow: move the selected cell by (rows, cols), extending the range.
+    fn extend(&mut self, dr: isize, dc: isize, cx: &mut Context<Self>) {
+        let Some(r) = self.results.get(self.active_result) else {
+            return;
+        };
+        let table = r.table.clone();
+        let (rows, cols) = {
+            let t = table.read(cx);
+            (t.delegate().visible_rows(), r.columns.len())
+        };
+        let Some((row, col)) = table.read(cx).selected_cell() else {
+            return;
+        };
+        if rows == 0 {
+            return;
+        }
+        let nr = row.saturating_add_signed(dr).min(rows - 1);
+        let nc = col.saturating_add_signed(dc).clamp(1, cols);
+        if (nr, nc) == (row, col) {
+            return;
+        }
+        self.extending = true;
+        table.update(cx, |t, cx| t.set_selected_cell(nr, nc, cx));
+    }
+
+    /// Ctrl/Cmd+C in the grid: the selected range as TSV, or the selected cell.
+    pub fn copy_cells(&mut self, cx: &mut Context<Self>) {
+        let Some(r) = self.results.get(self.active_result) else {
+            return;
+        };
+        let t = r.table.read(cx);
+        let d = t.delegate();
+        let (rows, cols) = match d.range() {
+            Some(rc) => rc,
+            None => match t.selected_cell() {
+                Some((row, col)) => (row..row + 1, col..col + 1),
+                None => return,
+            },
+        };
+        let cells = rows.len() * cols.len();
+        if cells > crate::grid::MAX_COPY_CELLS {
+            cx.emit(SqlTabEvent::Toast(format!(
+                "{} cells is too many to copy; use Export instead",
+                thousands(cells as u64)
+            )));
+            return;
+        }
+        let text = d.range_tsv(rows.clone(), cols.clone());
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        if cells > 1 {
+            cx.emit(SqlTabEvent::Toast(format!(
+                "Copied {} × {} cells",
+                thousands(rows.len() as u64),
+                cols.len()
+            )));
+        }
+    }
+
+    /// Copy the selected range (or row) in a format, with column names.
     pub fn copy_selection(&mut self, fmt: ExportFormat, cx: &mut Context<Self>) {
         self.export_open = false;
+        if let Some(r) = self.results.get(self.active_result) {
+            let d = r.table.read(cx).delegate();
+            if let Some((rows, cols)) = d.range()
+                && rows.len() * cols.len() <= crate::grid::MAX_COPY_CELLS
+            {
+                let data_cols: Vec<usize> = cols.filter_map(|c| d.data_col(c)).collect();
+                let names: Vec<String> = data_cols
+                    .iter()
+                    .map(|&c| r.columns[c].name.clone())
+                    .collect();
+                let values: Vec<Vec<Value>> = rows
+                    .clone()
+                    .map(|row| {
+                        data_cols
+                            .iter()
+                            .map(|&c| {
+                                d.cell(row, c)
+                                    .map(|cell| cell.to_value(r.columns[c].data_type))
+                                    .unwrap_or(Value::Null)
+                            })
+                            .collect()
+                    })
+                    .collect();
+                let text = export(fmt, &names, &values, self.dialect(), "result");
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                cx.emit(SqlTabEvent::Toast(format!(
+                    "Copied {} rows as {}",
+                    thousands(rows.len() as u64),
+                    fmt.label()
+                )));
+                cx.notify();
+                return;
+            }
+        }
         let Some((_, row)) = self.selected_row(cx) else {
             cx.emit(SqlTabEvent::Toast("Select a row first".into()));
             return;
@@ -1720,6 +1842,21 @@ impl Render for SqlTab {
             .id("sql-tab")
             .key_context("SqlTab")
             .track_focus(&self.focus)
+            .on_action(
+                cx.listener(|this, _: &crate::actions::CopyCells, _, cx| this.copy_cells(cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::actions::ExtendUp, _, cx| this.extend(-1, 0, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::actions::ExtendDown, _, cx| this.extend(1, 0, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::actions::ExtendLeft, _, cx| this.extend(0, -1, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::actions::ExtendRight, _, cx| this.extend(0, 1, cx)),
+            )
             .size_full()
             .flex()
             .flex_col()
@@ -1819,11 +1956,10 @@ impl SqlTab {
 
     /// Start editing a cell (double click).
     fn edit_cell(&mut self, view_row: usize, col_ix: usize, cx: &mut Context<Self>) {
-        if col_ix == 0 {
-            return;
-        }
-        let col = col_ix - 1;
         let Some(r) = self.results.get(self.active_result) else {
+            return;
+        };
+        let Some(col) = r.table.read(cx).delegate().data_col(col_ix) else {
             return;
         };
         let data_row = r.table.read(cx).delegate().data_row(view_row);

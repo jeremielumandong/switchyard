@@ -26,7 +26,14 @@ pub struct GridDelegate {
     view: Option<Arc<Vec<u32>>>,
     /// Staged edits: (data row, col) → new display text (`None` = NULL).
     staged: std::collections::HashMap<(usize, usize), Option<SharedString>>,
+    /// Display order: position → data column (columns can be dragged).
+    order: Vec<usize>,
+    /// Selected rectangle: (view row, table column) corners, either order.
+    range: Option<((usize, usize), (usize, usize))>,
 }
+
+/// Most cells one copy may take.
+pub const MAX_COPY_CELLS: usize = 1_000_000;
 
 fn initial_width(meta: &ColumnMeta) -> f32 {
     let name = meta.name.chars().count() as f32 * 7.5 + meta.type_name.len() as f32 * 6.0 + 40.0;
@@ -48,13 +55,76 @@ impl GridDelegate {
     /// A grid for these columns.
     pub fn new(columns: Arc<[ColumnMeta]>) -> Self {
         let widths = columns.iter().map(|c| px(initial_width(c))).collect();
+        let order = (0..columns.len()).collect();
         Self {
             columns,
             widths,
             data: BatchList::default(),
             view: None,
             staged: Default::default(),
+            order,
+            range: None,
         }
+    }
+
+    /// The data column shown at table column `table_col` (0 is the row-number column).
+    pub fn data_col(&self, table_col: usize) -> Option<usize> {
+        table_col
+            .checked_sub(1)
+            .and_then(|i| self.order.get(i).copied())
+    }
+
+    /// Select the rectangle between two (view row, table column) corners, or clear it.
+    pub fn set_range(&mut self, range: Option<((usize, usize), (usize, usize))>) {
+        self.range = range;
+    }
+
+    /// The selected rectangle as view rows and table columns (row-number column excluded).
+    pub fn range(&self) -> Option<(std::ops::Range<usize>, std::ops::Range<usize>)> {
+        let ((r0, c0), (r1, c1)) = self.range?;
+        let rows = r0.min(r1)..r0.max(r1) + 1;
+        let cols = c0.min(c1).max(1)..c0.max(c1).max(1) + 1;
+        let rows = rows.start.min(self.visible_rows())..rows.end.min(self.visible_rows());
+        let cols = cols.start..cols.end.min(self.columns.len() + 1);
+        (!rows.is_empty() && !cols.is_empty()).then_some((rows, cols))
+    }
+
+    fn in_range(&self, row: usize, table_col: usize) -> bool {
+        self.range.is_some_and(|((r0, c0), (r1, c1))| {
+            (r0.min(r1)..=r0.max(r1)).contains(&row)
+                && (c0.min(c1).max(1)..=c0.max(c1)).contains(&table_col)
+        })
+    }
+
+    /// Cells of `rows` × `cols` (table columns) as text, tab-separated, one line per row;
+    /// NULL is empty and tabs or line breaks inside values become spaces.
+    pub fn range_tsv(&self, rows: std::ops::Range<usize>, cols: std::ops::Range<usize>) -> String {
+        let mut out = String::new();
+        let mut buf = String::new();
+        for (i, r) in rows.enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            for (j, c) in cols.clone().enumerate() {
+                if j > 0 {
+                    out.push('\t');
+                }
+                buf.clear();
+                if let Some(cell) = self.data_col(c).and_then(|d| self.cell(r, d))
+                    && cell != CellRef::Null
+                {
+                    cell.write_display(&mut buf, 0);
+                }
+                out.extend(buf.chars().map(|ch| {
+                    if ch == '\t' || ch == '\n' || ch == '\r' {
+                        ' '
+                    } else {
+                        ch
+                    }
+                }));
+            }
+        }
+        out
     }
 
     /// The loaded rows.
@@ -221,8 +291,9 @@ impl TableDelegate for GridDelegate {
                 .movable(false)
                 .selectable(false);
         }
-        let meta = &self.columns[col_ix - 1];
-        let mut c = Column::new(SharedString::from(format!("c{col_ix}")), meta.name.clone())
+        let data = self.order[col_ix - 1];
+        let meta = &self.columns[data];
+        let mut c = Column::new(SharedString::from(format!("c{data}")), meta.name.clone())
             .width(self.widths[col_ix - 1])
             .min_width(px(48.))
             .resizable(true)
@@ -241,8 +312,8 @@ impl TableDelegate for GridDelegate {
         _window: &mut Window,
         _cx: &mut Context<TableState<Self>>,
     ) {
-        if col_ix > 0 {
-            self.sort_by(col_ix - 1, sort);
+        if let Some(col) = self.data_col(col_ix) {
+            self.sort_by(col, sort);
         }
     }
 
@@ -264,7 +335,7 @@ impl TableDelegate for GridDelegate {
                 .font_weight(FontWeight::SEMIBOLD)
                 .child("#");
         }
-        let meta = &self.columns[col_ix - 1];
+        let meta = &self.columns[self.order[col_ix - 1]];
         div()
             .size_full()
             .flex()
@@ -311,7 +382,12 @@ impl TableDelegate for GridDelegate {
                 .text_color(p.fg3)
                 .child(SharedString::from((row_ix + 1).to_string()));
         }
-        let col = col_ix - 1;
+        let col = self.order[col_ix - 1];
+        let base = if self.in_range(row_ix, col_ix) {
+            base.bg(p.sel)
+        } else {
+            base
+        };
         let numeric = self.columns[col].data_type.is_numeric();
         let data_row = self.data_row(row_ix);
         if let Some(staged) = self.staged.get(&(data_row, col)) {
@@ -362,7 +438,8 @@ impl TableDelegate for GridDelegate {
         if col_ix == 0 {
             return (row_ix + 1).to_string();
         }
-        self.cell(row_ix, col_ix - 1)
+        self.data_col(col_ix)
+            .and_then(|c| self.cell(row_ix, c))
             .map(|c| c.to_display())
             .unwrap_or_default()
     }
@@ -374,12 +451,16 @@ impl TableDelegate for GridDelegate {
         _window: &mut Window,
         _cx: &mut Context<TableState<Self>>,
     ) {
-        // Column order is presentation only; the table tracks it. Keep widths in step.
-        if col_ix == 0 || to_ix == 0 {
+        // The table moves its header; the delegate maps positions to data columns.
+        if col_ix == 0 || to_ix == 0 || col_ix > self.order.len() {
             return;
         }
+        let to = (to_ix - 1).min(self.order.len() - 1);
         let w = self.widths.remove(col_ix - 1);
-        self.widths.insert((to_ix - 1).min(self.widths.len()), w);
+        self.widths.insert(to, w);
+        let c = self.order.remove(col_ix - 1);
+        self.order.insert(to, c);
+        self.range = None;
     }
 }
 
@@ -446,6 +527,24 @@ mod tests {
         assert_eq!(g.visible_rows(), 1);
         g.set_filter("");
         assert_eq!(g.visible_rows(), 4);
+    }
+
+    #[test]
+    fn ranges_copy_as_tsv_in_display_order() {
+        let mut g = delegate();
+        // Row 3 has a NULL name.
+        g.set_range(Some(((3, 2), (0, 1))));
+        let (rows, cols) = g.range().unwrap();
+        assert_eq!((rows.clone(), cols.clone()), (0..4, 1..3));
+        assert_eq!(g.range_tsv(rows, cols), "3\tc\n1\ta\n2\tb\n4\t");
+        // Move "name" in front of "id": the copy follows the screen.
+        g.order = vec![1, 0];
+        assert_eq!(g.data_col(1), Some(1));
+        assert_eq!(g.range_tsv(0..2, 1..3), "c\t3\na\t1");
+        // The row-number column and out-of-range corners are clipped.
+        g.set_range(Some(((0, 0), (9, 9))));
+        assert_eq!(g.range(), Some((0..4, 1..3)));
+        assert_eq!(g.data_col(0), None);
     }
 
     #[test]
