@@ -2,8 +2,10 @@
 
 pub mod lexer;
 pub mod postgres;
+pub mod sqlite;
 pub mod tsql;
 
+use crate::catalog::ObjectKind;
 use crate::error::ErrorPosition;
 use crate::value::{self, Engine, Value};
 
@@ -90,6 +92,20 @@ pub trait Dialect: Send + Sync {
     fn keywords(&self) -> &'static [&'static str];
     /// Common built-in functions (lower case).
     fn functions(&self) -> &'static [&'static str];
+    /// The schema unqualified names resolve to by default.
+    fn default_schema(&self) -> &'static str;
+    /// Object folders the schema explorer shows under a schema, in order.
+    fn object_folders(&self) -> &'static [ObjectKind] {
+        &[
+            ObjectKind::Table,
+            ObjectKind::View,
+            ObjectKind::MaterializedView,
+            ObjectKind::Function,
+            ObjectKind::Procedure,
+            ObjectKind::Sequence,
+            ObjectKind::Type,
+        ]
+    }
 
     /// The unit containing byte `offset` (statement at cursor). Falls back to the closest
     /// preceding unit, then the following one.
@@ -116,6 +132,7 @@ pub fn dialect_for(engine: Engine) -> &'static dyn Dialect {
     match engine {
         Engine::Postgres => &postgres::PostgresDialect,
         Engine::SqlServer => &tsql::TSqlDialect,
+        Engine::D1 => &sqlite::SqliteDialect,
     }
 }
 

@@ -10,7 +10,7 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Styled as _, Window, div, px, uniform_list,
 };
 use switchyard_core::db::{
-    CatalogChunk, IntrospectScope, ObjectInfo, ObjectKind, SchemaInfo, Value, dialect_for,
+    CatalogChunk, Engine, IntrospectScope, ObjectInfo, ObjectKind, SchemaInfo, Value, dialect_for,
 };
 use switchyard_core::store::{DbConnection, Profile, ProfileId, now_ms};
 use switchyard_core::{Command, RuntimeHandle, SessionId};
@@ -44,17 +44,6 @@ pub enum Loadable<T> {
     /// Failed.
     Failed(String),
 }
-
-/// Object folders shown under a PostgreSQL schema.
-pub const PG_FOLDERS: &[ObjectKind] = &[
-    ObjectKind::Table,
-    ObjectKind::View,
-    ObjectKind::MaterializedView,
-    ObjectKind::Function,
-    ObjectKind::Procedure,
-    ObjectKind::Sequence,
-    ObjectKind::Type,
-];
 
 /// Schema explorer state for the active connection.
 #[derive(Default)]
@@ -130,6 +119,16 @@ impl SchemaState {
         });
     }
 
+    /// Object folders for the connection's dialect.
+    pub fn folders(&self) -> &'static [ObjectKind] {
+        dialect_for(
+            self.connection
+                .as_ref()
+                .map_or(Engine::Postgres, |c| c.engine),
+        )
+        .object_folders()
+    }
+
     /// Load every object folder of every user schema (for search).
     pub fn load_all_folders(&mut self, core: &RuntimeHandle) {
         let schemas: Vec<String> = match &self.schemas {
@@ -141,7 +140,7 @@ impl SchemaState {
             _ => return,
         };
         for schema in schemas {
-            for kind in PG_FOLDERS {
+            for kind in self.folders() {
                 if matches!(
                     self.objects.get(&(schema.clone(), *kind)),
                     None | Some(Loadable::NotLoaded)
@@ -207,7 +206,7 @@ impl SchemaState {
             self.expanded.insert(key.to_owned());
             if let Some(rest) = key.strip_prefix("f:")
                 && let Some((schema, kind)) = rest.split_once(':')
-                && let Some(kind) = PG_FOLDERS.iter().find(|k| format!("{k:?}") == kind)
+                && let Some(kind) = self.folders().iter().find(|k| format!("{k:?}") == kind)
                 && !matches!(
                     self.objects.get(&(schema.to_owned(), *kind)),
                     Some(Loadable::Loaded(_) | Loadable::Loading)
@@ -475,7 +474,7 @@ impl Workspace {
                     if !open {
                         continue;
                     }
-                    for kind in PG_FOLDERS {
+                    for kind in s.folders() {
                         let fkey = format!("f:{}:{kind:?}", sc.name);
                         let fopen = s.expanded.contains(&fkey);
                         let state = s.objects.get(&(sc.name.clone(), *kind));

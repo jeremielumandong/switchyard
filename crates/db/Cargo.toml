@@ -17,6 +17,8 @@ rustls-native-certs.workspace = true
 sqlparser.workspace = true
 secrecy.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

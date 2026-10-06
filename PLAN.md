@@ -144,14 +144,17 @@ Exit: one login to a Host opens a terminal and a tunneled PostgreSQL connection.
 - [ ] **M2-5 SSH agent.** Agent auth via `SSH_AUTH_SOCK` on Unix, OpenSSH agent pipe and Pageant
   on Windows.
   Done when: agent auth works on Linux and macOS in CI; Windows checked manually and noted.
-- [ ] **M2-6 Terminal core.** `switchyard-term` wraps `alacritty_terminal`'s `Term`: byte feed,
+- [x] **M2-6 Terminal core.** `switchyard-term` wraps `alacritty_terminal`'s `Term`: byte feed,
   resize, scrollback (default 10,000 lines). Local shell via `portable-pty`.
   Done when: unit tests feed escape sequences and assert grid state.
-- [ ] **M2-7 Terminal view.** GPUI rendering of cells, cursor, selection, true color, mouse
+  Note: `switchyard-term`: `Terminal` (shared, FairMutex) + `Feeder` (I/O-side parsing, coalesced wakeups), snapshots with resolved colors, selection, regex-free literal search, key/mouse/paste encoders, `portable-pty` local shells; 19 unit tests incl. real `/bin/sh` runs.
+- [x] **M2-7 Terminal view.** GPUI rendering of cells, cursor, selection, true color, mouse
   reporting, bracketed paste, scrollback search, clickable links.
   Done when: `vim`, `htop` and `less` render correctly; `cat` of a 100 MB file keeps UI responsive.
-- [ ] **M2-8 Splits and broadcast.** Split panes in a terminal tab; opt-in input broadcast.
+  Note: Canvas view (cell grid, true color, bold/italic/underline/strike, block/beam/underline cursor), mouse reporting (SGR + legacy), bracketed paste, selection + copy, scrollback search, Ctrl/Cmd+click links. Checked in the app: vim, htop, less; ~100 MB of output in 10 s (debug build) with the UI responsive. Not done: IME composition, wide glyph width for CJK is forced to one cell's advance per char.
+- [x] **M2-8 Splits and broadcast.** Split panes in a terminal tab; opt-in input broadcast.
   Done when: broadcast sends keystrokes to all panes only when enabled.
+  Note: Up to four side-by-side panes per tab (Split / Ctrl+Shift+D), broadcast toggle with a banner; checked in the app that input reaches every pane only while broadcast is on. No automated test for broadcast.
 - [ ] **M2-9 Tunnels.** Local forwards on ephemeral ports; shared tunnel registry; DB connections
   "via Host" open tunnels automatically; PostgreSQL cancel goes through the same tunnel.
   Done when: integration test queries and cancels PostgreSQL through the docker SSH server.
@@ -191,6 +194,17 @@ Exit: integrated auth works on a Linux machine that started without Kerberos lib
 - [ ] **M3-8 Certificates.** Corporate CA import (OS stores and file) and per-connection
   certificate pinning.
   Done when: connects to a server with a self-signed cert only after pinning.
+- [ ] **M3-9 Azure SQL with Entra ID (user request).** Interactive (auth code + PKCE) and
+  device-code sign-in with MFA, password and service principal; tokens passed to tiberius as
+  `AADToken`; refresh tokens in the keychain. See DECISIONS 2026-10-06.
+  Done when: connect to an Azure SQL database with an MFA-enabled account.
+
+## Extra — Cloudflare D1 (user request)
+
+- [x] **D1-1 Cloudflare D1 engine.** REST `raw` endpoint, SQLite dialect, type inference,
+  catalog, connection editor.
+  Note: tests run against a local stand-in (`crates/db/tests/d1.rs`); the real API was
+  reached and its auth error parsed, but no query has run against a real D1 database yet. No transactions or inline editing (see DECISIONS).
 
 ## M4 — File transfer
 
