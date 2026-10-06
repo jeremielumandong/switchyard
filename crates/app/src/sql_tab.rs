@@ -25,7 +25,13 @@ use switchyard_core::{
     Command, FetchLimit, QueryEvent, QueryId, RuntimeHandle, SessionId, StatementRequest,
 };
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use switchyard_core::db::complete::CatalogIndex;
+
 use crate::app_state::{SessionState, next_id};
+use crate::completion::{CompletionState, SqlCompletion};
 use crate::grid::GridDelegate;
 use crate::theme::{MONO, Palette, SANS, palette};
 use crate::ui::{self, Kind, thousands};
@@ -164,6 +170,7 @@ pub struct SqlTab {
     lint: Option<Task<()>>,
     position: i64,
     filter: Entity<InputState>,
+    completion: Rc<RefCell<CompletionState>>,
     _subs: Vec<Subscription>,
 }
 
@@ -202,6 +209,11 @@ impl SqlTab {
                 cx.emit(SqlTabEvent::Changed);
             }
         });
+        let completion: Rc<RefCell<CompletionState>> = Rc::default();
+        let provider = Rc::new(SqlCompletion {
+            state: completion.clone(),
+        });
+        editor.update(cx, |e, _| e.lsp_mut().completion_provider = Some(provider));
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter rows"));
         let filter_sub = cx.subscribe(&filter, |this, input, ev: &InputEvent, cx| {
             if let InputEvent::Change = ev {
@@ -240,6 +252,7 @@ impl SqlTab {
             lint: None,
             position,
             filter,
+            completion,
             _subs: vec![sub, filter_sub],
         };
         if let Some(c) = connection {
@@ -311,9 +324,29 @@ impl SqlTab {
 
     /// Session lifecycle updates from the workspace.
     pub fn on_session(&mut self, state: SessionState, cx: &mut Context<Self>) {
+        if matches!(state, SessionState::Open { .. })
+            && let Some(session) = self.session
+        {
+            // Load every column once for completion (served from the cache when warm).
+            self.core.send(Command::Introspect {
+                session,
+                scope: switchyard_core::db::IntrospectScope::AllColumns,
+                refresh: false,
+            });
+        }
         self.session_state = state;
         cx.emit(SqlTabEvent::Changed);
         cx.notify();
+    }
+
+    /// A catalog chunk for this tab's session.
+    pub fn on_catalog(&mut self, chunk: switchyard_core::db::CatalogChunk) {
+        if let switchyard_core::db::CatalogChunk::AllColumns(cols) = chunk {
+            tracing::debug!(columns = cols.len(), "completion catalog loaded");
+            let mut st = self.completion.borrow_mut();
+            st.index = CatalogIndex::from_columns(&cols);
+            st.engine = self.connection.as_ref().map(|c| c.engine);
+        }
     }
 
     /// Transaction state updates.

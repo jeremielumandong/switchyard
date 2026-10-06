@@ -7286,6 +7286,7 @@ dependencies = [
  "anyhow",
  "futures",
  "gpui-kit",
+ "lsp-types",
  "secrecy",
  "serde",
  "serde_json",

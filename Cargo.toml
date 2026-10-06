@@ -84,6 +84,9 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
+# editor completion items (must match gpui-component)
+lsp-types = "0.97"
+
 # plans / cli
 quick-xml = "0.42"
 clap = { version = "4.6", features = ["derive"] }

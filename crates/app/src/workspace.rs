@@ -244,6 +244,11 @@ impl Workspace {
             } => {
                 if self.schema.session == Some(session) {
                     self.schema.on_catalog(scope, result, cached_at);
+                } else {
+                    match result {
+                        Ok(chunk) => self.for_sql_session(session, cx, |t, _| t.on_catalog(chunk)),
+                        Err(e) => tracing::warn!(error = %e, "catalog load failed"),
+                    }
                 }
             }
             Event::History { entries, .. } => {
