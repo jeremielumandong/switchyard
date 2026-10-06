@@ -82,7 +82,7 @@ impl CatalogIndex {
 
     /// Columns of a table, optionally schema-qualified (prefers `public`/`dbo`).
     pub fn columns_of(&self, schema: Option<&str>, name: &str) -> Vec<(String, String)> {
-        let mut found: Vec<(&(String, String), &Vec<(String, String)>)> = self
+        let mut found: Vec<_> = self
             .tables_named(name)
             .filter(|((s, _), _)| schema.is_none_or(|q| s.eq_ignore_ascii_case(q)))
             .collect();
