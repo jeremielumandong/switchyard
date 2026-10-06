@@ -3,7 +3,9 @@ name: Bump version
 # Bumps the workspace version on a new branch and opens a pull request. Merging it is an
 # ordinary push to main, which runs CI; the release workflows require that run to pass.
 # (A commit pushed here with GITHUB_TOKEN would not trigger CI, so this never pushes to main.)
-# Needs "Allow GitHub Actions to create and approve pull requests" in Settings > Actions.
+# Opening the PR needs "Allow GitHub Actions to create and approve pull requests" (Settings >
+# Actions > General); without it the run pushes the branch and links to open the PR by hand.
+# Re-running for the same version reuses that branch.
 
 on:
   workflow_dispatch:
@@ -50,15 +52,31 @@ jobs:
           NEW: ${{ steps.bump.outputs.new }}
         run: |
           branch="bump/v$NEW"
-          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
-            echo "::error::Branch $branch already exists; merge or delete it first."
+          compare="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/pull/new/$branch"
+          if [ -n "$(gh pr list --head "$branch" --state open --json url --jq '.[].url')" ]; then
+            echo "::error::A pull request for $branch is already open."
             exit 1
           fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git switch -c "$branch"
-          git add Cargo.toml Cargo.lock
-          git commit -m "Bump version to $NEW"
-          git push origin "$branch"
-          gh pr create --base main --head "$branch" --title "Bump version to $NEW" \
-            --body "Bumps the workspace version from $OLD to $NEW (\`scripts/bump-version.py\`). Merge, wait for CI on main, then run the release workflows."
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            # Left by an earlier run whose pull request could not be opened: reuse it if it
+            # holds this version.
+            git fetch --depth 1 origin "$branch"
+            if [ "$(git show FETCH_HEAD:Cargo.toml | python3 -c 'import sys,tomllib; print(tomllib.loads(sys.stdin.read())["workspace"]["package"]["version"])')" != "$NEW" ]; then
+              echo "::error::Branch $branch exists with another version; delete it first."
+              exit 1
+            fi
+            echo "Reusing the existing $branch."
+          else
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git switch -c "$branch"
+            git add Cargo.toml Cargo.lock
+            git commit -m "Bump version to $NEW"
+            git push origin "$branch"
+          fi
+          if ! gh pr create --base main --head "$branch" --title "Bump version to $NEW" \
+            --body "Bumps the workspace version from $OLD to $NEW (\`scripts/bump-version.py\`). Merge, wait for CI on main, then run the release workflows."; then
+            # Usually "GitHub Actions is not permitted to create or approve pull requests".
+            echo "::warning::Could not open the pull request. Open it here: $compare (or allow Actions to create pull requests in Settings > Actions > General and re-run)."
+            echo "Open the pull request: $compare" >> "$GITHUB_STEP_SUMMARY"
+          fi
