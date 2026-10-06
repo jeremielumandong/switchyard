@@ -84,7 +84,7 @@ pub enum SshAuthMethod {
     },
     /// Keyboard-interactive (MFA codes and similar prompts).
     KeyboardInteractive,
-    /// Keys held by the SSH agent.
+    /// Keys held by an SSH agent (OpenSSH's, 1Password's, …).
     Agent,
 }
 
@@ -109,6 +109,12 @@ pub struct SshTarget {
     pub keepalive: Duration,
     /// The hop before this one (ProxyJump); its own `jump` continues the chain.
     pub jump: Option<Box<SshTarget>>,
+    /// Agent socket (OpenSSH `IdentityAgent`); `None` tries `SSH_AUTH_SOCK`, then the
+    /// 1Password agent.
+    pub agent_socket: Option<String>,
+    /// Public key file choosing which agent key to use (1Password holds many; servers
+    /// stop after a few failed keys).
+    pub agent_key: Option<String>,
 }
 
 impl std::fmt::Debug for SshTarget {
@@ -517,6 +523,10 @@ async fn authenticate(
                 Err(auth_failed(target, "the password was rejected"))
             }
         }
+        SshAuthMethod::PublicKey { key_path } if is_public_key_file(&expand_home(key_path)) => {
+            let path = expand_home(key_path);
+            agent_auth(handle, target, agent_socket, Some(&path)).await
+        }
         SshAuthMethod::PublicKey { key_path } => {
             let path = expand_home(key_path);
             let key = match load_secret_key(&path, None) {
@@ -606,69 +616,209 @@ async fn authenticate(
             }
             Err(auth_failed(target, "too many prompts"))
         }
-        SshAuthMethod::Agent => agent_auth(handle, target, agent_socket).await,
+        SshAuthMethod::Agent => {
+            let key = target.agent_key.as_deref().map(expand_home);
+            agent_auth(handle, target, agent_socket, key.as_deref()).await
+        }
     }
+}
+
+/// Whether `path` holds a public key: OpenSSH configs for agents (1Password) point
+/// `IdentityFile` at the `.pub` file to pick the agent key.
+fn is_public_key_file(path: &std::path::Path) -> bool {
+    if path.extension().is_some_and(|e| e == "pub") {
+        return true;
+    }
+    std::fs::read(path).is_ok_and(|b| {
+        let head = String::from_utf8_lossy(&b[..b.len().min(64)]).into_owned();
+        ["ssh-", "ecdsa-", "sk-"]
+            .iter()
+            .any(|p| head.starts_with(p))
+    })
+}
+
+/// 1Password's SSH agent socket on this platform (Linux, macOS).
+pub fn one_password_sockets() -> Vec<PathBuf> {
+    let Some(home) = std::env::var_os("HOME") else {
+        return Vec::new();
+    };
+    let home = PathBuf::from(home);
+    vec![
+        home.join(".1password").join("agent.sock"),
+        home.join("Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"),
+    ]
+}
+
+/// Agent sockets to try, in order.
+fn agent_candidates(explicit: Option<&str>, manager: Option<&std::path::Path>) -> Vec<PathBuf> {
+    if let Some(e) = explicit.map(str::trim).filter(|e| !e.is_empty()) {
+        // `IdentityAgent SSH_AUTH_SOCK` means the environment variable.
+        if e == "SSH_AUTH_SOCK" || e == "$SSH_AUTH_SOCK" {
+            return std::env::var_os("SSH_AUTH_SOCK")
+                .map(PathBuf::from)
+                .into_iter()
+                .collect();
+        }
+        return vec![expand_home(e)];
+    }
+    if let Some(m) = manager {
+        return vec![m.to_owned()];
+    }
+    let mut out: Vec<PathBuf> = std::env::var_os("SSH_AUTH_SOCK")
+        .map(PathBuf::from)
+        .into_iter()
+        .collect();
+    for p in one_password_sockets() {
+        if p.exists() && !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    out
 }
 
 #[cfg(unix)]
 async fn connect_agent(
-    socket: Option<&std::path::Path>,
+    socket: &std::path::Path,
 ) -> Result<russh::keys::agent::client::AgentClient<tokio::net::UnixStream>, String> {
-    use russh::keys::agent::client::AgentClient;
-    match socket {
-        Some(p) => AgentClient::connect_uds(p).await,
-        None => AgentClient::connect_env().await,
-    }
-    .map_err(|e| format!("no SSH agent ({e}); is SSH_AUTH_SOCK set?"))
+    russh::keys::agent::client::AgentClient::connect_uds(socket)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(windows)]
 async fn connect_agent(
-    _socket: Option<&std::path::Path>,
+    pipe: &std::path::Path,
 ) -> Result<
     russh::keys::agent::client::AgentClient<tokio::net::windows::named_pipe::NamedPipeClient>,
     String,
 > {
-    russh::keys::agent::client::AgentClient::connect_named_pipe(r"\\.\pipe\openssh-ssh-agent")
+    // 1Password and the OpenSSH agent service both serve this pipe.
+    russh::keys::agent::client::AgentClient::connect_named_pipe(pipe)
         .await
-        .map_err(|e| format!("the OpenSSH agent service is not running ({e})"))
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+fn agent_candidates_platform(
+    explicit: Option<&str>,
+    _manager: Option<&std::path::Path>,
+) -> Vec<PathBuf> {
+    vec![PathBuf::from(
+        explicit
+            .map(str::trim)
+            .filter(|e| e.starts_with(r"\\.\pipe\"))
+            .unwrap_or(r"\\.\pipe\openssh-ssh-agent"),
+    )]
+}
+
+#[cfg(unix)]
+fn agent_candidates_platform(
+    explicit: Option<&str>,
+    manager: Option<&std::path::Path>,
+) -> Vec<PathBuf> {
+    agent_candidates(explicit, manager)
+}
+
+/// A short name for the agent behind `socket`, for the status line.
+fn agent_name(socket: &std::path::Path) -> &'static str {
+    if socket
+        .to_string_lossy()
+        .to_lowercase()
+        .contains("1password")
+    {
+        "1Password agent"
+    } else {
+        "agent"
+    }
 }
 
 async fn agent_auth(
     handle: &mut Handle<ClientHandler>,
     target: &SshTarget,
-    socket: Option<&std::path::Path>,
+    manager_socket: Option<&std::path::Path>,
+    only_key: Option<&std::path::Path>,
 ) -> Result<String, SshError> {
-    let mut agent = connect_agent(socket)
-        .await
-        .map_err(|m| auth_failed(target, m))?;
-    let ids = agent
-        .request_identities()
-        .await
-        .map_err(|e| auth_failed(target, e.to_string()))?;
-    if ids.is_empty() {
-        return Err(auth_failed(target, "the SSH agent holds no keys"));
+    let wanted = match only_key.map(|p| (p, std::fs::read_to_string(p))) {
+        Some((p, Ok(text))) => Some(
+            PublicKey::from_openssh(text.trim())
+                .map_err(|e| SshError::Io(format!("{} is not a public key: {e}", p.display())))?,
+        ),
+        // No such file (an imported `IdentityFile` without its `.pub`): offer every key.
+        Some((p, Err(e))) => {
+            tracing::warn!(path = %p.display(), error = %e, "agent key file unreadable; offering all keys");
+            None
+        }
+        None => None,
+    };
+    let candidates = agent_candidates_platform(target.agent_socket.as_deref(), manager_socket);
+    if candidates.is_empty() {
+        return Err(auth_failed(
+            target,
+            "no SSH agent found: SSH_AUTH_SOCK is not set and the 1Password agent \
+             (~/.1password/agent.sock) is not running; set the agent socket on the Host",
+        ));
     }
     let hash = handle
         .best_supported_rsa_hash()
         .await
         .map_err(|e| auth_failed(target, e.to_string()))?
         .flatten();
-    for id in ids {
-        let russh::keys::agent::AgentIdentity::PublicKey { key, .. } = id else {
-            continue;
+    let mut tried = Vec::new();
+    for socket in candidates {
+        let name = agent_name(&socket);
+        let mut agent = match connect_agent(&socket).await {
+            Ok(a) => a,
+            Err(e) => {
+                tried.push(format!("{}: {e}", socket.display()));
+                continue;
+            }
         };
-        let kind = key_kind(&key);
-        let ok = handle
-            .authenticate_publickey_with(target.user.clone(), key, hash, &mut agent)
-            .await
-            .map(|r| r.success())
-            .unwrap_or(false);
-        if ok {
-            return Ok(format!("agent · {kind}"));
+        let ids = match agent.request_identities().await {
+            Ok(ids) => ids,
+            Err(e) => {
+                tried.push(format!("{}: {e}", socket.display()));
+                continue;
+            }
+        };
+        let keys: Vec<PublicKey> = ids
+            .into_iter()
+            .filter_map(|id| match id {
+                russh::keys::agent::AgentIdentity::PublicKey { key, .. } => Some(key),
+                _ => None,
+            })
+            .filter(|k| wanted.as_ref().is_none_or(|w| w.key_data() == k.key_data()))
+            .collect();
+        if keys.is_empty() {
+            tried.push(format!(
+                "{} ({name}): {}",
+                socket.display(),
+                if wanted.is_some() {
+                    "does not hold the chosen key"
+                } else {
+                    "holds no keys"
+                }
+            ));
+            continue;
         }
+        // The agent may ask the user to approve (1Password shows its own dialog).
+        tracing::info!(host = %target.label, agent = name, keys = keys.len(), "agent sign-in");
+        for key in keys {
+            let kind = key_kind(&key);
+            let ok = handle
+                .authenticate_publickey_with(target.user.clone(), key, hash, &mut agent)
+                .await
+                .map(|r| r.success())
+                .unwrap_or(false);
+            if ok {
+                return Ok(format!("{name} · {kind}"));
+            }
+        }
+        tried.push(format!(
+            "{} ({name}): no key was accepted",
+            socket.display()
+        ));
     }
-    Err(auth_failed(target, "no agent key was accepted"))
+    Err(auth_failed(target, tried.join("; ")))
 }
 
 type Slot = Arc<tokio::sync::Mutex<Weak<SshConn>>>;
@@ -779,5 +929,49 @@ impl SshManager {
         };
         slot.and_then(|s| s.try_lock().ok().and_then(|g| g.upgrade()))
             .is_some_and(|c| !c.is_closed())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn agent_socket_choice() {
+        // An explicit socket (IdentityAgent) is the only one tried; `~` expands.
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(
+            agent_candidates(Some("~/.1password/agent.sock"), None),
+            vec![PathBuf::from(format!("{home}/.1password/agent.sock"))]
+        );
+        // Without one: SSH_AUTH_SOCK first, then 1Password's socket when it exists.
+        let c = agent_candidates(None, None);
+        if let Some(env) = std::env::var_os("SSH_AUTH_SOCK") {
+            assert_eq!(c[0], PathBuf::from(env));
+        }
+        assert!(
+            c.iter().all(|p| p.exists()
+                || Some(p.as_os_str()) == std::env::var_os("SSH_AUTH_SOCK").as_deref())
+        );
+        assert_eq!(
+            agent_name(Path::new("/x/.1password/agent.sock")),
+            "1Password agent"
+        );
+        assert_eq!(agent_name(Path::new("/tmp/ssh-x/agent.1")), "agent");
+    }
+
+    #[test]
+    fn public_key_files_select_the_agent() {
+        let t = tempfile::tempdir().unwrap();
+        let pubf = t.path().join("id");
+        std::fs::write(&pubf, "ssh-ed25519 AAAAC3Nza... me@laptop\n").unwrap();
+        assert!(is_public_key_file(&pubf), "by content");
+        assert!(is_public_key_file(Path::new("/nope/key.pub")), "by name");
+        let private = t.path().join("id_priv");
+        std::fs::write(&private, "-----BEGIN OPENSSH PRIVATE KEY-----\n").unwrap();
+        assert!(!is_public_key_file(&private));
     }
 }

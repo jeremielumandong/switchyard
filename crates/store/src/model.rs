@@ -162,6 +162,13 @@ pub struct Host {
     /// Password or key passphrase.
     #[serde(default)]
     pub secret: Option<SecretRef>,
+    /// Agent socket for agent auth (OpenSSH `IdentityAgent`, e.g. 1Password's
+    /// `~/.1password/agent.sock`); `None` = `SSH_AUTH_SOCK`, then 1Password.
+    #[serde(default)]
+    pub identity_agent: Option<String>,
+    /// Public key file picking which agent key to offer.
+    #[serde(default)]
+    pub agent_key: Option<String>,
 }
 
 fn default_keepalive() -> u32 {
@@ -189,6 +196,8 @@ impl Host {
             keepalive_secs: 30,
             folder: None,
             secret: None,
+            identity_agent: None,
+            agent_key: None,
         }
     }
 }

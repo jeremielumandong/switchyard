@@ -901,10 +901,33 @@ impl Service {
                         .unwrap_or_else(|| std::env::var("USER").unwrap_or_else(|_| "root".into())),
                 );
                 host.port = h.port.unwrap_or(22);
-                if let Some(key) = &h.identity_file {
-                    host.auth = switchyard_store::SshAuth::PublicKey {
-                        key_path: key.clone(),
-                    };
+                let agent = h
+                    .identity_agent
+                    .clone()
+                    .filter(|a| !a.eq_ignore_ascii_case("none"));
+                match (&agent, &h.identity_file) {
+                    // An agent (1Password, …): the IdentityFile, a `.pub`, picks its key.
+                    (Some(a), key) => {
+                        host.auth = switchyard_store::SshAuth::Agent;
+                        host.identity_agent = Some(a.clone());
+                        host.agent_key = key.clone().map(|k| {
+                            if k.ends_with(".pub") {
+                                k
+                            } else {
+                                format!("{k}.pub")
+                            }
+                        });
+                    }
+                    (None, Some(key)) if key.ends_with(".pub") => {
+                        host.auth = switchyard_store::SshAuth::Agent;
+                        host.agent_key = Some(key.clone());
+                    }
+                    (None, Some(key)) => {
+                        host.auth = switchyard_store::SshAuth::PublicKey {
+                            key_path: key.clone(),
+                        };
+                    }
+                    (None, None) => {}
                 }
                 by_alias.insert(h.alias.clone(), host.id.clone());
                 created.push((host, h.proxy_jump.clone()));
@@ -1185,6 +1208,8 @@ impl Service {
             secret,
             keepalive: Duration::from_secs(u64::from(h.keepalive_secs)),
             jump: None,
+            agent_socket: h.identity_agent.clone(),
+            agent_key: h.agent_key.clone(),
         })
     }
 

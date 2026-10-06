@@ -84,6 +84,8 @@ fn target(id: &str, port: u16, auth: SshAuthMethod) -> SshTarget {
         secret: None,
         keepalive: Duration::from_secs(30),
         jump: None,
+        agent_socket: None,
+        agent_key: None,
     }
 }
 
@@ -489,4 +491,78 @@ async fn sftp_file_system_suite() {
 
     // Same SSH session as the terminal and tunnels.
     assert!(Arc::ptr_eq(&conn, &m.session(&t).await.unwrap()));
+}
+
+/// An agent on its own socket, the way 1Password runs one: the Host names the socket
+/// (`IdentityAgent`) and a public key picks which of its keys to offer.
+#[tokio::test]
+#[ignore = "needs ssh servers and ssh-agent"]
+async fn agent_on_its_own_socket_with_a_chosen_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let sock = dir.path().join("agent.sock");
+    let mut agent = std::process::Command::new("ssh-agent")
+        .args(["-D", "-a"])
+        .arg(&sock)
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("ssh-agent");
+    for _ in 0..50 {
+        if sock.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    for k in ["id_rsa", "id_ecdsa", "id_ed25519"] {
+        let ok = std::process::Command::new("ssh-add")
+            .arg(keys().join(k))
+            .env("SSH_AUTH_SOCK", &sock)
+            .output()
+            .unwrap();
+        assert!(
+            ok.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ok.stderr)
+        );
+    }
+    let m = SshManager::new(known(&dir), Prompter::new(HostKeyDecision::TrustOnce));
+
+    let mut t = target("agent-sock", main_port(), SshAuthMethod::Agent);
+    t.agent_socket = Some(sock.display().to_string());
+    t.agent_key = Some(keys().join("id_ecdsa.pub").display().to_string());
+    assert_eq!(whoami(&m, &t).await.unwrap(), t.user);
+    let conn = m.session(&t).await.unwrap();
+    assert!(conn.description.contains("ecdsa"), "{}", conn.description);
+
+    // An IdentityFile pointing at a `.pub` goes through the agent too.
+    let mut t = target(
+        "agent-pub",
+        main_port(),
+        SshAuthMethod::PublicKey {
+            key_path: keys().join("id_ed25519.pub").display().to_string(),
+        },
+    );
+    t.agent_socket = Some(sock.display().to_string());
+    let conn = m.session(&t).await.unwrap();
+    assert!(conn.description.contains("agent"), "{}", conn.description);
+
+    // A key the agent does not hold is reported, not silently swapped.
+    let mut t = target("agent-missing", main_port(), SshAuthMethod::Agent);
+    t.agent_socket = Some(sock.display().to_string());
+    let other = dir.path().join("other.pub");
+    std::fs::write(
+        &other,
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl x\n",
+    )
+    .unwrap();
+    t.agent_key = Some(other.display().to_string());
+    let Err(err) = m.session(&t).await else {
+        panic!("must fail")
+    };
+    assert!(
+        err.to_string().contains("does not hold the chosen key"),
+        "{err}"
+    );
+
+    let _ = agent.kill();
+    let _ = agent.wait();
 }

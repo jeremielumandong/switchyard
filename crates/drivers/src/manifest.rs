@@ -66,6 +66,9 @@ pub struct Detect {
     /// Environment variables naming a path that must exist (`SSH_AUTH_SOCK`).
     #[serde(default)]
     pub env: Vec<String>,
+    /// Well-known paths (`~` expands), e.g. the 1Password agent socket.
+    #[serde(default)]
+    pub paths: Vec<String>,
     /// Oldest acceptable version (checked where the version is known).
     #[serde(default)]
     pub min_version: Option<String>,
