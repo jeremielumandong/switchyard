@@ -1,5 +1,6 @@
 //! A text editor tab for a file on an SSH Host (or this computer). Save writes it back over
 //! SFTP after checking nobody changed it meanwhile; a conflict asks before overwriting.
+//! A terminal on the same Host, started in the file's folder, sits under the editor.
 
 use std::path::PathBuf;
 
@@ -7,24 +8,46 @@ use gpui_kit::component::input::{Editor, EditorState, InputEvent};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, AppContext as _, Context, Entity, FocusHandle, Focusable, FontWeight,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    InteractiveElement as _, IntoElement, MouseButton, MouseMoveEvent, ParentElement as _, Render,
     StatefulInteractiveElement as _, Styled as _, Subscription, Window, actions, div, px, relative,
 };
+use switchyard_core::store::EnvironmentLabel;
 use switchyard_core::{Command, Event, FsRef, RequestId, RuntimeHandle, SaveError};
 
 use crate::app_state::next_id;
+use crate::terminal_tab::TerminalTab;
 use crate::theme::{MONO, palette};
 use crate::ui::{self, Kind};
 
-actions!(editor_tab, [SaveFile]);
+actions!(editor_tab, [SaveFile, ToggleTerminal]);
 
-/// Bind Ctrl/Cmd+S inside editor tabs.
+/// Bind Ctrl/Cmd+S and Ctrl+` inside editor tabs.
 pub fn init(cx: &mut gpui_kit::App) {
-    cx.bind_keys([gpui_kit::KeyBinding::new(
-        "secondary-s",
-        SaveFile,
-        Some("EditorTab"),
-    )]);
+    cx.bind_keys([
+        gpui_kit::KeyBinding::new("secondary-s", SaveFile, Some("EditorTab")),
+        gpui_kit::KeyBinding::new("ctrl-`", ToggleTerminal, Some("EditorTab")),
+    ]);
+}
+
+/// Default and limits of the terminal's height under the editor.
+const TERM_HEIGHT: f32 = 260.;
+const TERM_MIN: f32 = 90.;
+
+/// ` cd '<folder>' && clear` for a POSIX shell (the leading space keeps it out of history
+/// where `HISTCONTROL` ignores spaces).
+fn cd_into(dir: &str) -> String {
+    format!(" cd '{}' && clear\r", dir.replace('\'', "'\\''"))
+}
+
+/// The folder holding `path`, POSIX style.
+fn posix_parent(path: &std::path::Path) -> Option<String> {
+    let s = path.to_string_lossy().replace('\\', "/");
+    let (dir, _) = s.trim_end_matches('/').rsplit_once('/')?;
+    Some(if dir.is_empty() {
+        "/".into()
+    } else {
+        dir.into()
+    })
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -57,6 +80,14 @@ pub struct EditorTab {
     loading_text: bool,
     focus: FocusHandle,
     _sub: Subscription,
+    host_name: String,
+    env: EnvironmentLabel,
+    /// The terminal under the editor, created the first time it is shown.
+    pub terminal: Option<Entity<TerminalTab>>,
+    show_terminal: bool,
+    term_height: f32,
+    /// Splitter drag: (mouse y, height) when it started.
+    drag: Option<(f32, f32)>,
 }
 
 fn language(path: &std::path::Path) -> &'static str {
@@ -74,6 +105,7 @@ impl EditorTab {
         fs: FsRef,
         path: PathBuf,
         host_name: &str,
+        env: EnvironmentLabel,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -105,7 +137,7 @@ impl EditorTab {
             fs: fs.clone(),
             path: path.clone(),
         });
-        Self {
+        let mut this = Self {
             core,
             fs,
             path,
@@ -118,6 +150,46 @@ impl EditorTab {
             loading_text: false,
             focus: cx.focus_handle(),
             _sub: sub,
+            host_name: host_name.to_owned(),
+            env,
+            terminal: None,
+            show_terminal: false,
+            term_height: TERM_HEIGHT,
+            drag: None,
+        };
+        this.set_terminal(true, cx);
+        this
+    }
+
+    /// Show or hide the terminal; hiding keeps its shell running.
+    fn set_terminal(&mut self, show: bool, cx: &mut Context<Self>) {
+        self.show_terminal = show;
+        if show && self.terminal.is_none() {
+            let host = match &self.fs {
+                FsRef::Host(h) => Some(h.clone()),
+                FsRef::Local => None,
+            };
+            let start = if host.is_some() || cfg!(unix) {
+                posix_parent(&self.path).map(|d| cd_into(&d))
+            } else {
+                None
+            };
+            let (core, name, env) = (self.core.clone(), self.host_name.clone(), self.env);
+            self.terminal = Some(cx.new(|cx| {
+                let t = TerminalTab::new(core, name, env, host, cx);
+                match start {
+                    Some(s) => t.with_startup(s),
+                    None => t,
+                }
+            }));
+        }
+        cx.notify();
+    }
+
+    /// Close the terminal's shell (tab closed).
+    pub fn shutdown(&mut self, cx: &mut Context<Self>) {
+        if let Some(t) = self.terminal.take() {
+            t.update(cx, |t, _| t.shutdown());
         }
     }
 
@@ -252,10 +324,63 @@ impl Render for EditorTab {
             _ if self.dirty => "Unsaved changes · ⌘S / Ctrl+S saves",
             _ => "Saved",
         };
+        let terminal = self
+            .terminal
+            .clone()
+            .filter(|_| self.show_terminal)
+            .map(|t| {
+                div()
+                    .flex_none()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .id("ed-splitter")
+                            .h(px(6.))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .border_t_1()
+                            .border_color(p.bd)
+                            .bg(p.panel)
+                            .cursor_row_resize()
+                            .hover(|s| s.bg(p.hover))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, ev: &gpui_kit::MouseDownEvent, _, cx| {
+                                    this.drag = Some((ev.position.y.into(), this.term_height));
+                                    cx.stop_propagation();
+                                }),
+                            )
+                            .child(div().w(px(28.)).h(px(2.)).rounded(px(2.)).bg(p.bd2)),
+                    )
+                    .child(div().h(px(self.term_height)).child(t))
+            });
         div()
             .key_context("EditorTab")
             .track_focus(&self.focus)
             .on_action(cx.listener(|this, _: &SaveFile, _, cx| this.save(false, cx)))
+            .on_action(cx.listener(|this, _: &ToggleTerminal, _, cx| {
+                let show = !this.show_terminal;
+                this.set_terminal(show, cx)
+            }))
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
+                if let Some((y0, h0)) = this.drag {
+                    if ev.pressed_button == Some(MouseButton::Left) {
+                        let y: f32 = ev.position.y.into();
+                        let max = (f32::from(window.viewport_size().height) - 200.).max(TERM_MIN);
+                        this.term_height = (h0 - (y - y0)).clamp(TERM_MIN, max);
+                        cx.notify();
+                    } else {
+                        this.drag = None;
+                    }
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.drag = None),
+            )
             .size_full()
             .flex()
             .flex_col()
@@ -288,6 +413,24 @@ impl Render for EditorTab {
                             .child(status),
                     )
                     .child(
+                        ui::button(
+                            "ed-term",
+                            "Terminal",
+                            if self.show_terminal {
+                                Kind::Secondary
+                            } else {
+                                Kind::Ghost
+                            },
+                            &p,
+                        )
+                        .h(px(22.))
+                        .text_size(px(11.5))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            let show = !this.show_terminal;
+                            this.set_terminal(show, cx)
+                        })),
+                    )
+                    .child(
                         ui::button("ed-save", "Save", Kind::Primary, &p)
                             .h(px(22.))
                             .text_size(px(11.5))
@@ -306,6 +449,7 @@ impl Render for EditorTab {
                         .text_size(px(12.5)),
                 ),
             )
+            .children(terminal)
             .when(self.state == State::Loading, |d| {
                 d.child(
                     div()
@@ -318,5 +462,23 @@ impl Render for EditorTab {
                         .child("Loading…"),
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_starts_in_the_files_folder() {
+        assert_eq!(
+            posix_parent(std::path::Path::new("/app/emulsion/docker-compose.yml")).as_deref(),
+            Some("/app/emulsion")
+        );
+        assert_eq!(
+            posix_parent(std::path::Path::new("/x")).as_deref(),
+            Some("/")
+        );
+        assert_eq!(cd_into("/srv/it's"), " cd '/srv/it'\\''s' && clear\r");
     }
 }

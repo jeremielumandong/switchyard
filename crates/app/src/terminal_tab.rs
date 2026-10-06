@@ -99,6 +99,8 @@ pub struct TerminalTab {
     broadcast: bool,
     search: Option<Entity<InputState>>,
     _search_sub: Option<Subscription>,
+    /// Typed into the first pane once its shell is up (e.g. `cd` to a folder).
+    startup: Option<Vec<u8>>,
 }
 
 impl TerminalTab {
@@ -124,12 +126,26 @@ impl TerminalTab {
             broadcast: false,
             search: None,
             _search_sub: None,
+            startup: None,
         };
         this.add_pane(cx);
         this
     }
 
-    /// Whether the tab is an SSH terminal (vs. a local shell).
+    /// Type `input` into the first shell once it is up.
+    pub fn with_startup(mut self, input: impl Into<Vec<u8>>) -> Self {
+        self.startup = Some(input.into());
+        self
+    }
+
+    fn run_startup(&mut self, term: TermId) {
+        if self.panes.first().map(|p| p.id) == Some(term)
+            && let Some(bytes) = self.startup.take()
+        {
+            self.core.send(Command::TerminalInput { term, bytes });
+        }
+    }
+
     /// The Host this terminal is on, if remote.
     pub fn host(&self) -> Option<&ProfileId> {
         match &self.target {
@@ -222,6 +238,9 @@ impl TerminalTab {
                 p.focus.focus(window, cx);
             }
         }
+        if !remote {
+            self.run_startup(term);
+        }
         cx.notify();
     }
 
@@ -237,6 +256,7 @@ impl TerminalTab {
                 TermStatus::Connected { description } => {
                     p.state = PaneState::Live;
                     p.description = description;
+                    self.run_startup(term);
                 }
                 TermStatus::Reconnecting {
                     attempt,
