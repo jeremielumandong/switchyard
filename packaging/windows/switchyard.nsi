@@ -1,4 +1,7 @@
-; Switchyard NSIS installer (x64, per-machine).
+; Switchyard NSIS installer (x64, per-user: no administrator rights needed).
+;
+; Installs to %LOCALAPPDATA%\Programs\Switchyard, registers the uninstaller under HKCU, puts
+; shortcuts in the user's Start menu and desktop, and adds swy to the user PATH.
 ;
 ; Built by build-windows.ps1, which passes:
 ;   /DVERSION=0.1.0  /DVERSION_QUAD=0.1.0.0  /DBIN_DIR=<dir with switchyard.exe, swy.exe>
@@ -27,9 +30,9 @@ SetCompressor /SOLID lzma
 
 Name "${APP_NAME} ${VERSION}"
 OutFile "${OUT_FILE}"
-InstallDir "$PROGRAMFILES64\${APP_NAME}"
-InstallDirRegKey HKLM "${UNINST_KEY}" "InstallLocation"
-RequestExecutionLevel admin
+InstallDir "$LOCALAPPDATA\Programs\${APP_NAME}"
+InstallDirRegKey HKCU "${UNINST_KEY}" "InstallLocation"
+RequestExecutionLevel user
 ShowInstDetails show
 
 VIProductVersion "${VERSION_QUAD}"
@@ -62,10 +65,19 @@ Function .onInit
     MessageBox MB_OK|MB_ICONSTOP "${APP_NAME} requires 64-bit Windows."
     Abort
   ${EndIf}
+  SetShellVarContext current
   SetRegView 64
+  ; Earlier installers were per-machine (Program Files, HKLM). That copy needs an
+  ; administrator to remove, so say so; this one installs alongside it for this user.
+  ReadRegStr $0 HKLM "${UNINST_KEY}" "InstallLocation"
+  ${If} $0 != ""
+    MessageBox MB_OKCANCEL|MB_ICONINFORMATION "${APP_NAME} is also installed for all users in$\r$\n$0$\r$\n$\r$\nThis installer adds a copy for your account only. To remove the all-users copy, uninstall it from Settings > Apps (needs an administrator).$\r$\n$\r$\nContinue?" /SD IDOK IDOK +2
+    Abort
+  ${EndIf}
 FunctionEnd
 
 Function un.onInit
+  SetShellVarContext current
   SetRegView 64
 FunctionEnd
 
@@ -87,18 +99,18 @@ Section "${APP_NAME} (required)" SecApp
   CreateShortcut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$INSTDIR\${APP_EXE}" "" "$INSTDIR\switchyard.ico"
   CreateShortcut "$SMPROGRAMS\${APP_NAME}\Uninstall ${APP_NAME}.lnk" "$INSTDIR\uninstall.exe"
 
-  WriteRegStr HKLM "${UNINST_KEY}" "DisplayName" "${APP_NAME}"
-  WriteRegStr HKLM "${UNINST_KEY}" "DisplayVersion" "${VERSION}"
-  WriteRegStr HKLM "${UNINST_KEY}" "Publisher" "${PUBLISHER}"
-  WriteRegStr HKLM "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\switchyard.ico"
-  WriteRegStr HKLM "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
-  WriteRegStr HKLM "${UNINST_KEY}" "UninstallString" '"$INSTDIR\uninstall.exe"'
-  WriteRegStr HKLM "${UNINST_KEY}" "QuietUninstallString" '"$INSTDIR\uninstall.exe" /S'
-  WriteRegDWORD HKLM "${UNINST_KEY}" "NoModify" 1
-  WriteRegDWORD HKLM "${UNINST_KEY}" "NoRepair" 1
+  WriteRegStr HKCU "${UNINST_KEY}" "DisplayName" "${APP_NAME}"
+  WriteRegStr HKCU "${UNINST_KEY}" "DisplayVersion" "${VERSION}"
+  WriteRegStr HKCU "${UNINST_KEY}" "Publisher" "${PUBLISHER}"
+  WriteRegStr HKCU "${UNINST_KEY}" "DisplayIcon" "$INSTDIR\switchyard.ico"
+  WriteRegStr HKCU "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
+  WriteRegStr HKCU "${UNINST_KEY}" "UninstallString" '"$INSTDIR\uninstall.exe"'
+  WriteRegStr HKCU "${UNINST_KEY}" "QuietUninstallString" '"$INSTDIR\uninstall.exe" /S'
+  WriteRegDWORD HKCU "${UNINST_KEY}" "NoModify" 1
+  WriteRegDWORD HKCU "${UNINST_KEY}" "NoRepair" 1
   ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
   IntFmt $0 "0x%08X" $0
-  WriteRegDWORD HKLM "${UNINST_KEY}" "EstimatedSize" "$0"
+  WriteRegDWORD HKCU "${UNINST_KEY}" "EstimatedSize" "$0"
 SectionEnd
 
 Section "Desktop shortcut" SecDesktop
@@ -109,7 +121,7 @@ Section "Add swy CLI to PATH" SecPath
   nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\path.ps1" -Action add -Dir "$INSTDIR"'
   Pop $0
   ${If} $0 == 0
-    WriteRegDWORD HKLM "${UNINST_KEY}" "AddedToPath" 1
+    WriteRegDWORD HKCU "${UNINST_KEY}" "AddedToPath" 1
     SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
   ${Else}
     DetailPrint "Could not update PATH (exit $0); add $INSTDIR to PATH manually."
@@ -125,7 +137,7 @@ SectionEnd
 Section "Uninstall"
   nsExec::Exec 'taskkill /IM "${APP_EXE}" /F'
 
-  ReadRegDWORD $0 HKLM "${UNINST_KEY}" "AddedToPath"
+  ReadRegDWORD $0 HKCU "${UNINST_KEY}" "AddedToPath"
   ${If} $0 == 1
     nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\path.ps1" -Action remove -Dir "$INSTDIR"'
     Pop $0
@@ -146,5 +158,5 @@ Section "Uninstall"
   Delete "$DESKTOP\${APP_NAME}.lnk"
 
   ; User data (profiles, history, drivers) is left in place on purpose.
-  DeleteRegKey HKLM "${UNINST_KEY}"
+  DeleteRegKey HKCU "${UNINST_KEY}"
 SectionEnd
