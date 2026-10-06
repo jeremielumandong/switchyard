@@ -36,7 +36,14 @@ pub struct PgDriver;
 
 /// Build a rustls connector with the platform's root certificates.
 pub fn tls_connector() -> Result<MakeRustlsConnect> {
-    Ok(MakeRustlsConnect::new(crate::tls::client_config()?))
+    tls_connector_with(None)
+}
+
+/// A connector that also trusts `extra_pem` (company CA or pinned certificate).
+pub fn tls_connector_with(extra_pem: Option<&str>) -> Result<MakeRustlsConnect> {
+    Ok(MakeRustlsConnect::new(crate::tls::client_config_with(
+        extra_pem,
+    )?))
 }
 
 pub(crate) fn map_error(e: tokio_postgres::Error, cancelled: bool) -> DbError {
@@ -125,7 +132,7 @@ impl Driver for PgDriver {
                 tls_host: cfg.host.clone(),
                 tls: match cfg.ssl_mode {
                     SslMode::Disable => None,
-                    _ => Some(tls_connector()?),
+                    _ => Some(tls_connector_with(cfg.trusted_ca_pem.as_deref())?),
                 },
             };
             let stream = tokio::time::timeout(

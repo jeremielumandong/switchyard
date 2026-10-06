@@ -35,6 +35,8 @@ pub enum PromptAnswer {
     Secret(Option<SecretString>),
     /// Keyboard-interactive answers (`None` = cancelled).
     Interactive(Option<Vec<SecretString>>),
+    /// Stop waiting (a Microsoft Entra sign-in dialog was cancelled).
+    Cancel,
 }
 
 /// Connection state of an SSH terminal.
@@ -553,6 +555,34 @@ pub enum Event {
         request: RequestId,
         /// The questions.
         req: InteractiveRequest,
+    },
+    /// Microsoft Entra sign-in in the browser: open `url`, then wait. Answer with
+    /// [`PromptAnswer::Cancel`] to give up; [`Event::PromptClosed`] ends the wait.
+    EntraSignIn {
+        /// Request id.
+        request: RequestId,
+        /// Connection name.
+        connection: String,
+        /// Microsoft's sign-in page.
+        url: String,
+    },
+    /// Microsoft Entra device-code sign-in: show the code and where to enter it.
+    EntraDeviceCode {
+        /// Request id.
+        request: RequestId,
+        /// Connection name.
+        connection: String,
+        /// The code to enter.
+        code: String,
+        /// Where to enter it.
+        url: String,
+        /// Microsoft's instruction text.
+        message: String,
+    },
+    /// A prompt the runtime raised is no longer needed (sign-in finished or failed).
+    PromptClosed {
+        /// Request id.
+        request: RequestId,
     },
     /// Live tunnels (sent when they open, stop, or their counters change).
     Tunnels(Vec<TunnelInfo>),

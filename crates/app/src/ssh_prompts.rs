@@ -1,5 +1,6 @@
-//! Questions from SSH connections: unknown host keys, passwords and passphrases, and
-//! keyboard-interactive (MFA) prompts. They queue above every other overlay.
+//! Questions from the runtime: unknown SSH host keys, passwords and passphrases,
+//! keyboard-interactive (MFA) prompts, and Microsoft Entra sign-ins. They queue above every
+//! other overlay.
 
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -45,6 +46,17 @@ pub enum SshPrompt {
         /// One input per prompt.
         inputs: Vec<Entity<InputState>>,
     },
+    /// Microsoft Entra sign-in in progress (browser or device code).
+    Entra {
+        /// Request id (answer [`PromptAnswer::Cancel`] to give up).
+        request: RequestId,
+        /// Connection name.
+        connection: String,
+        /// Sign-in page (browser) or where to enter the code.
+        url: String,
+        /// Device code and Microsoft's instructions, for device-code sign-in.
+        device: Option<(String, String)>,
+    },
 }
 
 impl SshPrompt {
@@ -52,7 +64,8 @@ impl SshPrompt {
         match self {
             SshPrompt::HostKey { request, .. }
             | SshPrompt::Secret { request, .. }
-            | SshPrompt::Interactive { request, .. } => *request,
+            | SshPrompt::Interactive { request, .. }
+            | SshPrompt::Entra { request, .. } => *request,
         }
     }
 }
@@ -121,6 +134,47 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Queue a Microsoft Entra sign-in. The browser opens right away for interactive
+    /// sign-in; device-code sign-in shows the code first.
+    pub(crate) fn push_entra_prompt(
+        &mut self,
+        request: RequestId,
+        connection: String,
+        url: String,
+        device: Option<(String, String)>,
+        cx: &mut Context<Self>,
+    ) {
+        if device.is_none() {
+            cx.open_url(&url);
+        }
+        self.prompts.push_back(SshPrompt::Entra {
+            request,
+            connection,
+            url,
+            device,
+        });
+        cx.notify();
+    }
+
+    /// The runtime no longer needs an answer (sign-in finished or failed).
+    pub(crate) fn close_prompt(
+        &mut self,
+        request: RequestId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(i) = self.prompts.iter().position(|p| p.request() == request) else {
+            return;
+        };
+        if i == 0 {
+            self.prompts.pop_front();
+            self.focus_next_prompt(window, cx);
+        } else {
+            self.prompts.remove(i);
+        }
+        cx.notify();
+    }
+
     fn finish_prompt(&mut self, answer: PromptAnswer, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(p) = self.prompts.pop_front() {
             self.core.send(Command::AnswerPrompt {
@@ -128,6 +182,11 @@ impl Workspace {
                 answer,
             });
         }
+        self.focus_next_prompt(window, cx);
+        cx.notify();
+    }
+
+    fn focus_next_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Focus the next question's first field.
         match self.prompts.front() {
             Some(SshPrompt::Secret { input, .. }) => {
@@ -138,7 +197,7 @@ impl Workspace {
                     i.update(cx, |i, cx| i.focus(window, cx));
                 }
             }
-            Some(SshPrompt::HostKey { .. }) => {}
+            Some(SshPrompt::HostKey { .. } | SshPrompt::Entra { .. }) => {}
             // Last question answered: typing goes back to the active terminal.
             None => {
                 if let Some(Tab::Terminal(t)) = self.tabs.get(self.active) {
@@ -147,7 +206,6 @@ impl Workspace {
                 }
             }
         }
-        cx.notify();
     }
 
     /// Cancel the front question (Escape).
@@ -157,6 +215,7 @@ impl Workspace {
             Some(SshPrompt::HostKey { .. }) => PromptAnswer::HostKey(HostKeyDecision::Reject),
             Some(SshPrompt::Secret { .. }) => PromptAnswer::Secret(None),
             Some(SshPrompt::Interactive { .. }) => PromptAnswer::Interactive(None),
+            Some(SshPrompt::Entra { .. }) => PromptAnswer::Cancel,
         };
         self.finish_prompt(answer, window, cx);
         true
@@ -333,6 +392,12 @@ impl Workspace {
                     .child(buttons(p, cx))
                     .into_any_element()
             }
+            SshPrompt::Entra {
+                connection,
+                url,
+                device,
+                ..
+            } => entra_body(connection, url, device.as_ref(), p, cx),
         };
         Some(
             div()
@@ -414,4 +479,116 @@ fn buttons(p: &Palette, cx: &mut Context<Workspace>) -> impl IntoElement {
             ui::button("sp-ok", "Connect", Kind::Primary, p)
                 .on_click(cx.listener(|this, _, w, cx| this.submit_prompt(w, cx))),
         )
+}
+
+fn entra_body(
+    connection: &str,
+    url: &str,
+    device: Option<&(String, String)>,
+    p: &Palette,
+    cx: &mut Context<Workspace>,
+) -> AnyElement {
+    let title = div()
+        .text_size(px(14.))
+        .font_weight(FontWeight::SEMIBOLD)
+        .mb(px(4.))
+        .child(format!("Sign in to Microsoft for {connection}"));
+    let note = |text: String| {
+        div()
+            .text_color(p.fg2)
+            .text_size(px(12.5))
+            .mb(px(12.))
+            .child(text)
+    };
+    let cancel = ui::button("entra-cancel", "Cancel", Kind::Ghost, p).on_click(cx.listener(
+        |this, _, w, cx| {
+            this.cancel_prompt(w, cx);
+        },
+    ));
+    let open_url = url.to_owned();
+    match device {
+        Some((code, message)) => {
+            let copy = code.clone();
+            div()
+                .flex()
+                .flex_col()
+                .child(title)
+                .child(note(message.clone()))
+                .child(
+                    div()
+                        .font_family(MONO)
+                        .text_size(px(22.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_center()
+                        .bg(p.bg)
+                        .border_1()
+                        .border_color(p.bd)
+                        .rounded(px(6.))
+                        .py(px(10.))
+                        .mb(px(14.))
+                        .child(code.clone()),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(6.))
+                        .justify_end()
+                        .child(cancel)
+                        .child(
+                            ui::button("entra-copy", "Copy code", Kind::Secondary, p).on_click(
+                                move |_, _, cx| {
+                                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                                        copy.clone(),
+                                    ))
+                                },
+                            ),
+                        )
+                        .child(
+                            ui::button("entra-open", "Open sign-in page", Kind::Primary, p)
+                                .on_click(move |_, _, cx| cx.open_url(&open_url)),
+                        ),
+                )
+                .into_any_element()
+        }
+        None => {
+            let copy = url.to_owned();
+            div()
+                .flex()
+                .flex_col()
+                .child(title)
+                .child(note(
+                    "Finish signing in in your browser, including any MFA step. Switchyard \
+                     connects as soon as Microsoft confirms."
+                        .into(),
+                ))
+                .child(
+                    div()
+                        .text_color(p.fg3)
+                        .text_size(px(11.))
+                        .mb(px(14.))
+                        .child("No browser window? Open it again, or copy the link into a browser on this computer."),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(6.))
+                        .justify_end()
+                        .child(cancel)
+                        .child(
+                            ui::button("entra-copy", "Copy link", Kind::Secondary, p).on_click(
+                                move |_, _, cx| {
+                                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                                        copy.clone(),
+                                    ))
+                                },
+                            ),
+                        )
+                        .child(
+                            ui::button("entra-open", "Open browser again", Kind::Primary, p)
+                                .on_click(move |_, _, cx| cx.open_url(&open_url)),
+                        ),
+                )
+                .into_any_element()
+        }
+    }
 }

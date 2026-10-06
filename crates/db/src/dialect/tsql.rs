@@ -233,14 +233,26 @@ impl Dialect for TSqlDialect {
         found
     }
 
+    /// Parameters become `@P1`, `@P2`, … (positional, as the driver binds them); a name
+    /// used twice maps to the same position. Declared variables are left alone.
     fn bind_params(&self, sql: &str) -> (String, Vec<String>) {
         let mut names: Vec<String> = Vec::new();
+        let mut out = String::with_capacity(sql.len());
+        let mut last = 0;
         for p in self.find_params(sql) {
-            if !names.iter().any(|n| n.eq_ignore_ascii_case(&p.name)) {
-                names.push(p.name);
-            }
+            let ix = match names.iter().position(|n| n.eq_ignore_ascii_case(&p.name)) {
+                Some(ix) => ix,
+                None => {
+                    names.push(p.name.clone());
+                    names.len() - 1
+                }
+            };
+            out.push_str(&sql[last..p.start]);
+            out.push_str(&format!("@P{}", ix + 1));
+            last = p.end;
         }
-        (sql.to_owned(), names)
+        out.push_str(&sql[last..]);
+        (out, names)
     }
 
     fn parser_dialect(&self) -> Box<dyn sqlparser::dialect::Dialect> {
@@ -277,6 +289,19 @@ impl Dialect for TSqlDialect {
 
     fn functions(&self) -> &'static [&'static str] {
         TSQL_FUNCTIONS
+    }
+
+    fn object_folders(&self) -> &'static [crate::catalog::ObjectKind] {
+        use crate::catalog::ObjectKind as K;
+        &[
+            K::Table,
+            K::View,
+            K::Procedure,
+            K::Function,
+            K::Sequence,
+            K::Synonym,
+            K::Type,
+        ]
     }
 
     fn default_schema(&self) -> &'static str {
@@ -328,6 +353,10 @@ mod tests {
         let p = d.find_params("declare @x int = @limit; select @@rowcount, @x, @name, '@no'");
         let names: Vec<_> = p.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["@limit", "@name"]);
+        let (sql, names) =
+            d.bind_params("declare @x int = @limit; select @x, @Name, @limit, @@rowcount");
+        assert_eq!(sql, "declare @x int = @P1; select @x, @P2, @P1, @@rowcount");
+        assert_eq!(names, ["@limit", "@Name"]);
     }
 
     #[test]
