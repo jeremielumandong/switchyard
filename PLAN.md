@@ -318,9 +318,14 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   signing/notarization via env vars (not yet exercised with a real Developer ID). Cask pending.
 - [ ] **M6-2 Windows.** Signed MSI, winget manifest.
   Partial: NSIS installer via `packaging/windows/build-windows.ps1` (optional signtool signing).
+  `release-windows.yml` builds it with a static CRT, signs the exes, uninstaller and installer
+  with Azure Trusted Signing (`-Sign`), verifies the publisher and uploads to the draft release.
+  MSI and winget pending.
   MSI vs NSIS open, see DECISIONS 2026-10-05. winget manifest pending.
 - [ ] **M6-3 Linux.** AppImage, `.deb`, `.rpm`, AUR PKGBUILD; Wayland and X11 checked.
-  Partial: AppImage via `packaging/linux/build-appimage.sh`. `.deb`, `.rpm`, AUR pending.
+  Partial: AppImage via `packaging/linux/build-appimage.sh` (appimagetool and runtime pinned by
+  SHA-256); `release.yml` builds it on Ubuntu 22.04 and uploads to the draft release.
+  `.deb`, `.rpm`, AUR pending.
 - [ ] **M6-4 Auto-update.** Signed updates on macOS and Windows; Linux defers to package managers.
 - [ ] **M6-5 Performance gates.** CI jobs that fail when a budget from CLAUDE.md is exceeded.
 - [ ] **M6-6 Crash reporting.** Opt-in, scrubbed of SQL text, hostnames and credentials;
@@ -335,7 +340,7 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 ## Follow-ups
 
 (Add items here instead of doing them mid-task.)
-- Release CI workflow that runs `packaging/` on a tag and uploads `dist/` to a GitHub release.
+- Release workflow for macOS (`build-macos.sh` + notarization) next to the Linux and Windows ones.
 - Log file for release builds (Windows GUI subsystem hides stdout).
 - Real app icon to replace the generated placeholder in `packaging/icons/`.
 

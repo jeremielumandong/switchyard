@@ -2,7 +2,7 @@
 ;
 ; Built by build-windows.ps1, which passes:
 ;   /DVERSION=0.1.0  /DVERSION_QUAD=0.1.0.0  /DBIN_DIR=<dir with switchyard.exe, swy.exe>
-;   /DREPO_ROOT=<repo>  /DOUT_FILE=<installer path>
+;   /DREPO_ROOT=<repo>  /DOUT_FILE=<installer path>  [/DSIGN_SCRIPT=<sign-one.ps1>]
 
 Unicode true
 SetCompressor /SOLID lzma
@@ -17,6 +17,13 @@ SetCompressor /SOLID lzma
 !define PUBLISHER "Switchyard"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}"
 !define ICON_FILE "${REPO_ROOT}\packaging\icons\switchyard.ico"
+
+; Signing (build-windows.ps1 -Sign passes /DSIGN_SCRIPT): the uninstaller written into the
+; installer and the installer itself are signed as they are produced. Needs NSIS 3.08+.
+!ifdef SIGN_SCRIPT
+  !uninstfinalize 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${SIGN_SCRIPT}" "%1"' = 0
+  !finalize 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${SIGN_SCRIPT}" "%1"' = 0
+!endif
 
 Name "${APP_NAME} ${VERSION}"
 OutFile "${OUT_FILE}"
