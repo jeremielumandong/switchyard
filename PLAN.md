@@ -160,11 +160,13 @@ Exit: one login to a Host opens a terminal and a tunneled PostgreSQL connection.
 - [x] **M2-8 Splits and broadcast.** Split panes in a terminal tab; opt-in input broadcast.
   Done when: broadcast sends keystrokes to all panes only when enabled.
   Note: Up to four side-by-side panes per tab (Split / Ctrl+Shift+D), broadcast toggle with a banner; checked in the app that input reaches every pane only while broadcast is on. No automated test for broadcast.
-- [ ] **M2-9 Tunnels.** Local forwards on ephemeral ports; shared tunnel registry; DB connections
+- [x] **M2-9 Tunnels.** Local forwards on ephemeral ports; shared tunnel registry; DB connections
   "via Host" open tunnels automatically; PostgreSQL cancel goes through the same tunnel.
   Done when: integration test queries and cancels PostgreSQL through the docker SSH server.
-- [ ] **M2-10 Tunnel manager UI.** List local port, target, status, bytes; stop a tunnel.
+  Note: `remote::ssh::Tunnel`: listener on 127.0.0.1:<ephemeral>, one direct-tcpip channel per connection, byte counters, keeps its SSH session and logs in again after a drop. Core shares one tunnel per (Host, target) across sessions; "via Host" connections use it for connect and cancel. `crates/core/tests/tunnel_pg.rs` queries, cancels `pg_sleep` (< 1 s), checks sharing and stopping; `tunnel_forwards_counts_and_stops` in remote.
+- [x] **M2-10 Tunnel manager UI.** List local port, target, status, bytes; stop a tunnel.
   Done when: stopping a tunnel disconnects dependent DB sessions with a clear message.
+  Note: Status-bar popover from the design: local port, Host → target, status (Active / Reconnecting / Failed with the error as tooltip), bytes, Stop. Stopping ends dependent sessions with "The tunnel through <Host> on port N was stopped · reconnect to continue" (test + checked in the app).
 
 ## M3 — SQL Server and Driver Manager
 
