@@ -55,7 +55,7 @@ impl EntraApp {
             s.map(str::trim).filter(|s| !s.is_empty())
         }
         let client_id = nonempty(client_id)
-            .or(BUILTIN_CLIENT_ID)
+            .or(nonempty(BUILTIN_CLIENT_ID))
             .ok_or_else(|| {
                 DbError::Unsupported(
                     "this build has no Microsoft Entra app registration; set an application \

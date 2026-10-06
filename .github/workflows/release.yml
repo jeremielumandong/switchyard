@@ -1,0 +1,76 @@
+name: Linux release package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  # Shared with Windows: GitHub can create duplicate drafts for the same tag.
+  group: shared-release
+  cancel-in-progress: false
+
+jobs:
+  package:
+    if: github.ref == 'refs/heads/main'
+    # The oldest supported runner: glibc is not bundled, so this sets the minimum distro.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require passing CI for this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          gh api "repos/$REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&branch=main&event=push&per_page=1" > /tmp/ci-runs.json
+          python3 - <<'PY'
+          import json
+          runs = json.load(open('/tmp/ci-runs.json'))['workflow_runs']
+          if not runs or runs[0]['conclusion'] != 'success':
+              raise SystemExit('Release blocked: the latest main-branch CI run for this commit must pass first.')
+          PY
+      - name: Check shared draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/upload-release-assets.py linux --check
+      - name: GPUI and packaging libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libvulkan-dev \
+            libfontconfig1-dev libfreetype-dev libxcb1-dev libx11-xcb-dev libssl-dev
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: '1.98.1'
+      - name: Build the AppImage
+        env:
+          CARGO_BUILD_JOBS: '2'
+          CARGO_INCREMENTAL: '0'
+          # Baked into the build (empty when the repository variable is unset).
+          SWITCHYARD_ENTRA_CLIENT_ID: ${{ vars.SWITCHYARD_ENTRA_CLIENT_ID }}
+        run: bash packaging/linux/build-appimage.sh
+      - name: Check the packaged executables
+        run: |
+          set -euo pipefail
+          appimage=$(ls dist/Switchyard-*-x86_64.AppImage)
+          work=$(mktemp -d)
+          (cd "$work" && "$GITHUB_WORKSPACE/$appimage" --appimage-extract >/dev/null)
+          ARGV0=swy "$work/squashfs-root/AppRun" --version
+          test -x "$work/squashfs-root/usr/bin/switchyard"
+          rm -rf "$work"
+      - name: Write checksum
+        run: |
+          cd dist
+          for f in Switchyard-*-x86_64.AppImage; do sha256sum "$f" > "$f.sha256"; done
+      - name: Upload Linux assets to shared draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/upload-release-assets.py linux
