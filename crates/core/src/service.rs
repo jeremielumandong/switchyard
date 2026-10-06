@@ -13,7 +13,6 @@ use crate::prompts::BusPrompter;
 use crate::terminals::{SshTerminalSpec, TermInput, Terminals};
 use futures::StreamExt;
 use secrecy::SecretString;
-use switchyard_db::TunnelEndpoint;
 use switchyard_db::d1::D1Driver;
 use switchyard_db::guard;
 use switchyard_db::mssql::MssqlDriver;
@@ -22,6 +21,7 @@ use switchyard_db::{
     CancelHandle, DbConfig, DbError, DbSession, Driver, Engine, IntrospectScope, ResultEvent,
     dialect_for,
 };
+use switchyard_db::{DbAuthMethod, TunnelEndpoint};
 use switchyard_drivers::Registry;
 use switchyard_drivers::install::CommandRunner;
 use switchyard_remote::ssh::{
@@ -1302,6 +1302,11 @@ impl Service {
         cfg.auth = c.auth;
         if c.auth.is_entra() {
             cfg.access_token = Some(self.entra.token(c, cfg.password.clone()).await?);
+        }
+        // Windows signs in with SSPI inside the driver; elsewhere Kerberos needs GSSAPI.
+        if c.auth == DbAuthMethod::Integrated && c.engine == Engine::SqlServer && !cfg!(windows) {
+            let k = crate::components::kerberos(&self.components).await?;
+            cfg.security = Some(Arc::new(k));
         }
         cfg.ssl_mode = c.ssl_mode;
         cfg.read_only = c.read_only;

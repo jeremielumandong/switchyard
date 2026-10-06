@@ -157,6 +157,24 @@ impl Registry {
         Ok(self.describe(&spec, &env))
     }
 
+    /// GSSAPI for Kerberos: the Driver Manager's `gssapi` component, or the system GSS
+    /// framework on macOS.
+    pub fn gssapi(&self) -> Result<crate::gssapi::Gssapi> {
+        #[cfg(target_os = "macos")]
+        let lib = {
+            if let Some(l) = lock(&self.loaded).get(GSSAPI) {
+                l.clone()
+            } else {
+                let l = Arc::new(open_library(Path::new(crate::gssapi::MACOS_FRAMEWORK))?);
+                lock(&self.loaded).insert(GSSAPI.to_owned(), l.clone());
+                l
+            }
+        };
+        #[cfg(not(target_os = "macos"))]
+        let lib = self.load(GSSAPI)?;
+        crate::gssapi::Gssapi::new(lib)
+    }
+
     /// Load a component's library, once; later calls share it.
     pub fn load(&self, id: &str) -> Result<Arc<Library>> {
         if let Some(l) = lock(&self.loaded).get(id) {
@@ -187,7 +205,7 @@ impl Registry {
 }
 
 #[allow(unsafe_code)]
-fn open_library(path: &Path) -> Result<Library> {
+pub(crate) fn open_library(path: &Path) -> Result<Library> {
     // SAFETY: loading a library runs its initializers. Only components the Driver Manager
     // found are loaded: system packages, archives verified against the signed manifest, or a
     // path the user chose for that component.
@@ -198,6 +216,8 @@ fn open_library(path: &Path) -> Result<Library> {
 }
 
 const OVERRIDES: &str = "paths.json";
+/// The Kerberos / GSSAPI component's id in the manifest.
+pub const GSSAPI: &str = "gssapi";
 
 fn read_overrides(dir: &Path) -> HashMap<String, PathBuf> {
     match std::fs::read(dir.join(OVERRIDES)) {
@@ -310,5 +330,23 @@ mod tests {
         let a = r.load(&id).unwrap();
         let b = r.load(&id).unwrap();
         assert!(Arc::ptr_eq(&a, &b), "loaded once");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn gssapi_comes_from_the_detected_system_library() {
+        let t = tempfile::tempdir().unwrap();
+        let r = Registry::with_env(
+            Manifest::bundled(),
+            DetectEnv::system(t.path().join("drivers")),
+            Box::new(|_| false),
+        );
+        if r.component(GSSAPI).unwrap().status.is_installed() {
+            r.gssapi()
+                .expect("the detected libgssapi_krb5 loads and has the API");
+        } else {
+            // Not installed here: integrated auth reports it instead of crashing.
+            assert!(r.gssapi().is_err());
+        }
     }
 }
