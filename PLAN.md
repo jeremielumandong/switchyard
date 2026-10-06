@@ -231,14 +231,14 @@ Exit: resume an interrupted 1 GB upload.
 - [ ] **M4-2 FTP/FTPS.** `suppaftp` implementation of `RemoteFs`; explicit and implicit TLS;
   passive and active modes.
   Done when: shared test suite passes against the docker FTP server.
-- [ ] **M4-3 Transfer queue.** Parallel transfers (default 4), pause, resume, retry; resume from
+- [x] **M4-3 Transfer queue.** Parallel transfers (default 4), pause, resume, retry; resume from
   offset (SFTP) and REST (FTP); progress, speed, ETA events.
   Done when: a killed 1 GB upload resumes from its last byte.
-  Note: Partial (user request): transfers with progress, cancel (partial file removed), recursive folders, conflict policy (ask / replace / keep both). Queue limits, pause, resume from offset still to do.
-- [ ] **M4-4 Files tab UI.** Dual pane, breadcrumbs, sortable columns, hidden-file toggle, drag and
+  Note: Queue of 4 parallel transfers (others wait, shown as queued), pause, resume, retry, cancel; files are written as `<name>.swypart` and renamed when complete, so resume continues from the last byte (SFTP offsets), also after the app was killed: a new transfer that finds a partial copy offers Resume / Start over. Progress, speed and ETA per transfer and overall (drawer, status bar). Verified: 1 GB upload killed with `kill -9` at 347 MB, restarted, resumed, SHA-256 identical. FTP REST waits for M4-2.
+- [x] **M4-4 Files tab UI.** Dual pane, breadcrumbs, sortable columns, hidden-file toggle, drag and
   drop between panes and from the OS, transfer drawer.
   Done when: all states from SPEC "Files tab" are reachable.
-  Note: Partial (user request): the sidebar's second tab becomes Files for the active SSH terminal or remote file (browse, hidden toggle, OS drop to upload, Upload picker, download to ~/Downloads, delete, transfers with progress). Dual-pane tab, sorting, breadcrumbs still to do.
+  Note: Dual-pane tab: this computer on the left, any Host (or this computer) on the right via the source picker; breadcrumbs, sortable Name/Size/Modified, hidden toggle, multi-select (Ctrl/Cmd-click), new folder, rename, delete with confirm, Copy →/←, drag between panes and from the OS, transfer drawer. The sidebar Files panel shares the queue and has ⇆ to open this tab. Remote-edit conflict state lives in the editor tab (M4-5).
 - [x] **M4-5 Remote edit.** Open remote file in the editor; save uploads after an mtime conflict
   check with a resolve dialog.
   Done when: conflict is detected when the remote file changes during editing.

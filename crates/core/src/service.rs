@@ -581,12 +581,16 @@ impl Service {
                 to,
                 dir,
                 on_conflict,
+                resume,
             } => {
-                let result = self.transfer(id, &from, &path, &to, dir, on_conflict).await;
+                let result = self
+                    .transfer(id, &from, &path, &to, dir, on_conflict, resume)
+                    .await;
                 self.files.finish(id);
                 self.emit(Event::TransferDone { id, result });
             }
             Command::CancelTransfer { id } => self.files.cancel(id),
+            Command::PauseTransfer { id } => self.files.pause(id),
             Command::FsOp { request, fs, op } => {
                 let result = match self.file_system(&fs).await {
                     Ok((f, posix)) => match &op {
@@ -787,6 +791,7 @@ impl Service {
         Ok((f, true))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn transfer(
         &self,
         id: u64,
@@ -795,8 +800,29 @@ impl Service {
         to: &crate::bus::FsRef,
         dir: Option<PathBuf>,
         on_conflict: crate::bus::OnConflict,
+        resume: bool,
     ) -> std::result::Result<PathBuf, crate::bus::TransferError> {
         use crate::bus::TransferError;
+        // Pause / cancel work while waiting for a slot too.
+        let control = self.files.start(id);
+        let slot = match self.files.slots.clone().try_acquire_owned() {
+            Ok(s) => s,
+            Err(_) => {
+                self.emit(Event::TransferQueued { id });
+                self.files
+                    .slots
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|e| TransferError::Failed(e.to_string()))?
+            }
+        };
+        let _slot = slot;
+        match control.load(std::sync::atomic::Ordering::SeqCst) {
+            1 => return Err(TransferError::Cancelled),
+            2 => return Err(TransferError::Paused),
+            _ => {}
+        }
         let fail = |e: CoreError| TransferError::Failed(e.to_string());
         let (src, src_posix) = self.file_system(from).await.map_err(fail)?;
         let (dst, dst_posix) = self.file_system(to).await.map_err(fail)?;
@@ -810,7 +836,6 @@ impl Service {
                 d
             }
         };
-        let cancel = self.files.start(id);
         let name = switchyard_remote::fs::file_name(path);
         let events = self.events.clone();
         let progress = move |done: u64, total: Option<u64>| {
@@ -829,7 +854,8 @@ impl Service {
             dst_posix,
             &dir,
             on_conflict,
-            &cancel,
+            resume,
+            &control,
             &progress,
         )
         .await

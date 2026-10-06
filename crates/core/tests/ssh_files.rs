@@ -107,6 +107,7 @@ async fn browse_transfer_and_edit_over_sftp() {
         to: fs.clone(),
         dir: Some(home.clone()),
         on_conflict: OnConflict::Ask,
+        resume: false,
     });
     let mut progress = 0;
     let remote = next(&mut rx, 20, |e| match e {
@@ -129,6 +130,7 @@ async fn browse_transfer_and_edit_over_sftp() {
         to: fs.clone(),
         dir: Some(home.clone()),
         on_conflict: OnConflict::Ask,
+        resume: false,
     });
     let r = next(&mut rx, 10, |e| match e {
         Event::TransferDone { id: 11, result } => Some(result),
@@ -146,6 +148,7 @@ async fn browse_transfer_and_edit_over_sftp() {
         to: FsRef::Local,
         dir: Some(back.path().to_owned()),
         on_conflict: OnConflict::Ask,
+        resume: false,
     });
     let got = next(&mut rx, 20, |e| match e {
         Event::TransferDone { id: 12, result } => Some(result.unwrap()),
@@ -153,6 +156,84 @@ async fn browse_transfer_and_edit_over_sftp() {
     })
     .await;
     assert_eq!(std::fs::read(got).unwrap().len(), 2_500_000);
+
+    // Pause a 30 MB upload part-way, then resume it from its last byte.
+    let big: Vec<u8> = (0..30_000_000u32).map(|i| (i % 241) as u8).collect();
+    std::fs::write(src.join("big.bin"), &big).unwrap();
+    let upload = |id: u64, resume: bool| Command::Transfer {
+        id,
+        from: FsRef::Local,
+        path: src.join("big.bin"),
+        to: fs.clone(),
+        dir: Some(remote.clone()),
+        on_conflict: OnConflict::Ask,
+        resume,
+    };
+    h.send(upload(40, false));
+    next(&mut rx, 20, |e| match e {
+        Event::TransferProgress { id: 40, done, .. } if done > 0 => Some(()),
+        _ => None,
+    })
+    .await;
+    h.send(Command::PauseTransfer { id: 40 });
+    let r = next(&mut rx, 20, |e| match e {
+        Event::TransferDone { id: 40, result } => Some(result),
+        _ => None,
+    })
+    .await;
+    assert_eq!(r, Err(TransferError::Paused));
+    h.send(Command::ListDir {
+        request: 41,
+        fs: fs.clone(),
+        path: Some(remote.clone()),
+    });
+    let part = next(&mut rx, 10, |e| match e {
+        Event::FsListing {
+            request: 41,
+            result,
+            ..
+        } => Some(result.unwrap()),
+        _ => None,
+    })
+    .await
+    .into_iter()
+    .find(|e| e.name == "big.bin.swypart")
+    .expect("partial file kept");
+    assert!(part.size > 0 && part.size < 30_000_000, "{}", part.size);
+    h.send(upload(42, true));
+    let mut first = None;
+    next(&mut rx, 60, |e| match e {
+        Event::TransferProgress { id: 42, done, .. } => {
+            if done > 0 && first.is_none() {
+                first = Some(done);
+            }
+            None
+        }
+        Event::TransferDone { id: 42, result } => Some(result.unwrap()),
+        _ => None,
+    })
+    .await;
+    assert!(
+        first.unwrap() >= part.size,
+        "resumed at {first:?}, part was {}",
+        part.size
+    );
+    // Byte-for-byte: download it back.
+    h.send(Command::Transfer {
+        id: 43,
+        from: fs.clone(),
+        path: remote.join("big.bin"),
+        to: FsRef::Local,
+        dir: Some(back.path().to_owned()),
+        on_conflict: OnConflict::Replace,
+        resume: false,
+    });
+    let got = next(&mut rx, 60, |e| match e {
+        Event::TransferDone { id: 43, result } => Some(result.unwrap()),
+        _ => None,
+    })
+    .await;
+    assert!(std::fs::read(got).unwrap() == big, "identical after resume");
 
     // Edit: read, save, then a change made elsewhere is a conflict.
     let env_path = remote.join("conf/app.env");
@@ -235,7 +316,10 @@ async fn browse_transfer_and_edit_over_sftp() {
         _ => None,
     })
     .await;
-    assert_eq!(now.content, "PORT=9\n", "the conflicting save wrote nothing");
+    assert_eq!(
+        now.content, "PORT=9\n",
+        "the conflicting save wrote nothing"
+    );
 
     // Clean up with a recursive delete.
     h.send(Command::FsOp {
