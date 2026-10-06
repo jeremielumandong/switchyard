@@ -11,6 +11,7 @@ name = "switchyard"
 path = "src/main.rs"
 
 [dependencies]
+quick-xml.workspace = true
 switchyard-core.workspace = true
 gpui-kit.workspace = true
 lsp-types.workspace = true

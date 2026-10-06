@@ -94,6 +94,8 @@ pub struct Workspace {
     rebind: Vec<(Entity<SqlTab>, Option<ProfileId>)>,
     /// Two tabs on screen at once.
     pub(crate) split: Option<crate::split::Split>,
+    /// The value viewer's decoded image, kept while the same cell stays selected.
+    pub(crate) viewer_image: Option<(u64, std::sync::Arc<gpui_kit::Image>)>,
     _events: Task<()>,
     _subs: Vec<Subscription>,
 }
@@ -191,6 +193,7 @@ impl Workspace {
             pending_files: None,
             rebind: Vec::new(),
             split: None,
+            viewer_image: None,
             _events: task,
             _subs: vec![search_sub],
         }

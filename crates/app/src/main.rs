@@ -24,6 +24,7 @@ mod terminal_tab;
 mod theme;
 mod transfers;
 mod ui;
+mod viewer;
 mod workspace;
 
 use std::borrow::Cow;
