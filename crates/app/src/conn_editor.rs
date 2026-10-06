@@ -720,13 +720,17 @@ impl ConnEditor {
                     .components
                     .iter()
                     .any(|c| c.id == "gssapi" && c.status == ComponentStatus::Missing);
-                self.test = if d.auth == DbAuthMethod::Integrated && gss_missing {
-                    TestState::Missing
+                if d.auth == DbAuthMethod::Integrated && gss_missing {
+                    self.test = TestState::Missing;
                 } else {
-                    TestState::Failed(
-                        "The SQL Server driver ships in milestone M3 (tiberius)".into(),
-                    )
-                };
+                    let request = next_id();
+                    self.test = TestState::Testing(request);
+                    self.core.send(Command::TestConnection {
+                        request,
+                        connection: d,
+                        secret: self.secret(cx),
+                    });
+                }
             }
             (ConnKind::Ssh, Ok(Profile::Host(host))) => {
                 let request = next_id();

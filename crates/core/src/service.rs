@@ -14,6 +14,7 @@ use secrecy::SecretString;
 use switchyard_db::TunnelEndpoint;
 use switchyard_db::d1::D1Driver;
 use switchyard_db::guard;
+use switchyard_db::mssql::MssqlDriver;
 use switchyard_db::pg::PgDriver;
 use switchyard_db::{
     CancelHandle, DbConfig, DbError, DbSession, Driver, Engine, IntrospectScope, ResultEvent,
@@ -176,6 +177,7 @@ impl Service {
         let mut drivers: HashMap<Engine, Arc<dyn Driver>> = HashMap::new();
         drivers.insert(Engine::Postgres, Arc::new(PgDriver));
         drivers.insert(Engine::D1, Arc::new(D1Driver::default()));
+        drivers.insert(Engine::SqlServer, Arc::new(MssqlDriver));
         for (engine, d) in config.extra_drivers {
             drivers.insert(engine, d);
         }

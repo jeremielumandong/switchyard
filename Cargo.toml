@@ -87,6 +87,7 @@ reqwest = { version = "=0.13.5", default-features = false, features = ["rustls-n
 portable-pty = "=0.9.0"
 russh = { version = "=0.64.1", default-features = false, features = ["ring", "rsa", "flate2"] }
 russh-sftp = "=3.0.1"
+tiberius = { version = "=0.13.0", default-features = false, features = ["tds80", "rustls"] }
 hmac = "=0.13.0"
 sha1 = "=0.11.0"
 data-encoding = "2"
