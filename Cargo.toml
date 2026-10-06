@@ -1,0 +1,115 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/app",
+    "crates/core",
+    "crates/store",
+    "crates/db",
+    "crates/remote",
+    "crates/term",
+    "crates/drivers",
+    "crates/plan",
+    "crates/cli",
+    "crates/agents",
+]
+default-members = [
+    "crates/core",
+    "crates/store",
+    "crates/db",
+    "crates/remote",
+    "crates/term",
+    "crates/drivers",
+    "crates/plan",
+    "crates/cli",
+    "crates/agents",
+    "crates/app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/jeremielumandong/switchyard"
+rust-version = "1.97"
+
+[workspace.dependencies]
+# internal
+switchyard-core = { path = "crates/core" }
+switchyard-store = { path = "crates/store" }
+switchyard-db = { path = "crates/db" }
+switchyard-remote = { path = "crates/remote" }
+switchyard-term = { path = "crates/term" }
+switchyard-drivers = { path = "crates/drivers" }
+switchyard-plan = { path = "crates/plan" }
+switchyard-agents = { path = "crates/agents" }
+
+# UI: gpui-kit is the facade over gpui (gpui-pre =0.3.8) + gpui-component 0.7.1, kept in lockstep.
+gpui-kit = { version = "=0.7.1", features = ["tree-sitter-sql"] }
+
+# async
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+futures = "0.3"
+
+# PostgreSQL
+tokio-postgres = "0.7.18"
+tokio-postgres-rustls = { version = "0.14", features = ["ring"] }
+postgres-types = "0.2"
+
+# SQL tooling
+sqlparser = "0.63"
+
+# storage and secrets
+rusqlite = { version = "0.40", features = ["bundled"] }
+keyring = "4.2"
+secrecy = { version = "0.10", features = ["serde"] }
+argon2 = "0.6"
+chacha20poly1305 = "0.11"
+
+# TLS / net
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-native-certs = "0.8"
+
+# platform
+directories = "6"
+libloading = "0.9"
+
+# serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# errors / logs
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# editor completion items (must match gpui-component)
+lsp-types = "0.97"
+
+# plans / cli
+quick-xml = "0.42"
+clap = { version = "4.6", features = ["derive"] }
+
+# testing
+insta = { version = "1.49", features = ["yaml"] }
+criterion = "0.8"
+tempfile = "3"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+
+[profile.dev]
+# Keep debug builds snappy for the UI: optimize dependencies, not our crates.
+opt-level = 0
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

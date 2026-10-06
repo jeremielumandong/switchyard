@@ -1,0 +1,22 @@
+[package]
+name = "switchyard-remote"
+description = "SSH sessions, tunnels, SFTP, FTP/FTPS and the RemoteFs trait"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+futures.workspace = true
+tokio = { workspace = true, features = ["fs"] }
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["fs", "rt-multi-thread", "macros"] }
+insta.workspace = true
+
+[lints]
+workspace = true

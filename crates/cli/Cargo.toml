@@ -1,0 +1,23 @@
+[package]
+name = "switchyard-cli"
+description = "The `swy` command-line tool and MCP server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "swy"
+path = "src/main.rs"
+
+[dependencies]
+switchyard-core.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+futures.workspace = true
+serde_json.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true
