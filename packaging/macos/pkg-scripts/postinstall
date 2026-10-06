@@ -1,0 +1,5 @@
+#!/bin/sh
+# Put the `swy` CLI on PATH for .pkg installs.
+mkdir -p /usr/local/bin
+ln -sf "/Applications/Switchyard.app/Contents/MacOS/swy" /usr/local/bin/swy
+exit 0

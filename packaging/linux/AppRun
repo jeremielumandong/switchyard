@@ -1,0 +1,9 @@
+#!/bin/sh
+# AppImage entry point. Runs the desktop app, or the `swy` CLI when the AppImage is invoked
+# through a symlink named `swy` (ln -s Switchyard.AppImage ~/.local/bin/swy).
+HERE="$(dirname "$(readlink -f "$0")")"
+export PATH="$HERE/usr/bin:$PATH"
+case "$(basename "${ARGV0:-$0}")" in
+  swy|swy.*) exec "$HERE/usr/bin/swy" "$@" ;;
+  *)         exec "$HERE/usr/bin/switchyard" "$@" ;;
+esac

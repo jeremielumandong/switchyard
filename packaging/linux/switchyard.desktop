@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Switchyard
+GenericName=Database and SSH Client
+Comment=Database client, SSH terminals and file transfer behind one connection model
+Exec=switchyard %U
+Icon=switchyard
+Terminal=false
+Categories=Development;Database;Network;
+Keywords=sql;postgres;postgresql;sqlserver;mssql;ssh;sftp;ftp;database;
+StartupWMClass=switchyard

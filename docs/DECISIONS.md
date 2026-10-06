@@ -212,3 +212,21 @@ registration, or one the user supplies per connection.
 - Windows agent support uses the OpenSSH agent named pipe; Pageant is not wired yet.
 - Integration tests run against local `sshd`s started by `scripts/ssh-test-servers.sh`
   (also in CI). The docker `openssh` service is not used by them.
+
+## 2026-10-05 — Local packaging scripts ahead of M6 (Windows uses NSIS, not MSI)
+
+Packaging scripts landed early, on request, in `packaging/`: a universal macOS `.app` packed as
+`.dmg` and `.pkg`, an NSIS installer for Windows, and an AppImage for Linux. SPEC and PLAN M6-2
+say "signed MSI"; the NSIS installer is what was asked for now. Revisit before M6-2 whether
+MSI is still needed (enterprise GPO deployment) or NSIS replaces it.
+
+- Signing and notarization run only when their environment variables are set (see each script's
+  header); without them the macOS app is ad-hoc signed and Windows binaries are unsigned.
+- Bundle / app id: `io.github.jeremielumandong.switchyard`.
+- The icon in `packaging/icons/` is a generated placeholder (`generate.py`); swap in real artwork
+  as `switchyard.png` (1024²) and re-run the generator for the `.ico` and 256 px PNG, or replace
+  them directly.
+- Release Windows builds use `windows_subsystem = "windows"`, so `tracing` output to stdout is
+  not visible there; a log file is a follow-up.
+- The AppImage does not bundle GPUI's system libraries or glibc; build it on the oldest
+  distro to support.
