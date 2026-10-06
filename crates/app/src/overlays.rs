@@ -14,7 +14,7 @@ use crate::conn_editor::{ConnEditor, ConnKind};
 use crate::palette::PaletteView;
 use crate::sidebar::{CtxMenu, CtxTarget};
 use crate::sql_tab::{PendingRun, SqlTab};
-use crate::theme::{MONO, Palette, SANS};
+use crate::theme::{MONO, Palette, SANS, ThemeId};
 use crate::ui::{self, Kind};
 use crate::workspace::Workspace;
 
@@ -841,63 +841,34 @@ impl Workspace {
     ) -> AnyElement {
         let body: AnyElement = match page {
             SettingsPage::Drivers => self.render_drivers(p, window, cx),
-            SettingsPage::Appearance => {
-                let dark = p.dark;
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(18.))
-                    .p(px(18.))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(8.))
-                            .child(
-                                div()
-                                    .text_size(px(12.))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(p.fg2)
-                                    .child("Theme"),
-                            )
-                            .child(
-                                div().flex().gap(px(8.)).children(
-                                    [
-                                        (true, "Dark", gpui_kit::rgb(0x17171a)),
-                                        (false, "Light", gpui_kit::rgb(0xffffff)),
-                                    ]
-                                    .into_iter()
-                                    .map(|(d, label, sw)| {
-                                        div()
-                                            .id(label)
-                                            .w(px(150.))
-                                            .p(px(8.))
-                                            .flex()
-                                            .flex_col()
-                                            .gap(px(6.))
-                                            .border_1()
-                                            .border_color(if d == dark { p.acc } else { p.bd })
-                                            .rounded(px(8.))
-                                            .on_click(cx.listener(move |this, _, w, cx| {
-                                                this.set_theme(d, w, cx)
-                                            }))
-                                            .child(
-                                                div()
-                                                    .h(px(64.))
-                                                    .rounded(px(5.))
-                                                    .bg(sw)
-                                                    .border_1()
-                                                    .border_color(p.bd),
-                                            )
-                                            .child(div().text_size(px(12.5)).child(label))
-                                    }),
-                                ),
-                            ),
-                    )
-                    .child(setting_row("Editor font", "Geist Mono · 12.5", true, p))
-                    .child(setting_row("Row height", "Compact · 26 px", false, p))
-                    .into_any_element()
-            }
+            SettingsPage::Appearance => div()
+                .flex()
+                .flex_col()
+                .gap(px(18.))
+                .p(px(18.))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(p.fg2)
+                                .child("Theme"),
+                        )
+                        .child(div().flex().flex_wrap().gap(px(10.)).children(
+                            ThemeId::ALL.into_iter().map(|id| {
+                                theme_card(id, id == p.id, p).on_click(
+                                    cx.listener(move |this, _, w, cx| this.set_theme(id, w, cx)),
+                                )
+                            }),
+                        )),
+                )
+                .child(setting_row("Editor font", "Geist Mono · 12.5", true, p))
+                .child(setting_row("Row height", "Compact · 26 px", false, p))
+                .into_any_element(),
             SettingsPage::General => div()
                 .flex()
                 .flex_col()
@@ -1495,4 +1466,91 @@ fn setting_row(label: &str, value: &str, mono: bool, p: &Palette) -> AnyElement 
                 .child(value.to_owned()),
         )
         .into_any_element()
+}
+
+/// A theme preview: its own background, text, a selected line and syntax colors.
+fn theme_card(id: ThemeId, current: bool, p: &Palette) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let t = id.palette();
+    let line = |w: f32, color: gpui_kit::Hsla| div().h(px(5.)).w(px(w)).rounded(px(2.)).bg(color);
+    div()
+        .id(SharedString::from(format!("theme-{}", id.key())))
+        .w(px(168.))
+        .p(px(6.))
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .border_1()
+        .border_color(if current { p.acc } else { p.bd })
+        .rounded(px(8.))
+        .hover(|s| s.bg(p.hover))
+        .child(
+            div()
+                .h(px(78.))
+                .rounded(px(5.))
+                .overflow_hidden()
+                .border_1()
+                .border_color(t.bd)
+                .flex()
+                .child(
+                    div()
+                        .w(px(34.))
+                        .h_full()
+                        .bg(t.panel)
+                        .border_r_1()
+                        .border_color(t.bd),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .h_full()
+                        .bg(t.surface)
+                        .flex()
+                        .flex_col()
+                        .gap(px(5.))
+                        .p(px(7.))
+                        .child(
+                            div()
+                                .flex()
+                                .gap(px(4.))
+                                .child(line(22., t.sx_kw))
+                                .child(line(30., t.fg)),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .h(px(13.))
+                                .px(px(3.))
+                                .rounded(px(2.))
+                                .bg(t.sel)
+                                .text_size(px(9.))
+                                .font_family(MONO)
+                                .text_color(t.fg)
+                                .child("selected"),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .gap(px(4.))
+                                .child(line(18., t.sx_fn))
+                                .child(line(26., t.sx_str)),
+                        )
+                        .child(line(40., t.sx_cm))
+                        .child(
+                            div()
+                                .flex()
+                                .justify_end()
+                                .child(div().h(px(8.)).w(px(22.)).rounded(px(3.)).bg(t.acc)),
+                        ),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .text_size(px(12.))
+                .when(current, |d| d.child(ui::dot(p.acc, 6.)))
+                .child(id.label()),
+        )
 }

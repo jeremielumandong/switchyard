@@ -1,7 +1,8 @@
 //! The main window: title bar, sidebar, tabbed work area, inspector, status bar and
 //! overlays. Owns UI state and routes runtime events to the views that need them.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use futures::StreamExt as _;
@@ -19,18 +20,20 @@ use switchyard_core::store::{
     BufferState, DbConnection, EnvironmentLabel, HistoryEntry, Profile, ProfileId,
     Workspace as SavedWorkspace,
 };
-use switchyard_core::{Command, Event, EventReceiver, RuntimeHandle, TermId};
+use switchyard_core::{Command, Event, EventReceiver, FsRef, RuntimeHandle, TermId};
 
 use crate::actions::{self, CommandId};
 use crate::app_state::{Profiles, SessionState, badge_of, describe, next_id};
 use crate::conn_editor::{ConnEditor, ConnEditorEvent};
+use crate::editor_tab::EditorTab;
 use crate::files_tab::FilesTab;
 use crate::overlays::{Overlay, SettingsPage};
 use crate::palette::{PaletteEvent, PaletteMode, PaletteView};
+use crate::remote_files::{RemoteFiles, RemoteFilesEvent};
 use crate::sidebar::{SchemaState, SideTab};
 use crate::sql_tab::{SqlTab, SqlTabEvent};
 use crate::terminal_tab::TerminalTab;
-use crate::theme::{self, MONO, Palette, SANS, palette};
+use crate::theme::{self, MONO, Palette, SANS, ThemeId, palette};
 use crate::ui::{self, Kind};
 
 /// A tab in the work area.
@@ -43,6 +46,8 @@ pub enum Tab {
     Terminal(Entity<TerminalTab>),
     /// File browser.
     Files(Entity<FilesTab>),
+    /// A text file (usually on an SSH Host).
+    Editor(Entity<EditorTab>),
 }
 
 /// The root view.
@@ -68,6 +73,8 @@ pub struct Workspace {
     pub(crate) secret_backend: (&'static str, bool),
     pub(crate) components: Vec<Component>,
     pub(crate) drivers: crate::drivers_page::DriversPage,
+    /// The sidebar Files panel per Host (kept while the app runs, so its folder is kept).
+    pub(crate) remote_files: HashMap<String, Entity<RemoteFiles>>,
     pub(crate) history: Vec<HistoryEntry>,
     pub(crate) focus: FocusHandle,
     pub(crate) overlay_focus: FocusHandle,
@@ -75,6 +82,10 @@ pub struct Workspace {
     pub(crate) schema_search: Entity<InputState>,
     pub(crate) prompts: std::collections::VecDeque<crate::ssh_prompts::SshPrompt>,
     pending_open: Option<ProfileId>,
+    /// A remote file the Files panel asked to open (needs the window).
+    pending_editor: Option<(ProfileId, PathBuf)>,
+    /// An editor tab with unsaved changes whose close was clicked once.
+    close_confirm: Option<gpui_kit::EntityId>,
     rebind: Vec<(Entity<SqlTab>, Option<ProfileId>)>,
     _events: Task<()>,
     _subs: Vec<Subscription>,
@@ -106,6 +117,9 @@ impl Workspace {
         });
         core.send(Command::LoadProfiles);
         core.send(Command::LoadWorkspace);
+        core.send(Command::LoadSetting {
+            key: "theme".into(),
+        });
         core.send(Command::DetectComponents);
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
@@ -152,6 +166,7 @@ impl Workspace {
             secret_backend: ("", false),
             components: Vec::new(),
             drivers: Default::default(),
+            remote_files: HashMap::new(),
             history: Vec::new(),
             focus,
             overlay_focus: cx.focus_handle(),
@@ -159,6 +174,8 @@ impl Workspace {
             schema_search,
             prompts: std::collections::VecDeque::new(),
             pending_open: None,
+            pending_editor: None,
+            close_confirm: None,
             rebind: Vec::new(),
             _events: task,
             _subs: vec![search_sub],
@@ -323,6 +340,18 @@ impl Workspace {
                     ed.update(cx, |ed, cx| ed.set_error(field, message, cx));
                 }
             }
+            Event::Setting { key, value } => {
+                // SWITCHYARD_THEME (tests, screenshots) wins over the saved choice.
+                if key == "theme"
+                    && std::env::var_os("SWITCHYARD_THEME").is_none()
+                    && let Some(v) = value.as_ref().and_then(|v| v.as_str())
+                {
+                    let id = ThemeId::from_key(v);
+                    if id != palette(cx).id {
+                        theme::apply(id.palette(), Some(window), cx);
+                    }
+                }
+            }
             Event::SecretBackend { name, locked } => {
                 self.secret_backend = (name, locked);
             }
@@ -395,6 +424,27 @@ impl Workspace {
                 self.history = entries;
             }
             Event::Workspace(w) => self.restore(w, window, cx),
+            Event::FsListing { .. }
+            | Event::FsOpDone { .. }
+            | Event::TransferProgress { .. }
+            | Event::TransferDone { .. } => {
+                for panel in self.remote_files.values() {
+                    panel.update(cx, |p, cx| p.on_event(&ev, cx));
+                }
+            }
+            Event::TextFileRead { .. } | Event::TextFileSaved { .. } => {
+                for t in &self.tabs {
+                    if let Tab::Editor(e) = t {
+                        e.update(cx, |e, cx| e.on_event(&ev, window, cx));
+                    }
+                }
+                // A saved file's size and time changed in the Files panel.
+                if matches!(ev, Event::TextFileSaved { result: Ok(_), .. }) {
+                    for panel in self.remote_files.values() {
+                        panel.update(cx, |p, cx| p.refresh(cx));
+                    }
+                }
+            }
             Event::DirListing {
                 request,
                 path,
@@ -707,6 +757,16 @@ impl Workspace {
         if let Tab::Terminal(t) = &self.tabs[ix] {
             t.update(cx, |t, _| t.shutdown());
         }
+        if let Tab::Editor(e) = &self.tabs[ix] {
+            let e = e.entity_id();
+            let dirty = matches!(&self.tabs[ix], Tab::Editor(t) if t.read(cx).dirty);
+            if dirty && self.close_confirm != Some(e) {
+                self.close_confirm = Some(e);
+                self.toast("Unsaved changes · close again to discard them", cx);
+                return;
+            }
+        }
+        self.close_confirm = None;
         self.tabs.remove(ix);
         if self.tabs.is_empty() {
             self.tabs.push(Tab::Welcome);
@@ -731,6 +791,70 @@ impl Workspace {
         let core = self.core.clone();
         let t = cx.new(|cx| TerminalTab::new(core, name, env, host, cx));
         self.tabs.push(Tab::Terminal(t));
+        self.active = self.tabs.len() - 1;
+        cx.notify();
+    }
+
+    /// The Host of the active SSH terminal or remote file: the sidebar then shows its files.
+    pub(crate) fn active_ssh_host(&self, cx: &App) -> Option<ProfileId> {
+        match self.tabs.get(self.active) {
+            Some(Tab::Terminal(t)) => t.read(cx).host().cloned(),
+            Some(Tab::Editor(e)) => match &e.read(cx).fs {
+                FsRef::Host(h) => Some(h.clone()),
+                FsRef::Local => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The Files panel for `host`, created on first use.
+    pub(crate) fn remote_files_for(
+        &mut self,
+        host: &ProfileId,
+        cx: &mut Context<Self>,
+    ) -> Entity<RemoteFiles> {
+        if let Some(e) = self.remote_files.get(&host.0) {
+            return e.clone();
+        }
+        let core = self.core.clone();
+        let h = host.clone();
+        let panel = cx.new(|cx| RemoteFiles::new(core, h, cx));
+        let sub = cx.subscribe(&panel, |this, _, ev: &RemoteFilesEvent, cx| match ev {
+            RemoteFilesEvent::Open { host, path } => {
+                this.pending_editor = Some((host.clone(), path.clone()));
+                cx.notify();
+            }
+            RemoteFilesEvent::Toast(t) => this.toast(t.clone(), cx),
+        });
+        self._subs.push(sub);
+        self.remote_files.insert(host.0.clone(), panel.clone());
+        panel
+    }
+
+    /// Open a file from a Host in an editor tab (or focus the one already open).
+    pub(crate) fn open_remote_file(
+        &mut self,
+        host: ProfileId,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let fs = FsRef::Host(host.clone());
+        if let Some(ix) = self
+            .tabs
+            .iter()
+            .position(|t| matches!(t, Tab::Editor(e) if e.read(cx).shows(&fs, &path)))
+        {
+            return self.activate(ix, cx);
+        }
+        let name = self
+            .profiles
+            .host(&host)
+            .map(|h| h.name.clone())
+            .unwrap_or_default();
+        let core = self.core.clone();
+        let tab = cx.new(|cx| EditorTab::new(core, fs, path, &name, window, cx));
+        self.tabs.push(Tab::Editor(tab));
         self.active = self.tabs.len() - 1;
         cx.notify();
     }
@@ -895,19 +1019,11 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(crate) fn set_theme(&mut self, dark: bool, window: &mut Window, cx: &mut Context<Self>) {
-        theme::apply(
-            if dark {
-                Palette::dark()
-            } else {
-                Palette::light()
-            },
-            Some(window),
-            cx,
-        );
+    pub(crate) fn set_theme(&mut self, id: ThemeId, window: &mut Window, cx: &mut Context<Self>) {
+        theme::apply(id.palette(), Some(window), cx);
         self.core.send(Command::SetSetting {
             key: "theme".into(),
-            value: (if dark { "dark" } else { "light" }).into(),
+            value: id.key().into(),
         });
         cx.notify();
     }
@@ -959,8 +1075,12 @@ impl Workspace {
             CommandId::Settings => self.open_settings(SettingsPage::General, window, cx),
             CommandId::SettingsDrivers => self.open_settings(SettingsPage::Drivers, window, cx),
             CommandId::ToggleTheme => {
-                let dark = !palette(cx).dark;
-                self.set_theme(dark, window, cx);
+                let next = if palette(cx).dark {
+                    ThemeId::SwitchyardLight
+                } else {
+                    ThemeId::SwitchyardDark
+                };
+                self.set_theme(next, window, cx);
             }
             CommandId::ToggleInspector => self.inspector_open = !self.inspector_open,
             CommandId::ToggleSidebar => {
@@ -1090,7 +1210,14 @@ impl Workspace {
                             Kind::Ghost,
                             p,
                         )
-                        .on_click(cx.listener(move |this, _, w, cx| this.set_theme(!dark, w, cx))),
+                        .on_click(cx.listener(move |this, _, w, cx| {
+                            let next = if dark {
+                                ThemeId::SwitchyardLight
+                            } else {
+                                ThemeId::SwitchyardDark
+                            };
+                            this.set_theme(next, w, cx)
+                        })),
                     )
                     .child(
                         ui::button("tb-components", "Components", Kind::Ghost, p).on_click(
@@ -1137,6 +1264,10 @@ impl Workspace {
                 )
             }
             Tab::Files(_) => ("FS".into(), "Files · local".into(), None, false),
+            Tab::Editor(e) => {
+                let e = e.read(cx);
+                ("ED".into(), e.title.clone().into(), None, e.dirty)
+            }
         }
     }
 
@@ -1592,6 +1723,9 @@ fn shortcut_hint(label: &'static str, key: SharedString, p: &Palette) -> AnyElem
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
+        if let Some((host, path)) = self.pending_editor.take() {
+            self.open_remote_file(host, path, window, cx);
+        }
         // Bind restored tabs whose connection arrived after the workspace.
         if !self.rebind.is_empty() && self.profiles_loaded {
             for (tab, id) in std::mem::take(&mut self.rebind) {
@@ -1604,6 +1738,7 @@ impl Render for Workspace {
             Some(Tab::Sql(t)) => t.clone().into_any_element(),
             Some(Tab::Terminal(t)) => t.clone().into_any_element(),
             Some(Tab::Files(f)) => f.clone().into_any_element(),
+            Some(Tab::Editor(e)) => e.clone().into_any_element(),
             _ => self.render_welcome(&p, cx),
         };
         let show_inspector =

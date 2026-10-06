@@ -149,6 +149,7 @@ pub struct Service {
     entra: EntraSignIn,
     components: Arc<Registry>,
     package_runner: Arc<dyn CommandRunner>,
+    files: Arc<crate::files::Files>,
 }
 
 fn endpoint_of(t: &Tunnel) -> TunnelEndpoint {
@@ -228,6 +229,7 @@ impl Service {
             next_tunnel: std::sync::atomic::AtomicU64::new(1),
             entra: EntraSignIn::new(prompter.clone(), secrets.clone()),
             components,
+            files: Arc::default(),
             package_runner: config
                 .package_runner
                 .clone()
@@ -552,6 +554,95 @@ impl Service {
                     self.error("Settings", e);
                 }
             }
+            Command::ListDir { request, fs, path } => {
+                let result = match self.file_system(&fs).await {
+                    Ok((f, _)) => {
+                        let path = path.unwrap_or_else(|| f.home());
+                        let r = f.list(&path).await.map_err(|e| e.to_string());
+                        Ok((path, r))
+                    }
+                    Err(e) => Err(e.to_string()),
+                };
+                let (path, result) = match result {
+                    Ok((p, r)) => (p, r),
+                    Err(e) => (PathBuf::new(), Err(e)),
+                };
+                self.emit(Event::FsListing {
+                    request,
+                    fs,
+                    path,
+                    result,
+                });
+            }
+            Command::Transfer {
+                id,
+                from,
+                path,
+                to,
+                dir,
+                on_conflict,
+            } => {
+                let result = self.transfer(id, &from, &path, &to, dir, on_conflict).await;
+                self.files.finish(id);
+                self.emit(Event::TransferDone { id, result });
+            }
+            Command::CancelTransfer { id } => self.files.cancel(id),
+            Command::FsOp { request, fs, op } => {
+                let result = match self.file_system(&fs).await {
+                    Ok((f, posix)) => match &op {
+                        crate::bus::FsOp::Mkdir(p) => f.mkdir(p).await,
+                        crate::bus::FsOp::Rename(a, b) => f.rename(a, b).await,
+                        crate::bus::FsOp::Delete(p) => {
+                            crate::files::delete_tree(f.as_ref(), p, posix).await
+                        }
+                    }
+                    .map_err(|e| e.to_string()),
+                    Err(e) => Err(e.to_string()),
+                };
+                self.emit(Event::FsOpDone {
+                    request,
+                    fs,
+                    result,
+                });
+            }
+            Command::ReadTextFile { request, fs, path } => {
+                let result = match self.file_system(&fs).await {
+                    Ok((f, _)) => crate::files::read_text(f.as_ref(), &path).await,
+                    Err(e) => Err(e.to_string()),
+                };
+                self.emit(Event::TextFileRead { request, result });
+            }
+            Command::WriteTextFile {
+                request,
+                fs,
+                path,
+                content,
+                expect_modified,
+                force,
+            } => {
+                let result = match self.file_system(&fs).await {
+                    Ok((f, _)) => {
+                        crate::files::write_text(
+                            f.as_ref(),
+                            &path,
+                            &content,
+                            expect_modified,
+                            force,
+                        )
+                        .await
+                    }
+                    Err(e) => Err(crate::bus::SaveError::Failed(e.to_string())),
+                };
+                self.emit(Event::TextFileSaved { request, result });
+            }
+            Command::LoadSetting { key } => {
+                let k = key.clone();
+                let value = self
+                    .with_store(move |s| s.setting::<serde_json::Value>(&k))
+                    .await
+                    .unwrap_or(None);
+                self.emit(Event::Setting { key, value });
+            }
             Command::ListLocalDir { request, path } => {
                 let result = LocalFs.list(&path).await.map_err(|e| e.to_string());
                 self.emit(Event::DirListing {
@@ -662,6 +753,86 @@ impl Service {
                 self.emit_components().await;
             }
         }
+    }
+
+    /// The file system behind `fs`, and whether its paths are POSIX. SFTP opens once per
+    /// Host on the shared SSH session (prompting like a terminal would).
+    async fn file_system(
+        &self,
+        fs: &crate::bus::FsRef,
+    ) -> Result<(Arc<dyn switchyard_remote::RemoteFs>, bool)> {
+        let id = match fs {
+            crate::bus::FsRef::Local => return Ok((Arc::new(LocalFs), cfg!(unix))),
+            crate::bus::FsRef::Host(id) => id,
+        };
+        let mut open = self.files.sftp.lock().await;
+        if let Some(f) = open.get(&id.0)
+            && !f.is_closed()
+        {
+            return Ok((f.clone(), true));
+        }
+        let host = self.host(id).await?;
+        let target = self.ssh_target(id).await?;
+        let conn = self
+            .ssh
+            .session(&target)
+            .await
+            .map_err(|e| CoreError::Unsupported(e.to_string()))?;
+        let f = Arc::new(
+            switchyard_remote::SftpFs::open(conn, host.name.clone())
+                .await
+                .map_err(|e| CoreError::Unsupported(format!("SFTP on {}: {e}", host.name)))?,
+        );
+        open.insert(id.0.clone(), f.clone());
+        Ok((f, true))
+    }
+
+    async fn transfer(
+        &self,
+        id: u64,
+        from: &crate::bus::FsRef,
+        path: &std::path::Path,
+        to: &crate::bus::FsRef,
+        dir: Option<PathBuf>,
+        on_conflict: crate::bus::OnConflict,
+    ) -> std::result::Result<PathBuf, crate::bus::TransferError> {
+        use crate::bus::TransferError;
+        let fail = |e: CoreError| TransferError::Failed(e.to_string());
+        let (src, src_posix) = self.file_system(from).await.map_err(fail)?;
+        let (dst, dst_posix) = self.file_system(to).await.map_err(fail)?;
+        let dir = match dir {
+            Some(d) => d,
+            None => {
+                let d = LocalFs.home().join("Downloads");
+                tokio::fs::create_dir_all(&d)
+                    .await
+                    .map_err(|e| TransferError::Failed(e.to_string()))?;
+                d
+            }
+        };
+        let cancel = self.files.start(id);
+        let name = switchyard_remote::fs::file_name(path);
+        let events = self.events.clone();
+        let progress = move |done: u64, total: Option<u64>| {
+            events.emit(Event::TransferProgress {
+                id,
+                name: name.clone(),
+                done,
+                total,
+            })
+        };
+        crate::files::transfer(
+            src.as_ref(),
+            src_posix,
+            path,
+            dst.as_ref(),
+            dst_posix,
+            &dir,
+            on_conflict,
+            &cancel,
+            &progress,
+        )
+        .await
     }
 
     async fn emit_components(&self) {
