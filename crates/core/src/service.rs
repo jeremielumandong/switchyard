@@ -3,22 +3,31 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
+use crate::bus::{TermId, TermTarget};
+use crate::prompts::BusPrompter;
+use crate::terminals::{SshTerminalSpec, TermInput, Terminals};
 use futures::StreamExt;
 use secrecy::SecretString;
+use switchyard_db::TunnelEndpoint;
+use switchyard_db::d1::D1Driver;
 use switchyard_db::guard;
 use switchyard_db::pg::PgDriver;
 use switchyard_db::{
     CancelHandle, DbConfig, DbError, DbSession, Driver, Engine, IntrospectScope, ResultEvent,
     dialect_for,
 };
+use switchyard_remote::ssh::{
+    KnownHosts, SshAuthMethod, SshManager, SshTarget, Tunnel, TunnelInfo,
+};
 use switchyard_remote::{LocalFs, RemoteFs};
 use switchyard_store::{
-    AppPaths, DbConnection, HistoryEntry, HistoryStatus, KeychainStore, MemoryStore, Profile,
-    ProfileId, SecretRef, SecretStore, Store, StoreError, VaultStore, now_ms,
+    AppPaths, DbConnection, HistoryEntry, HistoryStatus, Host, KeychainStore, MemoryStore, Profile,
+    ProfileId, SecretRef, SecretStore, SshAuth, Store, StoreError, VaultStore, now_ms,
 };
+use switchyard_term::{LocalShell, TermSize};
 use tokio::sync::mpsc;
 use tracing::{Instrument, info, info_span, warn};
 
@@ -46,6 +55,8 @@ pub struct ServiceConfig {
     pub secrets: SecretBackendChoice,
     /// Extra drivers (tests); the PostgreSQL driver is always registered.
     pub extra_drivers: Vec<(Engine, Arc<dyn Driver>)>,
+    /// Host key files.
+    pub known_hosts: KnownHosts,
 }
 
 impl ServiceConfig {
@@ -55,6 +66,11 @@ impl ServiceConfig {
             store_path: None,
             secrets: SecretBackendChoice::Memory,
             extra_drivers: Vec::new(),
+            known_hosts: KnownHosts {
+                user_file: None,
+                app_file: std::env::temp_dir()
+                    .join(format!("switchyard-known-hosts-{}", std::process::id())),
+            },
         }
     }
 
@@ -64,10 +80,15 @@ impl ServiceConfig {
             Ok("memory") => SecretBackendChoice::Memory,
             _ => SecretBackendChoice::Auto(paths.vault_file()),
         };
+        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
         Self {
             store_path: Some(paths.store_file()),
             secrets,
             extra_drivers: Vec::new(),
+            known_hosts: KnownHosts {
+                user_file: home.map(|h| PathBuf::from(h).join(".ssh").join("known_hosts")),
+                app_file: paths.data.join("known_hosts"),
+            },
         }
     }
 }
@@ -91,6 +112,8 @@ struct SessionInner {
 struct SessionSlot {
     connection: DbConnection,
     inner: tokio::sync::Mutex<SessionInner>,
+    /// Keeps the SSH tunnel open while the session uses it.
+    tunnel: Option<Arc<Tunnel>>,
 }
 
 /// The core service.
@@ -102,6 +125,20 @@ pub struct Service {
     drivers: HashMap<Engine, Arc<dyn Driver>>,
     sessions: Mutex<HashMap<SessionId, Arc<SessionSlot>>>,
     queries: Mutex<HashMap<QueryId, QueryControl>>,
+    terminals: Arc<Terminals>,
+    ssh: Arc<SshManager>,
+    tunnels: Mutex<Vec<Weak<Tunnel>>>,
+    /// Serializes tunnel creation so concurrent sessions share one tunnel.
+    tunnel_open: tokio::sync::Mutex<()>,
+    next_tunnel: std::sync::atomic::AtomicU64,
+    prompter: Arc<BusPrompter>,
+}
+
+fn endpoint_of(t: &Tunnel) -> TunnelEndpoint {
+    TunnelEndpoint {
+        host: t.local().ip().to_string(),
+        port: t.local().port(),
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -131,8 +168,14 @@ impl Service {
                 }
             };
         info!(backend = secrets.backend(), "secret backend selected");
+        let prompter = BusPrompter::new(events.clone());
+        let ssh = Arc::new(SshManager::new(
+            config.known_hosts.clone(),
+            prompter.clone(),
+        ));
         let mut drivers: HashMap<Engine, Arc<dyn Driver>> = HashMap::new();
         drivers.insert(Engine::Postgres, Arc::new(PgDriver));
+        drivers.insert(Engine::D1, Arc::new(D1Driver::default()));
         for (engine, d) in config.extra_drivers {
             drivers.insert(engine, d);
         }
@@ -144,13 +187,55 @@ impl Service {
             drivers,
             sessions: Mutex::default(),
             queries: Mutex::default(),
+            terminals: Arc::default(),
+            ssh,
+            tunnels: Mutex::default(),
+            tunnel_open: tokio::sync::Mutex::new(()),
+            next_tunnel: std::sync::atomic::AtomicU64::new(1),
+            prompter,
         })
     }
 
     /// Process commands until the channel closes.
     pub async fn run(self: Arc<Self>, mut commands: mpsc::UnboundedReceiver<Command>) {
         self.emit_secret_backend();
+        // Tunnel byte counters change without any command; report them once a second
+        // while something changed.
+        let weak = Arc::downgrade(&self);
+        tokio::spawn(async move {
+            let mut last = Vec::new();
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let Some(this) = weak.upgrade() else { break };
+                let now = this.tunnel_infos();
+                if now != last {
+                    this.emit(Event::Tunnels(now.clone()));
+                    last = now;
+                }
+            }
+        });
         while let Some(cmd) = commands.recv().await {
+            // Keystrokes must reach the program in the order they were typed, so terminal
+            // input is delivered here (it never blocks) instead of on a spawned task.
+            let cmd = match cmd {
+                Command::TerminalInput { term, bytes } => {
+                    self.terminals.send(term, TermInput::Data(bytes));
+                    continue;
+                }
+                Command::TerminalResize { term, size } => {
+                    self.terminals.send(term, TermInput::Resize(size));
+                    continue;
+                }
+                Command::ReconnectTerminal { term } => {
+                    self.terminals.send(term, TermInput::Reconnect);
+                    continue;
+                }
+                Command::AnswerPrompt { request, answer } => {
+                    self.prompter.answer(request, answer);
+                    continue;
+                }
+                other => other,
+            };
             let this = self.clone();
             tokio::spawn(async move { this.handle(cmd).await });
         }
@@ -287,6 +372,17 @@ impl Service {
                     result: result.map_err(|e| e.to_string()),
                 });
             }
+            Command::TestHost {
+                request,
+                host,
+                secret,
+            } => {
+                let result = self.test_host(host, secret).await;
+                self.emit(Event::TestResult {
+                    request,
+                    result: result.map_err(|e| e.to_string()),
+                });
+            }
             Command::OpenSession {
                 session,
                 connection,
@@ -300,6 +396,25 @@ impl Service {
                     message: e.to_string(),
                 }),
             },
+            Command::OpenTerminal { term, target, size } => {
+                self.open_terminal(term, target, size).await
+            }
+            Command::TerminalInput { term, bytes } => {
+                self.terminals.send(term, TermInput::Data(bytes));
+            }
+            Command::TerminalResize { term, size } => {
+                self.terminals.send(term, TermInput::Resize(size));
+            }
+            Command::CloseTerminal { term } => self.terminals.close(term),
+            Command::ReconnectTerminal { term } => {
+                self.terminals.send(term, TermInput::Reconnect);
+            }
+            Command::AnswerPrompt { request, answer } => self.prompter.answer(request, answer),
+            Command::AcceptChangedHostKey { host, fingerprint } => {
+                self.ssh.accept_changed_key(&host.0, &fingerprint);
+            }
+            Command::StopTunnel { id } => self.stop_tunnel(id),
+            Command::ListTunnels => self.emit(Event::Tunnels(self.tunnel_infos())),
             Command::CloseSession { session } => {
                 lock(&self.sessions).remove(&session);
             }
@@ -606,12 +721,225 @@ impl Service {
         self.emit_profiles().await;
     }
 
-    async fn db_config(&self, c: &DbConnection, secret: Option<SecretString>) -> Result<DbConfig> {
-        if c.via_host.is_some() {
-            return Err(CoreError::Unsupported(
-                "connecting through a Host needs SSH tunnels, which are not available yet".into(),
-            ));
+    async fn open_terminal(&self, term: TermId, target: TermTarget, size: TermSize) {
+        let result = match target {
+            TermTarget::Local { profile } => {
+                let profile = match profile {
+                    Some(id) => match self.with_store(move |s| s.profile(&id)).await {
+                        Ok(Some(Profile::Terminal(t))) => Some(t),
+                        _ => None,
+                    },
+                    None => None,
+                };
+                let shell = LocalShell {
+                    program: profile
+                        .as_ref()
+                        .map(|t| t.shell.trim().to_owned())
+                        .filter(|s| !s.is_empty()),
+                    env: profile.as_ref().map(|t| t.env.clone()).unwrap_or_default(),
+                    ..LocalShell::default()
+                };
+                let description = shell
+                    .program
+                    .clone()
+                    .or_else(|| std::env::var("SHELL").ok())
+                    .unwrap_or_else(|| "login shell".into());
+                let startup = profile.and_then(|t| t.startup_command);
+                self.terminals
+                    .open_local(
+                        term,
+                        shell,
+                        size,
+                        switchyard_term::DEFAULT_SCROLLBACK,
+                        self.events.clone(),
+                    )
+                    .map(|t| {
+                        if let Some(cmd) = startup {
+                            self.terminals
+                                .send(term, TermInput::Data(format!("{cmd}\r").into_bytes()));
+                        }
+                        (t, description)
+                    })
+                    .map_err(|e| e.to_string())
+            }
+            TermTarget::Host(host_id) => match self.ssh_target(&host_id).await {
+                Ok(target) => {
+                    let description = format!("{}@{}", target.user, target.address);
+                    let terminal = self.terminals.open_ssh(
+                        SshTerminalSpec {
+                            term,
+                            host_id,
+                            target,
+                            size,
+                        },
+                        self.ssh.clone(),
+                        self.events.clone(),
+                    );
+                    Ok((terminal, description))
+                }
+                Err(e) => Err(e.to_string()),
+            },
+        };
+        match result {
+            Ok((terminal, description)) => self.emit(Event::TerminalOpened {
+                term,
+                terminal,
+                description,
+            }),
+            Err(message) => self.emit(Event::TerminalFailed { term, message }),
         }
+    }
+
+    /// The SSH target for a Host, with its jump chain and keychain secrets.
+    pub(crate) async fn ssh_target(&self, id: &ProfileId) -> Result<SshTarget> {
+        let host = self.host(id).await?;
+        let mut chain = Vec::new();
+        for jid in host.jump_hosts.iter().take(8) {
+            if jid == id {
+                return Err(CoreError::Unsupported(
+                    "a Host cannot jump through itself".into(),
+                ));
+            }
+            chain.push(self.host(jid).await?);
+        }
+        let mut jump: Option<Box<SshTarget>> = None;
+        for h in chain {
+            let mut t = self.one_target(&h).await?;
+            t.jump = jump.take();
+            jump = Some(Box::new(t));
+        }
+        let mut t = self.one_target(&host).await?;
+        t.jump = jump;
+        Ok(t)
+    }
+
+    async fn test_host(&self, host: Host, secret: Option<SecretString>) -> Result<String> {
+        let mut target = self.one_target(&host).await?;
+        if secret.is_some() {
+            target.secret = secret;
+        }
+        let mut jump: Option<Box<SshTarget>> = None;
+        for jid in host.jump_hosts.iter().take(8) {
+            let mut t = self.one_target(&self.host(jid).await?).await?;
+            t.jump = jump.take();
+            jump = Some(Box::new(t));
+        }
+        target.jump = jump;
+        // A throwaway id: the test never reuses or replaces a live session.
+        target.id = format!("test:{}", host.id.0);
+        let conn = self
+            .ssh
+            .session(&target)
+            .await
+            .map_err(|e| CoreError::Unsupported(e.to_string()))?;
+        Ok(format!("Connected · {}", conn.description))
+    }
+
+    async fn host(&self, id: &ProfileId) -> Result<Host> {
+        let id2 = id.clone();
+        match self.with_store(move |s| s.profile(&id2)).await? {
+            Some(Profile::Host(h)) => Ok(h),
+            _ => Err(CoreError::NotFound(format!("Host {}", id.0))),
+        }
+    }
+
+    async fn one_target(&self, h: &Host) -> Result<SshTarget> {
+        let secret = match h.secret.clone() {
+            Some(key) => self.with_secrets(move |s| s.get(&key)).await?,
+            None => None,
+        };
+        Ok(SshTarget {
+            id: h.id.0.clone(),
+            label: h.name.clone(),
+            address: h.address.clone(),
+            port: h.port,
+            user: h.user.clone(),
+            auth: match &h.auth {
+                SshAuth::Password => SshAuthMethod::Password,
+                SshAuth::PublicKey { key_path } => SshAuthMethod::PublicKey {
+                    key_path: key_path.clone(),
+                },
+                SshAuth::KeyboardInteractive => SshAuthMethod::KeyboardInteractive,
+                SshAuth::Agent => SshAuthMethod::Agent,
+            },
+            secret,
+            keepalive: Duration::from_secs(u64::from(h.keepalive_secs)),
+            jump: None,
+        })
+    }
+
+    fn tunnel_infos(&self) -> Vec<TunnelInfo> {
+        let mut list = lock(&self.tunnels);
+        list.retain(|w| w.strong_count() > 0);
+        list.iter()
+            .filter_map(Weak::upgrade)
+            .filter(|t| !t.is_stopped())
+            .map(|t| t.info())
+            .collect()
+    }
+
+    /// The live tunnel to `host:port` through Host `host_id`, or a new one. Tunnels are
+    /// shared by every session that needs the same target.
+    async fn tunnel_for(&self, host_id: &ProfileId, host: &str, port: u16) -> Result<Arc<Tunnel>> {
+        let _creating = self.tunnel_open.lock().await;
+        let existing = lock(&self.tunnels)
+            .iter()
+            .filter_map(Weak::upgrade)
+            .find(|t| !t.is_stopped() && t.host_id() == host_id.0 && t.remote() == (host, port));
+        if let Some(t) = existing {
+            return Ok(t);
+        }
+        let target = self.ssh_target(host_id).await?;
+        let id = self
+            .next_tunnel
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let t = Arc::new(
+            Tunnel::open(id, self.ssh.clone(), target, host.to_owned(), port)
+                .await
+                .map_err(|e| CoreError::Unsupported(e.to_string()))?,
+        );
+        lock(&self.tunnels).push(Arc::downgrade(&t));
+        self.emit(Event::Tunnels(self.tunnel_infos()));
+        Ok(t)
+    }
+
+    /// The endpoint a connection should use: a tunnel when it goes through a Host.
+    async fn endpoint(&self, c: &DbConnection) -> Result<Option<Arc<Tunnel>>> {
+        match &c.via_host {
+            Some(h) => Ok(Some(self.tunnel_for(h, &c.server, c.port).await?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Stop a tunnel; sessions that used it end with a message saying why.
+    fn stop_tunnel(&self, id: u64) {
+        let tunnel = lock(&self.tunnels)
+            .iter()
+            .filter_map(Weak::upgrade)
+            .find(|t| t.id() == id);
+        let Some(t) = tunnel else { return };
+        t.stop();
+        let message = format!(
+            "The tunnel through {} on port {} was stopped · reconnect to continue",
+            t.info().host,
+            t.local().port()
+        );
+        let ended: Vec<SessionId> = lock(&self.sessions)
+            .iter()
+            .filter(|(_, slot)| slot.tunnel.as_ref().is_some_and(|s| s.id() == id))
+            .map(|(id, _)| *id)
+            .collect();
+        for session in ended {
+            lock(&self.sessions).remove(&session);
+            self.emit(Event::SessionFailed {
+                session,
+                message: message.clone(),
+            });
+        }
+        self.emit(Event::Tunnels(self.tunnel_infos()));
+    }
+
+    async fn db_config(&self, c: &DbConnection, secret: Option<SecretString>) -> Result<DbConfig> {
         let password = match secret {
             Some(s) => Some(s),
             None => match c.secret.clone() {
@@ -645,11 +973,15 @@ impl Service {
     ) -> Result<String> {
         let driver = self.driver(c.engine)?;
         let cfg = self.db_config(&c, secret).await?;
+        let tunnel = self.endpoint(&c).await?;
         let started = Instant::now();
-        let session = driver.connect(&cfg, None).await?;
+        let session = driver
+            .connect(&cfg, tunnel.as_deref().map(endpoint_of))
+            .await?;
         let ms = started.elapsed().as_millis();
+        let via = if tunnel.is_some() { " via tunnel" } else { "" };
         Ok(format!(
-            "Connected · {} · {ms} ms",
+            "Connected · {} · {ms} ms{via}",
             session.server_version()
         ))
     }
@@ -661,7 +993,10 @@ impl Service {
         };
         let driver = self.driver(conn.engine)?;
         let cfg = self.db_config(&conn, None).await?;
-        let s = driver.connect(&cfg, None).await?;
+        let tunnel = self.endpoint(&conn).await?;
+        let s = driver
+            .connect(&cfg, tunnel.as_deref().map(endpoint_of))
+            .await?;
         let version = s.server_version();
         lock(&self.sessions).insert(
             session,
@@ -671,6 +1006,7 @@ impl Service {
                     session: s,
                     txn_statements: 0,
                 }),
+                tunnel,
             }),
         );
         Ok(version)

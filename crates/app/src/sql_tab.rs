@@ -171,6 +171,9 @@ pub struct SqlTab {
     last_affected: Option<u64>,
     focus: FocusHandle,
     autosave: Option<Task<()>>,
+    /// Redraws the elapsed time while a query runs (nothing else notifies when no
+    /// rows arrive, and retained rendering only redraws what was notified).
+    ticker: Option<Task<()>>,
     lint: Option<Task<()>>,
     position: i64,
     filter: Entity<InputState>,
@@ -255,6 +258,7 @@ impl SqlTab {
             last_affected: None,
             focus: cx.focus_handle(),
             autosave: None,
+            ticker: None,
             lint: None,
             position,
             filter,
@@ -597,6 +601,25 @@ impl SqlTab {
             query,
             started: Instant::now(),
         };
+        self.ticker = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(250))
+                    .await;
+                let running = this
+                    .update(cx, |tab, cx| {
+                        let running = matches!(tab.run, RunState::Running { .. });
+                        if running {
+                            cx.notify();
+                        }
+                        running
+                    })
+                    .unwrap_or(false);
+                if !running {
+                    break;
+                }
+            }
+        }));
         if self.manual_txn && !self.txn_open {
             self.core.send(Command::Begin { session });
         }
@@ -646,6 +669,14 @@ impl SqlTab {
 
     /// Switch between auto-commit and manual transactions.
     pub fn set_manual(&mut self, manual: bool, cx: &mut Context<Self>) {
+        let engine = self.dialect().engine();
+        if manual && !engine.supports_transactions() {
+            cx.emit(SqlTabEvent::Toast(format!(
+                "{} runs every statement on its own; manual transactions are not available",
+                engine.display_name()
+            )));
+            return;
+        }
         if !manual && self.txn_open {
             cx.emit(SqlTabEvent::Toast(
                 "Commit or roll back the open transaction first".into(),
@@ -1774,10 +1805,7 @@ pub struct EditState {
 
 impl SqlTab {
     fn default_schema(&self) -> &'static str {
-        match self.connection.as_ref().map(|c| c.engine) {
-            Some(Engine::SqlServer) => "dbo",
-            _ => "public",
-        }
+        self.dialect().default_schema()
     }
 
     /// Start editing a cell (double click).

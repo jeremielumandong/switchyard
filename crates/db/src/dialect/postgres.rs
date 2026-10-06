@@ -276,6 +276,10 @@ impl Dialect for PostgresDialect {
     fn functions(&self) -> &'static [&'static str] {
         PG_FUNCTIONS
     }
+
+    fn default_schema(&self) -> &'static str {
+        "public"
+    }
 }
 
 #[cfg(test)]

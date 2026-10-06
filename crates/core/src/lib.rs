@@ -5,11 +5,14 @@
 pub mod bus;
 pub mod env;
 pub mod error;
+pub mod prompts;
 pub mod runtime;
 pub mod service;
+pub mod terminals;
 
 pub use bus::{
-    Command, Event, FetchLimit, QueryEvent, QueryId, RequestId, SessionId, StatementRequest,
+    Command, Event, FetchLimit, PromptAnswer, QueryEvent, QueryId, RequestId, SessionId,
+    StatementRequest, TermId, TermStatus, TermTarget,
 };
 pub use error::{CoreError, Result};
 pub use runtime::{Core, EventReceiver, EventSender, RuntimeHandle};
@@ -25,3 +28,5 @@ pub use switchyard_drivers as drivers;
 pub use switchyard_remote as remote;
 /// Re-exported store and model.
 pub use switchyard_store as store;
+/// Re-exported terminal state.
+pub use switchyard_term as term;

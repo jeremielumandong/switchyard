@@ -1,8 +1,17 @@
-//! Terminal state and local PTY (milestone M2).
+//! Terminal state on top of `alacritty_terminal`, input encoding and local PTYs.
 //!
-//! This crate will wrap `alacritty_terminal`'s `Term` (byte feed, resize, scrollback) and
-//! spawn local shells through `portable-pty`. SSH channel bytes are fed through the ANSI
-//! parser; the local tty module is only used for local shells.
+//! The same [`Terminal`] serves local shells and SSH channels: whoever owns the byte
+//! stream feeds output through a [`Feeder`]; the view reads [`Snapshot`]s.
 
-/// Default scrollback length in lines.
-pub const DEFAULT_SCROLLBACK: usize = 10_000;
+pub mod error;
+pub mod input;
+pub mod links;
+pub mod pty;
+pub mod terminal;
+
+pub use error::{Result, TermError};
+pub use pty::{LocalShell, PtyInput, spawn_local};
+pub use terminal::{
+    Attrs, Cursor, CursorShape, DEFAULT_SCROLLBACK, EventSink, Feeder, Mark, Modes, Run, SnapLine,
+    Snapshot, TermColor, TermEvent, TermSize, Terminal, new_terminal,
+};
