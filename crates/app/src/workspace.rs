@@ -63,6 +63,7 @@ pub struct Workspace {
     /// Keeps relative times ("Cached 3 min ago") current under retained rendering.
     _clock: Task<()>,
     pub(crate) tunnels_open: bool,
+    pub(crate) tunnels: Vec<switchyard_core::remote::ssh::TunnelInfo>,
     pub(crate) workspace_name: String,
     pub(crate) secret_backend: (&'static str, bool),
     pub(crate) components: Vec<Component>,
@@ -145,6 +146,7 @@ impl Workspace {
                 }
             }),
             tunnels_open: false,
+            tunnels: Vec::new(),
             workspace_name: "Default".into(),
             secret_backend: ("", false),
             components: Vec::new(),
@@ -199,6 +201,10 @@ impl Workspace {
                 }
             }
             Event::TerminalBell { .. } => {}
+            Event::Tunnels(list) => {
+                self.tunnels = list;
+                cx.notify();
+            }
             Event::TerminalStatus { term, status } => {
                 if let Some(t) = self.terminal_tab(term, cx) {
                     t.update(cx, |t, cx| t.on_status(term, status, cx));
@@ -1520,7 +1526,10 @@ impl Workspace {
                         this.tunnels_open = !this.tunnels_open;
                         cx.notify();
                     }))
-                    .child("0 tunnels"),
+                    .child(match self.tunnels.len() {
+                        1 => "1 tunnel".to_owned(),
+                        n => format!("{n} tunnels"),
+                    }),
             )
             .child(div().flex_1())
             .child(

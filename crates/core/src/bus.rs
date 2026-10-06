@@ -11,7 +11,7 @@ use switchyard_db::{
 };
 use switchyard_drivers::Component;
 use switchyard_remote::FileEntry;
-use switchyard_remote::ssh::{HostKeyDecision, HostKeyRequest, InteractiveRequest};
+use switchyard_remote::ssh::{HostKeyDecision, HostKeyRequest, InteractiveRequest, TunnelInfo};
 use switchyard_store::{
     BufferState, DbConnection, HistoryEntry, Host, Profile, ProfileId, Workspace,
 };
@@ -311,6 +311,13 @@ pub enum Command {
         /// Terminal.
         term: TermId,
     },
+    /// Stop a tunnel; sessions using it end.
+    StopTunnel {
+        /// Tunnel id.
+        id: u64,
+    },
+    /// Report the live tunnels ([`Event::Tunnels`]).
+    ListTunnels,
     /// Answer a prompt the runtime raised.
     AnswerPrompt {
         /// The prompt's request id.
@@ -547,6 +554,8 @@ pub enum Event {
         /// The questions.
         req: InteractiveRequest,
     },
+    /// Live tunnels (sent when they open, stop, or their counters change).
+    Tunnels(Vec<TunnelInfo>),
     /// A terminal could not be opened.
     TerminalFailed {
         /// Terminal.

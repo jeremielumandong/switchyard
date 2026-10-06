@@ -96,10 +96,17 @@ async fn ssh_terminal_prompts_runs_and_reconnects() {
     .await;
 
     // Drop the connection from the server side: the terminal reconnects on its own.
-    std::process::Command::new("pkill")
+    // The test user's processes belong to someone else on CI runners: fall back to sudo.
+    let killed = std::process::Command::new("pkill")
         .args(["-KILL", "-u", "swy"])
         .status()
         .unwrap();
+    if !killed.success() {
+        std::process::Command::new("sudo")
+            .args(["-n", "pkill", "-KILL", "-u", "swy"])
+            .status()
+            .unwrap();
+    }
     next(&mut rx, 15, |e| match e {
         Event::TerminalStatus {
             term: 9,

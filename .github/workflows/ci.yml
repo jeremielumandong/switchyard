@@ -42,7 +42,7 @@ jobs:
       - run: cargo test --workspace
 
   integration:
-    name: integration (PostgreSQL)
+    name: integration (PostgreSQL, SSH, tunnels)
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -66,19 +66,10 @@ jobs:
           for f in docker/postgres/*.sql; do
             psql -h localhost -U switchyard -d shop -v ON_ERROR_STOP=1 -f "$f"
           done
-      - run: cargo test -p switchyard-db -p switchyard-core -- --ignored
-
-  integration-ssh:
-    name: integration (SSH)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.98.1
-      - uses: Swatinem/rust-cache@v2
       - name: Install OpenSSH server
         run: sudo apt-get update && sudo apt-get install -y openssh-server
-      - name: Start test servers
+      - name: Start SSH test servers
         run: sudo DIR=/tmp/switchyard-ssh scripts/ssh-test-servers.sh
-      - run: cargo test -p switchyard-remote --test ssh -- --ignored --test-threads 1
+      - run: cargo test -p switchyard-db -p switchyard-core -p switchyard-remote -- --ignored --test-threads 1
         env:
           SWITCHYARD_SSH_KEYS: /tmp/switchyard-ssh
