@@ -429,3 +429,33 @@ the rev with it (Cargo warns "patch not used" until then).
   `build-windows.ps1`), so users need no VC++ redistributable and no DLLs are shipped.
 - `SWITCHYARD_ENTRA_CLIENT_ID` comes from a repository variable when set; empty values are
   ignored at runtime.
+
+## 2026-10-06 — Integrated auth for SQL Server (M3-7; user choices)
+
+- Asked the user: Kerberos on Linux/macOS through (a) runtime-loaded GSSAPI with a small
+  tiberius patch, (b) tiberius's `integrated-auth-gssapi` (build-time link, app won't start
+  without krb5), or (c) Windows only. **User chose (a)** and approved the `winauth` and
+  `sspi` dependencies.
+- **Windows:** `AuthMethod::Integrated` via tiberius `winauth` (the OS's SSPI; Kerberos or NTLM
+  as Windows negotiates). No native library beyond Windows itself.
+- **Linux/macOS Kerberos:** `switchyard_drivers::gssapi` resolves six RFC 2744 functions from
+  the Driver Manager's `gssapi` component (`libgssapi_krb5.so.2`; on macOS the system GSS
+  framework, which lives in the dyld cache) and runs `gss_init_sec_context` with the user's
+  ticket cache (mutual auth). `switchyard-db` sees only an engine-neutral `SecurityProvider`
+  trait on `DbConfig`; core supplies it for integrated SQL Server profiles. A missing library
+  disables only this method, with a pointer to Settings → Drivers (the connection editor
+  already shows the install card).
+- **tiberius patch:** vendored 0.13.0 with `AuthMethod::External(ExternalAuthProvider)`, the
+  same LOGIN7/SSPI exchange as upstream's GSSAPI arm with caller-supplied tokens. Kept as
+  small as possible and documented in `vendor/tiberius/VENDORED.md`; worth offering upstream.
+- **"Windows account" method** (`DbAuthMethod::WindowsPassword`): `DOMAIN\user` + password from
+  the keychain; SSPI on Windows, NTLM through `sspi` (pure Rust) elsewhere.
+- The SPN is built from the profile's server and port, so integrated auth also works through
+  an SSH tunnel (tiberius alone would use the tunnel's local address).
+- New dependencies (all MIT/Apache/BSD): `winauth`, `sspi` 0.23 and its tree (`picky`,
+  `picky-krb`, `md4`, …). `sspi` pulls `async-dnssd` on macOS only, which uses the system's
+  built-in DNS-SD.
+- Testing: `scripts/kerberos-test-kdc.sh` makes a throwaway MIT realm. CI runs the GSSAPI
+  handshake test and a core test that sends a real service ticket to SQL Server (refused with
+  18452 because the test KDC is not Active Directory). Not covered: a real AD domain, Windows
+  SSPI at runtime, the macOS GSS framework at runtime.

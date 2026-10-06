@@ -87,3 +87,15 @@ jobs:
       - run: cargo test -p switchyard-db --test mssql -- --ignored --test-threads 1
         env:
           SWITCHYARD_MSSQL_CA: /tmp/switchyard-mssql/ca.pem
+      - name: Kerberos test realm
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends krb5-kdc krb5-user
+          echo "127.0.0.1 db.switchyard.test" | sudo tee -a /etc/hosts
+          scripts/kerberos-test-kdc.sh start | sed 's/^export //; s/"//g' >> "$GITHUB_ENV"
+      - name: GSSAPI (runtime-loaded) against the test KDC
+        run: cargo test -p switchyard-drivers --test gssapi -- --ignored --test-threads 1
+      - name: Integrated auth through core to SQL Server
+        run: cargo test -p switchyard-core --test integrated -- --ignored --test-threads 1
+        env:
+          SSL_CERT_FILE: /tmp/switchyard-mssql/ca.pem
+          SSL_CERT_DIR: /nonexistent

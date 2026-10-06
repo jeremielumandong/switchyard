@@ -543,6 +543,22 @@ impl Profile {
                 if d.auth == DbAuthMethod::Password && d.user.trim().is_empty() {
                     return Err(ValidationError::new("user", "User is required"));
                 }
+                if d.auth == DbAuthMethod::WindowsPassword && d.user.trim().is_empty() {
+                    return Err(ValidationError::new(
+                        "user",
+                        "Windows account is required (DOMAIN\\user)",
+                    ));
+                }
+                if matches!(
+                    d.auth,
+                    DbAuthMethod::Integrated | DbAuthMethod::WindowsPassword
+                ) && d.engine != Engine::SqlServer
+                {
+                    return Err(ValidationError::new(
+                        "auth",
+                        "Windows and Kerberos sign-in are for SQL Server",
+                    ));
+                }
                 if d.auth.is_entra() && d.engine != Engine::SqlServer {
                     return Err(ValidationError::new(
                         "auth",
@@ -664,6 +680,20 @@ mod tests {
         h.auth = SshAuth::Agent;
         h.jump_hosts = vec![h.id.clone()];
         assert_eq!(Profile::Host(h).validate().unwrap_err().field, "jump_hosts");
+
+        let mut ad = DbConnection::new("ad", Engine::SqlServer);
+        ad.server = "db.corp.example.com".into();
+        ad.auth = DbAuthMethod::Integrated;
+        assert!(Profile::Db(ad.clone()).validate().is_ok(), "no user needed");
+        ad.auth = DbAuthMethod::WindowsPassword;
+        assert_eq!(
+            Profile::Db(ad.clone()).validate().unwrap_err().field,
+            "user"
+        );
+        ad.user = "CORP\\ana".into();
+        assert!(Profile::Db(ad.clone()).validate().is_ok());
+        ad.engine = Engine::Postgres;
+        assert_eq!(Profile::Db(ad).validate().unwrap_err().field, "auth");
 
         let mut az = DbConnection::new("azure", Engine::SqlServer);
         az.server = "contoso.database.windows.net".into();

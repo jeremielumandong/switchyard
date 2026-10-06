@@ -88,11 +88,14 @@ fn tiberius_config(cfg: &DbConfig, host: &str, port: u16) -> Result<Config> {
                 .unwrap_or_default();
             c.authentication(AuthMethod::sql_server(&cfg.user, pw));
         }
-        DbAuthMethod::Integrated => {
-            return Err(DbError::Unsupported(
-                "integrated authentication to SQL Server arrives with the Driver Manager (M3-7)"
-                    .into(),
-            ));
+        DbAuthMethod::Integrated => c.authentication(integrated(cfg)?),
+        DbAuthMethod::WindowsPassword => {
+            let pw = cfg
+                .password
+                .as_ref()
+                .map(|p| p.expose_secret().to_owned())
+                .unwrap_or_default();
+            c.authentication(AuthMethod::windows(&cfg.user, pw));
         }
         DbAuthMethod::EntraInteractive
         | DbAuthMethod::EntraDeviceCode
@@ -105,6 +108,56 @@ fn tiberius_config(cfg: &DbConfig, host: &str, port: u16) -> Result<Config> {
         }
     }
     Ok(c)
+}
+
+/// Integrated auth: Windows SSPI for the signed-in user, or the runtime-loaded provider
+/// (Kerberos through GSSAPI) that core supplies on Linux and macOS.
+fn integrated(cfg: &DbConfig) -> Result<AuthMethod> {
+    if let Some(provider) = &cfg.security {
+        // The service name is the server's own, even when connecting through a tunnel
+        // (tiberius would otherwise build it from the local tunnel address).
+        let spn = format!("MSSQLSvc/{}:{}", cfg.host, cfg.port);
+        return Ok(AuthMethod::External(tiberius::ExternalAuthProvider(
+            Arc::new(ExternalAuth {
+                provider: provider.clone(),
+                spn,
+            }),
+        )));
+    }
+    #[cfg(windows)]
+    {
+        Ok(AuthMethod::Integrated)
+    }
+    #[cfg(not(windows))]
+    {
+        Err(DbError::Unsupported(
+            "integrated authentication needs Kerberos (GSSAPI); install it from Settings → Drivers"
+                .into(),
+        ))
+    }
+}
+
+struct ExternalAuth {
+    provider: Arc<dyn crate::driver::SecurityProvider>,
+    spn: String,
+}
+
+struct ExternalContext(Box<dyn crate::driver::SecurityContext>);
+
+impl tiberius::ExternalAuthContext for ExternalContext {
+    fn step(&mut self, input: Option<&[u8]>) -> std::result::Result<Option<Vec<u8>>, String> {
+        self.0.step(input)
+    }
+}
+
+impl tiberius::ExternalAuth for ExternalAuth {
+    fn start(
+        &self,
+        _spn: &str,
+    ) -> std::result::Result<Box<dyn tiberius::ExternalAuthContext>, String> {
+        debug!(spn = %self.spn, "kerberos sign-in");
+        Ok(Box::new(ExternalContext(self.provider.start(&self.spn)?)))
+    }
 }
 
 async fn open_client(cfg: &DbConfig, via: Option<&TunnelEndpoint>) -> Result<TdsClient> {
