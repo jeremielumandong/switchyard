@@ -48,7 +48,7 @@ Exit: the app opens with the full layout, profiles save to SQLite, secrets land 
   command palette (Ctrl/Cmd+Shift+P) and quick switcher (Ctrl/Cmd+P) with fuzzy matching.
   Done when: every action registered so far is reachable from the palette.
   Note: `actions.rs` registry + `palette.rs`; every action is listed in `palette_commands`.
-- [ ] **M0-9 Connections sidebar and editor.** Sidebar tree grouped by Host or folder with
+- [x] **M0-9 Connections sidebar and editor.** Sidebar tree grouped by Host or folder with
   environment dots; connection editor dialog with a form per type and environment label.
   "Test connection" is stubbed until drivers exist.
   Done when: create, edit, delete and reorder connections; changes persist across restarts.
@@ -357,7 +357,6 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 
 - Observe CI green on macOS, Windows and Linux (M0-1).
 - Smoke tests for the SQL Server, SSH and FTP containers (M0-2).
-- Drag-to-reorder connections in the sidebar (M0-9).
 - Verify multi-cursor and folding in the gpui-component editor (M1-6).
 - Grid range selection and multi-cell TSV copy (M1-10); grid frame-time harness (M1-16).
 - XML and image value viewers (M1-11).

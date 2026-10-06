@@ -5,8 +5,8 @@ use std::collections::{HashMap, HashSet};
 use gpui_kit::component::input::Input;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, ClipboardItem, Context, FontWeight, InteractiveElement as _, IntoElement,
-    MouseButton, MouseDownEvent, ParentElement as _, Pixels, Point, SharedString,
+    AnyElement, AppContext as _, ClipboardItem, Context, FontWeight, InteractiveElement as _,
+    IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Pixels, Point, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window, div, px, uniform_list,
 };
 use switchyard_core::db::{
@@ -251,6 +251,40 @@ struct ConnRow {
     live: bool,
     profile: Option<ProfileId>,
     action: ConnAction,
+    /// Can be dragged to reorder among the rows of the same group (`group`).
+    drag: Option<DraggedProfile>,
+}
+
+/// A profile being dragged to a new place in the sidebar.
+#[derive(Clone, Debug)]
+pub struct DraggedProfile {
+    id: ProfileId,
+    /// Siblings it may move among: `hosts`, `h:<host id>` or `g:direct`.
+    group: String,
+    label: SharedString,
+}
+
+/// `order` with `dragged` moved onto `target`: after it when moving down, before it when
+/// moving up (like dragging in any list).
+pub(crate) fn move_to(
+    order: &[ProfileId],
+    dragged: &ProfileId,
+    target: &ProfileId,
+) -> Vec<ProfileId> {
+    let mut v = order.to_vec();
+    let (Some(from), Some(to)) = (
+        v.iter().position(|i| i == dragged),
+        v.iter().position(|i| i == target),
+    ) else {
+        return v;
+    };
+    if from == to {
+        return v;
+    }
+    let item = v.remove(from);
+    let t = v.iter().position(|i| i == target).unwrap_or(v.len());
+    v.insert(if from < to { t + 1 } else { t }, item);
+    v
 }
 
 #[derive(Clone)]
@@ -290,6 +324,20 @@ impl Workspace {
         }
     }
 
+    /// Move `dragged` onto `target` in the sidebar and save the order.
+    fn reorder_profile(&mut self, dragged: &ProfileId, target: &ProfileId, cx: &mut Context<Self>) {
+        let order: Vec<ProfileId> = self.profiles.all.iter().map(|p| p.id().clone()).collect();
+        let ids = move_to(&order, dragged, target);
+        if ids == order {
+            return;
+        }
+        self.profiles
+            .all
+            .sort_by_key(|p| ids.iter().position(|i| i == p.id()).unwrap_or(usize::MAX));
+        self.core.send(Command::ReorderProfiles { ids });
+        cx.notify();
+    }
+
     fn conn_rows(&self, cx: &Context<Self>) -> Vec<ConnRow> {
         let live: HashSet<ProfileId> = self
             .tabs
@@ -305,7 +353,7 @@ impl Workspace {
             })
             .collect();
         let mut rows = Vec::new();
-        let leaf = |p: &Profile| -> ConnRow {
+        let leaf = |p: &Profile, group: &str| -> ConnRow {
             let (label, sub, action) = match p {
                 Profile::Db(d) => (
                     d.name.clone(),
@@ -328,16 +376,22 @@ impl Workspace {
                     ConnAction::Terminal(Some(h.id.clone())),
                 ),
             };
+            let label: SharedString = label.into();
             ConnRow {
                 is_group: false,
                 key: p.id().0.clone(),
                 badge: badge_of(p),
-                label: label.into(),
+                label: label.clone(),
                 sub: sub.into(),
                 env: None,
                 live: live.contains(p.id()),
                 profile: Some(p.id().clone()),
                 action,
+                drag: Some(DraggedProfile {
+                    id: p.id().clone(),
+                    group: group.to_owned(),
+                    label,
+                }),
             }
         };
         for h in self.profiles.hosts() {
@@ -355,6 +409,11 @@ impl Workspace {
                 live: any_live,
                 profile: Some(h.id.clone()),
                 action: ConnAction::Toggle,
+                drag: Some(DraggedProfile {
+                    id: h.id.clone(),
+                    group: "hosts".into(),
+                    label: h.name.clone().into(),
+                }),
             });
             if !collapsed {
                 rows.push(ConnRow {
@@ -367,8 +426,9 @@ impl Workspace {
                     live: false,
                     profile: Some(h.id.clone()),
                     action: ConnAction::Terminal(Some(h.id.clone())),
+                    drag: None,
                 });
-                rows.extend(kids.into_iter().map(leaf));
+                rows.extend(kids.into_iter().map(|k| leaf(k, &key)));
             }
         }
         let direct = self.profiles.direct();
@@ -383,6 +443,7 @@ impl Workspace {
             live: direct.iter().any(|k| live.contains(k.id())),
             profile: None,
             action: ConnAction::Toggle,
+            drag: None,
         });
         if !self.collapsed.contains(&key) {
             rows.push(ConnRow {
@@ -395,9 +456,10 @@ impl Workspace {
                 live: false,
                 profile: None,
                 action: ConnAction::Terminal(None),
+                drag: None,
             });
             rows.extend(direct.into_iter().map(|p| {
-                let mut r = leaf(p);
+                let mut r = leaf(p, "g:direct");
                 if let Profile::Db(d) = p {
                     r.env = Some(d.environment);
                 }
@@ -413,6 +475,7 @@ impl Workspace {
                 live: false,
                 profile: None,
                 action: ConnAction::Files,
+                drag: None,
             });
         }
         rows
@@ -782,8 +845,30 @@ impl Workspace {
         let profile = r.profile.clone();
         let collapsed = self.collapsed.contains(&r.key);
         let ctx_profile = r.profile.clone();
+        let drop_line = p.acc;
+        let drop_target = r.drag.clone();
+        let over_target = r.drag.clone();
         div()
             .id(("conn-row", i))
+            .when_some(r.drag.clone(), |d, drag| {
+                d.on_drag(drag, |d: &DraggedProfile, _, _, cx| {
+                    let label = d.label.to_string();
+                    cx.new(|_| crate::files_tab::DragPreview(label))
+                })
+            })
+            .drag_over::<DraggedProfile>(move |s, d, _, _| match &over_target {
+                Some(t) if t.group == d.group && t.id != d.id => {
+                    s.bg(drop_line.opacity(0.18)).border_color(drop_line)
+                }
+                _ => s,
+            })
+            .on_drop(cx.listener(move |this, d: &DraggedProfile, _, cx| {
+                if let Some(t) = &drop_target
+                    && t.group == d.group
+                {
+                    this.reorder_profile(&d.id, &t.id, cx);
+                }
+            }))
             .w_full()
             .h(px(26.))
             .flex()
@@ -1315,5 +1400,35 @@ fn compact(n: i64) -> String {
         n if n >= 1_000_000 => format!("{:.1}M", n as f64 / 1_000_000.0),
         n if n >= 1_000 => format!("{:.1}K", n as f64 / 1_000.0).replace(".0K", "K"),
         n => n.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dragging_moves_after_going_down_and_before_going_up() {
+        let ids: Vec<ProfileId> = ["a", "b", "c", "d"].map(|s| ProfileId(s.into())).to_vec();
+        let id = |s: &str| ProfileId(s.into());
+        let names = |v: Vec<ProfileId>| v.into_iter().map(|i| i.0).collect::<Vec<_>>().join("");
+        assert_eq!(names(move_to(&ids, &id("a"), &id("c"))), "bcad");
+        assert_eq!(names(move_to(&ids, &id("d"), &id("b"))), "adbc");
+        assert_eq!(
+            names(move_to(&ids, &id("a"), &id("d"))),
+            "bcda",
+            "to the end"
+        );
+        assert_eq!(
+            names(move_to(&ids, &id("c"), &id("a"))),
+            "cabd",
+            "to the start"
+        );
+        assert_eq!(names(move_to(&ids, &id("b"), &id("b"))), "abcd");
+        assert_eq!(
+            names(move_to(&ids, &id("x"), &id("b"))),
+            "abcd",
+            "unknown id"
+        );
     }
 }
