@@ -71,7 +71,12 @@ jobs:
       - name: Start SSH test servers
         run: sudo DIR=/tmp/switchyard-ssh scripts/ssh-test-servers.sh
       - run: cargo test -p switchyard-db --lib --test pg --test d1 -- --ignored --test-threads 1
-      - run: cargo test -p switchyard-core -p switchyard-remote -- --ignored --test-threads 1
+      # Named targets: core's `integrated` test needs the Kerberos realm and SQL Server,
+      # so it runs in the SQL Server job.
+      - run: >-
+          cargo test -p switchyard-core -p switchyard-remote --lib
+          --test flow --test pg_edits --test ssh_files --test ssh_terminal --test tunnel_pg --test ssh
+          -- --ignored --test-threads 1
         env:
           SWITCHYARD_SSH_KEYS: /tmp/switchyard-ssh
 
@@ -91,7 +96,9 @@ jobs:
         run: |
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends krb5-kdc krb5-user
           echo "127.0.0.1 db.switchyard.test" | sudo tee -a /etc/hosts
-          scripts/kerberos-test-kdc.sh start | sed 's/^export //; s/"//g' >> "$GITHUB_ENV"
+          # Through a file, not a pipe, so a failing script fails the step.
+          scripts/kerberos-test-kdc.sh start > /tmp/krb5-env
+          sed 's/^export //; s/"//g' /tmp/krb5-env >> "$GITHUB_ENV"
       - name: GSSAPI (runtime-loaded) against the test KDC
         run: cargo test -p switchyard-drivers --test gssapi -- --ignored --test-threads 1
       - name: Integrated auth through core to SQL Server
