@@ -19,12 +19,16 @@ WHERE n.nspname NOT LIKE 'pg\\_toast%' AND n.nspname NOT LIKE 'pg\\_temp%'
 ORDER BY is_system, n.nspname";
 
 /// Relations of one relkind set in a schema, with estimated rows.
+/// Extension members (e.g. `pg_stat_statements`) are left out; they belong to the extension.
 pub const RELATIONS_SQL: &str = "\
 SELECT c.relname::text,
        CASE WHEN c.reltuples < 0 THEN NULL ELSE c.reltuples::int8 END AS est_rows
 FROM pg_catalog.pg_class c
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = $1 AND c.relkind = ANY($2::text::\"char\"[])
+  AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d
+                  WHERE d.classid = 'pg_catalog.pg_class'::regclass AND d.objid = c.oid
+                    AND d.deptype = 'e')
 ORDER BY c.relname";
 
 /// Functions or procedures in a schema.
@@ -33,6 +37,9 @@ SELECT p.proname::text, pg_catalog.pg_get_function_identity_arguments(p.oid) AS 
 FROM pg_catalog.pg_proc p
 JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
 WHERE n.nspname = $1 AND p.prokind = $2::text::\"char\"
+  AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d
+                  WHERE d.classid = 'pg_catalog.pg_proc'::regclass AND d.objid = p.oid
+                    AND d.deptype = 'e')
 ORDER BY p.proname, args";
 
 /// User-defined types in a schema (excluding table row types and arrays).
@@ -46,6 +53,9 @@ WHERE n.nspname = $1
        OR (SELECT c.relkind FROM pg_catalog.pg_class c WHERE c.oid = t.typrelid) = 'c')
   AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_type el
                   WHERE el.oid = t.typelem AND el.typarray = t.oid)
+  AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d
+                  WHERE d.classid = 'pg_catalog.pg_type'::regclass AND d.objid = t.oid
+                    AND d.deptype = 'e')
 ORDER BY 1";
 
 /// Columns of one relation.
