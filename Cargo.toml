@@ -1,5 +1,7 @@
 [workspace]
 resolver = "3"
+# Vendored dependencies are patched in below, not workspace members.
+exclude = ["vendor/tiberius"]
 members = [
     "crates/app",
     "crates/core",
@@ -90,7 +92,10 @@ reqwest = { version = "=0.13.5", default-features = false, features = ["rustls-n
 portable-pty = "=0.9.0"
 russh = { version = "=0.64.1", default-features = false, features = ["ring", "rsa", "flate2"] }
 russh-sftp = "=3.0.1"
-tiberius = { version = "=0.13.0", default-features = false, features = ["tds80", "rustls"] }
+# `winauth`: Windows integrated auth (SSPI). `sspi-rs`: NTLM on Linux/macOS (pure Rust).
+# Kerberos on Linux/macOS goes through the vendored copy's external-auth hook with a
+# runtime-loaded GSSAPI (see vendor/tiberius/VENDORED.md).
+tiberius = { version = "=0.13.0", default-features = false, features = ["tds80", "rustls", "winauth", "sspi-rs"] }
 hmac = "=0.13.0"
 sha1 = "=0.11.0"
 data-encoding = "2"
@@ -131,6 +136,7 @@ codegen-units = 1
 # gpui-fast (Retained Mode rendering) in place of GPUI Kit's upstream `gpui-pre`
 # snapshots: same names, version and API. See docs/DECISIONS.md.
 [patch.crates-io]
+tiberius = { path = "vendor/tiberius" }
 gpui-pre = { git = "https://github.com/longbridge/gpui-fast", rev = "598306fcbf77bff0f764b5a178a447344e72e132" }
 gpui-pre-platform = { git = "https://github.com/longbridge/gpui-fast", rev = "598306fcbf77bff0f764b5a178a447344e72e132" }
 gpui-pre-macros = { git = "https://github.com/longbridge/gpui-fast", rev = "598306fcbf77bff0f764b5a178a447344e72e132" }

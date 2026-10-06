@@ -200,10 +200,18 @@ Exit: integrated auth works on a Linux machine that started without Kerberos lib
   SPEC) and Settings → Drivers page.
   Done when: every state from the SPEC table is reachable and rendered.
   Note: Card states: missing/outdated, license, needs admin (command + Copy), downloading with progress, verifying, unpacking, failed with retry, installed then automatic re-test; Use existing path and manual steps. Settings → Drivers lists status/version/location with Install, Remove, Show steps, Retry, install from file and mirror. Checked in the app (download progress only in tests: the local download finished too fast to capture).
-- [ ] **M3-7 Integrated auth.** Windows: SSPI via tiberius `winauth`. Linux/macOS: spike
+- [x] **M3-7 Integrated auth.** Windows: SSPI via tiberius `winauth`. Linux/macOS: spike
   runtime-loaded GSSAPI versus tiberius `integrated-auth-gssapi` (build-time link); pick one,
   record it in `docs/DECISIONS.md`, implement with Driver Manager auto-setup on Linux.
   Done when: Linux machine without krb5 libs gets prompted, installs, and connects.
+  Note: Windows signs in with SSPI (tiberius `winauth`); Linux/macOS use Kerberos through
+  GSSAPI loaded at runtime by the Driver Manager (`libgssapi_krb5`, or macOS's GSS
+  framework) via an external-auth hook in a vendored tiberius (`vendor/tiberius`). New
+  "Windows account" method: DOMAIN\\user + password (SSPI on Windows, NTLM via `sspi`
+  elsewhere). Tested against a throwaway MIT KDC (`scripts/kerberos-test-kdc.sh`): full
+  mutual-auth handshake, and a real service ticket reaching SQL Server, which then refuses it
+  only because the test KDC is not Active Directory. Not verified: login against a real AD
+  domain, Windows SSPI and the macOS GSS framework (compiled in CI only).
 - [ ] **M3-8 Certificates.** Corporate CA import (OS stores and file) and per-connection
   certificate pinning.
   Done when: connects to a server with a self-signed cert only after pinning.
