@@ -1615,6 +1615,9 @@ impl Workspace {
 
     fn render_title_bar(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let dark = p.dark;
+        // The title bar's row is the window's drag area (`HTCAPTION` on Windows). GPUI
+        // reports it under every hitbox inside it, so each control must occlude it or
+        // Windows takes the click as a window drag and the control never sees it.
         TitleBar::new()
             .h(px(38.))
             .bg(p.panel)
@@ -1658,9 +1661,11 @@ impl Workspace {
                             .child(div().text_color(p.fg3).text_size(px(10.)).child("▾")),
                     )
                     .child(
-                        ui::button("tb-sidebar", "Sidebar", Kind::Ghost, p).on_click(cx.listener(
-                            |this, _, w, cx| this.run_command(CommandId::ToggleSidebar, w, cx),
-                        )),
+                        ui::button("tb-sidebar", "Sidebar", Kind::Ghost, p)
+                            .occlude()
+                            .on_click(cx.listener(|this, _, w, cx| {
+                                this.run_command(CommandId::ToggleSidebar, w, cx)
+                            })),
                     )
                     .child(
                         div().flex_1().flex().justify_center().min_w_0().child(
@@ -1681,6 +1686,7 @@ impl Workspace {
                                 .text_color(p.fg3)
                                 .text_size(px(12.5))
                                 .cursor_text()
+                                .occlude()
                                 .hover(|s| s.border_color(p.bd2))
                                 .on_click(cx.listener(|this, _, w, cx| {
                                     this.open_palette(PaletteMode::Commands, w, cx)
@@ -1701,6 +1707,7 @@ impl Workspace {
                             Kind::Ghost,
                             p,
                         )
+                        .occlude()
                         .on_click(cx.listener(move |this, _, w, cx| {
                             let next = if dark {
                                 ThemeId::SwitchyardLight
@@ -1711,18 +1718,18 @@ impl Workspace {
                         })),
                     )
                     .child(
-                        ui::button("tb-components", "Components", Kind::Ghost, p).on_click(
-                            cx.listener(|this, _, w, cx| {
+                        ui::button("tb-components", "Components", Kind::Ghost, p)
+                            .occlude()
+                            .on_click(cx.listener(|this, _, w, cx| {
                                 this.run_command(CommandId::OpenComponents, w, cx)
-                            }),
-                        ),
+                            })),
                     )
                     .child(
-                        ui::button("tb-settings", "Settings", Kind::Ghost, p).on_click(
-                            cx.listener(|this, _, w, cx| {
+                        ui::button("tb-settings", "Settings", Kind::Ghost, p)
+                            .occlude()
+                            .on_click(cx.listener(|this, _, w, cx| {
                                 this.open_settings(SettingsPage::General, w, cx)
-                            }),
-                        ),
+                            })),
                     ),
             )
             .into_any_element()
