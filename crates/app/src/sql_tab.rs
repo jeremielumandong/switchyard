@@ -34,6 +34,7 @@ use switchyard_core::db::edit::{EditTable, RowEdit, editable_table, update_state
 use crate::app_state::{SessionState, next_id};
 use crate::completion::{CompletionState, SqlCompletion};
 use crate::grid::GridDelegate;
+use crate::plan_view::{ExplainRequest, PlanView, PlanViewEvent};
 use crate::theme::{MONO, Palette, SANS, palette};
 use crate::ui::{self, Kind, thousands};
 
@@ -155,6 +156,14 @@ pub struct SqlTab {
     pub accent: Option<Hsla>,
     /// A run asked for while the session was still connecting; sent once it opens.
     queued_run: Option<(PendingRun, bool)>,
+    /// An explain asked for while the session was still connecting.
+    queued_explain: Option<ExplainRequest>,
+    /// The plan view (the "Plan" result tab).
+    plan: Entity<PlanView>,
+    /// The Plan result tab is showing.
+    pub show_plan: bool,
+    /// Editor highlight of the selected plan node's tables.
+    plan_marks: Option<gpui_kit::component::input::RangeDecorationCollection>,
     editor: Entity<EditorState>,
     editor_height: f32,
     drag: Option<(f32, f32)>,
@@ -240,6 +249,10 @@ impl SqlTab {
                 this.apply_filter(&needle, cx);
             }
         });
+        let plan = cx.new(|_| PlanView::new(core.clone()));
+        let plan_sub = cx.subscribe_in(&plan, window, |this, _, ev: &PlanViewEvent, window, cx| {
+            this.on_plan_event(ev, window, cx)
+        });
         let mut tab = Self {
             core,
             buffer_id: buffer.id,
@@ -249,6 +262,10 @@ impl SqlTab {
             session_state: SessionState::None,
             accent: None,
             queued_run: None,
+            queued_explain: None,
+            plan,
+            show_plan: false,
+            plan_marks: None,
             editor,
             editor_height: 300.0,
             drag: None,
@@ -279,7 +296,7 @@ impl SqlTab {
             position,
             filter,
             completion,
-            _subs: vec![sub, filter_sub],
+            _subs: vec![sub, filter_sub, plan_sub],
         };
         if let Some(c) = connection {
             tab.set_connection(Some(c), cx);
@@ -331,6 +348,8 @@ impl SqlTab {
             self.core.send(Command::CloseSession { session: s });
         }
         self.connection = connection;
+        let profile = self.connection.as_ref().map(|c| c.id.clone());
+        self.plan.update(cx, |v, _| v.set_connection(profile));
         self.txn_open = false;
         self.txn_statements = 0;
         match &self.connection {
@@ -360,6 +379,14 @@ impl SqlTab {
                 scope: switchyard_core::db::IntrospectScope::AllColumns,
                 refresh: false,
             });
+        }
+        if let Some(req) = self.queued_explain.take() {
+            if opened {
+                self.session_state = state.clone();
+                self.send_explain(req, cx);
+            } else if let SessionState::Failed(why) = &state {
+                cx.emit(SqlTabEvent::Toast(format!("Could not connect: {why}")));
+            }
         }
         // A run queued while connecting goes now; a failed open drops it and says why.
         if let Some((pending, confirmed)) = self.queued_run.take() {
@@ -471,12 +498,18 @@ impl SqlTab {
 
     /// Run the statement at the cursor, or the selection when there is one.
     pub fn run_statement(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let statements = self.statements_at_cursor(cx);
+        self.start(statements, window, cx);
+    }
+
+    /// The statements in the selection, or the one at the cursor.
+    fn statements_at_cursor(&self, cx: &App) -> Vec<StatementRequest> {
         let (text, sel, cursor) = {
             let e = self.editor.read(cx);
             (e.value().to_string(), e.selected_range(), e.cursor())
         };
         let dialect = self.dialect();
-        let statements: Vec<StatementRequest> = if sel.start < sel.end {
+        if sel.start < sel.end {
             let slice = &text[sel.clone()];
             dialect
                 .split_script(slice)
@@ -497,8 +530,122 @@ impl SqlTab {
                 })
                 .into_iter()
                 .collect()
+        }
+    }
+
+    /// Capture the plan of the statement at the cursor (or the first selected one):
+    /// estimated, or actual when `analyze` (the statement runs; writes are rolled back).
+    pub fn explain(&mut self, analyze: bool, _window: &mut Window, cx: &mut Context<Self>) {
+        let statements = self.statements_at_cursor(cx);
+        let Some(first) = statements.first() else {
+            cx.emit(SqlTabEvent::Toast("Nothing to explain".into()));
+            return;
         };
-        self.start(statements, window, cx);
+        if statements.len() > 1 {
+            cx.emit(SqlTabEvent::Toast(format!(
+                "Explaining the first of {} selected statements",
+                statements.len()
+            )));
+        }
+        let req = ExplainRequest {
+            sql: first.sql.clone(),
+            offset: Some(first.offset),
+            analyze,
+            confirmed: false,
+        };
+        self.send_explain(req, cx);
+    }
+
+    fn send_explain(&mut self, req: ExplainRequest, cx: &mut Context<Self>) {
+        if self.connection.is_none() {
+            cx.emit(SqlTabEvent::PickConnection);
+            return;
+        }
+        self.show_plan = true;
+        self.export_open = false;
+        // Same as runs: wait for a connecting session, reconnect a failed one.
+        match self.session_state {
+            SessionState::Connecting => {
+                self.queued_explain = Some(req);
+                cx.notify();
+                return;
+            }
+            SessionState::Failed(_) => {
+                let conn = self.connection.clone();
+                self.set_connection(conn, cx);
+                self.queued_explain = Some(req);
+                return;
+            }
+            _ => {}
+        }
+        let Some(session) = self.session else {
+            cx.emit(SqlTabEvent::PickConnection);
+            return;
+        };
+        self.plan.update(cx, |v, cx| v.explain(session, req, cx));
+        cx.notify();
+    }
+
+    /// Show the plan stored with a history entry.
+    pub fn open_saved_plan(&mut self, history_id: i64, cx: &mut Context<Self>) {
+        self.show_plan = true;
+        self.plan.update(cx, |v, cx| v.open_saved(history_id, cx));
+        cx.notify();
+    }
+
+    /// The plan view.
+    pub fn plan_view(&self) -> &Entity<PlanView> {
+        &self.plan
+    }
+
+    fn on_plan_event(&mut self, ev: &PlanViewEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match ev {
+            PlanViewEvent::Toast(t) => cx.emit(SqlTabEvent::Toast(t.clone())),
+            PlanViewEvent::Rerun(req) => self.send_explain(req.clone(), cx),
+            PlanViewEvent::Highlight {
+                sql,
+                offset,
+                ranges,
+            } => self.highlight_plan(sql, *offset, ranges, window, cx),
+        }
+    }
+
+    /// Mark where the selected plan node's tables appear in the statement.
+    fn highlight_plan(
+        &mut self,
+        sql: &str,
+        offset: Option<usize>,
+        ranges: &[std::ops::Range<usize>],
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use gpui_kit::component::input::{RangeDecoration, RangeDecorationStyle};
+        let text = self.editor.read(cx).value().to_string();
+        // Where the statement is now: where it was explained, else wherever it is found.
+        let base = offset
+            .filter(|&o| text.get(o..o + sql.len()) == Some(sql))
+            .or_else(|| text.find(sql));
+        let color = self.accent.unwrap_or_else(|| palette(cx).acc).opacity(0.3);
+        let marks: Vec<RangeDecoration> = match base {
+            Some(base) => ranges
+                .iter()
+                .map(|r| {
+                    RangeDecoration::new(base + r.start..base + r.end)
+                        .with_style(RangeDecorationStyle::Fill)
+                        .with_color(color)
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        match &self.plan_marks {
+            Some(c) => c.set(marks, cx),
+            None => {
+                let c = self
+                    .editor
+                    .update(cx, |e, cx| e.create_range_decorations_collection(marks, cx));
+                self.plan_marks = Some(c);
+            }
+        }
     }
 
     /// Run every statement in the buffer.
@@ -625,6 +772,7 @@ impl SqlTab {
             return;
         };
         let query = next_id();
+        self.show_plan = false;
         self.results.clear();
         self.active_result = 0;
         self.messages.clear();
@@ -689,6 +837,7 @@ impl SqlTab {
         if let RunState::Running { query, .. } | RunState::Paused { query, .. } = self.run {
             self.core.send(Command::Cancel { query });
         }
+        self.plan.update(cx, |v, cx| v.stop(cx));
         cx.notify();
     }
 
@@ -1246,7 +1395,8 @@ impl SqlTab {
     }
 
     fn render_toolbar(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let running = matches!(self.run, RunState::Running { .. } | RunState::Paused { .. });
+        let running = matches!(self.run, RunState::Running { .. } | RunState::Paused { .. })
+            || self.plan.read(cx).is_capturing();
         let env = self.environment();
         let conn_label: SharedString = self
             .connection
@@ -1287,6 +1437,27 @@ impl SqlTab {
                 ui::button_with_key("stop", "Stop", ui::keys("⌘.", "Ctrl+."), Kind::Secondary, p)
                     .text_color(if running { p.prod } else { p.fg3 })
                     .on_click(cx.listener(|this, _, _, cx| this.stop(cx))),
+            )
+            .child(ui::vdivider(p, 18.))
+            .child(
+                ui::button_with_key(
+                    "explain",
+                    "Explain",
+                    ui::keys("⌘E", "Ctrl+E"),
+                    Kind::Secondary,
+                    p,
+                )
+                .on_click(cx.listener(|this, _, w, cx| this.explain(false, w, cx))),
+            )
+            .child(
+                ui::button_with_key(
+                    "explain-analyze",
+                    "Analyze",
+                    ui::keys("⇧⌘E", "Ctrl+Shift+E"),
+                    Kind::Secondary,
+                    p,
+                )
+                .on_click(cx.listener(|this, _, w, cx| this.explain(true, w, cx))),
             )
             .child(ui::vdivider(p, 18.))
             .child(ui::segmented(
@@ -1477,6 +1648,10 @@ impl SqlTab {
             },
         ));
         let paused = matches!(self.run, RunState::Paused { .. });
+        let (plan_tab, plan_busy) = {
+            let v = self.plan.read(cx);
+            (v.has_content() || self.show_plan, v.is_capturing())
+        };
         let header = div()
             .h(px(32.))
             .flex_none()
@@ -1487,7 +1662,7 @@ impl SqlTab {
             .border_color(p.bd)
             .bg(p.panel)
             .children(tabs.into_iter().map(|(i, label, count)| {
-                let active = i == self.active_result;
+                let active = !self.show_plan && i == self.active_result;
                 div()
                     .id(("rtab", i))
                     .flex()
@@ -1501,6 +1676,7 @@ impl SqlTab {
                     .when(active, |d| d.border_b_2().border_color(p.fg))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.active_result = i;
+                        this.show_plan = false;
                         this.selected = None;
                         cx.notify();
                     }))
@@ -1513,6 +1689,30 @@ impl SqlTab {
                             .child(count),
                     )
             }))
+            .when(plan_tab, |d| {
+                d.child(
+                    div()
+                        .id("rtab-plan")
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(px(6.))
+                        .px(px(10.))
+                        .text_size(px(12.))
+                        .whitespace_nowrap()
+                        .text_color(if self.show_plan { p.fg } else { p.fg2 })
+                        .when(self.show_plan, |d| d.border_b_2().border_color(p.fg))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.show_plan = true;
+                            this.export_open = false;
+                            cx.notify();
+                        }))
+                        .child("Plan")
+                        .when(plan_busy, |d| {
+                            d.child(ui::pulse_dot("plan-pulse", p.acc, 6.))
+                        }),
+                )
+            })
             .child(div().flex_1())
             .child(
                 div()
@@ -1520,7 +1720,7 @@ impl SqlTab {
                     .flex()
                     .items_center()
                     .gap(px(6.))
-                    .when(!self.results.is_empty(), |d| {
+                    .when(!self.results.is_empty() && !self.show_plan, |d| {
                         d.child(
                             div()
                                 .w(px(150.))
@@ -1539,24 +1739,26 @@ impl SqlTab {
                                 ),
                         )
                     })
-                    .child(
-                        ui::button("fetch-all", "Fetch all", Kind::Ghost, p)
-                            .h(px(22.))
-                            .text_size(px(11.5))
-                            .when(!paused, |d| d.text_color(p.fg3))
-                            .on_click(cx.listener(|this, _, _, cx| this.fetch_all(cx))),
-                    )
-                    .child(
-                        ui::button("export", "Export ▾", Kind::Secondary, p)
-                            .h(px(22.))
-                            .px(px(8.))
-                            .text_size(px(11.5))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.export_open = !this.export_open;
-                                cx.notify();
-                            })),
-                    )
-                    .when(self.export_open, |d| {
+                    .when(!self.show_plan, |d| {
+                        d.child(
+                            ui::button("fetch-all", "Fetch all", Kind::Ghost, p)
+                                .h(px(22.))
+                                .text_size(px(11.5))
+                                .when(!paused, |d| d.text_color(p.fg3))
+                                .on_click(cx.listener(|this, _, _, cx| this.fetch_all(cx))),
+                        )
+                        .child(
+                            ui::button("export", "Export ▾", Kind::Secondary, p)
+                                .h(px(22.))
+                                .px(px(8.))
+                                .text_size(px(11.5))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.export_open = !this.export_open;
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .when(self.export_open && !self.show_plan, |d| {
                         d.child(self.render_export_menu(p, cx))
                     }),
             );
@@ -1565,7 +1767,13 @@ impl SqlTab {
             && self.error.is_none()
             && self.messages.is_empty()
             && matches!(self.run, RunState::Idle);
-        let body: AnyElement = if self.connection.is_none() {
+        let body: AnyElement = if self.show_plan {
+            div()
+                .flex_1()
+                .min_h_0()
+                .child(self.plan.clone())
+                .into_any_element()
+        } else if self.connection.is_none() {
             empty_state(
                 "No connection",
                 "Pick a connection for this tab to run queries.",
