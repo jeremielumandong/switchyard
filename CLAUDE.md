@@ -198,6 +198,8 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
   matching `gpui` version before bumping either.
 - `tiberius` takes a `futures` AsyncRead/AsyncWrite stream: wrap tokio streams with
   `tokio_util::compat` (`compat_write()`).
+- `ssh-key` (russh's key parser) is vendored (`vendor/ssh-key`) to accept OpenSSH P-256 keys
+  with a 31-byte scalar (one in 256); read `vendor/ssh-key/VENDORED.md` before bumping russh.
 - `tiberius` is vendored (`vendor/tiberius`, patched via `[patch.crates-io]`) for the
   `AuthMethod::External` hook; read `vendor/tiberius/VENDORED.md` before updating it. Never
   enable its `integrated-auth-gssapi` feature (links GSSAPI at build time); Kerberos goes
