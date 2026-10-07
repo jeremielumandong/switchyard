@@ -9096,6 +9096,7 @@ dependencies = [
  "futures",
  "hmac 0.13.0",
  "insta",
+ "ring",
  "russh",
  "russh-sftp",
  "secrecy",
