@@ -43,9 +43,36 @@ impl KeychainStore {
     pub fn available() -> bool {
         keyring::Entry::store_status().is_ok()
     }
+}
 
-    fn entry(key: &SecretRef) -> Result<keyring::Entry> {
-        keyring::Entry::new(SERVICE, &key.0).map_err(|e| StoreError::Keychain(e.to_string()))
+/// One keychain item, by name.
+fn entry(name: &str) -> Result<keyring::Entry> {
+    keyring::Entry::new(SERVICE, name).map_err(|e| StoreError::Keychain(e.to_string()))
+}
+
+/// The OS keychain as plain named strings, for [`chunked`].
+struct OsItems;
+
+impl chunked::Items for OsItems {
+    fn get(&self, name: &str) -> Result<Option<String>> {
+        match entry(name)?.get_password() {
+            Ok(v) => Ok(Some(v)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(StoreError::Keychain(e.to_string())),
+        }
+    }
+
+    fn set(&self, name: &str, value: &str) -> Result<()> {
+        entry(name)?
+            .set_password(value)
+            .map_err(|e| StoreError::Keychain(e.to_string()))
+    }
+
+    fn delete(&self, name: &str) -> Result<()> {
+        match entry(name)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(StoreError::Keychain(e.to_string())),
+        }
     }
 }
 
@@ -56,26 +83,110 @@ impl SecretStore for KeychainStore {
 
     fn get(&self, key: &SecretRef) -> Result<Option<SecretString>> {
         debug!(key = %key.0, "keychain read");
-        match Self::entry(key)?.get_password() {
-            Ok(v) => Ok(Some(SecretString::from(v))),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(StoreError::Keychain(e.to_string())),
-        }
+        Ok(chunked::get(&OsItems, &key.0)?.map(SecretString::from))
     }
 
     fn set(&self, key: &SecretRef, value: &SecretString) -> Result<()> {
         debug!(key = %key.0, "keychain write");
-        Self::entry(key)?
-            .set_password(value.expose_secret())
-            .map_err(|e| StoreError::Keychain(e.to_string()))
+        chunked::set(&OsItems, &key.0, value.expose_secret())
     }
 
     fn delete(&self, key: &SecretRef) -> Result<()> {
         debug!(key = %key.0, "keychain delete");
-        match Self::entry(key)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(StoreError::Keychain(e.to_string())),
+        chunked::delete(&OsItems, &key.0)
+    }
+}
+
+/// Values longer than one keychain item holds (Windows Credential Manager: 2,560 bytes,
+/// i.e. 1,280 UTF-16 units; an Entra token cache is longer) are split over numbered items
+/// `<key>#1`, `<key>#2`, …; the item `<key>` then holds a marker with the part count.
+/// Short values are stored as they always were.
+mod chunked {
+    use super::{Result, StoreError};
+
+    /// Most UTF-16 units per item, under Windows' 1,280 with room to spare.
+    pub(super) const PART_UNITS: usize = 1_000;
+    /// Starts the marker item. A value that itself starts with it is stored in parts too.
+    const MARKER: &str = "switchyard-parts:v1:";
+
+    /// Named string items (the keychain, or a map in tests).
+    pub(super) trait Items {
+        fn get(&self, name: &str) -> Result<Option<String>>;
+        fn set(&self, name: &str, value: &str) -> Result<()>;
+        fn delete(&self, name: &str) -> Result<()>;
+    }
+
+    fn part(key: &str, i: usize) -> String {
+        format!("{key}#{i}")
+    }
+
+    /// The part count when `value` is a marker.
+    fn parts_of(value: &str) -> Option<usize> {
+        value.strip_prefix(MARKER)?.parse().ok()
+    }
+
+    /// `value` cut at char boundaries into pieces of at most [`PART_UNITS`] UTF-16 units.
+    pub(super) fn split(value: &str) -> Vec<&str> {
+        let mut out = Vec::new();
+        let (mut start, mut units) = (0, 0);
+        for (i, c) in value.char_indices() {
+            if units + c.len_utf16() > PART_UNITS {
+                out.push(&value[start..i]);
+                (start, units) = (i, 0);
+            }
+            units += c.len_utf16();
         }
+        out.push(&value[start..]);
+        out
+    }
+
+    pub(super) fn get(items: &dyn Items, key: &str) -> Result<Option<String>> {
+        let Some(head) = items.get(key)? else {
+            return Ok(None);
+        };
+        let Some(n) = parts_of(&head) else {
+            return Ok(Some(head));
+        };
+        let mut value = String::new();
+        for i in 1..=n {
+            match items.get(&part(key, i))? {
+                Some(p) => value.push_str(&p),
+                None => {
+                    return Err(StoreError::Keychain(format!(
+                        "part {i} of {n} of a long secret is missing; save it again"
+                    )));
+                }
+            }
+        }
+        Ok(Some(value))
+    }
+
+    pub(super) fn set(items: &dyn Items, key: &str, value: &str) -> Result<()> {
+        let old = items.get(key).ok().flatten().and_then(|h| parts_of(&h));
+        let pieces = split(value);
+        let new = if pieces.len() > 1 || value.starts_with(MARKER) {
+            for (i, p) in pieces.iter().enumerate() {
+                items.set(&part(key, i + 1), p)?;
+            }
+            items.set(key, &format!("{MARKER}{}", pieces.len()))?;
+            pieces.len()
+        } else {
+            items.set(key, value)?;
+            0
+        };
+        for i in new + 1..=old.unwrap_or(0) {
+            items.delete(&part(key, i))?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn delete(items: &dyn Items, key: &str) -> Result<()> {
+        if let Some(n) = items.get(key).ok().flatten().and_then(|h| parts_of(&h)) {
+            for i in 1..=n {
+                items.delete(&part(key, i))?;
+            }
+        }
+        items.delete(key)
     }
 }
 
@@ -378,6 +489,65 @@ mod tests {
         assert_eq!(got.expose_secret(), SECRET);
         vault.lock();
         assert!(!vault.is_unlocked());
+    }
+
+    #[derive(Default)]
+    struct MapItems(Mutex<BTreeMap<String, String>>);
+
+    impl chunked::Items for MapItems {
+        fn get(&self, name: &str) -> Result<Option<String>> {
+            Ok(self.0.lock().unwrap().get(name).cloned())
+        }
+        fn set(&self, name: &str, value: &str) -> Result<()> {
+            // Windows Credential Manager's limit, in UTF-16 units.
+            if value.encode_utf16().count() > 1_280 {
+                return Err(StoreError::Keychain("longer than platform limit".into()));
+            }
+            self.0.lock().unwrap().insert(name.into(), value.into());
+            Ok(())
+        }
+        fn delete(&self, name: &str) -> Result<()> {
+            self.0.lock().unwrap().remove(name);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn long_secrets_are_split_over_items() {
+        let items = MapItems::default();
+        // An Entra token cache is a few KB of JSON; mix in non-BMP chars (2 UTF-16 units).
+        let long = format!("{{\"refresh\":\"{}\"}}", "ab😀".repeat(2_000));
+        chunked::set(&items, "c:token", &long).unwrap();
+        assert_eq!(chunked::get(&items, "c:token").unwrap().unwrap(), long);
+        let n = items.0.lock().unwrap().len();
+        assert!(n > 2, "split into parts: {n} items");
+
+        // Shorter again: one plain item, stale parts removed.
+        chunked::set(&items, "c:token", "short").unwrap();
+        assert_eq!(chunked::get(&items, "c:token").unwrap().unwrap(), "short");
+        assert_eq!(items.0.lock().unwrap().len(), 1);
+
+        chunked::set(&items, "c:token", &long).unwrap();
+        chunked::delete(&items, "c:token").unwrap();
+        assert!(items.0.lock().unwrap().is_empty());
+        assert!(chunked::get(&items, "c:token").unwrap().is_none());
+
+        // Every piece fits and they rebuild the value.
+        let pieces = chunked::split(&long);
+        assert!(
+            pieces
+                .iter()
+                .all(|p| p.encode_utf16().count() <= chunked::PART_UNITS)
+        );
+        assert_eq!(pieces.concat(), long);
+    }
+
+    #[test]
+    fn missing_part_is_an_error() {
+        let items = MapItems::default();
+        chunked::set(&items, "k", &"x".repeat(5_000)).unwrap();
+        items.0.lock().unwrap().remove("k#2");
+        assert!(chunked::get(&items, "k").is_err());
     }
 
     #[test]
