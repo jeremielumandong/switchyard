@@ -29,6 +29,7 @@ mod tab_menu;
 mod transport;
 mod ux;
 mod view;
+mod workspaces;
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -425,6 +426,10 @@ pub struct WorkbenchPanel {
     bound_workspace: WorkspaceId,
     pending_workspace: Option<WorkspaceId>,
     workspace_data: Option<persistence::WorkspaceData>,
+    /// The named workspaces; `None` until listed. Empty shows only the
+    /// "Add workspace" page.
+    workspaces: Option<Vec<switchyard_api::WorkspaceEntry>>,
+    _workspace_work: Option<gpui_kit::Task<()>>,
     request_tabs: Vec<RequestTabState>,
     active_request_tab: usize,
     next_request_tab_id: u64,
@@ -505,16 +510,15 @@ pub struct WorkbenchPanel {
 
 impl WorkbenchPanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let workspace = current_workspace_id();
         let mut panel = Self::new_with_workspace_result(
             window,
             cx,
-            workspace.clone(),
+            current_workspace_id(),
             Err("Workbench storage is loading.".into()),
             crate::api::compat::secrets(cx),
         );
         panel.storage_error = None;
-        panel.start_workspace_hydration(workspace, window, cx);
+        panel.load_workspaces(window, cx);
         panel
     }
 
@@ -877,6 +881,8 @@ impl WorkbenchPanel {
             bound_workspace: workspace.clone(),
             pending_workspace: None,
             workspace_data,
+            workspaces: None,
+            _workspace_work: None,
             request_tabs: vec![RequestTabState::blank(0, current_collection_id.clone())],
             active_request_tab: 0,
             next_request_tab_id: 1,

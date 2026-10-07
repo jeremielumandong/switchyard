@@ -47,6 +47,7 @@ pub use transport::{
     response_from_snapshot, response_snapshot, set_process_defaults,
 };
 pub use workspace::{
-    StorageCommand, TerminalCommand, WorkspaceData, execute, persist_terminal,
-    preview_request_url_updates, workspace_id_for,
+    StorageCommand, TerminalCommand, WorkspaceData, WorkspaceList, create_workspace, execute,
+    list_workspaces, mark_workspace_opened, persist_terminal, preview_request_url_updates,
+    workspace_id_for,
 };
