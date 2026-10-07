@@ -28,6 +28,7 @@ mod theme;
 mod transfers;
 mod ui;
 mod viewer;
+mod workload_tab;
 mod workspace;
 
 use std::borrow::Cow;
@@ -36,7 +37,7 @@ use anyhow::{Context as _, Result};
 use gpui_kit::component::TitleBar;
 use gpui_kit::{App, AppContext as _, Bounds, Global, WindowBounds, WindowOptions, px, size};
 use switchyard_core::store::AppPaths;
-use switchyard_core::{Core, ServiceConfig};
+use switchyard_core::{Command, Core, ServiceConfig};
 use tracing_subscriber::EnvFilter;
 
 /// Keeps the core runtime alive for the life of the app.
@@ -71,15 +72,22 @@ fn main() -> Result<()> {
         );
         std::process::exit(i32::from(code));
     }
+    let paths = AppPaths::resolve().context("could not determine a home directory")?;
+    // Oracle Instant Client needs its folder on the loader path from process start.
+    #[cfg(target_os = "linux")]
+    switchyard_core::drivers::registry::reexec_with_loader_path(&paths.drivers_dir());
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_env("SWITCHYARD_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
 
-    let paths = AppPaths::resolve().context("could not determine a home directory")?;
     let (core, events) = Core::start(ServiceConfig::from_paths(&paths))?;
     let handle = core.handle();
+    // `swy explain --open` hands plans to this app over a loopback socket.
+    handle.send(Command::StartHandoff {
+        data_dir: paths.data.clone(),
+    });
 
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)

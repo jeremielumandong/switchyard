@@ -11,6 +11,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use gpui_kit::component::input::{Textarea, TextareaState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, Bounds, ClickEvent, Context, Div, EventEmitter, FontWeight, Hsla,
@@ -19,7 +20,11 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Styled as _, Task, Window, canvas, deferred, div, point, px,
     relative,
 };
-use switchyard_core::plan::{Comparison, Finding, Pair, Plan, PlanKind, PlanNode, Severity};
+use gpui_kit::{AppContext as _, Entity};
+use switchyard_core::plan::whatif::WhatIf;
+use switchyard_core::plan::{
+    Comparison, Finding, Pair, Plan, PlanKind, PlanNode, PlanSource, Severity, Thresholds,
+};
 use switchyard_core::store::{HistoryEntry, ProfileId};
 use switchyard_core::{Command, QueryId, RequestId, RuntimeHandle, SessionId};
 
@@ -93,12 +98,19 @@ enum Status {
     Confirm {
         req: ExplainRequest,
     },
+    /// Planning with hypothetical indexes.
+    WhatIf {
+        query: QueryId,
+        started: Instant,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Menu {
     Plans,
     Compare,
+    /// Hypothetical indexes (HypoPG).
+    WhatIf,
 }
 
 /// One captured or loaded plan.
@@ -155,6 +167,10 @@ pub struct PlanView {
     /// Fit the graph once the pane's size is known.
     fit_pending: bool,
     ticker: Option<Task<()>>,
+    /// The session of the last capture (hypothetical indexes run there).
+    session: Option<SessionId>,
+    /// `CREATE INDEX` statements for the what-if panel, one per line.
+    what_if_input: Option<Entity<TextareaState>>,
 }
 
 impl EventEmitter<PlanViewEvent> for PlanView {}
@@ -187,6 +203,8 @@ impl PlanView {
             hotspots: None,
             fit_pending: false,
             ticker: None,
+            session: None,
+            what_if_input: None,
         }
     }
 
@@ -205,13 +223,16 @@ impl PlanView {
 
     /// Whether a capture is running.
     pub fn is_capturing(&self) -> bool {
-        matches!(self.status, Status::Capturing { .. })
+        matches!(
+            self.status,
+            Status::Capturing { .. } | Status::WhatIf { .. }
+        )
     }
 
     /// Whether `request` is this view's capture or history load.
     pub fn owns(&self, request: u64) -> bool {
         match self.status {
-            Status::Capturing { query, .. } => query == request,
+            Status::Capturing { query, .. } | Status::WhatIf { query, .. } => query == request,
             Status::Loading { request: r, .. } => r == request,
             _ => false,
         }
@@ -225,6 +246,7 @@ impl PlanView {
     /// Capture a plan on `session`.
     pub fn explain(&mut self, session: SessionId, req: ExplainRequest, cx: &mut Context<Self>) {
         self.stop(cx);
+        self.session = Some(session);
         let query = next_id();
         self.core.send(Command::Explain {
             session,
@@ -240,6 +262,12 @@ impl PlanView {
             started: Instant::now(),
         };
         self.menu = None;
+        self.tick(cx);
+        cx.notify();
+    }
+
+    /// Repaint while a capture runs, for its elapsed time.
+    fn tick(&mut self, cx: &mut Context<Self>) {
         self.ticker = Some(cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -256,12 +284,11 @@ impl PlanView {
                 }
             }
         }));
-        cx.notify();
     }
 
     /// Cancel a running capture.
     pub fn stop(&mut self, cx: &mut Context<Self>) {
-        if let Status::Capturing { query, .. } = self.status {
+        if let Status::Capturing { query, .. } | Status::WhatIf { query, .. } = self.status {
             self.core.send(Command::Cancel { query });
             cx.notify();
         }
@@ -317,6 +344,27 @@ impl PlanView {
             Some(id) if offset.is_none() => format!("{kind} · saved #{id}"),
             _ => format!("{kind} · {time}"),
         };
+        let ix = self.add_entry(plan, findings, history_id, offset, label);
+        match (purpose, self.current) {
+            (Purpose::Compare, Some(cur)) => self.start_compare(ix, cur, cx),
+            _ => {
+                self.set_current(ix, cx);
+                self.fit_pending = true;
+            }
+        }
+        // A new history entry exists: refresh the saved list next time the menu opens.
+        self.saved.clear();
+    }
+
+    /// Add a plan to the list (dropping the oldest unused one past twelve); its index.
+    fn add_entry(
+        &mut self,
+        plan: Arc<Plan>,
+        findings: Vec<Finding>,
+        history_id: Option<i64>,
+        offset: Option<usize>,
+        label: String,
+    ) -> usize {
         let entry = Entry {
             graph: layout::graph(&plan),
             flame: layout::flame(&plan),
@@ -335,16 +383,130 @@ impl PlanView {
             }
         }
         self.entries.push(entry);
-        let ix = self.entries.len() - 1;
-        match (purpose, self.current) {
-            (Purpose::Compare, Some(cur)) => self.start_compare(ix, cur, cx),
-            _ => {
-                self.set_current(ix, cx);
-                self.fit_pending = true;
+        self.entries.len() - 1
+    }
+
+    /// `CREATE INDEX` suggestions from the current plan's findings, one per line.
+    fn suggested_indexes(&self) -> String {
+        let Some(e) = self.current.and_then(|i| self.entries.get(i)) else {
+            return String::new();
+        };
+        let mut out: Vec<String> = Vec::new();
+        for f in &e.findings {
+            if let Some(s) = &f.suggestion {
+                for line in s.lines() {
+                    let l = line.trim();
+                    if l.to_ascii_uppercase().starts_with("CREATE INDEX")
+                        && !out.iter().any(|o| o == l)
+                    {
+                        out.push(l.to_owned());
+                    }
+                }
             }
         }
-        // A new history entry exists: refresh the saved list next time the menu opens.
-        self.saved.clear();
+        out.join("\n")
+    }
+
+    /// Open the what-if panel, pre-filled from the findings.
+    fn open_what_if(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.suggested_indexes();
+        let input = self.what_if_input.get_or_insert_with(|| {
+            cx.new(|cx| {
+                TextareaState::new(window, cx)
+                    .placeholder("CREATE INDEX ON orders (status);")
+                    .auto_grow(3, 8)
+            })
+        });
+        if !text.is_empty() {
+            input.update(cx, |i, cx| i.set_value(text, window, cx));
+        }
+        self.open_menu(Menu::WhatIf, cx);
+    }
+
+    /// Plan the current statement with the panel's hypothetical indexes.
+    fn run_what_if(&mut self, cx: &mut Context<Self>) {
+        let (Some(session), Some(input), Some(e)) = (
+            self.session,
+            self.what_if_input.as_ref(),
+            self.current.and_then(|i| self.entries.get(i)),
+        ) else {
+            return;
+        };
+        let text = input.read(cx).value().to_string();
+        let indexes: Vec<String> = text
+            .split([';', '\n'])
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_owned)
+            .collect();
+        if indexes.is_empty() {
+            return;
+        }
+        let sql = e.plan.sql.clone();
+        self.stop(cx);
+        let query = next_id();
+        self.core.send(Command::WhatIf {
+            session,
+            query,
+            sql,
+            indexes,
+        });
+        self.status = Status::WhatIf {
+            query,
+            started: Instant::now(),
+        };
+        self.menu = None;
+        self.tick(cx);
+        cx.notify();
+    }
+
+    /// The what-if result: the fresh estimate and the hypothetical plan, compared.
+    pub fn on_what_if(&mut self, result: Result<Arc<WhatIf>, String>, cx: &mut Context<Self>) {
+        self.ticker = None;
+        let w = match result {
+            Ok(w) => w,
+            Err(message) => {
+                self.status = Status::Failed { message, req: None };
+                cx.notify();
+                return;
+            }
+        };
+        self.status = Status::Idle;
+        let thresholds = Thresholds::default();
+        let time = chrono::Local::now().format("%H:%M:%S");
+        let before = Arc::new(w.before.clone());
+        let after = Arc::new(w.after.clone());
+        let b = self.add_entry(
+            before.clone(),
+            switchyard_core::plan::analyze(&before, &thresholds),
+            None,
+            None,
+            format!("Estimated · {time}"),
+        );
+        let names: Vec<String> = w
+            .indexes
+            .iter()
+            .map(|i| {
+                let size = i
+                    .bytes
+                    .map(|b| format!(" ({})", ui::bytes(b as u64)))
+                    .unwrap_or_default();
+                format!("{}{size}", i.definition)
+            })
+            .collect();
+        let a = self.add_entry(
+            after.clone(),
+            switchyard_core::plan::analyze(&after, &thresholds),
+            None,
+            None,
+            format!("Hypothetical · {}", names.join(", ")),
+        );
+        self.start_compare(b, a, cx);
+        if !w.uses_hypothetical() {
+            cx.emit(PlanViewEvent::Toast(
+                "The planner did not use the hypothetical index; the plan is unchanged.".into(),
+            ));
+        }
     }
 
     /// The capture or load failed.
@@ -808,6 +970,22 @@ impl PlanView {
                         })),
                 )
             })
+            .when(
+                entry.is_some_and(|e| e.plan.source == PlanSource::Postgres)
+                    && self.session.is_some()
+                    && self.compare.is_none(),
+                |d| {
+                    d.child(
+                        ui::button("what-if", "What if…", Kind::Ghost, p)
+                            .h(px(22.))
+                            .px(px(8.))
+                            .text_size(px(11.5))
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.open_what_if(window, cx)),
+                            ),
+                    )
+                },
+            )
             .when(entry.is_some(), |d| {
                 if self.compare.is_some() {
                     d.child(
@@ -900,6 +1078,33 @@ impl PlanView {
             s.join(" · ")
         };
         match menu {
+            Menu::WhatIf => {
+                body = body
+                    .right(px(10.))
+                    .w(px(460.))
+                    .child(caption(
+                        "Hypothetical indexes (HypoPG): plan this statement as if they existed. \
+                         Nothing is created.",
+                    ))
+                    .when_some(self.what_if_input.clone(), |d, input| {
+                        d.child(
+                            div()
+                                .mx(px(8.))
+                                .my(px(4.))
+                                .font_family(MONO)
+                                .text_size(px(11.5))
+                                .child(Textarea::new(&input)),
+                        )
+                    })
+                    .child(caption("One CREATE INDEX per line."))
+                    .child(
+                        div().flex().justify_end().px(px(8.)).py(px(4.)).child(
+                            ui::button("what-if-run", "Plan with these indexes", Kind::Primary, p)
+                                .h(px(24.))
+                                .on_click(cx.listener(|this, _, _, cx| this.run_what_if(cx))),
+                        ),
+                    );
+            }
             Menu::Plans => {
                 body = body.left(px(160.)).child(caption("Plans in this tab"));
                 for (i, e) in self.entries.iter().enumerate().rev() {
@@ -1051,6 +1256,29 @@ impl PlanView {
                     .child(div().flex_1())
                     .child(
                         ui::button("plan-stop", "Stop", Kind::Secondary, p)
+                            .h(px(22.))
+                            .text_color(p.prod)
+                            .on_click(cx.listener(|this, _, _, cx| this.stop(cx))),
+                    )
+                    .into_any_element(),
+            ),
+            Status::WhatIf { started, .. } => Some(
+                bar(p.panel)
+                    .child(ui::shimmer(90., p))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child("Planning with hypothetical indexes…"),
+                    )
+                    .child(
+                        div()
+                            .font_family(MONO)
+                            .text_color(p.fg3)
+                            .child(ui::duration(started.elapsed())),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        ui::button("what-if-stop", "Stop", Kind::Secondary, p)
                             .h(px(22.))
                             .text_color(p.prod)
                             .on_click(cx.listener(|this, _, _, cx| this.stop(cx))),

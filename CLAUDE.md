@@ -10,8 +10,11 @@ or a custom one) can plan and optimize queries. Written in Rust with GPUI + gpui
 - Task plan: `PLAN.md` (work through it in order)
 - Decisions log: `docs/DECISIONS.md` (append when you make or need a non-obvious call)
 
-Oracle is out of scope until after beta. Do not add Oracle code paths, but keep the
-`Driver` / `Dialect` traits general enough that Oracle can be added later.
+Engines: PostgreSQL, SQL Server, Oracle, Snowflake and Cloudflare D1. Oracle was moved
+before beta at the user's request (see `docs/DECISIONS.md`); its client library (Instant
+Client) is always runtime-loaded through the Driver Manager, never linked at build time.
+Keep the `Driver` / `Dialect` traits general; engine settings without a field go in
+`DbConfig::options`.
 
 ## How to work in this repo
 
@@ -175,8 +178,17 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
   Claude Code `claude -p --output-format stream-json --mcp-config <json>`, resume `--resume <id>`;
   Codex CLI `codex exec --json`, MCP via `[mcp_servers]` in `config.toml`, resume `codex exec resume <id>`;
   Gemini CLI `gemini -p --output-format stream-json`, MCP via `mcpServers` in `.gemini/settings.json`.
+- Claude Code 2.1 stream-json sends each content block of an assistant message as a separate
+  `assistant` event with the same message id (not a growing message); don't diff by length.
+  A `claude` started from inside a Claude Code session inherits its `CLAUDE_CODE_*`
+  environment (same session id); harmless for tests, but don't assert on the id.
+- procps `kill` ignores a negative pid unless it follows `--`: `kill -TERM -- -<pgid>`.
+  Without it the call succeeds and signals nothing.
 - Codex CLI `exec` has been reported to cancel MCP tool calls that need approval (no one can answer
   the prompt), and a generated `CODEX_HOME` hides the user's stored login. See PLAN task M5-12.
+- Reading `shared_preload_libraries` with `current_setting` fails without `pg_read_all_settings`;
+  `pg_settings` just hides the row. SQL Server records no missing indexes for trivial plans,
+  so tests need a query that goes through full optimization (aggregate, ORDER BY).
 - `pg_stat_statements`, HypoPG and Query Store are optional. Detect them and degrade gracefully;
   missing permissions (`pg_read_all_stats`, `VIEW SERVER STATE`) produce a hint, not an error.
 
@@ -232,5 +244,14 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
   `open_window` from gpui-kit already wraps the view in `Root`.
 - The API script sandbox re-executes the app binary with `--switchyard-api-script-worker`;
   `main()` must check that argument before starting GPUI.
+- Oracle Instant Client on Linux finds `libclntshcore` / `libnnz` only through the loader
+  path, which glibc reads at process start (`libnnz.so` has no soname, so preloading it
+  does not help). `main` calls `reexec_with_loader_path` to restart once with the client
+  on `LD_LIBRARY_PATH`; child processes (PTY shells, package installs) get the user's
+  original value back. It also needs the system `libaio.so.1`, which Ubuntu 24.04 renamed
+  to `libaio.so.1t64` (Oracle's fix is a symlink). Oracle tests:
+  `LD_LIBRARY_PATH=<ic> SWITCHYARD_ORACLE_CLIENT=<ic> cargo test -p switchyard-db --test oracle -- --ignored`.
+- Docker Hub rate-limits anonymous pulls in CI and cloud sessions; gvenzl's Oracle images are
+  also on ghcr.io.
 - Pageant comes with russh on Windows (`AgentClient::connect_pageant`, `pageant` crate,
   Apache-2.0); no feature flag.

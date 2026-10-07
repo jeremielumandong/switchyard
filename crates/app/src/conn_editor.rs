@@ -34,6 +34,10 @@ pub enum ConnKind {
     SqlServer,
     /// Cloudflare D1.
     D1,
+    /// Snowflake.
+    Snowflake,
+    /// Oracle Database.
+    Oracle,
     /// SSH Host.
     Ssh,
     /// SFTP over a Host.
@@ -43,9 +47,11 @@ pub enum ConnKind {
 }
 
 impl ConnKind {
-    const ALL: [ConnKind; 6] = [
+    const ALL: [ConnKind; 8] = [
         ConnKind::Postgres,
         ConnKind::SqlServer,
+        ConnKind::Oracle,
+        ConnKind::Snowflake,
         ConnKind::D1,
         ConnKind::Ssh,
         ConnKind::Sftp,
@@ -57,6 +63,8 @@ impl ConnKind {
             ConnKind::Postgres => "PG",
             ConnKind::SqlServer => "MS",
             ConnKind::D1 => "D1",
+            ConnKind::Snowflake => "SF",
+            ConnKind::Oracle => "OR",
             ConnKind::Ssh => "SSH",
             ConnKind::Sftp => "SFTP",
             ConnKind::Ftp => "FTP",
@@ -68,6 +76,8 @@ impl ConnKind {
             ConnKind::Postgres => "PostgreSQL",
             ConnKind::SqlServer => "SQL Server",
             ConnKind::D1 => "Cloudflare D1",
+            ConnKind::Snowflake => "Snowflake",
+            ConnKind::Oracle => "Oracle",
             ConnKind::Ssh => "SSH Host",
             ConnKind::Sftp => "SFTP",
             ConnKind::Ftp => "FTP / FTPS",
@@ -77,14 +87,19 @@ impl ConnKind {
     fn is_db(self) -> bool {
         matches!(
             self,
-            ConnKind::Postgres | ConnKind::SqlServer | ConnKind::D1
+            ConnKind::Postgres
+                | ConnKind::SqlServer
+                | ConnKind::Oracle
+                | ConnKind::D1
+                | ConnKind::Snowflake
         )
     }
 
     fn sub(self) -> &'static str {
         match self {
-            ConnKind::Postgres | ConnKind::SqlServer => "Database",
+            ConnKind::Postgres | ConnKind::SqlServer | ConnKind::Oracle => "Database",
             ConnKind::D1 => "SQLite over HTTPS",
+            ConnKind::Snowflake => "Cloud warehouse",
             ConnKind::Ssh => "Terminal + tunnels",
             ConnKind::Sftp => "Files over a Host",
             ConnKind::Ftp => "Files, own login",
@@ -127,6 +142,8 @@ pub struct ConnEditor {
     env: EnvironmentLabel,
     read_only: bool,
     history: bool,
+    /// Coding agents (`swy mcp`) may use this connection.
+    agents: bool,
     test: TestState,
     card: Option<driver_card::DriverCard>,
     driver_path: Entity<InputState>,
@@ -169,6 +186,8 @@ impl ConnEditor {
         let kind = match &existing {
             Some(Profile::Db(d)) if d.engine == Engine::SqlServer => ConnKind::SqlServer,
             Some(Profile::Db(d)) if d.engine == Engine::D1 => ConnKind::D1,
+            Some(Profile::Db(d)) if d.engine == Engine::Snowflake => ConnKind::Snowflake,
+            Some(Profile::Db(d)) if d.engine == Engine::Oracle => ConnKind::Oracle,
             Some(Profile::Db(_)) => ConnKind::Postgres,
             Some(Profile::Host(_)) => ConnKind::Ssh,
             Some(Profile::File(f)) => match f.protocol {
@@ -191,6 +210,7 @@ impl ConnEditor {
                 .unwrap_or(EnvironmentLabel::Development),
             read_only: matches!(&existing, Some(Profile::Db(d)) if d.read_only),
             history: !matches!(&existing, Some(Profile::Db(d)) if !d.history_enabled),
+            agents: matches!(&existing, Some(Profile::Db(d)) if d.agent_access),
             test: TestState::Idle,
             card: None,
             driver_path: driver_card::path_input(window, cx),
@@ -243,20 +263,20 @@ impl ConnEditor {
             Select { options, chosen }
         };
         match self.kind {
-            ConnKind::Postgres | ConnKind::SqlServer => {
-                let engine = if self.kind == ConnKind::Postgres {
-                    Engine::Postgres
-                } else {
-                    Engine::SqlServer
+            ConnKind::Postgres | ConnKind::SqlServer | ConnKind::Oracle => {
+                let engine = match self.kind {
+                    ConnKind::Postgres => Engine::Postgres,
+                    ConnKind::Oracle => Engine::Oracle,
+                    _ => Engine::SqlServer,
                 };
                 let d = match existing {
                     Some(Profile::Db(d)) => d.clone(),
                     _ => {
                         let mut d = DbConnection::new("", engine);
-                        d.database = if engine == Engine::Postgres {
-                            "postgres".into()
-                        } else {
-                            "master".into()
+                        d.database = match engine {
+                            Engine::Postgres => "postgres".into(),
+                            Engine::Oracle => String::new(),
+                            _ => "master".into(),
                         };
                         d
                     }
@@ -265,16 +285,26 @@ impl ConnEditor {
                     self,
                     "name",
                     &d.name,
-                    if engine == Engine::Postgres {
-                        "shop_prod"
-                    } else {
-                        "Reporting"
+                    match engine {
+                        Engine::Postgres => "shop_prod",
+                        Engine::Oracle => "erp",
+                        _ => "Reporting",
                     },
                     false,
                 );
                 add(self, "host", &d.server, "localhost", false);
                 add(self, "port", &d.port.to_string(), "", false);
-                add(self, "database", &d.database, "", false);
+                add(
+                    self,
+                    "database",
+                    &d.database,
+                    if engine == Engine::Oracle {
+                        "FREEPDB1"
+                    } else {
+                        ""
+                    },
+                    false,
+                );
                 add(self, "user", &d.user, "app_ro", false);
                 add(
                     self,
@@ -363,6 +393,53 @@ impl ConnEditor {
                         "API token with D1 Read or Edit"
                     },
                     true,
+                );
+            }
+            ConnKind::Snowflake => {
+                let d = match existing {
+                    Some(Profile::Db(d)) => d.clone(),
+                    _ => {
+                        let mut d = DbConnection::new("", Engine::Snowflake);
+                        d.server.clear();
+                        d.auth = DbAuthMethod::KeyPair;
+                        d
+                    }
+                };
+                let option = |k: &str| d.option(k).unwrap_or_default().to_owned();
+                add(self, "name", &d.name, "analytics", false);
+                add(self, "server", &d.server, "myorg-myaccount", false);
+                add(self, "user", &d.user, "REPORTING_SVC", false);
+                add(self, "database", &d.database, "ANALYTICS", false);
+                add(self, "schema", &option("schema"), "PUBLIC", false);
+                add(self, "warehouse", &option("warehouse"), "COMPUTE_WH", false);
+                add(self, "role", &option("role"), "The user's default", false);
+                add(
+                    self,
+                    "private_key_path",
+                    &option("private_key_path"),
+                    "~/.snowflake/rsa_key.p8",
+                    false,
+                );
+                add(
+                    self,
+                    "password",
+                    "",
+                    if d.secret.is_some() {
+                        "•••••••• (stored)"
+                    } else {
+                        ""
+                    },
+                    true,
+                );
+                self.selects.insert(
+                    "auth",
+                    sel(
+                        SNOWFLAKE_AUTH
+                            .iter()
+                            .map(|(key, m)| (m.label().into(), (*key).into()))
+                            .collect(),
+                        snowflake_auth_key(d.auth),
+                    ),
                 );
             }
             ConnKind::Ssh => {
@@ -592,11 +669,11 @@ impl ConnEditor {
             .as_ref()
             .and_then(|i| self.profiles.all.iter().find(|p| p.id() == i));
         Ok(match self.kind {
-            ConnKind::Postgres | ConnKind::SqlServer => {
-                let engine = if self.kind == ConnKind::Postgres {
-                    Engine::Postgres
-                } else {
-                    Engine::SqlServer
+            ConnKind::Postgres | ConnKind::SqlServer | ConnKind::Oracle => {
+                let engine = match self.kind {
+                    ConnKind::Postgres => Engine::Postgres,
+                    ConnKind::Oracle => Engine::Oracle,
+                    _ => Engine::SqlServer,
                 };
                 let mut d = match existing {
                     Some(Profile::Db(d)) => d.clone(),
@@ -626,6 +703,7 @@ impl ConnEditor {
                 d.environment = self.env;
                 d.read_only = self.read_only;
                 d.history_enabled = self.history;
+                d.agent_access = self.agents;
                 Profile::Db(d)
             }
             ConnKind::D1 => {
@@ -644,6 +722,37 @@ impl ConnEditor {
                 d.environment = self.env;
                 d.read_only = self.read_only;
                 d.history_enabled = self.history;
+                d.agent_access = self.agents;
+                Profile::Db(d)
+            }
+            ConnKind::Snowflake => {
+                let mut d = match existing {
+                    Some(Profile::Db(d)) => d.clone(),
+                    _ => DbConnection::new("", Engine::Snowflake),
+                };
+                d.id = id;
+                d.engine = Engine::Snowflake;
+                d.name = self.value("name", cx);
+                d.server = self.value("server", cx);
+                d.port = Engine::Snowflake.default_port();
+                d.database = self.value("database", cx);
+                d.user = self.value("user", cx);
+                d.auth = snowflake_auth_from_key(&self.chosen("auth"));
+                d.via_host = None;
+                for key in ["schema", "warehouse", "role", "private_key_path"] {
+                    let v = self.value(key, cx);
+                    if v.is_empty()
+                        || (key == "private_key_path" && d.auth != DbAuthMethod::KeyPair)
+                    {
+                        d.options.remove(key);
+                    } else {
+                        d.options.insert(key.to_owned(), v);
+                    }
+                }
+                d.environment = self.env;
+                d.read_only = self.read_only;
+                d.history_enabled = self.history;
+                d.agent_access = self.agents;
                 Profile::Db(d)
             }
             ConnKind::Ssh => {
@@ -749,7 +858,16 @@ impl ConnEditor {
     fn test(&mut self, cx: &mut Context<Self>) {
         self.error = None;
         match (self.kind, self.build(cx)) {
-            (ConnKind::Postgres | ConnKind::D1, Ok(Profile::Db(d))) => {
+            (ConnKind::Oracle, Ok(Profile::Db(_))) if self.oracle_client_missing() => {
+                self.test = TestState::Missing;
+                if self.card.as_ref().is_none_or(|c| c.id != ORACLE_CLIENT) {
+                    self.card = Some(driver_card::DriverCard::new(ORACLE_CLIENT));
+                }
+            }
+            (
+                ConnKind::Postgres | ConnKind::Oracle | ConnKind::D1 | ConnKind::Snowflake,
+                Ok(Profile::Db(d)),
+            ) => {
                 let request = next_id();
                 self.test = TestState::Testing(request);
                 self.core.send(Command::TestConnection {
@@ -825,6 +943,12 @@ impl ConnEditor {
         self.request = None;
         self.error = Some((field, message));
         cx.notify();
+    }
+
+    fn oracle_client_missing(&self) -> bool {
+        self.components
+            .iter()
+            .any(|c| c.id == ORACLE_CLIENT && !c.status.is_installed())
     }
 
     fn set_kind(&mut self, kind: ConnKind, window: &mut Window, cx: &mut Context<Self>) {
@@ -1024,7 +1148,9 @@ impl ConnEditor {
                     cx,
                 ));
                 match auth {
-                    DbAuthMethod::Integrated => {}
+                    DbAuthMethod::Integrated
+                    | DbAuthMethod::KeyPair
+                    | DbAuthMethod::AccessToken => {}
                     DbAuthMethod::WindowsPassword => {
                         v.push(self.field(
                             "user",
@@ -1148,6 +1274,88 @@ impl ConnEditor {
                     p,
                     cx,
                 ));
+            }
+            ConnKind::Oracle => {
+                v.push(self.field("name", "Name", 6, false, None, p, cx));
+                v.push(self.field("host", "Host", 4, true, None, p, cx));
+                v.push(self.field("port", "Port", 2, true, None, p, cx));
+                v.push(self.field(
+                    "database",
+                    "Service name",
+                    6,
+                    true,
+                    Some("FREEPDB1, ORCLPDB1… or, with Host empty, a TNS alias or descriptor"),
+                    p,
+                    cx,
+                ));
+                v.push(self.field("user", "User", 3, false, None, p, cx));
+                v.push(self.field(
+                    "password",
+                    "Password",
+                    3,
+                    false,
+                    Some("Stored in the OS keychain"),
+                    p,
+                    cx,
+                ));
+                v.push(self.field(
+                    "via",
+                    "Connect via Host",
+                    6,
+                    false,
+                    Some("Opens an ephemeral local port automatically"),
+                    p,
+                    cx,
+                ));
+            }
+            ConnKind::Snowflake => {
+                let auth = snowflake_auth_from_key(&self.chosen("auth"));
+                v.push(self.field("name", "Name", 6, false, None, p, cx));
+                v.push(self.field(
+                    "server",
+                    "Account identifier",
+                    6,
+                    true,
+                    Some("orgname-accountname, or the host before .snowflakecomputing.com"),
+                    p,
+                    cx,
+                ));
+                v.push(self.field("user", "User", 3, false, None, p, cx));
+                v.push(self.field("auth", "Authentication", 3, false, None, p, cx));
+                if auth == DbAuthMethod::KeyPair {
+                    v.push(self.field(
+                        "private_key_path",
+                        "Private key file",
+                        6,
+                        true,
+                        Some("PKCS#8 .p8 (or PKCS#1) PEM; read in place, never copied"),
+                        p,
+                        cx,
+                    ));
+                    v.push(self.field(
+                        "password",
+                        "Key passphrase (optional)",
+                        6,
+                        false,
+                        Some("Only for an encrypted key · stored in the OS keychain"),
+                        p,
+                        cx,
+                    ));
+                } else {
+                    v.push(self.field(
+                        "password",
+                        "Programmatic access token",
+                        6,
+                        false,
+                        Some("Snowsight → your profile → Programmatic access tokens · stored in the OS keychain"),
+                        p,
+                        cx,
+                    ));
+                }
+                v.push(self.field("warehouse", "Warehouse", 3, true, None, p, cx));
+                v.push(self.field("role", "Role", 3, true, None, p, cx));
+                v.push(self.field("database", "Database", 3, true, None, p, cx));
+                v.push(self.field("schema", "Schema", 3, true, None, p, cx));
             }
             ConnKind::Ssh => {
                 v.push(self.field("name", "Name", 6, false, None, p, cx));
@@ -1484,6 +1692,21 @@ impl Render for ConnEditor {
                                     )),
                                 )
                             })
+                            .when(is_db, |d| {
+                                let label = if self.env.is_production() {
+                                    "Allow coding agents (Production: read-only queries and \
+                                     estimated plans; every call is recorded in history)"
+                                } else {
+                                    "Allow coding agents (read-only queries, plans, statistics; \
+                                     every call is recorded in history)"
+                                };
+                                d.child(ui::checkbox("agents", self.agents, label, &p).on_click(
+                                    cx.listener(|this, _, _, cx| {
+                                        this.agents = !this.agents;
+                                        cx.notify();
+                                    }),
+                                ))
+                            })
                             .when(self.test == TestState::Missing, |d| {
                                 d.child(self.render_driver_card(&p, cx))
                             })
@@ -1561,6 +1784,29 @@ const MSSQL_AUTH: [(&str, DbAuthMethod); 7] = [
     ("integrated", DbAuthMethod::Integrated),
     ("windows", DbAuthMethod::WindowsPassword),
 ];
+
+/// The Driver Manager component Oracle connections need.
+const ORACLE_CLIENT: &str = "oracle-instant-client";
+
+/// Snowflake sign-in methods (its SQL API takes no passwords).
+const SNOWFLAKE_AUTH: [(&str, DbAuthMethod); 2] = [
+    ("key-pair", DbAuthMethod::KeyPair),
+    ("token", DbAuthMethod::AccessToken),
+];
+
+fn snowflake_auth_key(m: DbAuthMethod) -> &'static str {
+    SNOWFLAKE_AUTH
+        .iter()
+        .find(|(_, a)| *a == m)
+        .map_or("key-pair", |(k, _)| k)
+}
+
+fn snowflake_auth_from_key(key: &str) -> DbAuthMethod {
+    SNOWFLAKE_AUTH
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map_or(DbAuthMethod::KeyPair, |(_, a)| *a)
+}
 
 fn auth_key(m: DbAuthMethod) -> &'static str {
     MSSQL_AUTH

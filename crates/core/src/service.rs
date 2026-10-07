@@ -42,11 +42,15 @@ use crate::bus::{
 use crate::error::{CoreError, Result};
 use crate::runtime::EventSender;
 
+pub mod agent;
+
 /// Where secrets go.
 #[derive(Clone, Debug)]
 pub enum SecretBackendChoice {
     /// OS keychain if available, else the vault at this path.
     Auto(PathBuf),
+    /// The local vault at this path, even when a keychain exists (`SWITCHYARD_SECRETS=vault`).
+    Vault(PathBuf),
     /// In-memory (tests, demos).
     Memory,
 }
@@ -90,6 +94,7 @@ impl ServiceConfig {
     pub fn from_paths(paths: &AppPaths) -> Self {
         let secrets = match std::env::var("SWITCHYARD_SECRETS").as_deref() {
             Ok("memory") => SecretBackendChoice::Memory,
+            Ok("vault") => SecretBackendChoice::Vault(paths.vault_file()),
             _ => SecretBackendChoice::Auto(paths.vault_file()),
         };
         let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
@@ -189,6 +194,10 @@ impl Service {
                         (v.clone(), Some(v))
                     }
                 }
+                SecretBackendChoice::Vault(vault_path) => {
+                    let v = Arc::new(VaultStore::new(vault_path));
+                    (v.clone(), Some(v))
+                }
             };
         info!(backend = secrets.backend(), "secret backend selected");
         let prompter = BusPrompter::new(events.clone());
@@ -215,6 +224,14 @@ impl Service {
         let mut drivers: HashMap<Engine, Arc<dyn Driver>> = HashMap::new();
         drivers.insert(Engine::Postgres, Arc::new(PgDriver));
         drivers.insert(Engine::D1, Arc::new(D1Driver::default()));
+        drivers.insert(
+            Engine::Oracle,
+            Arc::new(switchyard_db::oracle::OracleDriver),
+        );
+        drivers.insert(
+            Engine::Snowflake,
+            Arc::new(switchyard_db::snowflake::SnowflakeDriver::default()),
+        );
         drivers.insert(Engine::SqlServer, Arc::new(MssqlDriver));
         for (engine, d) in config.extra_drivers {
             drivers.insert(engine, d);
@@ -538,6 +555,46 @@ impl Service {
                 request,
                 history_id,
             } => self.load_plan(request, history_id).await,
+            Command::AgentQuery {
+                session,
+                query,
+                sql,
+                row_cap,
+                timeout,
+                tags,
+            } => {
+                let span = info_span!("agent_query", query, session);
+                self.agent_query(session, query, sql, row_cap, timeout, tags)
+                    .instrument(span)
+                    .await
+            }
+            Command::StartHandoff { data_dir } => {
+                tokio::spawn(crate::handoff::serve(
+                    crate::handoff::handoff_file(&data_dir),
+                    self.events.clone(),
+                ));
+            }
+            Command::RecordAgentCall {
+                session,
+                summary,
+                error,
+                tags,
+            } => self.record_agent_call(session, summary, error, tags).await,
+            Command::Workload { session, request } => {
+                let span = info_span!("workload", request, session);
+                self.workload(session, request).instrument(span).await
+            }
+            Command::WhatIf {
+                session,
+                query,
+                sql,
+                indexes,
+            } => {
+                let span = info_span!("what_if", query, session);
+                self.what_if(session, query, sql, indexes)
+                    .instrument(span)
+                    .await
+            }
             Command::SearchHistory {
                 request,
                 query,
@@ -1311,6 +1368,17 @@ impl Service {
         }
         cfg.ssl_mode = c.ssl_mode;
         cfg.read_only = c.read_only;
+        cfg.options = c.options.clone();
+        if c.engine == Engine::Oracle {
+            // ODPI-C loads the client from the Driver Manager's folder; without one it
+            // searches the usual places and says what is missing.
+            let reg = self.components.clone();
+            let dir = tokio::task::spawn_blocking(move || reg.oracle_client()).await;
+            if let Ok(Ok(dir)) = dir {
+                cfg.options
+                    .insert("client_lib_dir".into(), dir.display().to_string());
+            }
+        }
         Ok(cfg)
     }
 
@@ -1587,6 +1655,50 @@ impl Service {
                 });
             }
         }
+    }
+
+    async fn workload(&self, session: SessionId, request: RequestId) {
+        let Some(slot) = self.slot(session) else {
+            return self.emit(Event::Workload {
+                request,
+                result: Err(DbError::Closed.to_string()),
+            });
+        };
+        let engine = slot.connection.engine;
+        let mut inner = slot.inner.lock().await;
+        let result = switchyard_plan::access::workload(inner.session.as_mut(), engine).await;
+        drop(inner);
+        self.emit(Event::Workload {
+            request,
+            result: result.map(Arc::new).map_err(|e| e.to_string()),
+        });
+    }
+
+    async fn what_if(&self, session: SessionId, query: QueryId, sql: String, indexes: Vec<String>) {
+        let Some(slot) = self.slot(session) else {
+            return self.emit(Event::WhatIf {
+                request: query,
+                result: Err(DbError::Closed.to_string()),
+            });
+        };
+        let engine = slot.connection.engine;
+        let mut inner = slot.inner.lock().await;
+        let (resume_tx, _resume_rx) = mpsc::unbounded_channel();
+        lock(&self.queries).insert(
+            query,
+            QueryControl {
+                cancel: inner.session.cancel_handle(),
+                resume: resume_tx,
+            },
+        );
+        let result =
+            switchyard_plan::whatif::what_if(inner.session.as_mut(), engine, &sql, &indexes).await;
+        drop(inner);
+        lock(&self.queries).remove(&query);
+        self.emit(Event::WhatIf {
+            request: query,
+            result: result.map(Arc::new).map_err(|e| e.to_string()),
+        });
     }
 
     async fn load_plan(&self, request: RequestId, history_id: i64) {

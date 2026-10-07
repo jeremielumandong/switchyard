@@ -175,6 +175,47 @@ impl Registry {
         crate::gssapi::Gssapi::new(lib)
     }
 
+    /// The folder holding an installed component's library (Oracle Instant Client is
+    /// loaded by its own client library from there, not by us).
+    pub fn library_dir(&self, id: &str) -> Result<PathBuf> {
+        let c = self.component(id)?;
+        match &c.status {
+            ComponentStatus::Installed {
+                location,
+                source: Source::UserPath | Source::AppManaged | Source::System,
+                ..
+            } => {
+                let p = PathBuf::from(location);
+                Ok(if p.is_dir() {
+                    p
+                } else {
+                    p.parent().map(Path::to_path_buf).unwrap_or(p)
+                })
+            }
+            _ => Err(DriverError::BadPath(format!("{} is not installed", c.name))),
+        }
+    }
+
+    /// Oracle Instant Client's folder, for ODPI-C to load the client from.
+    pub fn oracle_client(&self) -> Result<PathBuf> {
+        self.library_dir(ORACLE_CLIENT)
+    }
+
+    /// The Instant Client folder the Linux loader must search, when Switchyard installed
+    /// it or the user chose it. Its `libclntsh` finds `libnnz` (which has no soname) and
+    /// `libclntshcore` only through the loader path, which glibc reads at process start;
+    /// see [`reexec_with_loader_path`].
+    pub fn oracle_loader_dir(&self) -> Option<PathBuf> {
+        let c = self.component(ORACLE_CLIENT).ok()?;
+        match &c.status {
+            ComponentStatus::Installed {
+                source: Source::UserPath | Source::AppManaged,
+                ..
+            } => self.library_dir(ORACLE_CLIENT).ok(),
+            _ => None,
+        }
+    }
+
     /// Load a component's library, once; later calls share it.
     pub fn load(&self, id: &str) -> Result<Arc<Library>> {
         if let Some(l) = lock(&self.loaded).get(id) {
@@ -218,6 +259,61 @@ pub(crate) fn open_library(path: &Path) -> Result<Library> {
 const OVERRIDES: &str = "paths.json";
 /// The Kerberos / GSSAPI component's id in the manifest.
 pub const GSSAPI: &str = "gssapi";
+/// The Oracle Instant Client component's id in the manifest.
+pub const ORACLE_CLIENT: &str = "oracle-instant-client";
+
+/// Set in a process Switchyard re-executed with an extended `LD_LIBRARY_PATH`.
+pub const REEXEC_MARK: &str = "SWITCHYARD_LOADER_REEXEC";
+/// The `LD_LIBRARY_PATH` the user started Switchyard with, for child processes.
+pub const ORIGINAL_LOADER_PATH: &str = "SWITCHYARD_ORIGINAL_LD_LIBRARY_PATH";
+
+/// Linux: when an app-managed Oracle Instant Client exists and is not on the loader path,
+/// run this executable again with it prepended to `LD_LIBRARY_PATH`. Returns only when
+/// nothing needed doing or the exec failed; call before any thread starts.
+#[cfg(target_os = "linux")]
+pub fn reexec_with_loader_path(drivers_dir: &Path) {
+    use std::os::unix::process::CommandExt as _;
+    if std::env::var_os(REEXEC_MARK).is_some() {
+        return;
+    }
+    let Some(dir) = Registry::new(drivers_dir.to_owned()).oracle_loader_dir() else {
+        return;
+    };
+    let current = std::env::var_os("LD_LIBRARY_PATH");
+    if current
+        .as_ref()
+        .is_some_and(|c| std::env::split_paths(c).any(|p| p == dir))
+    {
+        return;
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let mut dirs = vec![dir];
+    if let Some(c) = &current {
+        dirs.extend(std::env::split_paths(c));
+    }
+    let Ok(joined) = std::env::join_paths(dirs) else {
+        return;
+    };
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(std::env::args_os().skip(1))
+        .env("LD_LIBRARY_PATH", joined)
+        .env(REEXEC_MARK, "1");
+    match &current {
+        Some(c) => cmd.env(ORIGINAL_LOADER_PATH, c),
+        None => cmd.env_remove(ORIGINAL_LOADER_PATH),
+    };
+    let err = cmd.exec();
+    eprintln!("switchyard: could not restart with Oracle Instant Client on the loader path: {err}");
+}
+
+/// Undo [`reexec_with_loader_path`] for a child process (shells, package managers): give it
+/// the `LD_LIBRARY_PATH` the user started Switchyard with.
+pub fn original_loader_path() -> Option<Option<std::ffi::OsString>> {
+    std::env::var_os(REEXEC_MARK)?;
+    Some(std::env::var_os(ORIGINAL_LOADER_PATH))
+}
 
 fn read_overrides(dir: &Path) -> HashMap<String, PathBuf> {
     match std::fs::read(dir.join(OVERRIDES)) {

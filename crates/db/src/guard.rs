@@ -220,6 +220,26 @@ pub fn is_single_select(dialect: &dyn Dialect, sql: &str) -> bool {
     }
 }
 
+/// Whether `sql` is one statement an agent may ask an estimated plan for: a query or DML
+/// (INSERT, UPDATE, DELETE, MERGE). Never DDL, never several statements.
+pub fn is_single_plannable(dialect: &dyn Dialect, sql: &str) -> bool {
+    let pd = dialect.parser_dialect();
+    match Parser::parse_sql(pd.as_ref(), sql) {
+        Ok(stmts) => {
+            stmts.len() == 1
+                && matches!(
+                    &stmts[0],
+                    Statement::Query(_)
+                        | Statement::Insert(_)
+                        | Statement::Update(_)
+                        | Statement::Delete(_)
+                        | Statement::Merge { .. }
+                )
+        }
+        Err(_) => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,5 +321,17 @@ mod tests {
             destructive_in_script(&TSqlDialect, "delete from dbo.x\nGO\nselect 1").len(),
             1
         );
+    }
+
+    #[test]
+    fn plannable_is_one_query_or_dml() {
+        let d = &PostgresDialect;
+        assert!(is_single_plannable(d, "select 1"));
+        assert!(is_single_plannable(d, "update t set a = 1 where id = 2"));
+        assert!(is_single_plannable(d, "delete from t"));
+        assert!(!is_single_plannable(d, "drop table t"));
+        assert!(!is_single_plannable(d, "create index on t (a)"));
+        assert!(!is_single_plannable(d, "select 1; drop table t"));
+        assert!(!is_single_plannable(d, "explain analyze delete from t"));
     }
 }

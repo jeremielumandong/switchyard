@@ -1,7 +1,9 @@
 //! SQL dialects: identifier quoting, script splitting, parameters, row limits, literals.
 
 pub mod lexer;
+pub mod oracle;
 pub mod postgres;
+pub mod snowflake;
 pub mod sqlite;
 pub mod tsql;
 
@@ -133,6 +135,8 @@ pub fn dialect_for(engine: Engine) -> &'static dyn Dialect {
         Engine::Postgres => &postgres::PostgresDialect,
         Engine::SqlServer => &tsql::TSqlDialect,
         Engine::D1 => &sqlite::SqliteDialect,
+        Engine::Snowflake => &snowflake::SnowflakeDialect,
+        Engine::Oracle => &oracle::OracleDialect,
     }
 }
 

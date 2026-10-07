@@ -257,6 +257,10 @@ pub struct DbConnection {
     /// that require their own app registration.
     #[serde(default)]
     pub entra_client_id: Option<String>,
+    /// Engine-specific settings (Snowflake `warehouse`, `role`, `schema`,
+    /// `private_key_path`). Never secrets.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub options: std::collections::BTreeMap<String, String>,
 }
 
 fn yes() -> bool {
@@ -286,7 +290,16 @@ impl DbConnection {
             secret: None,
             tenant: None,
             entra_client_id: None,
+            options: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// An engine-specific option, trimmed; `None` when unset or blank.
+    pub fn option(&self, key: &str) -> Option<&str> {
+        self.options
+            .get(key)
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
     }
 }
 
@@ -514,6 +527,70 @@ impl Profile {
                     ));
                 }
             }
+            Profile::Db(d) if d.engine == Engine::Snowflake => {
+                if d.server.trim().is_empty() {
+                    return Err(ValidationError::new(
+                        "server",
+                        "Account identifier is required (orgname-accountname)",
+                    ));
+                }
+                if d.user.trim().is_empty() {
+                    return Err(ValidationError::new("user", "User is required"));
+                }
+                match d.auth {
+                    DbAuthMethod::KeyPair if d.option("private_key_path").is_none() => {
+                        return Err(ValidationError::new(
+                            "private_key_path",
+                            "Choose the private key file",
+                        ));
+                    }
+                    DbAuthMethod::KeyPair | DbAuthMethod::AccessToken => {}
+                    _ => {
+                        return Err(ValidationError::new(
+                            "auth",
+                            "Snowflake signs in with a key pair or a programmatic access token",
+                        ));
+                    }
+                }
+                if d.via_host.is_some() {
+                    return Err(ValidationError::new(
+                        "via_host",
+                        "Cloud databases are reached over HTTPS, not through a Host",
+                    ));
+                }
+                if d.fetch_limit == Some(0) {
+                    return Err(ValidationError::new(
+                        "fetch_limit",
+                        "Fetch limit must be positive",
+                    ));
+                }
+            }
+            Profile::Db(d) if d.engine == Engine::Oracle => {
+                if d.server.trim().is_empty() && d.database.trim().is_empty() {
+                    return Err(ValidationError::new(
+                        "server",
+                        "Host is required (or a TNS alias as the service name)",
+                    ));
+                }
+                if !d.server.trim().is_empty() && d.port == 0 {
+                    return Err(ValidationError::new("port", "Port must be 1–65535"));
+                }
+                if d.user.trim().is_empty() {
+                    return Err(ValidationError::new("user", "User is required"));
+                }
+                if d.auth != DbAuthMethod::Password {
+                    return Err(ValidationError::new(
+                        "auth",
+                        "Oracle connections sign in with a user and password",
+                    ));
+                }
+                if d.fetch_limit == Some(0) {
+                    return Err(ValidationError::new(
+                        "fetch_limit",
+                        "Fetch limit must be positive",
+                    ));
+                }
+            }
             Profile::Db(d) if d.engine.is_cloud_api() => {
                 if d.server.trim().is_empty() {
                     return Err(ValidationError::new("server", "Account ID is required"));
@@ -732,6 +809,26 @@ mod tests {
         );
         cf.database = "9f1c-uuid".into();
         assert!(Profile::Db(cf).validate().is_ok(), "D1 needs no user");
+
+        let mut sf = DbConnection::new("wh", Engine::Snowflake);
+        sf.server = "myorg-acct".into();
+        sf.user = "reader".into();
+        sf.auth = DbAuthMethod::KeyPair;
+        assert_eq!(
+            Profile::Db(sf.clone()).validate().unwrap_err().field,
+            "private_key_path"
+        );
+        sf.options
+            .insert("private_key_path".into(), "/keys/rsa_key.p8".into());
+        assert!(Profile::Db(sf.clone()).validate().is_ok());
+        sf.auth = DbAuthMethod::Password;
+        assert_eq!(
+            Profile::Db(sf.clone()).validate().unwrap_err().field,
+            "auth"
+        );
+        let json = serde_json::to_string(&sf).unwrap();
+        let back: DbConnection = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.option("private_key_path"), Some("/keys/rsa_key.p8"));
 
         let mut d = DbConnection::new("shop", Engine::Postgres);
         d.user = "app".into();

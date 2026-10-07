@@ -74,6 +74,14 @@ pub fn spawn_local(
             }
         }
     }
+    // Switchyard may have restarted itself with Oracle Instant Client on the loader path
+    // (switchyard-drivers `reexec_with_loader_path`); shells get the user's own value.
+    if std::env::var_os("SWITCHYARD_LOADER_REEXEC").is_some() {
+        match std::env::var_os("SWITCHYARD_ORIGINAL_LD_LIBRARY_PATH") {
+            Some(v) => cmd.env("LD_LIBRARY_PATH", v),
+            None => cmd.env_remove("LD_LIBRARY_PATH"),
+        }
+    }
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     cmd.env("TERM_PROGRAM", "Switchyard");

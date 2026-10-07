@@ -25,8 +25,16 @@ tiberius.workspace = true
 tokio-util.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+rsa.workspace = true
+oracle.workspace = true
+sha2.workspace = true
+base64.workspace = true
+uuid.workspace = true
+flate2.workspace = true
 
 [dev-dependencies]
+rsa = { workspace = true, features = ["getrandom"] }
+tempfile.workspace = true
 insta.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 criterion.workspace = true

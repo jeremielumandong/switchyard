@@ -88,6 +88,13 @@ pub enum DbAuthMethod {
     EntraPassword,
     /// Microsoft Entra ID service principal: application (client) id and client secret.
     EntraServicePrincipal,
+    /// Snowflake key-pair authentication: a signed JWT from an RSA private key file
+    /// (`DbConfig::options["private_key_path"]`); the stored secret is the key's
+    /// passphrase, if it has one.
+    KeyPair,
+    /// A bearer token issued by the server (Snowflake programmatic access token), stored
+    /// like a password.
+    AccessToken,
 }
 
 impl DbAuthMethod {
@@ -110,6 +117,8 @@ impl DbAuthMethod {
                 | Self::WindowsPassword
                 | Self::EntraPassword
                 | Self::EntraServicePrincipal
+                | Self::KeyPair
+                | Self::AccessToken
         )
     }
 
@@ -123,6 +132,8 @@ impl DbAuthMethod {
             Self::EntraDeviceCode => "Microsoft Entra · device code (MFA)",
             Self::EntraPassword => "Microsoft Entra · password",
             Self::EntraServicePrincipal => "Microsoft Entra · service principal",
+            Self::KeyPair => "Key pair (private key file)",
+            Self::AccessToken => "Programmatic access token",
         }
     }
 }
@@ -175,6 +186,9 @@ pub struct DbConfig {
     /// Integrated authentication through a library loaded at runtime (Kerberos on Linux and
     /// macOS); set by core for [`DbAuthMethod::Integrated`] where needed.
     pub security: Option<std::sync::Arc<dyn SecurityProvider>>,
+    /// Engine-specific settings that have no field of their own (Snowflake `warehouse`,
+    /// `role`, `schema`, `private_key_path`). Never secrets.
+    pub options: std::collections::BTreeMap<String, String>,
 }
 
 impl DbConfig {
@@ -195,7 +209,16 @@ impl DbConfig {
             application_name: "Switchyard".into(),
             trusted_ca_pem: None,
             security: None,
+            options: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// An engine-specific option, trimmed; `None` when unset or blank.
+    pub fn option(&self, key: &str) -> Option<&str> {
+        self.options
+            .get(key)
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
     }
 }
 

@@ -302,6 +302,56 @@ pub enum Command {
         /// History tags.
         tags: Vec<String>,
     },
+    /// Run a query for a coding agent: a single SELECT/WITH in a read-only transaction that
+    /// is rolled back, with a row cap and a timeout; always recorded in history.
+    AgentQuery {
+        /// Session.
+        session: SessionId,
+        /// New query id.
+        query: QueryId,
+        /// The statement.
+        sql: String,
+        /// Rows kept at most.
+        row_cap: usize,
+        /// Stop and cancel after this long.
+        timeout: Duration,
+        /// History tags (`agent` is always added).
+        tags: Vec<String>,
+    },
+    /// Record an agent tool call that is not a query (catalog, workload, what-if).
+    RecordAgentCall {
+        /// Session (names the connection).
+        session: SessionId,
+        /// What was called, as shown in history.
+        summary: String,
+        /// The error, when the call failed.
+        error: Option<String>,
+        /// History tags (`agent` is always added).
+        tags: Vec<String>,
+    },
+    /// Listen for requests from `swy` (`--open`); writes the handoff file in `data_dir`.
+    StartHandoff {
+        /// The app's data directory.
+        data_dir: std::path::PathBuf,
+    },
+    /// Read the access statistics (workload) of the session's database.
+    Workload {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+    },
+    /// Plan a statement with hypothetical indexes (PostgreSQL + HypoPG). Nothing is created.
+    WhatIf {
+        /// Session.
+        session: SessionId,
+        /// New query id chosen by the UI (cancel with [`Command::Cancel`]).
+        query: QueryId,
+        /// The statement.
+        sql: String,
+        /// `CREATE INDEX` statements to simulate.
+        indexes: Vec<String>,
+    },
     /// Load the plan stored with a history entry.
     LoadPlan {
         /// Request id.
@@ -689,6 +739,29 @@ pub enum Event {
         plan: Arc<switchyard_plan::Plan>,
         /// Findings, ranked.
         findings: Vec<switchyard_plan::Finding>,
+    },
+    /// A request from `swy` (see [`crate::handoff`]).
+    Handoff(crate::handoff::Handoff),
+    /// Result of [`Command::AgentQuery`].
+    AgentRows {
+        /// The query id.
+        query: QueryId,
+        /// Rows, or why nothing ran.
+        result: Result<crate::service::agent::AgentRows, String>,
+    },
+    /// Access statistics for [`Command::Workload`].
+    Workload {
+        /// Request id.
+        request: RequestId,
+        /// The workload, or what went wrong.
+        result: Result<Arc<switchyard_plan::access::Workload>, String>,
+    },
+    /// Result of [`Command::WhatIf`].
+    WhatIf {
+        /// The query id.
+        request: QueryId,
+        /// Plans before and after, or what went wrong.
+        result: Result<Arc<switchyard_plan::whatif::WhatIf>, String>,
     },
     /// A plan could not be captured or loaded.
     PlanFailed {
