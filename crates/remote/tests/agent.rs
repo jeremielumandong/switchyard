@@ -123,6 +123,9 @@ fn target(port: u16, agent_socket: Option<&str>) -> SshTarget {
         jump: None,
         agent_socket: agent_socket.map(str::to_owned),
         agent_key: None,
+        forward_agent: false,
+        forward_x11: false,
+        x11_display: None,
     }
 }
 

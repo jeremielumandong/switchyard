@@ -92,6 +92,44 @@
           ]
         }
       }
+    },
+    {
+      "id": "x-server",
+      "name": "X server",
+      "needed_for": "X11 forwarding (graphical programs from SSH Hosts)",
+      "required_by": ["ssh.x11_forwarding"],
+      "detect": {
+        "paths": [
+          "/tmp/.X11-unix/X0",
+          "/Applications/Utilities/XQuartz.app",
+          "/opt/X11/bin/Xquartz",
+          "C:/Program Files/VcXsrv/vcxsrv.exe",
+          "C:/Program Files (x86)/Xming/Xming.exe"
+        ]
+      },
+      "platforms": {
+        "windows": {
+          "strategy": "manual",
+          "steps": [
+            "Install VcXsrv (free), X410 (Microsoft Store) or Xming and start it (VcXsrv: run XLaunch, display 0).",
+            "Switchyard forwards X11 to localhost:0 unless the Host sets another X display."
+          ]
+        },
+        "macos": {
+          "strategy": "manual",
+          "steps": [
+            "Install XQuartz from xquartz.org (or: brew install --cask xquartz).",
+            "Log out and back in so DISPLAY is set, then reconnect the Host."
+          ]
+        },
+        "linux": {
+          "strategy": "manual",
+          "steps": [
+            "Most desktops run an X server or XWayland already; DISPLAY must be set in Switchyard's environment.",
+            "On a Wayland session without XWayland, install it (e.g. sudo apt install xwayland) and log in again."
+          ]
+        }
+      }
     }
   ]
 }

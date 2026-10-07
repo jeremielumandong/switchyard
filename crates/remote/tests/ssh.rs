@@ -86,6 +86,9 @@ fn target(id: &str, port: u16, auth: SshAuthMethod) -> SshTarget {
         jump: None,
         agent_socket: None,
         agent_key: None,
+        forward_agent: false,
+        forward_x11: false,
+        x11_display: None,
     }
 }
 
@@ -773,4 +776,132 @@ async fn dynamic_forward_is_a_socks_proxy() {
     s5.read_exact(&mut rep).await.unwrap();
     assert_ne!(rep[1], 0);
     t.stop();
+}
+
+/// A private `ssh-agent` holding the test ed25519 key; killed on drop.
+struct LocalAgent {
+    socket: PathBuf,
+    pid: String,
+    _dir: tempfile::TempDir,
+}
+
+impl LocalAgent {
+    fn start() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("agent.sock");
+        let out = std::process::Command::new("ssh-agent")
+            .args(["-s", "-a"])
+            .arg(&socket)
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        let pid = text
+            .split(';')
+            .find_map(|p| p.trim().strip_prefix("SSH_AGENT_PID="))
+            .unwrap()
+            .to_owned();
+        let added = std::process::Command::new("ssh-add")
+            .arg(keys().join("id_ed25519"))
+            .env("SSH_AUTH_SOCK", &socket)
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(added.success());
+        Self {
+            socket,
+            pid,
+            _dir: dir,
+        }
+    }
+}
+
+impl Drop for LocalAgent {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("kill").arg(&self.pid).status();
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs ssh servers"]
+async fn forwarded_agent_signs_on_the_server() {
+    let dir = tempfile::tempdir().unwrap();
+    let agent = LocalAgent::start();
+    let m = SshManager::new(known(&dir), Prompter::new(HostKeyDecision::TrustOnce));
+    // From the server, log in to the server again: the user has no private key there, so
+    // only the forwarded agent can sign.
+    let hop = format!(
+        "ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+         -p {} swy@127.0.0.1 echo signed-by-forwarded-agent",
+        main_port()
+    );
+
+    let mut off = target("agent-fwd-off", main_port(), key("id_ed25519"));
+    off.agent_socket = Some(agent.socket.display().to_string());
+    let conn = m.session(&off).await.unwrap();
+    let (code, _) = conn.exec(&hop).await.unwrap();
+    assert_ne!(code, Some(0), "no forwarding, no signature");
+
+    let mut on = target("agent-fwd-on", main_port(), key("id_ed25519"));
+    on.agent_socket = Some(agent.socket.display().to_string());
+    on.forward_agent = true;
+    let conn = m.session(&on).await.unwrap();
+    let (code, out) = conn.exec("ssh-add -l").await.unwrap();
+    assert_eq!(code, Some(0), "{}", String::from_utf8_lossy(&out));
+    assert!(String::from_utf8_lossy(&out).contains("swy-ed25519"));
+    let (code, out) = conn.exec(&hop).await.unwrap();
+    assert_eq!(code, Some(0), "{}", String::from_utf8_lossy(&out));
+    assert!(String::from_utf8_lossy(&out).contains("signed-by-forwarded-agent"));
+}
+
+#[tokio::test]
+#[ignore = "needs ssh servers"]
+async fn x11_reaches_the_local_display_without_the_fake_cookie() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    // A fake X server on TCP display :37 (port 6037).
+    let display = tokio::net::TcpListener::bind("127.0.0.1:6037")
+        .await
+        .unwrap();
+    let seen = Arc::new(Mutex::new(None::<(Vec<u8>, Vec<u8>)>));
+    let seen2 = seen.clone();
+    tokio::spawn(async move {
+        let (mut s, _) = display.accept().await.unwrap();
+        let mut head = [0u8; 12];
+        s.read_exact(&mut head).await.unwrap();
+        assert_eq!(head[0], b'l');
+        let n = usize::from(u16::from_le_bytes([head[6], head[7]]));
+        let d = usize::from(u16::from_le_bytes([head[8], head[9]]));
+        let mut name = vec![0u8; n + (4 - n % 4) % 4];
+        let mut data = vec![0u8; d + (4 - d % 4) % 4];
+        s.read_exact(&mut name).await.unwrap();
+        s.read_exact(&mut data).await.unwrap();
+        *seen2.lock().unwrap() = Some((name[..n].to_vec(), data[..d].to_vec()));
+        s.write_all(b"X11OK").await.unwrap();
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let m = SshManager::new(known(&dir), Prompter::new(HostKeyDecision::TrustOnce));
+    let mut t = target("x11-fwd", main_port(), key("id_ed25519"));
+    t.forward_x11 = true;
+    t.x11_display = Some("127.0.0.1:37".into());
+    let conn = m.session(&t).await.unwrap();
+    // On the server: an X client using the session's DISPLAY and the (fake) cookie sshd
+    // stored for it.
+    let client = r#"python3 - <<'PY'
+import os, socket, struct, subprocess
+d = os.environ["DISPLAY"]
+n = int(d.split(":")[1].split(".")[0])
+cookie = subprocess.check_output(["xauth", "list", d]).split()[2].decode()
+name, data = b"MIT-MAGIC-COOKIE-1", bytes.fromhex(cookie)
+pkt = b"l\0" + struct.pack("<HHHHxx", 11, 0, len(name), len(data))
+pkt += name + b"\0" * (-len(name) % 4) + data + b"\0" * (-len(data) % 4)
+s = socket.create_connection(("127.0.0.1", 6000 + n))
+s.sendall(pkt)
+print(s.recv(5).decode())
+PY"#;
+    let (code, out) = conn.exec(client).await.unwrap();
+    let out = String::from_utf8_lossy(&out);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains("X11OK"), "{out}");
+    // No real cookie for this display here, so the fake one was stripped, never passed on.
+    assert_eq!(seen.lock().unwrap().clone(), Some((Vec::new(), Vec::new())));
 }

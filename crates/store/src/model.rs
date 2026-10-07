@@ -173,6 +173,15 @@ pub struct Host {
     /// Saved port forwards (local, remote, dynamic).
     #[serde(default)]
     pub forwards: Vec<PortForward>,
+    /// Forward this machine's SSH agent to the Host (`ssh -A`).
+    #[serde(default)]
+    pub forward_agent: bool,
+    /// Forward X11 to the local display (`ssh -X`).
+    #[serde(default)]
+    pub forward_x11: bool,
+    /// X display to forward to instead of `DISPLAY` (`:1`, `localhost:0`).
+    #[serde(default)]
+    pub x11_display: Option<String>,
 }
 
 /// Direction of a saved port forward.
@@ -304,6 +313,9 @@ impl Host {
             identity_agent: None,
             agent_key: None,
             forwards: Vec::new(),
+            forward_agent: false,
+            forward_x11: false,
+            x11_display: None,
         }
     }
 }

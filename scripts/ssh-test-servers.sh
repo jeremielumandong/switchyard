@@ -30,6 +30,9 @@ KbdInteractiveAuthentication yes
 PubkeyAuthentication yes
 UsePAM yes
 AllowTcpForwarding yes
+AllowAgentForwarding yes
+X11Forwarding yes
+X11UseLocalhost yes
 PermitRootLogin no
 AuthorizedKeysFile .ssh/authorized_keys
 Subsystem sftp internal-sftp

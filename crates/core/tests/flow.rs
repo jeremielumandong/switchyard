@@ -369,7 +369,10 @@ async fn driver_manager_commands_report_on_the_bus() {
     })
     .await;
     let ids: Vec<_> = comps.iter().map(|c| c.id.as_str()).collect();
-    assert_eq!(ids, ["oracle-instant-client", "gssapi", "ssh-agent"]);
+    assert_eq!(
+        ids,
+        ["oracle-instant-client", "gssapi", "ssh-agent", "x-server"]
+    );
 
     // A path without the library is refused with a reason.
     h.send(Command::UseComponentPath {

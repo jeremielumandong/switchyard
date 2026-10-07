@@ -4,6 +4,7 @@
 
 pub mod known_hosts;
 pub mod tunnel;
+mod x11;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -17,7 +18,7 @@ use russh::client::{self, Handle, KeyboardInteractiveAuthResponse};
 use russh::keys::{PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate, load_secret_key};
 pub use russh::{Channel, ChannelMsg};
 use secrecy::{ExposeSecret, SecretString};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 pub use known_hosts::{HostKeyStatus, KnownHosts, fingerprint};
 use tunnel::RemoteRoutes;
@@ -117,6 +118,13 @@ pub struct SshTarget {
     /// Public key file choosing which agent key to use (1Password holds many; servers
     /// stop after a few failed keys).
     pub agent_key: Option<String>,
+    /// Let the server use this machine's SSH agent (`ssh -A`): only for servers you trust,
+    /// since their root can use your keys while you are connected.
+    pub forward_agent: bool,
+    /// Forward X11 (`ssh -X`) to `DISPLAY` (on Windows, VcXsrv/X410 on `localhost:0`).
+    pub forward_x11: bool,
+    /// X display to forward to instead of `DISPLAY` (`:1`, `localhost:0`).
+    pub x11_display: Option<String>,
 }
 
 impl std::fmt::Debug for SshTarget {
@@ -199,6 +207,10 @@ struct ClientHandler {
     outcome: Arc<Mutex<KeyOutcome>>,
     /// Remote forwards on this connection.
     routes: Arc<RemoteRoutes>,
+    /// Agents to hand forwarded agent channels to; `None` refuses them.
+    agent_forward: Option<Vec<AgentEndpoint>>,
+    /// X11 forwarding; `None` refuses X11 channels.
+    x11: Option<Arc<x11::X11Forward>>,
 }
 
 fn record(outcome: &Mutex<KeyOutcome>, e: SshError) {
@@ -293,6 +305,48 @@ impl client::Handler for ClientHandler {
         self.routes.open(connected_port, channel, reply);
         Ok(())
     }
+
+    async fn server_channel_open_agent_forward(
+        &mut self,
+        channel: Channel<Msg>,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        // Dropping `reply` rejects: forwarding was not asked for on this Host.
+        let Some(endpoints) = self.agent_forward.clone() else {
+            warn!(host = %self.label, "refused an agent channel the Host did not ask for");
+            return Ok(());
+        };
+        tokio::spawn(async move {
+            match agent_stream(&endpoints).await {
+                Ok(mut agent) => {
+                    reply.accept().await;
+                    let mut ch = channel.into_stream();
+                    let _ = tokio::io::copy_bidirectional(&mut ch, &mut agent).await;
+                }
+                Err(e) => {
+                    warn!(error = %e, "forwarded agent request: no local agent");
+                    reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
+                }
+            }
+        });
+        Ok(())
+    }
+
+    async fn server_channel_open_x11(
+        &mut self,
+        channel: Channel<Msg>,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        match &self.x11 {
+            Some(x) => x.open(channel, reply),
+            None => warn!(host = %self.label, "refused an X11 channel the Host did not ask for"),
+        }
+        Ok(())
+    }
 }
 
 fn key_kind(key: &PublicKey) -> &'static str {
@@ -330,6 +384,10 @@ pub struct SshConn {
     /// Remote forward requests go one at a time (a port-0 request learns its port only
     /// from the reply).
     forward_requests: tokio::sync::Mutex<()>,
+    /// Ask for agent forwarding on shell and exec channels.
+    forward_agent: bool,
+    /// X11 forwarding for shell and exec channels.
+    x11: Option<Arc<x11::X11Forward>>,
 }
 
 impl std::fmt::Debug for SshConn {
@@ -365,6 +423,23 @@ impl SshConn {
         self.handle.as_ref().is_none_or(Handle::is_closed)
     }
 
+    /// Ask for the Host's agent and X11 forwarding on a session channel. Refusals are not
+    /// errors: the shell still works without them.
+    async fn request_forwarding(&self, ch: &Channel<Msg>) {
+        if self.forward_agent
+            && let Err(e) = ch.agent_forward(false).await
+        {
+            warn!(host = %self.label, error = %e, "agent forwarding request failed");
+        }
+        if let Some(x) = &self.x11
+            && let Err(e) = ch
+                .request_x11(false, false, x11::MIT_COOKIE, x.fake_cookie(), x.screen())
+                .await
+        {
+            warn!(host = %self.label, error = %e, "X11 forwarding request failed");
+        }
+    }
+
     /// An interactive shell with a PTY of `cols × rows`.
     pub async fn open_shell(&self, cols: u16, rows: u16) -> Result<Channel<Msg>, SshError> {
         let ch = self
@@ -383,6 +458,7 @@ impl SshConn {
         )
         .await
         .map_err(|e| SshError::Channel(e.to_string()))?;
+        self.request_forwarding(&ch).await;
         ch.request_shell(true)
             .await
             .map_err(|e| SshError::Channel(e.to_string()))?;
@@ -417,6 +493,7 @@ impl SshConn {
             .channel_open_session()
             .await
             .map_err(|e| SshError::Channel(e.to_string()))?;
+        self.request_forwarding(&ch).await;
         ch.exec(true, command)
             .await
             .map_err(|e| SshError::Channel(e.to_string()))?;
@@ -451,8 +528,28 @@ async fn connect_one(
     });
     let outcome: Arc<Mutex<KeyOutcome>> = Arc::default();
     let routes: Arc<RemoteRoutes> = Arc::default();
+    let agent_forward = target
+        .forward_agent
+        .then(|| agent_candidates_platform(target.agent_socket.as_deref(), agent_socket));
+    let x11 = if target.forward_x11 {
+        match x11::local_display(target.x11_display.as_deref()).map(x11::X11Forward::new) {
+            Some(Ok(x)) => Some(x),
+            Some(Err(e)) => {
+                warn!(host = %target.label, error = %e, "X11 forwarding off");
+                None
+            }
+            None => {
+                warn!(host = %target.label, "X11 forwarding off: no X display (set DISPLAY or the Host's X display)");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let handler = ClientHandler {
         routes: routes.clone(),
+        agent_forward,
+        x11: x11.clone(),
         known: known.clone(),
         accept_changed,
         label: target.label.clone(),
@@ -509,6 +606,8 @@ async fn connect_one(
         description,
         routes,
         forward_requests: tokio::sync::Mutex::new(()),
+        forward_agent: target.forward_agent,
+        x11,
     })
 }
 
@@ -818,6 +917,38 @@ async fn connect_agent(
     russh::keys::agent::client::AgentClient::connect_named_pipe(pipe)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// A raw byte stream to the first local agent that answers (agent forwarding).
+async fn agent_stream(endpoints: &[AgentEndpoint]) -> Result<Box<dyn x11::Duplex>, String> {
+    let mut tried = Vec::new();
+    for e in endpoints {
+        let r: Result<Box<dyn x11::Duplex>, String> = match e {
+            #[cfg(unix)]
+            AgentEndpoint::Socket(p) => tokio::net::UnixStream::connect(p)
+                .await
+                .map(|s| Box::new(s) as Box<dyn x11::Duplex>)
+                .map_err(|e| e.to_string()),
+            #[cfg(windows)]
+            AgentEndpoint::Socket(p) => tokio::net::windows::named_pipe::ClientOptions::new()
+                .open(p)
+                .map(|s| Box::new(s) as Box<dyn x11::Duplex>)
+                .map_err(|e| e.to_string()),
+            #[cfg(not(any(unix, windows)))]
+            AgentEndpoint::Socket(_) => Err("no agent sockets on this platform".into()),
+            // Pageant speaks window messages, not a byte stream.
+            AgentEndpoint::Pageant => Err("Pageant cannot be forwarded".into()),
+        };
+        match r {
+            Ok(s) => return Ok(s),
+            Err(err) => tried.push(format!("{}: {err}", e.display())),
+        }
+    }
+    Err(if tried.is_empty() {
+        "no SSH agent found".into()
+    } else {
+        tried.join("; ")
+    })
 }
 
 /// A short name for the agent behind `socket`, for the status line.
