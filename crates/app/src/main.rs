@@ -16,6 +16,7 @@ mod folds;
 mod grid;
 mod overlays;
 mod palette;
+mod plan_view;
 mod remote_files;
 mod sidebar;
 mod split;

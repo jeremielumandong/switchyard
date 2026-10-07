@@ -218,5 +218,11 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
   `cargo clippy -p <crate> --target x86_64-pc-windows-msvc` with `CC_x86_64_pc_windows_msvc=clang`,
   `AR_x86_64_pc_windows_msvc=llvm-lib` and `CFLAGS_x86_64_pc_windows_msvc=-isystem <dir>` where
   `<dir>` holds stub `assert.h`/`string.h`/`stdlib.h` so `ring` compiles (check never links).
+- PostgreSQL parallel plans: below a Gather, "Actual Total Time" is a per-process average and
+  "Actual Loops" counts all processes, so time × loops overstates wall time; `plan::pg`
+  divides by workers + leader.
+- GPUI: an element's size is only known after a frame. Measure with a `canvas` prepaint into
+  an `Rc<Cell<Bounds>>` and, when a layout depends on it (plan Fit), retry with
+  `cx.on_next_frame`; reset the cell when the layout changes or it holds stale sizes.
 - Pageant comes with russh on Windows (`AgentClient::connect_pageant`, `pageant` crate,
   Apache-2.0); no feature flag.
