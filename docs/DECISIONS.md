@@ -741,3 +741,21 @@ M7; SPEC's scope table moves remote/dynamic/X11 forwarding into v1.
 - Saved forwards are held by the core until stopped (database tunnels stay weak, owned by
   their sessions). Auto-start runs when a terminal opens on the Host, beside its login; an
   auto-start forward needs a fixed port.
+
+## 2026-10-07 — MX-2: agent and X11 forwarding
+
+- Both are off by default and per Host. Agent forwarding is labeled as trusting the Host
+  (its root can use your keys while connected). The handler refuses agent and X11 channels
+  a Host did not ask for, so a server cannot open them on its own.
+- Agent channels are piped as raw bytes to the first agent from the login's own list
+  (the Host's socket, `SSH_AUTH_SOCK`, 1Password; Windows: pipes). Pageant is not a byte
+  stream (window messages), so it cannot be forwarded; use the OpenSSH agent service.
+- X11 follows OpenSSH: the server gets a random 128-bit fake MIT-MAGIC-COOKIE-1 (ring's
+  system RNG); each forwarded connection must present it, and it is replaced by the
+  display's real cookie from `xauth list <display>`, or removed when there is none. The
+  real cookie never leaves this machine. Only MIT-MAGIC-COOKIE-1 is supported.
+- Display: the Host's "X display" field, else `DISPLAY`, else on Windows `localhost:0`
+  (VcXsrv, X410 and Xming defaults). `:N` is `/tmp/.X11-unix/XN`; XQuartz's launchd path is
+  used as is; `host:N` is TCP port 6000 + N.
+- The Driver Manager's "X server" component detects by path (Linux's X0 socket, XQuartz,
+  VcXsrv, Xming; X410 is a Store app and is not found by path) and shows install steps.
