@@ -309,14 +309,24 @@ faster, and no agent call ever performed a write.
   plans stored with their history entry.
   Done when: comparing two saved plans shows correct deltas.
   Note: plans are stored with their history entry (store migration 2) and `switchyard_plan::compare` matches operators by operation and object. Compare ▾ offers this tab's other plans and the connection's saved plans; the view shows time, planning, rows, pages and cost deltas, both graphs side by side (shared zoom) and a per-operator table (new / gone included) that selects in both. History rows with a stored plan get a "Plan" button. Checked in the app: before/after `CREATE INDEX` on `orders(total)`, loaded from history, showed −63% time, −96% pages, −30% cost.
-- [ ] **M5-7 Access analysis.** PostgreSQL `pg_stat_user_tables`, `pg_stat_user_indexes`,
+- [x] **M5-7 Access analysis.** PostgreSQL `pg_stat_user_tables`, `pg_stat_user_indexes`,
   `pg_stat_statements`; SQL Server index usage, missing-index DMVs, Query Store. Workload view UI.
   Missing extension or permission shows a hint with the GRANT statement.
   Done when: integration tests with and without the extensions and permissions.
-  WIP (parked for the API workspace, user request): `plan::access::workload` (tables, indexes, pg_stat_statements / Query Store, missing-index DMVs, hints with the fixing GRANT / CREATE EXTENSION / ALTER statements; probes under a savepoint inside an open transaction). Test PostgreSQL image now has HypoPG (`docker/postgres-image`), CI uses the compose service. Still to do: integration tests, core command, Workload view.
-- [ ] **M5-8 Hypothetical indexes.** Detect HypoPG; create hypothetical index, explain, drop it,
+  Note: `plan::access::workload`, `Command::Workload`, Workload tab (palette "Workload: Query and
+  Index Statistics"): statements / tables / indexes / missing indexes, flags for mostly-full-scan
+  tables and unused indexes, hints with copyable fixes. `crates/plan/tests/access.rs` covers both
+  engines with and without extensions, Query Store and grants (5 PostgreSQL, 3 SQL Server).
+  Found by the tests: reading `shared_preload_libraries` needs `pg_read_all_settings`, so it now
+  comes from `pg_settings` (hidden rows → "unknown"). Deferred: open a statement from the list in
+  an editor / explain it directly.
+- [x] **M5-8 Hypothetical indexes.** Detect HypoPG; create hypothetical index, explain, drop it,
   all in one session.
   Done when: plan changes with a hypothetical index and no real index is created.
+  Note: `plan::whatif` (definitions checked with sqlparser: exactly one CREATE INDEX each;
+  `hypopg_reset()` before and after, also on error), `Command::WhatIf`; plan view "What if…"
+  pre-filled from findings' CREATE INDEX suggestions, results open in the compare view. Test:
+  cost of `total = 123.45` on 1M orders drops >10× and `pg_indexes` is unchanged.
 - [ ] **M5-9 `swy` CLI.** `clap` binary with `connections`, `query`, `explain [--analyze] [--open]`,
   `workload`; table, CSV and JSON output; `--open` hands off to the running app.
   Done when: CLI integration tests against docker for each command.

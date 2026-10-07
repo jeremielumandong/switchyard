@@ -332,7 +332,7 @@ async fn postgres(s: &mut dyn DbSession) -> Result<Workload> {
             "SELECT {MARKER} current_user AS who,
                     (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) AS su,
                     pg_has_role(current_user, 'pg_read_all_stats', 'USAGE') AS read_all,
-                    current_setting('shared_preload_libraries') AS preload,
+                    (SELECT setting FROM pg_settings WHERE name = 'shared_preload_libraries') AS preload,
                     (SELECT extversion FROM pg_extension WHERE extname = 'pg_stat_statements') AS pgss,
                     (SELECT extversion FROM pg_extension WHERE extname = 'hypopg') AS hypopg,
                     EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'hypopg') AS hypopg_available,
@@ -344,6 +344,8 @@ async fn postgres(s: &mut dyn DbSession) -> Result<Workload> {
     .await?;
     let who = me.text(0, "who").unwrap_or("").to_owned();
     let privileged = me.flag(0, "su") || me.flag(0, "read_all");
+    // Hidden (NULL) for roles without pg_read_all_settings.
+    let preload_known = me.text(0, "preload").is_some();
     let preload = me.text(0, "preload").unwrap_or("").to_owned();
     let pgss = me.text(0, "pgss").map(str::to_owned);
     w.hypopg = me.text(0, "hypopg").map(str::to_owned);
@@ -354,12 +356,15 @@ async fn postgres(s: &mut dyn DbSession) -> Result<Workload> {
         s,
         e,
         &format!(
-            "SELECT {MARKER} schemaname, relname, seq_scan, seq_tup_read, idx_scan,
-                    n_tup_ins + n_tup_upd + n_tup_del AS writes, n_live_tup, n_dead_tup,
-                    pg_total_relation_size(relid) AS bytes,
-                    round(extract(epoch FROM greatest(last_analyze, last_autoanalyze)) * 1000) AS analyzed_ms
-               FROM pg_stat_user_tables
-              ORDER BY seq_tup_read DESC NULLS LAST, relname
+            "SELECT {MARKER} s.schemaname, s.relname, s.seq_scan, s.seq_tup_read, s.idx_scan,
+                    s.n_tup_ins + s.n_tup_upd + s.n_tup_del AS writes,
+                    -- The counter starts at 0 after a stats reset; the planner's estimate stays.
+                    CASE WHEN s.n_live_tup > 0 THEN s.n_live_tup
+                         WHEN c.reltuples >= 0 THEN c.reltuples::bigint END AS n_live_tup,
+                    s.n_dead_tup, pg_total_relation_size(s.relid) AS bytes,
+                    round(extract(epoch FROM greatest(s.last_analyze, s.last_autoanalyze)) * 1000) AS analyzed_ms
+               FROM pg_stat_user_tables s JOIN pg_class c ON c.oid = s.relid
+              ORDER BY s.seq_tup_read DESC NULLS LAST, s.relname
               LIMIT {LIMIT}"
         ),
         &[],
@@ -419,10 +424,18 @@ async fn postgres(s: &mut dyn DbSession) -> Result<Workload> {
     }
 
     // Statements.
-    let loaded = preload
-        .split(',')
-        .any(|l| l.trim().trim_matches('"') == "pg_stat_statements");
+    // Unknown preload list: assume loaded and let the query tell.
+    let loaded = !preload_known
+        || preload
+            .split(',')
+            .any(|l| l.trim().trim_matches('"') == "pg_stat_statements");
     let preload_fix = || {
+        if !preload_known {
+            // Without the current list, ALTER SYSTEM would overwrite other libraries.
+            return "-- add pg_stat_statements to shared_preload_libraries (postgresql.conf), \
+                    then restart the server"
+                .to_owned();
+        }
         let list = if preload.trim().is_empty() {
             "pg_stat_statements".to_owned()
         } else {
@@ -471,6 +484,7 @@ async fn postgres(s: &mut dyn DbSession) -> Result<Workload> {
                    FROM pg_stat_statements
                   WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
                     AND query NOT LIKE '%swy:access%'
+                    AND query NOT LIKE '%SAVEPOINT {SAVEPOINT}%'
                     AND query <> '<insufficient privilege>'
                   ORDER BY {total} DESC
                   LIMIT {LIMIT}"
@@ -501,6 +515,11 @@ async fn postgres(s: &mut dyn DbSession) -> Result<Workload> {
                     Source::Statements,
                     "Reading pg_stat_statements was refused.",
                     Some(format!("GRANT pg_read_all_stats TO {};", pg_ident(&who))),
+                ),
+                Err(err) if err.to_string().contains("shared_preload_libraries") => w.hint(
+                    Source::Statements,
+                    "pg_stat_statements is installed but not loaded by the server.",
+                    Some(preload_fix()),
                 ),
                 Err(err) => w.hint(
                     Source::Statements,
