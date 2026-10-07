@@ -170,6 +170,110 @@ pub struct Host {
     /// Public key file picking which agent key to offer.
     #[serde(default)]
     pub agent_key: Option<String>,
+    /// Saved port forwards (local, remote, dynamic).
+    #[serde(default)]
+    pub forwards: Vec<PortForward>,
+}
+
+/// Direction of a saved port forward.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForwardDirection {
+    /// `-L`: listen on this machine, reach the target from the Host.
+    Local,
+    /// `-R`: listen on the Host, reach the target from this machine.
+    Remote,
+    /// `-D`: SOCKS proxy on this machine, targets reached from the Host.
+    Dynamic,
+}
+
+impl ForwardDirection {
+    /// Display name.
+    pub fn label(self) -> &'static str {
+        match self {
+            ForwardDirection::Local => "Local",
+            ForwardDirection::Remote => "Remote",
+            ForwardDirection::Dynamic => "Dynamic (SOCKS)",
+        }
+    }
+}
+
+/// A port forward saved on a Host (MobaXterm's "SSH tunnel").
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortForward {
+    /// Id, unique within the Host.
+    pub id: String,
+    /// Display name; empty shows the forward itself.
+    #[serde(default)]
+    pub name: String,
+    /// Direction.
+    pub direction: ForwardDirection,
+    /// Address listened on: here for local and dynamic forwards, on the Host for remote
+    /// ones. Empty = loopback.
+    #[serde(default)]
+    pub bind_address: String,
+    /// Port listened on; 0 = any free port.
+    pub bind_port: u16,
+    /// Target host (not used by dynamic forwards).
+    #[serde(default)]
+    pub target_host: String,
+    /// Target port (not used by dynamic forwards).
+    #[serde(default)]
+    pub target_port: u16,
+    /// Start whenever a terminal or the Files tab connects to the Host.
+    #[serde(default)]
+    pub auto_start: bool,
+}
+
+impl PortForward {
+    /// A new forward with a fresh id.
+    pub fn new(direction: ForwardDirection) -> Self {
+        Self {
+            id: ProfileId::new().0,
+            name: String::new(),
+            direction,
+            bind_address: String::new(),
+            bind_port: 0,
+            target_host: String::new(),
+            target_port: 0,
+            auto_start: false,
+        }
+    }
+
+    /// `L 8080 → db:5432`, `R 9000 ← localhost:3000`, `D 1080`.
+    pub fn summary(&self) -> String {
+        let bind = if self.bind_address.trim().is_empty() {
+            self.bind_port.to_string()
+        } else {
+            format!("{}:{}", self.bind_address.trim(), self.bind_port)
+        };
+        match self.direction {
+            ForwardDirection::Local => {
+                format!("L {bind} → {}:{}", self.target_host, self.target_port)
+            }
+            ForwardDirection::Remote => {
+                format!("R {bind} ← {}:{}", self.target_host, self.target_port)
+            }
+            ForwardDirection::Dynamic => format!("D {bind} (SOCKS)"),
+        }
+    }
+
+    /// Why the forward cannot start, if it cannot.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.direction != ForwardDirection::Dynamic {
+            if self.target_host.trim().is_empty() {
+                return Err("enter the target host".into());
+            }
+            if self.target_port == 0 {
+                return Err("enter the target port".into());
+            }
+        }
+        if self.direction != ForwardDirection::Remote && self.bind_port == 0 && self.auto_start {
+            // Allowed, but a random port each time is rarely what an auto-start wants.
+            return Err("give an auto-start forward a fixed port".into());
+        }
+        Ok(())
+    }
 }
 
 fn default_keepalive() -> u32 {
@@ -199,6 +303,7 @@ impl Host {
             secret: None,
             identity_agent: None,
             agent_key: None,
+            forwards: Vec::new(),
         }
     }
 }
@@ -737,6 +842,39 @@ impl ValidationError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn port_forwards() {
+        // Hosts saved before forwards existed still load.
+        let mut v = serde_json::to_value(Host::new("web", "10.0.0.1", "deploy")).unwrap();
+        v.as_object_mut().unwrap().remove("forwards");
+        let h: Host = serde_json::from_value(v).unwrap();
+        assert!(h.forwards.is_empty());
+
+        let mut l = PortForward::new(ForwardDirection::Local);
+        l.bind_port = 15432;
+        l.target_host = "db.internal".into();
+        l.target_port = 5432;
+        assert_eq!(l.summary(), "L 15432 → db.internal:5432");
+        assert!(l.validate().is_ok());
+        let mut r = l.clone();
+        r.direction = ForwardDirection::Remote;
+        r.bind_address = "0.0.0.0".into();
+        assert_eq!(r.summary(), "R 0.0.0.0:15432 ← db.internal:5432");
+        let mut d = PortForward::new(ForwardDirection::Dynamic);
+        d.bind_port = 1080;
+        assert_eq!(d.summary(), "D 1080 (SOCKS)");
+        assert!(d.validate().is_ok(), "SOCKS needs no target");
+
+        let mut bad = PortForward::new(ForwardDirection::Local);
+        bad.target_host = "db".into();
+        assert!(bad.validate().unwrap_err().contains("target port"));
+        bad.target_port = 5432;
+        bad.auto_start = true;
+        assert!(bad.validate().unwrap_err().contains("fixed port"));
+        let back: PortForward = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+        assert_eq!(back, r);
+    }
 
     #[test]
     fn validation() {

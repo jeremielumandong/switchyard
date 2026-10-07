@@ -14,6 +14,7 @@ mod drivers_page;
 mod editor_tab;
 mod files_tab;
 mod folds;
+mod forwards_editor;
 mod grid;
 mod overlays;
 mod palette;

@@ -151,6 +151,8 @@ pub struct ConnEditor {
     error: Option<(Option<&'static str>, String)>,
     request: Option<RequestId>,
     connect_after: bool,
+    /// A Host's port forwards.
+    forwards: Vec<crate::forwards_editor::ForwardRow>,
 }
 
 impl EventEmitter<ConnEditorEvent> for ConnEditor {}
@@ -218,6 +220,7 @@ impl ConnEditor {
             error: None,
             request: None,
             connect_after: true,
+            forwards: Vec::new(),
         };
         this.build_fields(existing.as_ref(), window, cx);
         this
@@ -625,6 +628,47 @@ impl ConnEditor {
                 );
             }
         }
+        self.forwards = match existing {
+            Some(Profile::Host(h)) if self.kind == ConnKind::Ssh => h
+                .forwards
+                .iter()
+                .map(|f| crate::forwards_editor::ForwardRow::new(f, window, cx))
+                .collect(),
+            _ => Vec::new(),
+        };
+    }
+
+    /// A port forward row changed.
+    fn forward_action(
+        &mut self,
+        action: crate::forwards_editor::RowAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::forwards_editor::{ForwardRow, RowAction};
+        use switchyard_core::store::{ForwardDirection, PortForward};
+        match action {
+            RowAction::Add => {
+                let f = PortForward::new(ForwardDirection::Local);
+                self.forwards.push(ForwardRow::new(&f, window, cx));
+            }
+            RowAction::Direction(i, d) => {
+                if let Some(r) = self.forwards.get_mut(i) {
+                    r.set_direction(d);
+                }
+            }
+            RowAction::ToggleAuto(i) => {
+                if let Some(r) = self.forwards.get_mut(i) {
+                    r.toggle_auto();
+                }
+            }
+            RowAction::Remove(i) => {
+                if i < self.forwards.len() {
+                    self.forwards.remove(i);
+                }
+            }
+        }
+        cx.notify();
     }
 
     fn value(&self, key: &str, cx: &Context<Self>) -> String {
@@ -784,6 +828,12 @@ impl ConnEditor {
                     vec![ProfileId(jump)]
                 };
                 h.environment = self.env;
+                h.forwards = self
+                    .forwards
+                    .iter()
+                    .map(|r| r.read(cx))
+                    .collect::<Result<_, _>>()
+                    .map_err(|m| (None, m))?;
                 Profile::Host(h)
             }
             ConnKind::Sftp => {
@@ -1445,6 +1495,11 @@ impl Render for ConnEditor {
             "New connection".into()
         };
         let fields = self.fields(&p, cx);
+        let forwards = (self.kind == ConnKind::Ssh).then(|| {
+            crate::forwards_editor::render(&self.forwards, &p, cx, |this: &mut Self, a, w, cx| {
+                this.forward_action(a, w, cx)
+            })
+        });
         let (test_label, test_color, testing) = match &self.test {
             TestState::Idle => (String::new(), gpui_kit::transparent_black(), false),
             TestState::Testing(_) => ("Connecting…".into(), p.acc, true),
@@ -1588,6 +1643,7 @@ impl Render for ConnEditor {
                             .flex_col()
                             .gap(px(14.))
                             .child(div().grid().grid_cols(6).gap(px(12.)).children(fields))
+                            .children(forwards)
                             .child(
                                 div()
                                     .flex()

@@ -25,7 +25,7 @@ use switchyard_db::{DbAuthMethod, TunnelEndpoint};
 use switchyard_drivers::Registry;
 use switchyard_drivers::install::CommandRunner;
 use switchyard_remote::ssh::{
-    KnownHosts, SshAuthMethod, SshManager, SshTarget, Tunnel, TunnelInfo,
+    ForwardSpec, KnownHosts, SshAuthMethod, SshManager, SshTarget, Tunnel, TunnelInfo,
 };
 use switchyard_remote::{LocalFs, RemoteFs};
 use switchyard_store::{
@@ -43,6 +43,34 @@ use crate::error::{CoreError, Result};
 use crate::runtime::EventSender;
 
 pub mod agent;
+
+/// The SSH layer's description of a saved forward.
+fn forward_spec(f: &switchyard_store::PortForward) -> ForwardSpec {
+    use switchyard_store::ForwardDirection;
+    let bind_address = f.bind_address.trim().to_owned();
+    match f.direction {
+        ForwardDirection::Local => ForwardSpec::Local {
+            bind_address,
+            bind_port: f.bind_port,
+            host: f.target_host.trim().to_owned(),
+            port: f.target_port,
+        },
+        ForwardDirection::Remote => ForwardSpec::Remote {
+            bind_address: if bind_address.is_empty() {
+                "localhost".into()
+            } else {
+                bind_address
+            },
+            bind_port: f.bind_port,
+            host: f.target_host.trim().to_owned(),
+            port: f.target_port,
+        },
+        ForwardDirection::Dynamic => ForwardSpec::Dynamic {
+            bind_address,
+            bind_port: f.bind_port,
+        },
+    }
+}
 
 /// Where secrets go.
 #[derive(Clone, Debug)]
@@ -147,6 +175,8 @@ pub struct Service {
     terminals: Arc<Terminals>,
     ssh: Arc<SshManager>,
     tunnels: Mutex<Vec<Weak<Tunnel>>>,
+    /// Running saved forwards, by (Host id, forward id). Held here: nothing else owns them.
+    forwards: Mutex<HashMap<(String, String), Arc<Tunnel>>>,
     /// Serializes tunnel creation so concurrent sessions share one tunnel.
     tunnel_open: tokio::sync::Mutex<()>,
     next_tunnel: std::sync::atomic::AtomicU64,
@@ -247,6 +277,7 @@ impl Service {
             terminals: Arc::default(),
             ssh,
             tunnels: Mutex::default(),
+            forwards: Mutex::default(),
             tunnel_open: tokio::sync::Mutex::new(()),
             next_tunnel: std::sync::atomic::AtomicU64::new(1),
             entra: EntraSignIn::new(prompter.clone(), secrets.clone()),
@@ -279,6 +310,15 @@ impl Service {
             }
         });
         while let Some(cmd) = commands.recv().await {
+            // A terminal on a Host starts its auto-start forwards, beside the login.
+            if let Command::OpenTerminal {
+                target: TermTarget::Host(host),
+                ..
+            } = &cmd
+            {
+                let (this, host) = (self.clone(), host.clone());
+                tokio::spawn(async move { this.auto_start_forwards(&host).await });
+            }
             // Keystrokes must reach the program in the order they were typed, so terminal
             // input is delivered here (it never blocks) instead of on a spawned task.
             let cmd = match cmd {
@@ -491,6 +531,14 @@ impl Service {
             }
             Command::StopTunnel { id } => self.stop_tunnel(id),
             Command::ListTunnels => self.emit(Event::Tunnels(self.tunnel_infos())),
+            Command::StartForward { host, forward } => {
+                if let Err(e) = self.start_forward(&host, &forward).await {
+                    self.emit(Event::Error {
+                        context: "Port forward".into(),
+                        message: e.to_string(),
+                    });
+                }
+            }
             Command::CloseSession { session } => {
                 lock(&self.sessions).remove(&session);
             }
@@ -1317,8 +1365,58 @@ impl Service {
         }
     }
 
+    /// Start a Host's saved forward, unless it is running.
+    async fn start_forward(&self, host_id: &ProfileId, forward_id: &str) -> Result<()> {
+        let key = (host_id.0.clone(), forward_id.to_owned());
+        let _creating = self.tunnel_open.lock().await;
+        if lock(&self.forwards)
+            .get(&key)
+            .is_some_and(|t| !t.is_stopped())
+        {
+            return Ok(());
+        }
+        let host = self.host(host_id).await?;
+        let f = host
+            .forwards
+            .iter()
+            .find(|f| f.id == forward_id)
+            .ok_or_else(|| CoreError::NotFound(format!("port forward on {}", host.name)))?;
+        f.validate()
+            .map_err(|e| CoreError::Unsupported(format!("{}: {e}", f.summary())))?;
+        let spec = forward_spec(f);
+        let target = self.ssh_target(host_id).await?;
+        let id = self
+            .next_tunnel
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let t = Arc::new(
+            Tunnel::start(id, Some(f.id.clone()), self.ssh.clone(), target, spec)
+                .await
+                .map_err(|e| CoreError::Unsupported(format!("{}: {e}", f.summary())))?,
+        );
+        lock(&self.tunnels).push(Arc::downgrade(&t));
+        lock(&self.forwards).insert(key, t);
+        self.emit(Event::Tunnels(self.tunnel_infos()));
+        Ok(())
+    }
+
+    /// Start the Host's auto-start forwards that are not running (when it connects).
+    async fn auto_start_forwards(&self, host_id: &ProfileId) {
+        let Ok(host) = self.host(host_id).await else {
+            return;
+        };
+        for f in host.forwards.iter().filter(|f| f.auto_start) {
+            if let Err(e) = self.start_forward(host_id, &f.id).await {
+                self.emit(Event::Error {
+                    context: "Port forward".into(),
+                    message: e.to_string(),
+                });
+            }
+        }
+    }
+
     /// Stop a tunnel; sessions that used it end with a message saying why.
     fn stop_tunnel(&self, id: u64) {
+        lock(&self.forwards).retain(|_, t| t.id() != id);
         let tunnel = lock(&self.tunnels)
             .iter()
             .filter_map(Weak::upgrade)

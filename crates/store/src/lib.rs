@@ -10,8 +10,9 @@ pub mod store;
 
 pub use error::{Result, StoreError};
 pub use model::{
-    BufferState, DbConnection, EnvironmentLabel, FileConnection, FileProtocol, FtpMode, FtpTls,
-    Host, Profile, ProfileId, SecretRef, SshAuth, TerminalProfile, ValidationError, Workspace,
+    BufferState, DbConnection, EnvironmentLabel, FileConnection, FileProtocol, ForwardDirection,
+    FtpMode, FtpTls, Host, PortForward, Profile, ProfileId, SecretRef, SshAuth, TerminalProfile,
+    ValidationError, Workspace,
 };
 pub use paths::AppPaths;
 pub use secrets::{KeychainStore, MemoryStore, SecretStore, VaultStore};

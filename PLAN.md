@@ -412,12 +412,21 @@ task needs are pre-approved (license checked, no GPL, recorded in DECISIONS). No
 embedded RDP/VNC, serial ports, network tools and local servers (Tier 2), an embedded X
 server or bundled Unix tools on Windows (Tier 3).
 
-- [ ] **MX-1 Remote and dynamic forwarding.** `-R` (server port → local target) through
+- [x] **MX-1 Remote and dynamic forwarding.** `-R` (server port → local target) through
   `tcpip_forward` and `-D` SOCKS5 (no auth, CONNECT, IPv4/IPv6/domain) on the shared Host
   session; both in the tunnel registry and manager UI (add, stop, bytes), defined on a Host
   and optionally started with it.
   Done when: integration tests against the docker OpenSSH forward traffic both ways and
   through SOCKS5.
+  Note: `remote::ssh::tunnel` now runs `ForwardSpec::{Local, Remote, Dynamic}`: remote
+  forwards route `forwarded-tcpip` channels per server port (connect locally first, then
+  accept or reject), are cancelled on stop and re-requested after a reconnect (1 s → 60 s
+  backoff); dynamic forwards speak SOCKS4/4a/5 CONNECT without auth. Hosts gain `forwards`
+  (`store::PortForward`, auto-start); `Command::StartForward`; auto-start forwards start
+  when a terminal opens on the Host. UI: forward rows (L/R/D, bind, target, Auto) in the
+  Host editor; the Tunnels panel shows the direction and lists saved forwards with Start.
+  Tests: `remote/tests/ssh.rs` (remote forward, dead target, SOCKS5/SOCKS4),
+  `core/tests/ssh_forwards.rs`. Not done: naming forwards in the editor (kept if set).
 - [ ] **MX-2 Agent and X11 forwarding.** Per-Host toggles. Agent forwarding answers
   `auth-agent@openssh.com` channels from the local agent (finishes M2-5's scope); X11 opens
   `x11` channels to the local display (`DISPLAY`: Unix socket or TCP) with a generated
