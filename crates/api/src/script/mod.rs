@@ -24,7 +24,14 @@ const MAX_RESULT_BYTES: usize = 512 * 1024;
 const MAX_CONSOLE_ENTRIES: usize = 256;
 const MAX_SUBREQUESTS: usize = 4;
 const LOOP_BUDGET: u64 = 100_000;
-const SCRIPT_WALL_TIMEOUT: Duration = Duration::from_millis(1_500);
+/// Counted from the worker's start, so it includes loading the engine and bundled libraries.
+/// Debug builds run the engine several times slower (and CI starts the large test binary as
+/// the worker while other tests run), so they get more room; release builds keep 1.5 s.
+const SCRIPT_WALL_TIMEOUT: Duration = if cfg!(debug_assertions) {
+    Duration::from_millis(5_000)
+} else {
+    Duration::from_millis(1_500)
+};
 /// JSON framing and escaping add overhead to the largest accepted response.
 const MAX_WORKER_REQUEST_BYTES: u64 = 32 * 1024 * 1024;
 const WORKER_RESULT_PREFIX: &str = "SWITCHYARD_API_SCRIPT_RESULT:";
