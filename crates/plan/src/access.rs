@@ -233,11 +233,7 @@ impl Rows {
 }
 
 /// Run `sql` and keep the last result set that had columns.
-pub(crate) async fn rows(
-    session: &mut dyn DbSession,
-    sql: &str,
-    params: &[Value],
-) -> Result<Rows> {
+pub(crate) async fn rows(session: &mut dyn DbSession, sql: &str, params: &[Value]) -> Result<Rows> {
     let mut stream = session.execute(sql, params).await?;
     let mut out = Rows::default();
     while let Some(ev) = stream.next().await {
@@ -500,7 +496,11 @@ async fn postgres(s: &mut dyn DbSession) -> Result<Workload> {
                     "Reading pg_stat_statements was refused.",
                     Some(format!("GRANT pg_read_all_stats TO {};", pg_ident(&who))),
                 ),
-                Err(err) => w.hint(Source::Statements, format!("pg_stat_statements: {err}"), None),
+                Err(err) => w.hint(
+                    Source::Statements,
+                    format!("pg_stat_statements: {err}"),
+                    None,
+                ),
             }
         }
     }
@@ -848,7 +848,10 @@ mod tests {
             }
             .unused()
         );
-        assert!(!IndexUsage { scans: None, ..ix }.unused(), "unknown is not unused");
+        assert!(
+            !IndexUsage { scans: None, ..ix }.unused(),
+            "unknown is not unused"
+        );
         assert_eq!(pg_ident("a\"b"), "\"a\"\"b\"");
         assert_eq!(ms_ident("dom\\us]er"), "[dom\\us]]er]");
         assert_eq!(

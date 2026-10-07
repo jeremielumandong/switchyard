@@ -33,6 +33,7 @@ impl EventSender {
 pub struct RuntimeHandle {
     commands: mpsc::UnboundedSender<Command>,
     handle: tokio::runtime::Handle,
+    secrets: Arc<dyn switchyard_store::SecretStore>,
 }
 
 impl RuntimeHandle {
@@ -50,6 +51,26 @@ impl RuntimeHandle {
         F::Output: Send + 'static,
     {
         self.handle.spawn(fut)
+    }
+
+    /// Run blocking work (disk, synchronous network) on the runtime's blocking pool. The
+    /// UI awaits the returned handle from a GPUI task; it never blocks the UI thread.
+    pub fn spawn_blocking<F, T>(&self, f: F) -> tokio::task::JoinHandle<T>
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        self.handle.spawn_blocking(f)
+    }
+
+    /// The API workspace's secret store (the app's keychain or vault).
+    pub fn api_secrets(&self) -> Arc<dyn switchyard_api::SecretStore> {
+        Arc::new(crate::api_secrets::ApiSecrets::new(self.secrets.clone()))
+    }
+
+    /// The tokio runtime handle (for libraries that drive async work from blocking code).
+    pub fn tokio(&self) -> tokio::runtime::Handle {
+        self.handle.clone()
     }
 }
 
@@ -76,10 +97,12 @@ impl Core {
             Service::new(config, events.clone())?
         };
         let service = Arc::new(service);
+        let secrets = service.secret_backend();
         runtime.spawn(Service::run(service, cmd_rx));
         let handle = RuntimeHandle {
             commands: cmd_tx,
             handle: runtime.handle().clone(),
+            secrets,
         };
         Ok((
             Self {

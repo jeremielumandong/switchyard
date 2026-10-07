@@ -44,7 +44,7 @@ pub use transport::{
     OperationPhase, PickerFileGrant, Redirect, Response, ScriptConsoleEntry, ScriptNextRequest,
     ScriptRequestView, ScriptResponseView, ScriptResult, ScriptScopes, ScriptTestResult,
     USER_DATA_DIR_ENV, WorkbenchTransport, default_user_data_dir, exchange_oauth_token,
-    response_from_snapshot, response_snapshot,
+    response_from_snapshot, response_snapshot, set_process_defaults,
 };
 pub use workspace::{
     StorageCommand, TerminalCommand, WorkspaceData, execute, persist_terminal,
