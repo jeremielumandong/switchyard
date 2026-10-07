@@ -1,0 +1,40 @@
+[package]
+name = "switchyard-api"
+description = "API workspace: collections, request compiler, native HTTP, OAuth, scripts (ported from AgentOps)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aho-corasick.workspace = true
+base64.workspace = true
+boa_engine.workspace = true
+chrono.workspace = true
+hex.workspace = true
+httpdate.workspace = true
+psl.workspace = true
+regex.workspace = true
+reqwest = { workspace = true, features = ["form", "stream"] }
+ring.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+sha2.workspace = true
+hmac.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["process", "fs"] }
+tracing.workspace = true
+url.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

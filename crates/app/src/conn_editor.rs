@@ -1069,7 +1069,7 @@ impl ConnEditor {
                             "Application (client) id",
                             3,
                             true,
-                            Some("Only if your organization requires its own app registration"),
+                            Some("Leave empty to sign in as Microsoft's SQL client (like SSMS)"),
                             p,
                             cx,
                         ));

@@ -542,3 +542,46 @@ on main for the exact commit, which merging the PR provides.
   and "Actual Loops" counts every process's executions, so time × loops is CPU time across
   workers. The parser divides by the processes (workers launched + leader, or workers alone
   for a single-copy Gather) to get wall time, which shares and self times assume.
+
+## 2026-10-07 — Entra sign-in falls back to Microsoft's SQL client id (user request)
+
+Users who cannot register an Entra app (or whose app has no access to Azure SQL) could not
+sign in at all: password, browser/MFA and device code all need a client id. When neither the
+connection nor the build (`SWITCHYARD_ENTRA_CLIENT_ID`) names one, Switchyard now signs in as
+`2fd908ad-0664-4344-b9be-cd3e8b574c38`, the public client Microsoft.Data.SqlClient (SSMS,
+`sqlcmd -G`) uses for Azure SQL. It is a Microsoft first-party app, so tenants accept it
+without registration or consent, and it allows the `http://localhost` redirect, ROPC and
+device code. A connection's own client id, or a build's, still wins. The user reported that
+AgentOps connects the same way (it shells out to `sqlcmd -G`).
+
+## 2026-10-07 — API workspace (Postman-style), Snowflake and Oracle (user requests)
+
+The user asked to bring AgentOps's API Workbench (MIT, same owner) into Switchyard as an "API"
+workspace next to the current "Default" one (switched from the title bar's workspace menu), to
+add Snowflake, and to add Oracle now rather than after beta. Answers recorded from the session:
+full port in one go; Snowflake through its SQL REST API with key-pair (JWT) auth; Oracle now
+(overrides "Oracle is out of scope until after beta" in CLAUDE.md and SPEC); M5-7/8 parked.
+
+- `crates/api` (`switchyard-api`) is AgentOps's `agentops-core::workbench` (model, compiler,
+  store, Postman / OpenAPI / HAR / Insomnia import and export, cookie jar, OAuth, snippets,
+  diffs, collection runs) plus the agent-service pieces it called over loopback HTTP:
+  `native_routines` sending and OAuth exchange (`api::http`), the Boa `pm.*` sandbox
+  (`api::script`, with its vendored MIT/ISC/BSD/Apache/CC0 JS libraries) and the
+  send/script/oauth/cancel endpoints (`api::service`). The transport keeps AgentOps's JSON
+  wire format (its tests pin it) but `service::dispatch` answers in process.
+- New dependencies, approved by the user with the port: `boa_engine`, `serde_yaml`, `psl`,
+  `httpdate`, and (already in the lockfile through other crates) `base64`, `url`, `uuid`,
+  `regex`, `aho-corasick`, `hex`, `sha2`, `zeroize`. `parking_lot`, `getrandom` and `libc`
+  were replaced with std / `ring`.
+- Script sandbox: scripts run in a worker process (the app binary with a hidden argument)
+  killed at the 1.5 s wall-clock deadline, with Boa's loop and recursion budgets. AgentOps
+  also capped the worker's CPU and memory with `setrlimit` / a Windows job object; both need
+  `unsafe`, which this workspace denies, so those caps are not ported.
+- SQLite journal: WAL, overridable with `SWITCHYARD_SQLITE_JOURNAL_MODE` (AgentOps probed
+  for network filesystems with `statfs`, which needs `unsafe`).
+- Secrets: the `SecretStore` trait stays; core implements it over Switchyard's keychain /
+  fallback vault (AgentOps's own OS-keychain backend is dropped).
+- UI: the Workbench panel is AgentOps's GPUI panel, ported from gpui-component 0.5 to 0.7
+  (`TextareaState` for multi-line fields, `EditorState` for the response body) behind a small
+  `app::api::compat` shim for AgentOps's theme tokens, dialogs, toasts and settings. Its
+  background work runs through `compat::blocking` on core's tokio runtime, never the UI thread.

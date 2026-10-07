@@ -7,6 +7,7 @@
 //! * [`findings`]: ranked rules over a plan.
 //! * [`compare`]: totals and per-operator deltas between two plans.
 
+pub mod access;
 pub mod capture;
 pub mod compare;
 pub mod findings;

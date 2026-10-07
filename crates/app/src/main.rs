@@ -6,6 +6,7 @@
 extern crate gpui_kit as gpui;
 
 mod actions;
+mod api;
 mod app_state;
 mod completion;
 mod conn_editor;
@@ -61,6 +62,15 @@ fn load_fonts(cx: &mut App) {
 }
 
 fn main() -> Result<()> {
+    // The API workspace runs `pm.*` scripts in a sandbox process: this binary with a hidden
+    // argument, talking JSON over stdin/stdout. It must not start logging or the UI.
+    if std::env::args().any(|a| a == switchyard_core::api::script::WORKER_ARG) {
+        let code = switchyard_core::api::script::run_worker(
+            std::io::stdin().lock(),
+            std::io::stdout().lock(),
+        );
+        std::process::exit(i32::from(code));
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_env("SWITCHYARD_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
@@ -76,6 +86,7 @@ fn main() -> Result<()> {
         .run(move |cx| {
             gpui_kit::init(cx);
             load_fonts(cx);
+            api::compat::init(cx, paths.data.join("api"), handle.clone());
             cx.set_global(CoreHolder(core));
             actions::init(cx);
             editor_tab::init(cx);
