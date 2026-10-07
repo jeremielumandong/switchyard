@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 # Vendored dependencies are patched in below, not workspace members.
-exclude = ["vendor/tiberius"]
+exclude = ["vendor/tiberius", "vendor/ssh-key"]
 members = [
     "crates/app",
     "crates/core",
@@ -167,6 +167,7 @@ codegen-units = 1
 # snapshots: same names, version and API. See docs/DECISIONS.md.
 [patch.crates-io]
 tiberius = { path = "vendor/tiberius" }
+ssh-key = { path = "vendor/ssh-key" }
 gpui-pre = { git = "https://github.com/longbridge/gpui-fast", rev = "598306fcbf77bff0f764b5a178a447344e72e132" }
 gpui-pre-platform = { git = "https://github.com/longbridge/gpui-fast", rev = "598306fcbf77bff0f764b5a178a447344e72e132" }
 gpui-pre-macros = { git = "https://github.com/longbridge/gpui-fast", rev = "598306fcbf77bff0f764b5a178a447344e72e132" }

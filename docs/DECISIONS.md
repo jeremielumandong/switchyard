@@ -759,3 +759,14 @@ M7; SPEC's scope table moves remote/dynamic/X11 forwarding into v1.
   used as is; `host:N` is TCP port 6000 + N.
 - The Driver Manager's "X server" component detects by path (Linux's X0 socket, XQuartz,
   VcXsrv, Xming; X410 is a Store app and is not found by path) and shows install steps.
+
+## 2026-10-07 — Vendored ssh-key for short ECDSA scalars
+
+- `ssh-key` 0.7.0-rc.11 (russh's key parser, latest release, still unfixed on master)
+  rejects OpenSSH P-256 keys whose private scalar is stored in 31 bytes ("SshKey: length
+  invalid"). That is about one key in 256, plain or passphrase-protected; CI hit it at random
+  because the SSH tests generate fresh keys each run.
+- The user chose to vendor it (`vendor/ssh-key`, `[patch.crates-io]`, like tiberius) with a
+  one-line fix over a loader workaround (would miss encrypted keys) or a test-only fix
+  (would leave those users unable to log in). See `vendor/ssh-key/VENDORED.md`; drop the
+  copy once a release carries the fix.
