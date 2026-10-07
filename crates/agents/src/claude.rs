@@ -413,6 +413,7 @@ mod tests {
             mcp: &mcp,
             system_prompt: "be brief",
             extra_args: &[],
+            extra_env: &[],
         };
         let inv = ClaudeCode.prepare(&ctx).unwrap();
         let a = &inv.args;

@@ -139,6 +139,7 @@ pub fn start(adapter: Arc<dyn AgentAdapter>, req: RunRequest) -> Result<AgentRun
         mcp: &req.mcp,
         system_prompt: SYSTEM_PROMPT,
         extra_args: &req.extra_args,
+        extra_env: &req.extra_env,
     })?;
 
     let mut cmd = process::command(&program);

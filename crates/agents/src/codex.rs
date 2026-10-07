@@ -380,6 +380,7 @@ mod tests {
             mcp: &mcp,
             system_prompt: "be \"brief\"\nplease",
             extra_args: &[],
+            extra_env: &[],
         };
         let inv = Codex.prepare(&ctx).unwrap();
         assert_eq!(inv.stdin.as_deref(), Some("why slow?"));

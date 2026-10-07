@@ -1,0 +1,8 @@
+{"type":"init","session_id":"recorded-session-1","model":"gemini-2.5-flash"}
+{"type":"message","role":"user","content":"describe orders\n"}
+{"type":"tool_use","tool_name":"mcp_switchyard_list_connections","tool_id":"mcp_switchyard_list_connections__mcp_switchyard_list_connections_1791391472950_0","parameters":{}}
+{"type":"tool_result","tool_id":"mcp_switchyard_list_connections__mcp_switchyard_list_connections_1791391472950_0","status":"success","output":"No connections are enabled for agents. In Switchyard, edit a connection and turn on \"Allow coding agents\"."}
+{"type":"tool_use","tool_name":"mcp_switchyard_describe_table","tool_id":"mcp_switchyard_describe_table__mcp_switchyard_describe_table_1791391473031_0","parameters":{"connection":"shop","table":"orders"}}
+{"type":"tool_result","tool_id":"mcp_switchyard_describe_table__mcp_switchyard_describe_table_1791391473031_0","status":"error","output":"Error: MCP tool 'describe_table' reported an error.","error":{"type":"mcp_tool_error","message":"MCP tool 'describe_table' reported tool error for function call: {\"name\":\"describe_table\",\"args\":{\"connection\":\"shop\",\"table\":\"orders\"}} with response: [{\"functionResponse\":{\"name\":\"describe_table\",\"response\":{\"content\":[{\"type\":\"text\",\"text\":\"no connection named \\\"shop\\\" is available to agents (see list_connections)\"}],\"isError\":true}}}]"}}
+{"type":"message","role":"assistant","content":"Plan: Bitmap Heap Scan on orders.","delta":true}
+{"type":"result","status":"success","stats":{"total_tokens":45,"input_tokens":30,"output_tokens":15,"cached":0,"input":30,"duration_ms":128,"tool_calls":2,"models":{"gemini-2.5-flash":{"total_tokens":45,"input_tokens":30,"output_tokens":15,"cached":0,"input":30}}}}

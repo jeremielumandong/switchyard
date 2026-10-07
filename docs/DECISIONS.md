@@ -789,3 +789,33 @@ Responses API server and the real `swy mcp`):
   `mcp_tool_call` (server, tool, arguments, result content, error, status),
   `agent_message`, `reasoning`, warning `error` items, `turn.completed` (usage),
   `turn.failed`, top-level `error`.
+
+## 2026-10-07 — M5-13: Gemini CLI adapter (spike outcome, Gemini CLI 0.63)
+
+Verified with the real CLI against a mock Gemini API (`GOOGLE_GEMINI_BASE_URL`, API-key
+auth) and the real `swy mcp`:
+- MCP config goes in `<run dir>/.gemini/settings.json` (workspace settings), owner-only, with
+  the token in the server's `env`. Workspace MCP servers connect only in trusted folders;
+  `--skip-trust` alone left the server "Disabled". `GEMINI_CLI_TRUST_WORKSPACE=true` in the
+  CLI's environment (with `--skip-trust`) trusts the run directory without writing to the
+  user's `trustedFolders.json`.
+- Tools: policy files in the workspace tier are disabled in this version, so the rules go in
+  an `--admin-policy` file (highest tier: the user's policies cannot override it): allow
+  `mcpName = "switchyard"` + `toolName = "*"` (an `mcpName`-only rule is rejected by this
+  version's validator), deny `toolName = "*"` below it. Denied tools are not offered to the
+  model at all: it saw exactly the seven Switchyard tools. `--allowed-mcp-server-names
+  switchyard` and `-e none` keep the user's other servers and extensions out.
+- Prompt on stdin (`-p ""` is appended to it); instructions in `GEMINI.md` (workspace
+  context).
+- Resume: sessions are stored per project directory (`~/.gemini/tmp/<dir name>/chats/`),
+  and each run has a new directory, so `--resume <id>` reports "No previous sessions found
+  for this project". `--session-file` with the saved chat works from any directory; the
+  adapter finds `session-*-<id[..8]>.jsonl` under Gemini's home (`GEMINI_CLI_HOME`, else the
+  user's home) and checks its first record names the session. Continuing gets a new session
+  id, which the next follow-up uses. Each run also leaves a small project entry in Gemini's
+  own data (`projects.json`, `tmp/<name>`); that is Gemini's bookkeeping and stays.
+- Claude Code, checked at the same time: `claude --resume <id>` works from a different
+  directory, so its per-run directories need nothing extra.
+- Stream: `init` (session_id, model), `message` (role, content, delta), `tool_use`
+  (tool_name `mcp_switchyard_<tool>`, tool_id, parameters), `tool_result` (status, output,
+  error), `error` (warnings), `result` (status, stats, error).

@@ -370,9 +370,15 @@ faster, and no agent call ever performed a write.
   Responses API (`cli/tests/mock_model`) completes describe_table + explain against the
   docker PostgreSQL (no OpenAI login exists in this environment for a model-backed run).
   Run requests gained `extra_args` / `extra_env` (settings; M5-14 uses them).
-- [ ] **M5-13 Gemini CLI adapter.** `gemini -p --output-format stream-json`, MCP via `mcpServers`
+- [x] **M5-13 Gemini CLI adapter.** `gemini -p --output-format stream-json`, MCP via `mcpServers`
   in a generated `.gemini/settings.json` inside the temp workdir, resume support.
   Done when: replay tests pass and a live run completes the same tool sequence.
+  Note: `agents::gemini` (workspace settings, admin policy, `GEMINI.md`, session-file resume;
+  see DECISIONS). Tests: `agents/tests/gemini_replay.rs` (recorded from Gemini CLI 0.63) and
+  `cli/tests/cli.rs` `gemini_runs_switchyard_tools_with_a_scripted_model`: the real Gemini
+  binary with a mock Gemini API completes describe_table + explain against the docker
+  PostgreSQL, and a follow-up continues the conversation. No Google login here for a
+  model-backed run.
 - [ ] **M5-14 Custom adapter, detection, picker.** User-defined command template, plain-text or
   JSONL field mapping, MCP config template. Detection of installed CLIs with version ranges and
   install hints via the Driver Manager. Agent picker in the assistant panel; default in
