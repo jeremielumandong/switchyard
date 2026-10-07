@@ -697,3 +697,28 @@ full port in one go; Snowflake through its SQL REST API with key-pair (JWT) auth
   message id and handles both.
 - Process groups: `process_group(0)` and `kill -TERM -- -<pgid>` (SIGKILL after 2 s if the
   CLI is still there); `taskkill /T /F` on Windows.
+
+## 2026-10-07 — MobaXterm parity (user request), before the rest of M5
+
+The user asked for MobaXterm's features. Answers recorded from the session: MobaXterm work
+goes first (M5-12 to M5-15 wait; the Codex spike's findings so far are below), Tier 1 only,
+and crates a chosen tier needs are pre-approved (license-checked, recorded here). PLAN gains
+M7; SPEC's scope table moves remote/dynamic/X11 forwarding into v1.
+
+- Tier 1 (in M7): SSH remote and SOCKS forwarding, agent and X11 forwarding, terminal
+  logging, copy-on-select / right-click paste / keyword highlighting, macros, session
+  folders and per-session settings, PuTTY and MobaXterm import, key generator, SFTP that
+  follows the terminal's folder, SCP, Telnet and raw TCP, Mosh/RDP/VNC through external
+  viewers, more local shells and WSL.
+- Not now: serial ports, embedded RDP/VNC, network tools and local servers (Tier 2); an
+  embedded X server or bundled Unix tools on Windows (Tier 3: use VcXsrv/X410 and WSL/Git
+  Bash instead).
+- Codex spike so far (codex-cli 0.160.1): `codex exec --ignore-user-config` skips the
+  user's `config.toml` but keeps the login in `CODEX_HOME`, so no generated home and no
+  copied credentials. Switchyard's server goes in with `-c mcp_servers.switchyard.*`
+  (`env_vars` forwards the token from the environment; `default_tools_approval_mode =
+  "approve"`). The model sees the tools as namespace `mcp__switchyard`. With `-s read-only`
+  and `approval_policy = "never"` Codex still offers `exec_command`, `web_search`,
+  `view_image` and others, so they must be disabled by feature flag; still to check. A `swy`
+  that exits at startup is dropped silently. Verified with a mock Responses API server (no
+  OpenAI login in this environment).

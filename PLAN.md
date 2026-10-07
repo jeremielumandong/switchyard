@@ -404,6 +404,52 @@ faster, and no agent call ever performed a write.
   Note: plans (EXPLAIN PLAN / DBMS_XPLAN) and workload stats for Oracle not done; Linux
   arm64 Instant Client not in the manifest (x64 only).
 
+## M7 — MobaXterm parity, Tier 1 (user request)
+
+Taken before the rest of M5 at the user's request (M5-12 spike notes are kept; see
+DECISIONS 2026-10-07). Tier 1 only: features that fit the current architecture. Crates a
+task needs are pre-approved (license checked, no GPL, recorded in DECISIONS). Not in scope:
+embedded RDP/VNC, serial ports, network tools and local servers (Tier 2), an embedded X
+server or bundled Unix tools on Windows (Tier 3).
+
+- [ ] **MX-1 Remote and dynamic forwarding.** `-R` (server port → local target) through
+  `tcpip_forward` and `-D` SOCKS5 (no auth, CONNECT, IPv4/IPv6/domain) on the shared Host
+  session; both in the tunnel registry and manager UI (add, stop, bytes), defined on a Host
+  and optionally started with it.
+  Done when: integration tests against the docker OpenSSH forward traffic both ways and
+  through SOCKS5.
+- [ ] **MX-2 Agent and X11 forwarding.** Per-Host toggles. Agent forwarding answers
+  `auth-agent@openssh.com` channels from the local agent (finishes M2-5's scope); X11 opens
+  `x11` channels to the local display (`DISPLAY`: Unix socket or TCP) with a generated
+  MIT-MAGIC-COOKIE replaced by the real one from `xauth`. Windows: detect VcXsrv / X410 /
+  Xming through the Driver Manager and point at its display.
+  Done when: tests prove a forwarded agent signs and an X11 channel reaches a fake display.
+- [ ] **MX-3 Terminal logging.** Per-session "log to file" (plain text, ANSI stripped, or
+  raw), file name template with host and timestamp, started from settings or the tab menu.
+- [ ] **MX-4 Terminal conveniences.** Copy on select, right-click paste (settings, default
+  off like today), paste confirmation for multi-line text, keyword highlighting of output
+  (error/warning/fail/ok… with user rules), font zoom per tab.
+- [ ] **MX-5 Macros.** Record keystrokes in a terminal, save with a name, replay into the
+  current terminal or all broadcast panes, run one on connect.
+- [ ] **MX-6 Session folders and per-session settings.** Folders and favorites in the
+  sidebar; per-Host startup command, remote start directory, terminal font/colors override,
+  environment variables; duplicate and bulk edit.
+- [ ] **MX-7 Session import.** PuTTY sessions (Windows registry, `~/.putty/sessions`) and
+  MobaXterm bookmarks (`MobaXterm.ini` / `.mxtsessions`) into Hosts, with the same preview
+  as the `~/.ssh/config` import.
+- [ ] **MX-8 SSH key generator.** Ed25519, ECDSA, RSA; passphrase; OpenSSH and PuTTY
+  `.ppk` output; copy public key, "install on Host" (append to `authorized_keys`).
+- [ ] **MX-9 Follow terminal folder.** The SFTP sidebar follows the shell's current
+  directory (OSC 7, with an opt-in shell snippet when the shell does not emit it).
+- [ ] **MX-10 SCP.** Upload/download through `scp` when the server has no SFTP subsystem.
+- [ ] **MX-11 Telnet and raw TCP sessions.** In-house Telnet client (option negotiation,
+  NAWS, terminal type, binary), raw TCP; new session kinds in the connection model.
+- [ ] **MX-12 External viewers.** Mosh, RDP (`xfreerdp`/`mstsc`/Microsoft Remote Desktop)
+  and VNC sessions launched through tools the Driver Manager detects, with install hints.
+- [ ] **MX-13 More local shells.** Shell picker (bash, zsh, fish, pwsh, cmd, Git Bash) and
+  WSL distributions on Windows.
+- Also counted for parity: M2-5 (SSH agent) and M4-2 (FTP/FTPS) above.
+
 ## M6 — Packaging and beta
 
 Exit: every performance budget passes on all three platforms; signed builds published.
