@@ -167,6 +167,11 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 const FETCH_STEP: usize = 10_000;
 
 impl Service {
+    /// The secret backend (keychain or vault) the service uses.
+    pub fn secret_backend(&self) -> Arc<dyn SecretStore> {
+        self.secrets.clone()
+    }
+
     /// Build the service.
     pub fn new(config: ServiceConfig, events: EventSender) -> Result<Self> {
         let store = match &config.store_path {

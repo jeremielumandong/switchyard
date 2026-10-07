@@ -117,6 +117,13 @@ psl = "2.1"
 regex = "1"
 serde_yaml = "0.9"
 sha2 = "0.10"
+sxd-document = "0.3"
+sxd-xpath = "0.4"
+serde_json_path = "0.7"
+# Same versions gpui-kit already builds (HTML / Markdown response previews).
+html5ever = "=0.27.0"
+markup5ever_rcdom = "=0.3.0"
+markdown = "=1.0.0"
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 zeroize = "1"

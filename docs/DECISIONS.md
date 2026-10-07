@@ -581,4 +581,7 @@ full port in one go; Snowflake through its SQL REST API with key-pair (JWT) auth
   for network filesystems with `statfs`, which needs `unsafe`).
 - Secrets: the `SecretStore` trait stays; core implements it over Switchyard's keychain /
   fallback vault (AgentOps's own OS-keychain backend is dropped).
-
+- UI: the Workbench panel is AgentOps's GPUI panel, ported from gpui-component 0.5 to 0.7
+  (`TextareaState` for multi-line fields, `EditorState` for the response body) behind a small
+  `app::api::compat` shim for AgentOps's theme tokens, dialogs, toasts and settings. Its
+  background work runs through `compat::blocking` on core's tokio runtime, never the UI thread.

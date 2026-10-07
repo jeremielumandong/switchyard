@@ -248,6 +248,17 @@ pub struct NativeWorkbenchTransport {
     runtime: Option<tokio::runtime::Handle>,
 }
 
+/// Process-wide defaults the host sets once: its tokio runtime and the API data directory.
+static DEFAULTS: std::sync::OnceLock<(tokio::runtime::Handle, PathBuf)> =
+    std::sync::OnceLock::new();
+
+/// Make `runtime` and `data_dir` what [`NativeWorkbenchTransport::from_env`] uses when the
+/// caller is not on a runtime thread and [`USER_DATA_DIR_ENV`] is not set. Later calls are
+/// ignored.
+pub fn set_process_defaults(runtime: tokio::runtime::Handle, data_dir: PathBuf) {
+    let _ = DEFAULTS.set((runtime, data_dir));
+}
+
 /// A runtime for callers outside any tokio runtime (tests, the CLI before it starts one).
 fn fallback_runtime() -> Result<tokio::runtime::Handle, String> {
     static RUNTIME: std::sync::OnceLock<Result<tokio::runtime::Runtime, String>> =
@@ -290,9 +301,12 @@ impl NativeWorkbenchTransport {
     /// The data directory from [`USER_DATA_DIR_ENV`] (none otherwise), and the current
     /// tokio runtime if there is one.
     pub fn from_env() -> Self {
+        let defaults = DEFAULTS.get();
         Self {
-            user_data_dir: default_user_data_dir(),
-            runtime: tokio::runtime::Handle::try_current().ok(),
+            user_data_dir: default_user_data_dir().or_else(|| defaults.map(|d| d.1.clone())),
+            runtime: tokio::runtime::Handle::try_current()
+                .ok()
+                .or_else(|| defaults.map(|d| d.0.clone())),
         }
     }
 
