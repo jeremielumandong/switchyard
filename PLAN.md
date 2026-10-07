@@ -313,6 +313,7 @@ faster, and no agent call ever performed a write.
   `pg_stat_statements`; SQL Server index usage, missing-index DMVs, Query Store. Workload view UI.
   Missing extension or permission shows a hint with the GRANT statement.
   Done when: integration tests with and without the extensions and permissions.
+  WIP (parked for the API workspace, user request): `plan::access::workload` (tables, indexes, pg_stat_statements / Query Store, missing-index DMVs, hints with the fixing GRANT / CREATE EXTENSION / ALTER statements; probes under a savepoint inside an open transaction). Test PostgreSQL image now has HypoPG (`docker/postgres-image`), CI uses the compose service. Still to do: integration tests, core command, Workload view.
 - [ ] **M5-8 Hypothetical indexes.** Detect HypoPG; create hypothetical index, explain, drop it,
   all in one session.
   Done when: plan changes with a hypothetical index and no real index is created.

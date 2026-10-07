@@ -1,5 +1,6 @@
 -- Sample schema for integration tests and demos.
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+CREATE EXTENSION IF NOT EXISTS hypopg;
 
 CREATE TABLE customers (
     id          bigserial PRIMARY KEY,
