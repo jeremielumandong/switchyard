@@ -66,6 +66,12 @@ impl Workspace {
                     }
                 }
                 self.components = c.clone();
+                if let Some(v) = &self.assistant_view {
+                    v.update(cx, |v, cx| {
+                        v.set_components(c);
+                        cx.notify();
+                    });
+                }
             }
             Event::ComponentProgress { id, progress } => {
                 self.drivers
@@ -227,6 +233,7 @@ impl Workspace {
                     p.dev,
                 ),
                 (None, ComponentStatus::TooOld { .. }) => ("Too old".into(), p.stg),
+                (None, ComponentStatus::TooNew { .. }) => ("Untested version".into(), p.stg),
                 (None, ComponentStatus::Missing) => ("Not installed".into(), p.fg3),
             };
             let (location, version) = match &c.status {
@@ -234,6 +241,9 @@ impl Workspace {
                     location, version, ..
                 } => (location.clone(), version.clone().unwrap_or("—".into())),
                 ComponentStatus::TooOld {
+                    location, version, ..
+                }
+                | ComponentStatus::TooNew {
                     location, version, ..
                 } => (location.clone(), version.clone()),
                 ComponentStatus::Missing => ("—".into(), "—".into()),

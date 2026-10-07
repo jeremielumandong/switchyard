@@ -72,6 +72,12 @@ pub struct Detect {
     /// Oldest acceptable version (checked where the version is known).
     #[serde(default)]
     pub min_version: Option<String>,
+    /// Executables looked up on PATH (coding CLIs); `<program> --version` gives the version.
+    #[serde(default)]
+    pub programs: Vec<String>,
+    /// First version not supported (a newer major Switchyard was not tested with).
+    #[serde(default)]
+    pub below_version: Option<String>,
 }
 
 /// Install strategy per platform.

@@ -92,6 +92,9 @@ pub type QueryId = u64;
 /// An open terminal (local shell or SSH channel).
 pub type TermId = u64;
 
+/// An assistant run, chosen by the UI.
+pub type AgentRunId = u64;
+
 /// The user's answer to a runtime prompt.
 #[derive(Debug)]
 pub enum PromptAnswer {
@@ -571,6 +574,39 @@ pub enum Command {
     },
     /// Report the live tunnels ([`Event::Tunnels`]).
     ListTunnels,
+    /// Ask a coding CLI (the assistant). Events arrive as [`Event::Agent`], ending with
+    /// `Exited`. The run may use `connection` only (all agent-enabled connections when
+    /// `None`); `agent` `None` uses the connection's override or the default from Settings →
+    /// Assistant.
+    RunAgent {
+        /// Run id.
+        run: AgentRunId,
+        /// The CLI, or `None` for the configured one.
+        agent: Option<switchyard_agents::AgentKind>,
+        /// The connection the question is about.
+        connection: Option<ProfileId>,
+        /// The request.
+        prompt: String,
+        /// Conversation to continue.
+        resume: Option<String>,
+    },
+    /// Stop a run (its CLI and everything it started).
+    CancelAgent {
+        /// Run id.
+        run: AgentRunId,
+    },
+    /// Start the CLI interactively in a local terminal with Switchyard's tools attached
+    /// ("Open in terminal"); answers like [`Command::OpenTerminal`].
+    OpenAgentTerminal {
+        /// Terminal id chosen by the UI.
+        term: TermId,
+        /// The CLI, or `None` for the configured one.
+        agent: Option<switchyard_agents::AgentKind>,
+        /// The connection it may use (all agent-enabled ones when `None`).
+        connection: Option<ProfileId>,
+        /// Initial size in cells.
+        size: TermSize,
+    },
     /// Start one of a Host's saved port forwards (no-op if it is running). Failures come
     /// back as [`Event::Error`] with context "Port forward".
     StartForward {
@@ -977,6 +1013,15 @@ pub enum Event {
     PromptClosed {
         /// Request id.
         request: RequestId,
+    },
+    /// What an assistant run did ([`Command::RunAgent`]); `Exited` is its last event.
+    Agent {
+        /// Run id.
+        run: AgentRunId,
+        /// The CLI that ran.
+        agent: switchyard_agents::AgentKind,
+        /// What happened.
+        event: switchyard_agents::AgentEvent,
     },
     /// Live tunnels (sent when they open, stop, or their counters change).
     Tunnels(Vec<TunnelInfo>),

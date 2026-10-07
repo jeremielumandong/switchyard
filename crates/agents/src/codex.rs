@@ -73,6 +73,32 @@ pub fn args(ctx: &RunContext<'_>) -> Vec<String> {
         a.push("resume".into());
     }
     a.extend(["--json", "--skip-git-repo-check", "--ignore-user-config"].map(String::from));
+    a.extend(options(ctx));
+    if let Some(r) = resume {
+        a.push(r.to_owned());
+    }
+    // The prompt comes from stdin.
+    a.push("-".into());
+    a
+}
+
+/// The argv for the interactive TUI ("Open in terminal"): the same tools and server.
+pub fn interactive_args(ctx: &RunContext<'_>) -> Vec<String> {
+    let mut a = Vec::new();
+    let resume = ctx.resume.filter(|r| !r.trim().is_empty());
+    if resume.is_some() {
+        a.push("resume".to_owned());
+    }
+    a.extend(options(ctx));
+    if let Some(r) = resume {
+        a.push(r.to_owned());
+    }
+    a
+}
+
+/// Options shared by `exec` and the TUI.
+fn options(ctx: &RunContext<'_>) -> Vec<String> {
+    let mut a = Vec::new();
     for f in DISABLED_FEATURES {
         a.extend(["--disable".into(), (*f).to_owned()]);
     }
@@ -100,11 +126,6 @@ pub fn args(ctx: &RunContext<'_>) -> Vec<String> {
         a.extend(["-m".into(), m.to_owned()]);
     }
     a.extend(ctx.extra_args.iter().cloned());
-    if let Some(r) = resume {
-        a.push(r.to_owned());
-    }
-    // The prompt comes from stdin.
-    a.push("-".into());
     a
 }
 
@@ -128,6 +149,14 @@ impl AgentAdapter for Codex {
 
     fn parser(&self) -> Box<dyn StreamParser> {
         Box::new(Parser::default())
+    }
+
+    fn interactive(&self, ctx: &RunContext<'_>) -> Option<Result<Invocation, AgentError>> {
+        Some(Ok(Invocation {
+            args: interactive_args(ctx),
+            env: ctx.mcp.env.clone(),
+            stdin: None,
+        }))
     }
 }
 

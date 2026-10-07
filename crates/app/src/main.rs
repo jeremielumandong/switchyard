@@ -8,6 +8,8 @@ extern crate gpui_kit as gpui;
 mod actions;
 mod api;
 mod app_state;
+mod assistant_panel;
+mod assistant_settings;
 mod completion;
 mod conn_editor;
 mod drivers_page;

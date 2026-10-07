@@ -157,6 +157,36 @@ impl AgentAdapter for Gemini {
     }
 
     fn prepare(&self, ctx: &RunContext<'_>) -> Result<Invocation, AgentError> {
+        let (policy, session) = write_workspace(ctx)?;
+        Ok(Invocation {
+            args: args(ctx, &policy, session.as_deref()),
+            env: vec![("GEMINI_CLI_TRUST_WORKSPACE".to_owned(), "true".to_owned())],
+            stdin: Some(ctx.prompt.to_owned()),
+        })
+    }
+
+    fn interactive(&self, ctx: &RunContext<'_>) -> Option<Result<Invocation, AgentError>> {
+        Some(write_workspace(ctx).map(|(policy, session)| {
+            // Interactive: the headless prompt and stream flags go, the rest stays.
+            let mut a = args(ctx, &policy, session.as_deref());
+            a.drain(..4);
+            Invocation {
+                args: a,
+                env: vec![("GEMINI_CLI_TRUST_WORKSPACE".to_owned(), "true".to_owned())],
+                stdin: None,
+            }
+        }))
+    }
+
+    fn parser(&self) -> Box<dyn StreamParser> {
+        Box::new(Parser::default())
+    }
+}
+
+/// Write the run directory's settings, policy and instructions; find the session to
+/// continue. Returns (policy file, session file).
+fn write_workspace(ctx: &RunContext<'_>) -> Result<(PathBuf, Option<PathBuf>), AgentError> {
+    {
         let dir = ctx.workdir.join(".gemini");
         std::fs::create_dir_all(&dir)?;
         let s = serde_json::to_vec_pretty(&settings(ctx)).map_err(std::io::Error::other)?;
@@ -164,7 +194,6 @@ impl AgentAdapter for Gemini {
         let policy = ctx.workdir.join("switchyard-policy.toml");
         write_private(&policy, POLICY.as_bytes())?;
         std::fs::write(ctx.workdir.join("GEMINI.md"), ctx.system_prompt)?;
-        let env = vec![("GEMINI_CLI_TRUST_WORKSPACE".to_owned(), "true".to_owned())];
         let session = match ctx.resume.filter(|r| !r.trim().is_empty()) {
             Some(id) => {
                 let file = gemini_home(ctx.extra_env).and_then(|h| find_session(&h, id));
@@ -178,15 +207,7 @@ impl AgentAdapter for Gemini {
             }
             None => None,
         };
-        Ok(Invocation {
-            args: args(ctx, &policy, session.as_deref()),
-            env,
-            stdin: Some(ctx.prompt.to_owned()),
-        })
-    }
-
-    fn parser(&self) -> Box<dyn StreamParser> {
-        Box::new(Parser::default())
+        Ok((policy, session))
     }
 }
 

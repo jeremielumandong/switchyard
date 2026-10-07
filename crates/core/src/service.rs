@@ -43,6 +43,7 @@ use crate::error::{CoreError, Result};
 use crate::runtime::EventSender;
 
 pub mod agent;
+mod assistant;
 
 /// The SSH layer's description of a saved forward.
 fn forward_spec(f: &switchyard_store::PortForward) -> ForwardSpec {
@@ -98,6 +99,10 @@ pub struct ServiceConfig {
     pub drivers_dir: PathBuf,
     /// Package-manager runner (tests replace it).
     pub package_runner: Option<Arc<dyn CommandRunner>>,
+    /// Data directory (assistant session tokens).
+    pub data_dir: PathBuf,
+    /// The `swy` executable for assistant runs; `None` finds it next to the app or on PATH.
+    pub swy: Option<PathBuf>,
 }
 
 impl ServiceConfig {
@@ -115,6 +120,8 @@ impl ServiceConfig {
             drivers_dir: std::env::temp_dir()
                 .join(format!("switchyard-drivers-{}", std::process::id())),
             package_runner: None,
+            data_dir: std::env::temp_dir().join(format!("switchyard-data-{}", std::process::id())),
+            swy: None,
         }
     }
 
@@ -136,6 +143,8 @@ impl ServiceConfig {
             },
             drivers_dir: paths.drivers_dir(),
             package_runner: None,
+            data_dir: paths.data.clone(),
+            swy: None,
         }
     }
 }
@@ -171,6 +180,12 @@ pub struct Service {
     vault: Option<Arc<VaultStore>>,
     drivers: HashMap<Engine, Arc<dyn Driver>>,
     sessions: Mutex<HashMap<SessionId, Arc<SessionSlot>>>,
+    /// Running assistant runs, to cancel.
+    agent_runs: Mutex<HashMap<crate::bus::AgentRunId, switchyard_agents::CancelHandle>>,
+    /// Data directory (assistant session tokens).
+    data_dir: PathBuf,
+    /// `swy` override for assistant runs.
+    swy: Option<PathBuf>,
     queries: Mutex<HashMap<QueryId, QueryControl>>,
     terminals: Arc<Terminals>,
     ssh: Arc<SshManager>,
@@ -273,6 +288,9 @@ impl Service {
             vault,
             drivers,
             sessions: Mutex::default(),
+            agent_runs: Mutex::default(),
+            data_dir: config.data_dir.clone(),
+            swy: config.swy.clone(),
             queries: Mutex::default(),
             terminals: Arc::default(),
             ssh,
@@ -531,6 +549,23 @@ impl Service {
             }
             Command::StopTunnel { id } => self.stop_tunnel(id),
             Command::ListTunnels => self.emit(Event::Tunnels(self.tunnel_infos())),
+            Command::RunAgent {
+                run,
+                agent,
+                connection,
+                prompt,
+                resume,
+            } => self.run_agent(run, agent, connection, prompt, resume).await,
+            Command::CancelAgent { run } => self.cancel_agent(run),
+            Command::OpenAgentTerminal {
+                term,
+                agent,
+                connection,
+                size,
+            } => {
+                self.open_agent_terminal(term, agent, connection, size)
+                    .await
+            }
             Command::StartForward { host, forward } => {
                 if let Err(e) = self.start_forward(&host, &forward).await {
                     self.emit(Event::Error {
@@ -1204,6 +1239,7 @@ impl Service {
                         size,
                         switchyard_term::DEFAULT_SCROLLBACK,
                         self.events.clone(),
+                        Vec::new(),
                     )
                     .map(|t| {
                         if let Some(cmd) = startup {

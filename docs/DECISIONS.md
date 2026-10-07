@@ -819,3 +819,36 @@ auth) and the real `swy mcp`:
 - Stream: `init` (session_id, model), `message` (role, content, delta), `tool_use`
   (tool_name `mcp_switchyard_<tool>`, tool_id, parameters), `tool_result` (status, output,
   error), `error` (warnings), `result` (status, stats, error).
+
+## 2026-10-07 — M5-14: custom CLI, detection, settings
+
+- Supported ranges (Driver Manager `min_version` / `below_version`): Claude Code ≥ 2.1.0 < 3,
+  Codex CLI ≥ 0.160.0 < 1.0, Gemini CLI ≥ 0.63.0 < 1.0, from the versions the adapters were
+  verified against. A newer major shows "Untested version" (it may still work; the user
+  decides); an older one "Too old". A version that cannot be read counts as installed.
+- Install hints are manual steps (npm / Homebrew / Anthropic's installer, then the CLI's own
+  sign-in); Switchyard never installs or signs in a coding CLI for the user.
+- A custom CLI's own tools are whatever its command allows: Switchyard cannot restrict an
+  unknown CLI, so its safety is the MCP server's (every tool read-only server-side). Its MCP
+  config file must be a relative path inside the run directory.
+- Runs are scoped to the connection the question is about (token names only it) and refused
+  when that connection does not allow agents; with no connection, all agent-enabled ones.
+- "Open in terminal" applies the same restrictions as headless runs (Claude Code: no built-in
+  tools, only Switchyard's server; Codex: the same feature disables and overrides, but its TUI
+  has no `--ignore-user-config`, so the user's own Codex config applies there; Gemini: the
+  same workspace settings and admin policy). The token and run directory live until the
+  terminal's program exits.
+
+## 2026-10-07 — M5-15: assistant panel
+
+- One panel for every CLI: it consumes only `AgentEvent`s from `Event::Agent`, so nothing in
+  `app` knows which CLI answered.
+- Suggestions are the answer's fenced SQL blocks (```sql and friends, or unlabelled blocks that
+  parse as a known kind), classified by their first statement: CREATE INDEX → Index, ANALYZE /
+  UPDATE STATISTICS / CREATE STATISTICS → Statistics, SELECT / WITH → Rewrite, else Other.
+  Nothing in a card runs DDL: an index is compared with a hypothetical index (HypoPG) where
+  available, else only opened in the editor; statistics are re-planned after the user runs them.
+- "Compare" always uses estimated plans, so comparing a suggestion never executes it; the base
+  is the statement the user asked about, captured again if the plan view holds another one.
+- Agent ANALYZE stays refused by the MCP server until the in-app approval prompt exists
+  (Follow-ups); the panel itself never asks for actual plans on the agent's behalf.
