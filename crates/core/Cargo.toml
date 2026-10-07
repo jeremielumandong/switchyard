@@ -14,6 +14,7 @@ switchyard-remote.workspace = true
 switchyard-term.workspace = true
 switchyard-drivers.workspace = true
 switchyard-plan.workspace = true
+switchyard-api.workspace = true
 switchyard-agents.workspace = true
 tokio.workspace = true
 futures.workspace = true

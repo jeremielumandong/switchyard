@@ -224,5 +224,13 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
 - GPUI: an element's size is only known after a frame. Measure with a `canvas` prepaint into
   an `Rc<Cell<Bounds>>` and, when a layout depends on it (plan Fit), retry with
   `cx.on_next_frame`; reset the cell when the layout changes or it holds stale sizes.
+- GPUI on Windows: the title bar row is a `WindowControlArea::Drag` (`HTCAPTION`), and GPUI
+  reports it under every hitbox inside it. Every clickable title-bar control needs
+  `.occlude()`, or Windows takes the click as a window drag. Linux/Xvfb does not show this.
+- gpui-component 0.7 splits inputs: `InputState` (one line), `TextareaState` (multi-line),
+  `EditorState` (code). Code ported from 0.5 (AgentOps) must pick the right one per field.
+  `open_window` from gpui-kit already wraps the view in `Root`.
+- The API script sandbox re-executes the app binary with `--switchyard-api-script-worker`;
+  `main()` must check that argument before starting GPUI.
 - Pageant comes with russh on Windows (`AgentClient::connect_pageant`, `pageant` crate,
   Apache-2.0); no feature flag.

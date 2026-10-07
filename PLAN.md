@@ -313,6 +313,7 @@ faster, and no agent call ever performed a write.
   `pg_stat_statements`; SQL Server index usage, missing-index DMVs, Query Store. Workload view UI.
   Missing extension or permission shows a hint with the GRANT statement.
   Done when: integration tests with and without the extensions and permissions.
+  WIP (parked for the API workspace, user request): `plan::access::workload` (tables, indexes, pg_stat_statements / Query Store, missing-index DMVs, hints with the fixing GRANT / CREATE EXTENSION / ALTER statements; probes under a savepoint inside an open transaction). Test PostgreSQL image now has HypoPG (`docker/postgres-image`), CI uses the compose service. Still to do: integration tests, core command, Workload view.
 - [ ] **M5-8 Hypothetical indexes.** Detect HypoPG; create hypothetical index, explain, drop it,
   all in one session.
   Done when: plan changes with a hypothetical index and no real index is created.
@@ -349,6 +350,18 @@ faster, and no agent call ever performed a write.
   Done when: each suggestion type can be compared and opened with every adapter; agent calls show
   in history with the right `agent:<id>` tag.
 
+## Extra — API workspace, Snowflake, Oracle (user request)
+
+- [x] API-1 `switchyard-api` crate: AgentOps's API Workbench core (collections, requests,
+  environments, import/export, cookies, OAuth, `pm.*` scripts in a Boa worker, collection runs),
+  sending in process on core's runtime; secrets through the keychain / vault.
+  Note: worker CPU/memory `setrlimit` caps not ported (need `unsafe`); wall-clock kill kept.
+- [x] API-2 API workspace in the app: title-bar workspace menu switches Default ↔ API; the
+  Workbench panel (ported to gpui-component 0.7 inputs) fills the window in API mode.
+  Note: AgentOps's UI tests not ported yet (they used its test harness); see Follow-ups.
+- [ ] API-3 Snowflake engine (SQL REST API, key-pair JWT; adds `rsa`).
+- [ ] API-4 Oracle engine (Instant Client runtime-loaded by the Driver Manager).
+
 ## M6 — Packaging and beta
 
 Exit: every performance budget passes on all three platforms; signed builds published.
@@ -374,12 +387,13 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 
 ## Later (not before beta)
 
-- Oracle via Driver Manager (Instant Client auto-install, license acceptance).
 - Workload-wide index advisor, snippet library, import wizard, data compare, folder sync.
 
 ## Follow-ups
 
 (Add items here instead of doing them mid-task.)
+- API workspace: port AgentOps's Workbench UI tests; persist workbench preferences (they live
+  in session memory for now); per-project collections (`current_project()` returns None).
 - Release workflow for macOS (`build-macos.sh` + notarization) next to the Linux and Windows ones.
 - Log file for release builds (Windows GUI subsystem hides stdout).
 - Real app icon to replace the generated placeholder in `packaging/icons/`.

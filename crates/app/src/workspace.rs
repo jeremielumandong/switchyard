@@ -55,7 +55,22 @@ pub enum Tab {
 }
 
 /// The root view.
+/// Which workspace the window shows (the title bar's "Default ▾" menu).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppMode {
+    /// Databases, terminals and files.
+    Default,
+    /// The API client: collections, requests, environments.
+    Api,
+}
+
 pub struct Workspace {
+    /// Default (databases, terminals, files) or API.
+    pub(crate) mode: AppMode,
+    /// The workspace menu in the title bar is open.
+    mode_menu: bool,
+    /// The API workspace, created the first time it is shown.
+    api: Option<Entity<crate::api::workbench::WorkbenchPanel>>,
     pub(crate) core: RuntimeHandle,
     pub(crate) profiles: Profiles,
     pub(crate) profiles_loaded: bool,
@@ -159,7 +174,16 @@ impl Workspace {
                 }
             },
         );
+        // Toasts from the API workspace (queued in a global by its notify shim).
+        let toast_sub = cx.observe_global::<crate::api::compat::notify::Toasts>(|this, cx| {
+            for text in crate::api::compat::notify::drain(cx) {
+                this.toast(text, cx);
+            }
+        });
         Self {
+            mode: AppMode::Default,
+            mode_menu: false,
+            api: None,
             core,
             profiles: Profiles::default(),
             profiles_loaded: false,
@@ -207,7 +231,7 @@ impl Workspace {
             split: None,
             viewer_image: None,
             _events: task,
-            _subs: vec![search_sub],
+            _subs: vec![search_sub, toast_sub],
         }
     }
 
@@ -1613,8 +1637,90 @@ impl Workspace {
 
     // --------------------------------------------------------------- render
 
+    /// Show the Default or API workspace.
+    pub(crate) fn set_mode(&mut self, mode: AppMode, window: &mut Window, cx: &mut Context<Self>) {
+        self.mode_menu = false;
+        if mode == AppMode::Api && self.api.is_none() {
+            self.api = Some(cx.new(|cx| crate::api::workbench::WorkbenchPanel::new(window, cx)));
+        }
+        self.mode = mode;
+        match (mode, &self.api) {
+            (AppMode::Api, Some(api)) => {
+                let focus = api.read(cx).focus_handle(cx);
+                window.focus(&focus, cx);
+            }
+            _ => window.focus(&self.focus, cx),
+        }
+        cx.notify();
+    }
+
+    /// The title bar's workspace menu: Default or API.
+    fn render_mode_menu(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let item = |id: &'static str, mode: AppMode, title: &'static str, sub: &'static str| {
+            let active = self.mode == mode;
+            div()
+                .id(id)
+                .flex()
+                .flex_col()
+                .px(px(10.))
+                .py(px(6.))
+                .rounded(px(5.))
+                .cursor_pointer()
+                .when(active, |d| d.bg(p.sel))
+                .hover(|s| s.bg(p.hover))
+                .on_click(cx.listener(move |this, _, w, cx| this.set_mode(mode, w, cx)))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .text_size(px(12.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(title)
+                        .when(active, |d| d.child(div().text_color(p.acc).child("✓"))),
+                )
+                .child(div().text_size(px(11.)).text_color(p.fg3).child(sub))
+        };
+        gpui_kit::deferred(
+            div()
+                .id("mode-menu")
+                .absolute()
+                .top(px(34.))
+                .left(px(8.))
+                .w(px(280.))
+                .p(px(4.))
+                .bg(p.elev)
+                .border_1()
+                .border_color(p.bd)
+                .rounded(px(7.))
+                .shadow(ui::shadow(p))
+                .occlude()
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.mode_menu = false;
+                    cx.notify();
+                }))
+                .child(item(
+                    "mode-default",
+                    AppMode::Default,
+                    "Default",
+                    "Databases, terminals, files and tunnels",
+                ))
+                .child(item(
+                    "mode-api",
+                    AppMode::Api,
+                    "API",
+                    "Collections, requests, environments and runs",
+                )),
+        )
+        .with_priority(2)
+        .into_any_element()
+    }
+
     fn render_title_bar(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let dark = p.dark;
+        // The title bar's row is the window's drag area (`HTCAPTION` on Windows). GPUI
+        // reports it under every hitbox inside it, so each control must occlude it or
+        // Windows takes the click as a window drag and the control never sees it.
         TitleBar::new()
             .h(px(38.))
             .bg(p.panel)
@@ -1629,6 +1735,7 @@ impl Workspace {
                     .font_family(SANS)
                     .child(
                         div()
+                            .id("tb-workspace")
                             .flex()
                             .flex_none()
                             .items_center()
@@ -1636,7 +1743,14 @@ impl Workspace {
                             .h(px(26.))
                             .px(px(8.))
                             .rounded(px(6.))
+                            .occlude()
+                            .cursor_pointer()
+                            .when(self.mode_menu, |d| d.bg(p.hover))
                             .hover(|s| s.bg(p.hover))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.mode_menu = !this.mode_menu;
+                                cx.notify();
+                            }))
                             .child(
                                 div()
                                     .size(px(14.))
@@ -1653,15 +1767,22 @@ impl Workspace {
                                     .text_size(px(12.5))
                                     .text_color(p.fg)
                                     .whitespace_nowrap()
-                                    .child(self.workspace_name.clone()),
+                                    .child(match self.mode {
+                                        AppMode::Default => self.workspace_name.clone(),
+                                        AppMode::Api => "API".into(),
+                                    }),
                             )
                             .child(div().text_color(p.fg3).text_size(px(10.)).child("▾")),
                     )
-                    .child(
-                        ui::button("tb-sidebar", "Sidebar", Kind::Ghost, p).on_click(cx.listener(
-                            |this, _, w, cx| this.run_command(CommandId::ToggleSidebar, w, cx),
-                        )),
-                    )
+                    .when(self.mode == AppMode::Default, |d| {
+                        d.child(
+                            ui::button("tb-sidebar", "Sidebar", Kind::Ghost, p)
+                                .occlude()
+                                .on_click(cx.listener(|this, _, w, cx| {
+                                    this.run_command(CommandId::ToggleSidebar, w, cx)
+                                })),
+                        )
+                    })
                     .child(
                         div().flex_1().flex().justify_center().min_w_0().child(
                             div()
@@ -1681,6 +1802,7 @@ impl Workspace {
                                 .text_color(p.fg3)
                                 .text_size(px(12.5))
                                 .cursor_text()
+                                .occlude()
                                 .hover(|s| s.border_color(p.bd2))
                                 .on_click(cx.listener(|this, _, w, cx| {
                                     this.open_palette(PaletteMode::Commands, w, cx)
@@ -1701,6 +1823,7 @@ impl Workspace {
                             Kind::Ghost,
                             p,
                         )
+                        .occlude()
                         .on_click(cx.listener(move |this, _, w, cx| {
                             let next = if dark {
                                 ThemeId::SwitchyardLight
@@ -1711,18 +1834,18 @@ impl Workspace {
                         })),
                     )
                     .child(
-                        ui::button("tb-components", "Components", Kind::Ghost, p).on_click(
-                            cx.listener(|this, _, w, cx| {
+                        ui::button("tb-components", "Components", Kind::Ghost, p)
+                            .occlude()
+                            .on_click(cx.listener(|this, _, w, cx| {
                                 this.run_command(CommandId::OpenComponents, w, cx)
-                            }),
-                        ),
+                            })),
                     )
                     .child(
-                        ui::button("tb-settings", "Settings", Kind::Ghost, p).on_click(
-                            cx.listener(|this, _, w, cx| {
+                        ui::button("tb-settings", "Settings", Kind::Ghost, p)
+                            .occlude()
+                            .on_click(cx.listener(|this, _, w, cx| {
                                 this.open_settings(SettingsPage::General, w, cx)
-                            }),
-                        ),
+                            })),
                     ),
             )
             .into_any_element()
@@ -2366,6 +2489,19 @@ impl Render for Workspace {
             }
             self.sync_schema(cx);
         }
+        let api_body = match (self.mode, &self.api) {
+            (AppMode::Api, Some(api)) => Some(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .child(api.clone())
+                    .into_any_element(),
+            ),
+            _ => None,
+        };
+        let mode_menu = self.mode_menu.then(|| self.render_mode_menu(&p, cx));
         let center = self.render_center(&p, cx);
         let show_inspector =
             self.inspector_open && matches!(self.tabs.get(self.active), Some(Tab::Sql(_)));
@@ -2464,24 +2600,28 @@ impl Render for Workspace {
                 this.run_command(CommandId::Unsplit, w, cx)
             }))
             .child(title)
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .children(sidebar)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .bg(p.surface)
-                            .child(strip)
-                            .child(div().flex_1().min_h_0().flex().flex_col().child(center)),
-                    )
-                    .children(inspector),
-            )
+            .when_some(mode_menu, |d, menu| d.child(menu))
+            .when_some(api_body, |d, body| d.child(body))
+            .when(self.mode == AppMode::Default, |d| {
+                d.child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .flex()
+                        .children(sidebar)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .bg(p.surface)
+                                .child(strip)
+                                .child(div().flex_1().min_h_0().flex().flex_col().child(center)),
+                        )
+                        .children(inspector),
+                )
+            })
             .child(status)
             .children(overlays)
     }

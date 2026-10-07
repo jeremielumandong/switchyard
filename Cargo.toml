@@ -13,6 +13,7 @@ members = [
     "crates/plan",
     "crates/cli",
     "crates/agents",
+    "crates/api",
 ]
 default-members = [
     "crates/core",
@@ -24,6 +25,7 @@ default-members = [
     "crates/plan",
     "crates/cli",
     "crates/agents",
+    "crates/api",
     "crates/app",
 ]
 
@@ -46,6 +48,7 @@ switchyard-term = { path = "crates/term" }
 switchyard-drivers = { path = "crates/drivers" }
 switchyard-plan = { path = "crates/plan" }
 switchyard-agents = { path = "crates/agents" }
+switchyard-api = { path = "crates/api" }
 
 # UI: gpui-kit is the facade over gpui (gpui-pre =0.3.8) + gpui-component 0.7.1, kept in lockstep.
 gpui-kit = { version = "=0.7.1", features = ["tree-sitter-sql"] }
@@ -103,6 +106,27 @@ sha1 = "=0.11.0"
 data-encoding = "2"
 # SHA-256 and CSPRNG for the Entra PKCE flow; already in the tree as rustls' provider.
 ring = "0.17"
+# API workspace (switchyard-api, ported from AgentOps; approved by the user with the
+# workbench port, see DECISIONS 2026-10-07). Most were already in the graph.
+aho-corasick = "1"
+base64 = "0.23"
+boa_engine = { version = "0.21", default-features = false, features = ["annex-b"] }
+hex = "0.4"
+httpdate = "1"
+psl = "2.1"
+regex = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+sxd-document = "0.3"
+sxd-xpath = "0.4"
+serde_json_path = "0.7"
+# Same versions gpui-kit already builds (HTML / Markdown response previews).
+html5ever = "=0.27.0"
+markup5ever_rcdom = "=0.3.0"
+markdown = "=1.0.0"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+zeroize = "1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 # editor completion items (must match gpui-component)
