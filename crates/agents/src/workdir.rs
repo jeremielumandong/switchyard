@@ -57,6 +57,7 @@ impl Drop for WorkDir {
 }
 
 fn create_private_dir(path: &Path, existing_ok: bool) -> std::io::Result<()> {
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut b = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {
