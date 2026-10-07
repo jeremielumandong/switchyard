@@ -299,7 +299,9 @@ async fn sql_server_workload_with_query_store_and_dmvs() {
     let mut s = mssql_shop().await;
     exec(
         s.as_mut(),
-        "ALTER DATABASE shop SET QUERY_STORE = ON (OPERATION_MODE = READ_WRITE)",
+        // AUTO capture (the default since 2019) skips cheap queries run a few times.
+        "ALTER DATABASE shop SET QUERY_STORE = ON \
+         (OPERATION_MODE = READ_WRITE, QUERY_CAPTURE_MODE = ALL)",
     )
     .await;
     for _ in 0..3 {
