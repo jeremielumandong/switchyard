@@ -52,6 +52,8 @@ pub enum Tab {
     Files(Entity<FilesTab>),
     /// A text file (usually on an SSH Host).
     Editor(Entity<EditorTab>),
+    /// Query and index statistics of a database.
+    Workload(Entity<crate::workload_tab::WorkloadTab>),
 }
 
 /// The root view.
@@ -513,6 +515,23 @@ impl Workspace {
                     });
                 }
             }
+            Event::Workload { request, result } => {
+                let tab = self.tabs.iter().find_map(|t| match t {
+                    Tab::Workload(w) if w.read(cx).owns(request) => Some(w.clone()),
+                    _ => None,
+                });
+                if let Some(tab) = tab {
+                    tab.update(cx, |t, cx| t.on_result(result, cx));
+                }
+            }
+            Event::WhatIf { request, result } => {
+                if let Some(tab) = self.plan_tab(cx, |v| v.owns(request)) {
+                    tab.update(cx, |t, cx| {
+                        t.plan_view().update(cx, |v, cx| v.on_what_if(result, cx));
+                        cx.notify();
+                    });
+                }
+            }
             Event::PlanFailed {
                 request,
                 error,
@@ -859,6 +878,7 @@ impl Workspace {
             Some(Tab::Terminal(t)) => t.clone().into_any_element(),
             Some(Tab::Files(f)) => f.clone().into_any_element(),
             Some(Tab::Editor(e)) => e.clone().into_any_element(),
+            Some(Tab::Workload(w)) => w.clone().into_any_element(),
             _ => self.render_welcome(p, cx),
         }
     }
@@ -1472,6 +1492,25 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Query and index statistics for the active SQL tab's connection.
+    pub(crate) fn open_workload(&mut self, cx: &mut Context<Self>) {
+        let Some(tab) = self.active_sql() else {
+            return self.toast("Open a query tab on a database first", cx);
+        };
+        let (session, name) = {
+            let t = tab.read(cx);
+            (t.session, t.connection.as_ref().map(|c| c.name.clone()))
+        };
+        let (Some(session), Some(name)) = (session, name) else {
+            return self.toast("Connect the query tab to a database first", cx);
+        };
+        let core = self.core.clone();
+        let w = cx.new(|_| crate::workload_tab::WorkloadTab::new(core, session, name));
+        self.tabs.push(Tab::Workload(w));
+        self.active = self.tabs.len() - 1;
+        cx.notify();
+    }
+
     pub(crate) fn open_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search history"));
         let core = self.core.clone();
@@ -1622,6 +1661,7 @@ impl Workspace {
                 .detach();
             }
             CommandId::ShowHistory => self.open_history(window, cx),
+            CommandId::ShowWorkload => self.open_workload(cx),
             CommandId::SplitRight => self.split_view(crate::split::SplitDir::Right, window, cx),
             CommandId::SplitDown => self.split_view(crate::split::SplitDir::Down, window, cx),
             CommandId::Unsplit => self.split = None,
@@ -1889,6 +1929,12 @@ impl Workspace {
                 let e = e.read(cx);
                 ("ED".into(), e.title.clone().into(), None, e.dirty)
             }
+            Tab::Workload(w) => (
+                "WL".into(),
+                format!("Workload · {}", w.read(cx).name).into(),
+                None,
+                false,
+            ),
         }
     }
 

@@ -28,6 +28,7 @@ mod theme;
 mod transfers;
 mod ui;
 mod viewer;
+mod workload_tab;
 mod workspace;
 
 use std::borrow::Cow;

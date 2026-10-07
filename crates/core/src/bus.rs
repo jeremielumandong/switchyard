@@ -302,6 +302,24 @@ pub enum Command {
         /// History tags.
         tags: Vec<String>,
     },
+    /// Read the access statistics (workload) of the session's database.
+    Workload {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+    },
+    /// Plan a statement with hypothetical indexes (PostgreSQL + HypoPG). Nothing is created.
+    WhatIf {
+        /// Session.
+        session: SessionId,
+        /// New query id chosen by the UI (cancel with [`Command::Cancel`]).
+        query: QueryId,
+        /// The statement.
+        sql: String,
+        /// `CREATE INDEX` statements to simulate.
+        indexes: Vec<String>,
+    },
     /// Load the plan stored with a history entry.
     LoadPlan {
         /// Request id.
@@ -689,6 +707,20 @@ pub enum Event {
         plan: Arc<switchyard_plan::Plan>,
         /// Findings, ranked.
         findings: Vec<switchyard_plan::Finding>,
+    },
+    /// Access statistics for [`Command::Workload`].
+    Workload {
+        /// Request id.
+        request: RequestId,
+        /// The workload, or what went wrong.
+        result: Result<Arc<switchyard_plan::access::Workload>, String>,
+    },
+    /// Result of [`Command::WhatIf`].
+    WhatIf {
+        /// The query id.
+        request: QueryId,
+        /// Plans before and after, or what went wrong.
+        result: Result<Arc<switchyard_plan::whatif::WhatIf>, String>,
     },
     /// A plan could not be captured or loaded.
     PlanFailed {

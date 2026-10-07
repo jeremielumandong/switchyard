@@ -180,6 +180,9 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
   Gemini CLI `gemini -p --output-format stream-json`, MCP via `mcpServers` in `.gemini/settings.json`.
 - Codex CLI `exec` has been reported to cancel MCP tool calls that need approval (no one can answer
   the prompt), and a generated `CODEX_HOME` hides the user's stored login. See PLAN task M5-12.
+- Reading `shared_preload_libraries` with `current_setting` fails without `pg_read_all_settings`;
+  `pg_settings` just hides the row. SQL Server records no missing indexes for trivial plans,
+  so tests need a query that goes through full optimization (aggregate, ORDER BY).
 - `pg_stat_statements`, HypoPG and Query Store are optional. Detect them and degrade gracefully;
   missing permissions (`pg_read_all_stats`, `VIEW SERVER STATE`) produce a hint, not an error.
 

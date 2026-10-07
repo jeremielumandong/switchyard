@@ -546,6 +546,21 @@ impl Service {
                 request,
                 history_id,
             } => self.load_plan(request, history_id).await,
+            Command::Workload { session, request } => {
+                let span = info_span!("workload", request, session);
+                self.workload(session, request).instrument(span).await
+            }
+            Command::WhatIf {
+                session,
+                query,
+                sql,
+                indexes,
+            } => {
+                let span = info_span!("what_if", query, session);
+                self.what_if(session, query, sql, indexes)
+                    .instrument(span)
+                    .await
+            }
             Command::SearchHistory {
                 request,
                 query,
@@ -1606,6 +1621,50 @@ impl Service {
                 });
             }
         }
+    }
+
+    async fn workload(&self, session: SessionId, request: RequestId) {
+        let Some(slot) = self.slot(session) else {
+            return self.emit(Event::Workload {
+                request,
+                result: Err(DbError::Closed.to_string()),
+            });
+        };
+        let engine = slot.connection.engine;
+        let mut inner = slot.inner.lock().await;
+        let result = switchyard_plan::access::workload(inner.session.as_mut(), engine).await;
+        drop(inner);
+        self.emit(Event::Workload {
+            request,
+            result: result.map(Arc::new).map_err(|e| e.to_string()),
+        });
+    }
+
+    async fn what_if(&self, session: SessionId, query: QueryId, sql: String, indexes: Vec<String>) {
+        let Some(slot) = self.slot(session) else {
+            return self.emit(Event::WhatIf {
+                request: query,
+                result: Err(DbError::Closed.to_string()),
+            });
+        };
+        let engine = slot.connection.engine;
+        let mut inner = slot.inner.lock().await;
+        let (resume_tx, _resume_rx) = mpsc::unbounded_channel();
+        lock(&self.queries).insert(
+            query,
+            QueryControl {
+                cancel: inner.session.cancel_handle(),
+                resume: resume_tx,
+            },
+        );
+        let result =
+            switchyard_plan::whatif::what_if(inner.session.as_mut(), engine, &sql, &indexes).await;
+        drop(inner);
+        lock(&self.queries).remove(&query);
+        self.emit(Event::WhatIf {
+            request: query,
+            result: result.map(Arc::new).map_err(|e| e.to_string()),
+        });
     }
 
     async fn load_plan(&self, request: RequestId, history_id: i64) {
