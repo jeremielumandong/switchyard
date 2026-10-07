@@ -11,10 +11,11 @@ russh.workspace = true
 russh-sftp.workspace = true
 secrecy.workspace = true
 hmac.workspace = true
+ring.workspace = true
 sha1.workspace = true
 data-encoding.workspace = true
 futures.workspace = true
-tokio = { workspace = true, features = ["fs", "net", "sync", "time", "macros", "io-util"] }
+tokio = { workspace = true, features = ["fs", "net", "sync", "time", "macros", "io-util", "rt"] }
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

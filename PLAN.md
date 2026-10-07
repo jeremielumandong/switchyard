@@ -427,12 +427,20 @@ server or bundled Unix tools on Windows (Tier 3).
   Host editor; the Tunnels panel shows the direction and lists saved forwards with Start.
   Tests: `remote/tests/ssh.rs` (remote forward, dead target, SOCKS5/SOCKS4),
   `core/tests/ssh_forwards.rs`. Not done: naming forwards in the editor (kept if set).
-- [ ] **MX-2 Agent and X11 forwarding.** Per-Host toggles. Agent forwarding answers
+- [x] **MX-2 Agent and X11 forwarding.** Per-Host toggles. Agent forwarding answers
   `auth-agent@openssh.com` channels from the local agent (finishes M2-5's scope); X11 opens
   `x11` channels to the local display (`DISPLAY`: Unix socket or TCP) with a generated
   MIT-MAGIC-COOKIE replaced by the real one from `xauth`. Windows: detect VcXsrv / X410 /
   Xming through the Driver Manager and point at its display.
   Done when: tests prove a forwarded agent signs and an X11 channel reaches a fake display.
+  Note: Host options `forward_agent`, `forward_x11`, `x11_display` (editor checkboxes and an
+  X display field). Agent channels are piped to the same agent the login uses (socket or
+  Windows pipe; Pageant cannot be forwarded) and refused when the Host did not ask; X11
+  (`ssh/x11.rs`) checks the fake cookie in each setup packet and swaps in the real one from
+  `xauth list` (or none). Driver Manager: "X server" component (VcXsrv/X410/Xming, XQuartz,
+  XWayland hints). Test servers allow agent and X11 forwarding. Tests: forwarded agent signs
+  a nested `ssh` on the server (and fails without forwarding); an X client on the server
+  reaches a fake local display with the fake cookie stripped; X11 unit tests.
 - [ ] **MX-3 Terminal logging.** Per-session "log to file" (plain text, ANSI stripped, or
   raw), file name template with host and timestamp, started from settings or the tab menu.
 - [ ] **MX-4 Terminal conveniences.** Copy on select, right-click paste (settings, default
@@ -487,6 +495,10 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 - Workload-wide index advisor, snippet library, import wizard, data compare, folder sync.
 
 ## Follow-ups
+
+- `core/tests/flow.rs` `cancel_stops_a_running_query_quickly` times out (5 s) when the
+  machine is busy building (seen twice); passes alone. Look at what it waits on before
+  raising the timeout.
 
 - Agent runs on systems with only the fallback vault: `swy mcp` cannot unlock it unless
   `SWITCHYARD_VAULT_PASSWORD` is in the app's environment. Option: let `swy mcp` borrow the

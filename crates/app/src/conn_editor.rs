@@ -153,6 +153,10 @@ pub struct ConnEditor {
     connect_after: bool,
     /// A Host's port forwards.
     forwards: Vec<crate::forwards_editor::ForwardRow>,
+    /// A Host's agent forwarding (`ssh -A`).
+    forward_agent: bool,
+    /// A Host's X11 forwarding (`ssh -X`).
+    forward_x11: bool,
 }
 
 impl EventEmitter<ConnEditorEvent> for ConnEditor {}
@@ -221,6 +225,8 @@ impl ConnEditor {
             request: None,
             connect_after: true,
             forwards: Vec::new(),
+            forward_agent: matches!(&existing, Some(Profile::Host(h)) if h.forward_agent),
+            forward_x11: matches!(&existing, Some(Profile::Host(h)) if h.forward_x11),
         };
         this.build_fields(existing.as_ref(), window, cx);
         this
@@ -495,6 +501,17 @@ impl ConnEditor {
                     "keepalive",
                     &h.keepalive_secs.to_string(),
                     "30",
+                    false,
+                );
+                add(
+                    self,
+                    "x11_display",
+                    h.x11_display.as_deref().unwrap_or_default(),
+                    if cfg!(windows) {
+                        "localhost:0"
+                    } else {
+                        "$DISPLAY"
+                    },
                     false,
                 );
                 add(
@@ -821,6 +838,9 @@ impl ConnEditor {
                 h.identity_agent = opt(self.value("agent_socket", cx));
                 h.agent_key = opt(self.value("agent_key", cx));
                 h.keepalive_secs = self.value("keepalive", cx).parse().unwrap_or(30);
+                h.forward_agent = self.forward_agent;
+                h.forward_x11 = self.forward_x11;
+                h.x11_display = opt(self.value("x11_display", cx));
                 let jump = self.chosen("jump");
                 h.jump_hosts = if jump.is_empty() {
                     vec![]
@@ -1464,6 +1484,17 @@ impl ConnEditor {
                 }
                 v.push(self.field("jump", "Jump host", 4, true, None, p, cx));
                 v.push(self.field("keepalive", "Keepalive (s)", 2, false, None, p, cx));
+                if self.forward_x11 {
+                    v.push(self.field(
+                        "x11_display",
+                        "X display",
+                        3,
+                        true,
+                        Some("Empty: DISPLAY (Windows: VcXsrv/X410 on localhost:0)"),
+                        p,
+                        cx,
+                    ));
+                }
             }
             ConnKind::Sftp => {
                 v.push(self.field("name", "Name", 6, false, None, p, cx));
@@ -1644,6 +1675,32 @@ impl Render for ConnEditor {
                             .gap(px(14.))
                             .child(div().grid().grid_cols(6).gap(px(12.)).children(fields))
                             .children(forwards)
+                            .when(self.kind == ConnKind::Ssh, |d| {
+                                d.child(
+                                    ui::checkbox(
+                                        "fwd-agent",
+                                        self.forward_agent,
+                                        "Forward SSH agent (ssh -A): the Host can use your agent's keys while you are connected; only for Hosts you trust",
+                                        &p,
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.forward_agent = !this.forward_agent;
+                                        cx.notify();
+                                    })),
+                                )
+                                .child(
+                                    ui::checkbox(
+                                        "fwd-x11",
+                                        self.forward_x11,
+                                        "Forward X11 (ssh -X): graphical programs on the Host open windows here",
+                                        &p,
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.forward_x11 = !this.forward_x11;
+                                        cx.notify();
+                                    })),
+                                )
+                            })
                             .child(
                                 div()
                                     .flex()

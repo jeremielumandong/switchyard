@@ -1319,6 +1319,9 @@ impl Service {
             jump: None,
             agent_socket: h.identity_agent.clone(),
             agent_key: h.agent_key.clone(),
+            forward_agent: h.forward_agent,
+            forward_x11: h.forward_x11,
+            x11_display: h.x11_display.clone(),
         })
     }
 
