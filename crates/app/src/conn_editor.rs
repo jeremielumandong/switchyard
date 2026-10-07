@@ -645,6 +645,19 @@ impl ConnEditor {
                 );
             }
         }
+        if self.kind.is_db() {
+            let chosen = match existing {
+                Some(Profile::Db(d)) => d.assistant_agent.clone().unwrap_or_default(),
+                _ => String::new(),
+            };
+            let mut options = vec![("Default (Settings → Assistant)".to_owned(), String::new())];
+            options.extend(
+                crate::assistant_settings::AGENTS
+                    .into_iter()
+                    .map(|k| (k.display_name().to_owned(), k.id().to_owned())),
+            );
+            self.selects.insert("assistant", sel(options, &chosen));
+        }
         self.forwards = match existing {
             Some(Profile::Host(h)) if self.kind == ConnKind::Ssh => h
                 .forwards
@@ -765,6 +778,7 @@ impl ConnEditor {
                 d.read_only = self.read_only;
                 d.history_enabled = self.history;
                 d.agent_access = self.agents;
+                d.assistant_agent = Some(self.chosen("assistant")).filter(|a| !a.is_empty());
                 Profile::Db(d)
             }
             ConnKind::D1 => {
@@ -784,6 +798,7 @@ impl ConnEditor {
                 d.read_only = self.read_only;
                 d.history_enabled = self.history;
                 d.agent_access = self.agents;
+                d.assistant_agent = Some(self.chosen("assistant")).filter(|a| !a.is_empty());
                 Profile::Db(d)
             }
             ConnKind::Snowflake => {
@@ -814,6 +829,7 @@ impl ConnEditor {
                 d.read_only = self.read_only;
                 d.history_enabled = self.history;
                 d.agent_access = self.agents;
+                d.assistant_agent = Some(self.chosen("assistant")).filter(|a| !a.is_empty());
                 Profile::Db(d)
             }
             ConnKind::Ssh => {
@@ -1526,6 +1542,17 @@ impl Render for ConnEditor {
             "New connection".into()
         };
         let fields = self.fields(&p, cx);
+        let assistant_field = (self.kind.is_db() && self.agents).then(|| {
+            div().w(px(300.)).child(self.field(
+                "assistant",
+                "Assistant CLI",
+                6,
+                false,
+                None,
+                &p,
+                cx,
+            ))
+        });
         let forwards = (self.kind == ConnKind::Ssh).then(|| {
             crate::forwards_editor::render(&self.forwards, &p, cx, |this: &mut Self, a, w, cx| {
                 this.forward_action(a, w, cx)
@@ -1820,6 +1847,7 @@ impl Render for ConnEditor {
                                     }),
                                 ))
                             })
+                            .children(assistant_field)
                             .when(self.test == TestState::Missing, |d| {
                                 d.child(self.render_driver_card(&p, cx))
                             })

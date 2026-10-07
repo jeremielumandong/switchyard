@@ -7,6 +7,9 @@
 
 mod adapter;
 pub mod claude;
+pub mod codex;
+pub mod custom;
+pub mod gemini;
 mod process;
 pub mod runner;
 mod workdir;
@@ -16,8 +19,11 @@ use serde_json::Value;
 
 pub use adapter::{AgentAdapter, Invocation, McpServer, RunContext, StreamParser};
 pub use claude::ClaudeCode;
+pub use codex::Codex;
+pub use custom::{Custom, CustomCli};
+pub use gemini::Gemini;
 pub use process::find_program;
-pub use runner::{AgentRun, CancelHandle, RunRequest};
+pub use runner::{AgentRun, CancelHandle, InteractiveSession, RunRequest};
 
 /// Name of Switchyard's MCP server in every generated CLI config.
 pub const MCP_SERVER_NAME: &str = "switchyard";

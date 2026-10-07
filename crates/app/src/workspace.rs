@@ -98,6 +98,13 @@ pub struct Workspace {
     pub(crate) workspace_name: String,
     pub(crate) secret_backend: (&'static str, bool),
     pub(crate) components: Vec<Component>,
+    /// Settings → Assistant, as saved.
+    pub(crate) assistant: switchyard_core::agent_run::AssistantSettings,
+    /// The Assistant settings page, once opened.
+    pub(crate) assistant_view: Option<Entity<crate::assistant_settings::AssistantSettingsView>>,
+    /// The assistant panel (right side).
+    pub(crate) assistant_panel: Entity<crate::assistant_panel::AssistantPanel>,
+    pub(crate) assistant_open: bool,
     pub(crate) drivers: crate::drivers_page::DriversPage,
     /// The sidebar Files panel per Host (kept while the app runs, so its folder is kept).
     pub(crate) remote_files: HashMap<String, Entity<RemoteFiles>>,
@@ -161,10 +168,23 @@ impl Workspace {
         core.send(Command::LoadSetting {
             key: "inspector.width".into(),
         });
+        core.send(Command::LoadSetting {
+            key: switchyard_core::agent_run::ASSISTANT_SETTINGS_KEY.into(),
+        });
         core.send(Command::DetectComponents);
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let schema_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search objects"));
+        let assistant_core = core.clone();
+        let assistant_panel =
+            cx.new(|cx| crate::assistant_panel::AssistantPanel::new(assistant_core, window, cx));
+        let assistant_sub = cx.subscribe_in(
+            &assistant_panel,
+            window,
+            |this, _, ev: &crate::assistant_panel::AssistantPanelEvent, window, cx| {
+                this.on_assistant_event(ev, window, cx)
+            },
+        );
         let search_sub = cx.subscribe(
             &schema_search,
             |this, input, ev: &gpui_kit::component::input::InputEvent, cx| {
@@ -217,6 +237,10 @@ impl Workspace {
             workspace_name: "Default".into(),
             secret_backend: ("", false),
             components: Vec::new(),
+            assistant: Default::default(),
+            assistant_view: None,
+            assistant_panel,
+            assistant_open: false,
             drivers: Default::default(),
             remote_files: HashMap::new(),
             history: Vec::new(),
@@ -234,7 +258,7 @@ impl Workspace {
             split: None,
             viewer_image: None,
             _events: task,
-            _subs: vec![search_sub, toast_sub],
+            _subs: vec![search_sub, toast_sub, assistant_sub],
         }
     }
 
@@ -414,6 +438,17 @@ impl Workspace {
                     self.inspector_width = (w as f32).max(crate::sidebar::INSPECTOR_MIN);
                 }
             }
+            Event::Setting { key, value }
+                if key == switchyard_core::agent_run::ASSISTANT_SETTINGS_KEY =>
+            {
+                if let Some(s) = value.and_then(|v| {
+                    serde_json::from_value::<switchyard_core::agent_run::AssistantSettings>(v).ok()
+                }) {
+                    self.assistant = s.clone();
+                    self.assistant_panel
+                        .update(cx, |p, cx| p.set_settings(s, cx));
+                }
+            }
             Event::Setting { key, value } => {
                 // SWITCHYARD_THEME (tests, screenshots) wins over the saved choice.
                 if key == "theme"
@@ -582,6 +617,10 @@ impl Workspace {
                 }
             }
             Event::DirListing { .. } => {}
+            Event::Agent { run, agent, event } => {
+                self.assistant_panel
+                    .update(cx, |p, cx| p.on_agent_event(run, agent, event, cx));
+            }
             Event::Components(_)
             | Event::ComponentProgress { .. }
             | Event::ComponentInstalled { .. }
@@ -738,7 +777,18 @@ impl Workspace {
                     inputs,
                 });
             }
-            SqlTabEvent::Changed => self.sync_schema(cx),
+            SqlTabEvent::Changed => {
+                self.sync_schema(cx);
+                self.sync_assistant(cx);
+            }
+            SqlTabEvent::Optimize { sql, findings } => {
+                self.assistant_open = true;
+                self.sync_assistant(cx);
+                let (sql, findings) = (sql.clone(), findings.clone());
+                self.assistant_panel
+                    .update(cx, |p, cx| p.optimize(sql, findings, cx));
+                cx.notify();
+            }
         }
         cx.notify();
     }
@@ -1487,6 +1537,70 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Point the assistant panel at the active SQL tab's connection.
+    pub(crate) fn sync_assistant(&mut self, cx: &mut Context<Self>) {
+        let conn = self
+            .active_sql()
+            .and_then(|t| t.read(cx).connection.clone());
+        self.assistant_panel
+            .update(cx, |p, cx| p.set_connection(conn, cx));
+    }
+
+    /// The assistant panel asks for something.
+    fn on_assistant_event(
+        &mut self,
+        ev: &crate::assistant_panel::AssistantPanelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::assistant_panel::AssistantPanelEvent as E;
+        use crate::plan_view::AfterPlan;
+        let compare =
+            |this: &mut Self, base: Option<String>, then: AfterPlan, cx: &mut Context<Self>| {
+                match this.active_sql() {
+                    Some(tab) => tab.update(cx, |t, cx| t.assistant_compare(base, then, cx)),
+                    None => this.toast("Open the statement's SQL tab to compare plans", cx),
+                }
+            };
+        match ev {
+            E::OpenInEditor(sql) => {
+                let conn = self
+                    .active_sql()
+                    .and_then(|t| t.read(cx).connection.clone());
+                match conn {
+                    Some(conn) => {
+                        let tab = self.open_query_tab(&conn, "suggestion", window, cx);
+                        let sql = sql.clone();
+                        tab.update(cx, |t, cx| t.insert_text(&sql, window, cx));
+                    }
+                    None => self.toast("Pick a connection first", cx),
+                }
+            }
+            E::ComparePlan { base, sql } => {
+                compare(self, base.clone(), AfterPlan::Compare(sql.clone()), cx)
+            }
+            E::WhatIf { base, indexes } => {
+                compare(self, base.clone(), AfterPlan::WhatIf(indexes.clone()), cx)
+            }
+            E::Replan { base } => compare(self, base.clone(), AfterPlan::Replan, cx),
+            E::OpenTerminal(agent) => {
+                let conn = self
+                    .active_sql()
+                    .and_then(|t| t.read(cx).connection.clone());
+                let kind = agent.unwrap_or_else(|| self.assistant.agent_for(conn.as_ref()));
+                let core = self.core.clone();
+                let (agent, conn_id) = (*agent, conn.map(|c| c.id));
+                let t = cx.new(|cx| {
+                    TerminalTab::new_agent(core, kind.display_name().to_owned(), agent, conn_id, cx)
+                });
+                self.tabs.push(Tab::Terminal(t));
+                self.active = self.tabs.len() - 1;
+            }
+            E::Close => self.assistant_open = false,
+        }
+        cx.notify();
+    }
+
     pub(crate) fn open_settings(
         &mut self,
         page: SettingsPage,
@@ -1640,6 +1754,24 @@ impl Workspace {
                 self.set_theme(next, window, cx);
             }
             CommandId::ToggleInspector => self.inspector_open = !self.inspector_open,
+            CommandId::ToggleAssistant => {
+                self.assistant_open = !self.assistant_open;
+                if self.assistant_open {
+                    self.sync_assistant(cx);
+                }
+            }
+            CommandId::OptimizeQuery => {
+                if let Some(tab) = self.active_sql() {
+                    tab.update(cx, |t, cx| t.optimize(cx));
+                }
+            }
+            CommandId::PlanQuery => {
+                self.assistant_open = true;
+                self.sync_assistant(cx);
+                self.assistant_panel
+                    .update(cx, |p, cx| p.plan_query(window, cx));
+            }
+            CommandId::SettingsAssistant => self.open_settings(SettingsPage::Assistant, window, cx),
             CommandId::ToggleSidebar => {
                 self.sidebar_open = !self.sidebar_open;
                 self.save_layout(cx);
@@ -2562,6 +2694,14 @@ impl Render for Workspace {
             .sidebar_open
             .then(|| self.render_sidebar(&p, window, cx));
         let inspector = show_inspector.then(|| self.render_inspector(&p, cx));
+        let assistant = self.assistant_open.then(|| {
+            div()
+                .w(px(400.))
+                .flex_none()
+                .border_l_1()
+                .border_color(p.bd)
+                .child(self.assistant_panel.clone())
+        });
         let title = self.render_title_bar(&p, cx);
         let strip = self.render_tab_strip(&p, cx);
         let status = self.render_status_bar(&p, cx);
@@ -2614,6 +2754,9 @@ impl Render for Workspace {
             )
             .on_action(cx.listener(|this, _: &actions::OpenSettings, w, cx| {
                 this.open_settings(SettingsPage::General, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::ToggleAssistant, w, cx| {
+                this.run_command(CommandId::ToggleAssistant, w, cx)
             }))
             .on_action(cx.listener(|this, _: &actions::ToggleSidebar, w, cx| {
                 this.run_command(CommandId::ToggleSidebar, w, cx)
@@ -2672,7 +2815,8 @@ impl Render for Workspace {
                                 .child(strip)
                                 .child(div().flex_1().min_h_0().flex().flex_col().child(center)),
                         )
-                        .children(inspector),
+                        .children(inspector)
+                        .children(assistant),
                 )
             })
             .child(status)

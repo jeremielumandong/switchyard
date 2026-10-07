@@ -356,6 +356,8 @@ mod tests {
                 var: Box::new(|_| None),
                 overrides: HashMap::new(),
                 os: Os::Linux,
+                program: Box::new(|_| None),
+                version_of: Box::new(|_| None),
             },
             Box::new(|_| false),
         )

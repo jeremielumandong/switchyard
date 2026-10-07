@@ -359,25 +359,63 @@ faster, and no agent call ever performed a write.
   `live_claude_code_run` (`SWITCHYARD_LIVE_AGENT=claude`; passed with haiku). Not yet on the
   core bus (the assistant panel, M5-15, adds the command). Vault-only systems: `swy mcp`
   needs `SWITCHYARD_VAULT_PASSWORD` in the app's environment (see Follow-ups).
-- [ ] **M5-12 Codex CLI adapter (spike first).** `codex exec --json`, MCP via `[mcp_servers]` in a
+- [x] **M5-12 Codex CLI adapter (spike first).** `codex exec --json`, MCP via `[mcp_servers]` in a
   generated config, resume via `codex exec resume`. Spike: how to auto-approve only Switchyard's MCP
   tools in non-interactive mode without bypassing approvals globally, and how to keep the user's
   existing login when using a generated config. Record the outcome in `docs/DECISIONS.md`.
   Done when: replay tests pass and a live run completes a `describe_table` + `explain` tool sequence.
-- [ ] **M5-13 Gemini CLI adapter.** `gemini -p --output-format stream-json`, MCP via `mcpServers`
+  Note: `agents::codex` (spike outcome in DECISIONS). Tests: `agents/tests/codex_replay.rs`
+  (stream recorded from codex-cli 0.160.1) and `cli/tests/cli.rs`
+  `codex_runs_switchyard_tools_with_a_scripted_model`: the real Codex binary with a mock
+  Responses API (`cli/tests/mock_model`) completes describe_table + explain against the
+  docker PostgreSQL (no OpenAI login exists in this environment for a model-backed run).
+  Run requests gained `extra_args` / `extra_env` (settings; M5-14 uses them).
+- [x] **M5-13 Gemini CLI adapter.** `gemini -p --output-format stream-json`, MCP via `mcpServers`
   in a generated `.gemini/settings.json` inside the temp workdir, resume support.
   Done when: replay tests pass and a live run completes the same tool sequence.
-- [ ] **M5-14 Custom adapter, detection, picker.** User-defined command template, plain-text or
+  Note: `agents::gemini` (workspace settings, admin policy, `GEMINI.md`, session-file resume;
+  see DECISIONS). Tests: `agents/tests/gemini_replay.rs` (recorded from Gemini CLI 0.63) and
+  `cli/tests/cli.rs` `gemini_runs_switchyard_tools_with_a_scripted_model`: the real Gemini
+  binary with a mock Gemini API completes describe_table + explain against the docker
+  PostgreSQL, and a follow-up continues the conversation. No Google login here for a
+  model-backed run.
+- [x] **M5-14 Custom adapter, detection, picker.** User-defined command template, plain-text or
   JSONL field mapping, MCP config template. Detection of installed CLIs with version ranges and
   install hints via the Driver Manager. Agent picker in the assistant panel; default in
   Settings → Assistant; per-connection override. "Open in terminal" launches the selected CLI
   interactively in a terminal tab with the MCP server attached.
   Done when: each CLI shows as installed / missing / unsupported version correctly.
-- [ ] **M5-15 Assistant panel.** Optimize button on plan view and editor, streaming answer with
+  Note: `agents::custom` (argument and MCP config templates with placeholders, prompt as argument
+  or on stdin, plain text or JSON-lines output mapped by JSON pointers, interactive arguments).
+  Driver Manager: `claude-code` (≥ 2.1, < 3), `codex-cli` (≥ 0.160, < 1), `gemini-cli` (≥ 0.63,
+  < 1) found on PATH and common install folders, version from `--version`; new status
+  "Untested version" (TooNew) beside Too old / Not installed; install hints per OS. Settings →
+  Assistant (default CLI with its status, path / model / extra arguments per CLI, the custom
+  CLI); per-connection "Assistant CLI" in the connection editor; the panel's own picker is in
+  M5-15. Core: `Command::RunAgent` / `CancelAgent` / `OpenAgentTerminal`, `Event::Agent`;
+  runs are scoped to the asked-about connection (refused without agent access). "Open in
+  terminal" starts the CLI interactively (same restrictions, `AgentAdapter::interactive`) in a
+  local terminal whose exit revokes the token and removes the run directory. Tests:
+  `drivers` detection (installed / missing / too old / untested, user path), `agents` custom
+  adapter, `core/tests/assistant.rs` (settings, per-connection choice, refusal, cancel,
+  missing CLI, Open in terminal).
+- [x] **M5-15 Assistant panel.** Optimize button on plan view and editor, streaming answer with
   tool calls, suggestion cards with Compare plan and Open in editor, follow-up input, Plan a query
   mode.
   Done when: each suggestion type can be compared and opened with every adapter; agent calls show
   in history with the right `agent:<id>` tag.
+  Note: `app/assistant_panel.rs`, right of the inspector (Ctrl/Cmd+J, palette "Toggle
+  Assistant", "Optimize Statement at Cursor", "Plan a Query…"). "Optimize ✦" in the editor and
+  plan view sends the statement and its findings; the CLI picker cycles the default / per-
+  connection choice; follow-ups resume the CLI's session; Stop cancels; "Terminal" opens the
+  CLI interactively (M5-14). Answers render prose and code blocks; each ```sql block becomes a
+  card by kind: Index → "Compare plan (hypothetical)" (HypoPG what-if on PostgreSQL), Statistics
+  → "Re-plan & compare" (the user runs the statement), Rewrite → "Compare plan" / "Show plan"
+  (estimated plans, base vs suggestion in the plan view's compare); every card has "Open in
+  editor". Cards come from the normalized `AgentEvent::Text`, so they work the same for every
+  adapter (replay tests cover each parser; history tags `agent:<cli>` by the M5-12/13 tests).
+  Checked under Xvfb with a scripted CLI. Deferred: in-app approval for agent ANALYZE (still
+  refused), UI tests (Follow-ups).
 
 ## Extra — API workspace, Snowflake, Oracle (user request)
 
@@ -505,6 +543,10 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   running app's unlocked secrets over the loopback handoff, scoped by the session token.
 
 (Add items here instead of doing them mid-task.)
+- Agent actual plans: approval prompt in the app for `explain` with ANALYZE / STATISTICS XML
+  from an agent (the MCP server refuses them until then).
+- Assistant panel: markdown is prose + code blocks only (no bold/lists/tables); GPUI tests
+  for the panel and Assistant settings.
 - Oracle: EXPLAIN PLAN / DBMS_XPLAN → `PlanNode`; V$SQL workload view; arm64 Linux archive;
   CI job with the `oracle` compose profile + Instant Client; TCPS / wallet sign-in.
 - Snowflake: `EXPLAIN USING JSON` → `PlanNode`; QUERY_HISTORY / ACCESS_HISTORY workload view;

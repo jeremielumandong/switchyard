@@ -36,6 +36,15 @@ pub enum ComponentStatus {
         /// How it was found.
         source: Source,
     },
+    /// Found, but a newer version than Switchyard supports (an untested major).
+    TooNew {
+        /// Version found.
+        version: String,
+        /// First unsupported version.
+        supported_below: String,
+        /// Where.
+        location: String,
+    },
     /// Found, but older than the manifest's minimum.
     TooOld {
         /// Version found.
@@ -59,6 +68,12 @@ impl ComponentStatus {
 /// Reads an environment variable.
 pub type EnvLookup = Box<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
+/// Finds an executable by name.
+pub type ProgramLookup = Box<dyn Fn(&str) -> Option<PathBuf> + Send + Sync>;
+
+/// A program's `--version` output.
+pub type VersionProbe = Box<dyn Fn(&Path) -> Option<String> + Send + Sync>;
+
 /// What detection looks at; tests replace every part of it.
 pub struct DetectEnv {
     /// App-managed driver directory.
@@ -71,6 +86,10 @@ pub struct DetectEnv {
     pub overrides: HashMap<String, PathBuf>,
     /// Operating system.
     pub os: Os,
+    /// Executable lookup (PATH and common install folders).
+    pub program: ProgramLookup,
+    /// Runs `<program> --version`.
+    pub version_of: VersionProbe,
 }
 
 impl std::fmt::Debug for DetectEnv {
@@ -117,7 +136,124 @@ impl DetectEnv {
             var: Box::new(|k| std::env::var(k).ok()),
             overrides: HashMap::new(),
             os,
+            program: Box::new(find_program),
+            version_of: Box::new(program_version),
         }
+    }
+}
+
+/// Folders searched after PATH: desktop-launched apps often miss npm and Homebrew.
+fn program_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    dirs.extend(["/usr/local/bin", "/opt/homebrew/bin"].map(PathBuf::from));
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    if let Some(h) = home.map(PathBuf::from) {
+        for d in [
+            ".local/bin",
+            ".npm-global/bin",
+            ".claude/local",
+            ".volta/bin",
+            ".bun/bin",
+        ] {
+            dirs.push(h.join(d));
+        }
+    }
+    if let Some(a) = std::env::var_os("APPDATA") {
+        dirs.push(PathBuf::from(a).join("npm"));
+    }
+    dirs
+}
+
+/// `name` on PATH or in a common install folder (Windows: `.exe`, `.cmd`, `.bat`).
+pub fn find_program(name: &str) -> Option<PathBuf> {
+    let exts: &[&str] = if cfg!(windows) {
+        &["exe", "cmd", "bat"]
+    } else {
+        &[""]
+    };
+    program_dirs().into_iter().find_map(|d| {
+        exts.iter()
+            .map(|e| {
+                let p = d.join(name);
+                if e.is_empty() { p } else { p.with_extension(e) }
+            })
+            .find(|p| p.is_file())
+    })
+}
+
+/// `<program> --version`, given up after 10 s.
+pub fn program_version(program: &Path) -> Option<String> {
+    let mut child = std::process::Command::new(program)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    let mut out = String::new();
+    std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out).ok()?;
+    version::parse_version(&out)
+}
+
+/// A coding CLI: found on PATH (or the user's path) and checked against the version range.
+fn detect_program(spec: &ComponentSpec, env: &DetectEnv) -> ComponentStatus {
+    let found = env
+        .overrides
+        .get(&spec.id)
+        .filter(|p| p.is_file())
+        .map(|p| (p.clone(), Source::UserPath))
+        .or_else(|| {
+            spec.detect
+                .programs
+                .iter()
+                .find_map(|n| (env.program)(n))
+                .map(|p| (p, Source::System))
+        });
+    let Some((path, source)) = found else {
+        return ComponentStatus::Missing;
+    };
+    let location = path.display().to_string();
+    let version = (env.version_of)(&path);
+    if let Some(v) = &version {
+        if let Some(min) = spec.detect.min_version.as_deref()
+            && !version::at_least(v, min)
+        {
+            return ComponentStatus::TooOld {
+                version: v.clone(),
+                required: min.to_owned(),
+                location,
+            };
+        }
+        if let Some(below) = spec.detect.below_version.as_deref()
+            && version::at_least(v, below)
+        {
+            return ComponentStatus::TooNew {
+                version: v.clone(),
+                supported_below: below.to_owned(),
+                location,
+            };
+        }
+    }
+    ComponentStatus::Installed {
+        version,
+        location,
+        source,
     }
 }
 
@@ -160,6 +296,9 @@ fn lib_dir(spec: &ComponentSpec, os: Os, root: &Path) -> PathBuf {
 
 /// Detect one component.
 pub fn detect(spec: &ComponentSpec, env: &DetectEnv) -> ComponentStatus {
+    if !spec.detect.programs.is_empty() {
+        return detect_program(spec, env);
+    }
     let libs = &spec.detect.libraries;
     let min = spec.detect.min_version.as_deref();
 
@@ -264,6 +403,8 @@ mod tests {
             var: Box::new(|_| None),
             overrides: HashMap::new(),
             os: Os::Linux,
+            program: Box::new(|_| None),
+            version_of: Box::new(|_| None),
         }
     }
 
@@ -378,5 +519,118 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// A machine where `programs` maps CLI names to (path, version output).
+    fn cli_env(programs: &[(&'static str, &'static str, &'static str)]) -> DetectEnv {
+        let t = std::env::temp_dir();
+        let mut e = env(&t);
+        let found: Vec<(String, PathBuf, String)> = programs
+            .iter()
+            .map(|(n, p, v)| ((*n).to_owned(), PathBuf::from(p), (*v).to_owned()))
+            .collect();
+        let f2 = found.clone();
+        e.program = Box::new(move |name| {
+            found
+                .iter()
+                .find(|(n, _, _)| n == name)
+                .map(|(_, p, _)| p.clone())
+        });
+        e.version_of = Box::new(move |path| {
+            f2.iter()
+                .find(|(_, p, _)| p == path)
+                .and_then(|(_, _, v)| version::parse_version(v))
+        });
+        e
+    }
+
+    #[test]
+    fn coding_clis_installed_missing_and_unsupported() {
+        let m = Manifest::bundled();
+        let spec = |id: &str| m.component(id).unwrap().clone();
+        let (claude, codex, gemini) = (spec("claude-code"), spec("codex-cli"), spec("gemini-cli"));
+
+        let none = cli_env(&[]);
+        for s in [&claude, &codex, &gemini] {
+            assert_eq!(detect(s, &none), ComponentStatus::Missing, "{}", s.id);
+        }
+
+        let good = cli_env(&[
+            ("claude", "/usr/bin/claude", "2.1.292 (Claude Code)"),
+            ("codex", "/usr/bin/codex", "codex-cli 0.160.1"),
+            ("gemini", "/usr/bin/gemini", "0.63.0"),
+        ]);
+        for (s, v) in [
+            (&claude, "2.1.292"),
+            (&codex, "0.160.1"),
+            (&gemini, "0.63.0"),
+        ] {
+            assert_eq!(
+                detect(s, &good),
+                ComponentStatus::Installed {
+                    version: Some(v.into()),
+                    location: format!("/usr/bin/{}", s.detect.programs[0]),
+                    source: Source::System,
+                },
+                "{}",
+                s.id
+            );
+        }
+
+        let old = cli_env(&[
+            ("claude", "/usr/bin/claude", "1.0.40 (Claude Code)"),
+            ("codex", "/usr/bin/codex", "codex-cli 0.12.0"),
+            ("gemini", "/usr/bin/gemini", "0.9.1"),
+        ]);
+        for s in [&claude, &codex, &gemini] {
+            assert!(
+                matches!(detect(s, &old), ComponentStatus::TooOld { .. }),
+                "{}",
+                s.id
+            );
+        }
+
+        let new = cli_env(&[
+            ("claude", "/usr/bin/claude", "3.0.1 (Claude Code)"),
+            ("codex", "/usr/bin/codex", "codex-cli 1.2.0"),
+            ("gemini", "/usr/bin/gemini", "1.0.0"),
+        ]);
+        for s in [&claude, &codex, &gemini] {
+            assert!(
+                matches!(detect(s, &new), ComponentStatus::TooNew { .. }),
+                "{}",
+                s.id
+            );
+        }
+
+        // A version that cannot be read still counts as installed (shown without one).
+        let odd = cli_env(&[("codex", "/usr/bin/codex", "codex (dev build)")]);
+        assert!(matches!(
+            detect(&codex, &odd),
+            ComponentStatus::Installed { version: None, .. }
+        ));
+    }
+
+    #[test]
+    fn a_chosen_cli_path_wins() {
+        let t = tempfile::tempdir().unwrap();
+        let mine = t.path().join("my-claude");
+        std::fs::write(&mine, "").unwrap();
+        let mut e = cli_env(&[("claude", "/usr/bin/claude", "2.1.0")]);
+        e.overrides.insert("claude-code".into(), mine.clone());
+        let mine2 = mine.clone();
+        e.version_of = Box::new(move |p| (p == mine2).then(|| "2.2.0".into()));
+        let s = Manifest::bundled()
+            .component("claude-code")
+            .unwrap()
+            .clone();
+        assert_eq!(
+            detect(&s, &e),
+            ComponentStatus::Installed {
+                version: Some("2.2.0".into()),
+                location: mine.display().to_string(),
+                source: Source::UserPath,
+            }
+        );
     }
 }

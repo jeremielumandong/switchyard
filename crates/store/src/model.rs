@@ -357,6 +357,10 @@ pub struct DbConnection {
     /// Allow coding agents (MCP) to use this connection.
     #[serde(default)]
     pub agent_access: bool,
+    /// The assistant's coding CLI for this connection (`claude-code`, `codex`, `gemini`,
+    /// `custom`); `None` uses the default from Settings → Assistant.
+    #[serde(default)]
+    pub assistant_agent: Option<String>,
     /// Rows fetched before pausing (None = app default).
     #[serde(default)]
     pub fetch_limit: Option<u64>,
@@ -402,6 +406,7 @@ impl DbConnection {
             read_only: false,
             history_enabled: true,
             agent_access: false,
+            assistant_agent: None,
             fetch_limit: None,
             folder: None,
             secret: None,

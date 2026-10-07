@@ -56,6 +56,13 @@ pub enum SqlTabEvent {
     PromptParams(PendingRun),
     /// The tab's title, dirty state or connection changed.
     Changed,
+    /// Ask the assistant to optimize a statement (findings from the plan, if any).
+    Optimize {
+        /// The statement.
+        sql: String,
+        /// The plan's findings, one line each.
+        findings: Vec<String>,
+    },
 }
 
 /// Statements waiting for a confirmation or parameter values.
@@ -586,6 +593,43 @@ impl SqlTab {
         cx.notify();
     }
 
+    /// Ask the assistant about the statement at the cursor.
+    pub fn optimize(&mut self, cx: &mut Context<Self>) {
+        let statements = self.statements_at_cursor(cx);
+        let Some(first) = statements.first() else {
+            cx.emit(SqlTabEvent::Toast("Nothing to optimize".into()));
+            return;
+        };
+        if self.connection.is_none() {
+            cx.emit(SqlTabEvent::PickConnection);
+            return;
+        }
+        cx.emit(SqlTabEvent::Optimize {
+            sql: first.sql.clone(),
+            findings: Vec::new(),
+        });
+    }
+
+    /// An assistant suggestion card: compare plans in this tab's plan view.
+    pub fn assistant_compare(
+        &mut self,
+        base: Option<String>,
+        then: crate::plan_view::AfterPlan,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(session) = self.session.filter(|_| self.connection.is_some()) else {
+            cx.emit(SqlTabEvent::Toast(
+                "Connect this tab to compare plans".into(),
+            ));
+            return;
+        };
+        self.show_plan = true;
+        self.export_open = false;
+        self.plan
+            .update(cx, |v, cx| v.assistant_compare(session, base, then, cx));
+        cx.notify();
+    }
+
     /// Show the plan stored with a history entry.
     pub fn open_saved_plan(&mut self, history_id: i64, cx: &mut Context<Self>) {
         self.show_plan = true;
@@ -602,6 +646,10 @@ impl SqlTab {
         match ev {
             PlanViewEvent::Toast(t) => cx.emit(SqlTabEvent::Toast(t.clone())),
             PlanViewEvent::Rerun(req) => self.send_explain(req.clone(), cx),
+            PlanViewEvent::Optimize { sql, findings } => cx.emit(SqlTabEvent::Optimize {
+                sql: sql.clone(),
+                findings: findings.clone(),
+            }),
             PlanViewEvent::Highlight {
                 sql,
                 offset,
@@ -1458,6 +1506,10 @@ impl SqlTab {
                     p,
                 )
                 .on_click(cx.listener(|this, _, w, cx| this.explain(true, w, cx))),
+            )
+            .child(
+                ui::button("optimize", "Optimize ✦", Kind::Secondary, p)
+                    .on_click(cx.listener(|this, _, _, cx| this.optimize(cx))),
             )
             .child(ui::vdivider(p, 18.))
             .child(ui::segmented(
