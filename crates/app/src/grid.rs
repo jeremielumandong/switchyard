@@ -67,6 +67,12 @@ impl GridDelegate {
         }
     }
 
+    /// Width of the pinned row-number column; it grows with the row count.
+    pub fn row_number_width(&self) -> Pixels {
+        let digits = thousands(self.data.len().max(1) as u64).len() as f32;
+        px((digits * 7.5 + 22.0).max(44.0))
+    }
+
     /// The data column shown at table column `table_col` (0 is the row-number column).
     pub fn data_col(&self, table_col: usize) -> Option<usize> {
         table_col
@@ -282,9 +288,8 @@ impl TableDelegate for GridDelegate {
 
     fn column(&self, col_ix: usize, _cx: &App) -> Column {
         if col_ix == 0 {
-            let digits = thousands(self.data.len().max(1) as u64).len() as f32;
             return Column::new("#", "#")
-                .width(px((digits * 7.5 + 22.0).max(44.0)))
+                .width(self.row_number_width())
                 .text_right()
                 .fixed_left()
                 .resizable(false)
