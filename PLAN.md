@@ -327,13 +327,21 @@ faster, and no agent call ever performed a write.
   `hypopg_reset()` before and after, also on error), `Command::WhatIf`; plan view "What if…"
   pre-filled from findings' CREATE INDEX suggestions, results open in the compare view. Test:
   cost of `total = 123.45` on 1M orders drops >10× and `pg_indexes` is unchanged.
-- [ ] **M5-9 `swy` CLI.** `clap` binary with `connections`, `query`, `explain [--analyze] [--open]`,
+- [x] **M5-9 `swy` CLI.** `clap` binary with `connections`, `query`, `explain [--analyze] [--open]`,
   `workload`; table, CSV and JSON output; `--open` hands off to the running app.
   Done when: CLI integration tests against docker for each command.
-- [ ] **M5-10 MCP server.** `swy mcp` over stdio with `rmcp`: tools from SPEC "MCP tools" with every
+  Note: `crates/cli` drives the shared core over its bus (scripts split by the dialect,
+  Production confirmation via `--yes`); `--open` uses a loopback handoff (token file in the
+  data dir, `core::handoff`). Keychain-less use: `SWITCHYARD_SECRETS=vault` +
+  `SWITCHYARD_VAULT_PASSWORD`. Tests: `crates/cli/tests/cli.rs`.
+- [x] **M5-10 MCP server.** `swy mcp` over stdio with `rmcp`: tools from SPEC "MCP tools" with every
   guard from CLAUDE.md "Agent safety rules"; per-connection agent access setting in the app.
   Done when: tests prove writes are rejected, row caps and timeouts hold, Production is hidden by
   default, and no tool output contains hostnames or secrets.
+  Note: hand-rolled stdio JSON-RPC (ported from Emulsion, see DECISIONS) instead of `rmcp`.
+  Tools: list_connections, list_tables, describe_table, run_query, explain (estimated
+  only; ANALYZE refused until M5-14's approval), workload, what_if. "Allow coding agents"
+  checkbox in the connection editor. Session token scoping is M5-11.
 - [ ] **M5-11 Agent adapter core + Claude Code.** In `switchyard-agents`: `AgentAdapter` trait and normalized
   `AgentEvent` stream; shared runner (temp workdir, session token for `swy mcp`, child process, cancel kills the
   process tree, cleanup). Claude Code adapter: `claude -p --output-format stream-json

@@ -16,6 +16,7 @@ use gpui_kit::{
     px,
 };
 use switchyard_core::drivers::Component;
+use switchyard_core::handoff::Handoff;
 use switchyard_core::store::{
     BufferState, DbConnection, EnvironmentLabel, HistoryEntry, Profile, ProfileId,
     Workspace as SavedWorkspace,
@@ -532,6 +533,12 @@ impl Workspace {
                     });
                 }
             }
+            Event::Handoff(Handoff::OpenPlan { history_id, sql }) => {
+                self.open_saved_plan(history_id, &sql, window, cx);
+                window.activate_window();
+            }
+            // Agent queries come from `swy mcp`, which reads its own events.
+            Event::AgentRows { .. } => {}
             Event::PlanFailed {
                 request,
                 error,

@@ -22,6 +22,11 @@ pub type EventReceiver = fmpsc::UnboundedReceiver<Event>;
 pub struct EventSender(fmpsc::UnboundedSender<Event>);
 
 impl EventSender {
+    /// A sender over `tx`.
+    pub(crate) fn new(tx: fmpsc::UnboundedSender<Event>) -> Self {
+        Self(tx)
+    }
+
     /// Emit an event (dropped silently if the UI is gone).
     pub fn emit(&self, event: Event) {
         let _ = self.0.unbounded_send(event);
@@ -91,7 +96,7 @@ impl Core {
             .map_err(|e| CoreError::Startup(e.to_string()))?;
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (ev_tx, ev_rx) = fmpsc::unbounded();
-        let events = EventSender(ev_tx);
+        let events = EventSender::new(ev_tx);
         let service = {
             let _guard = runtime.enter();
             Service::new(config, events.clone())?

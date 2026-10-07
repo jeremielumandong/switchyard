@@ -8985,8 +8985,11 @@ dependencies = [
  "anyhow",
  "clap",
  "futures",
+ "secrecy",
+ "serde",
  "serde_json",
  "switchyard-core",
+ "tempfile",
  "tokio",
  "tracing-subscriber",
 ]

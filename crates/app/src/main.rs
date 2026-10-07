@@ -37,7 +37,7 @@ use anyhow::{Context as _, Result};
 use gpui_kit::component::TitleBar;
 use gpui_kit::{App, AppContext as _, Bounds, Global, WindowBounds, WindowOptions, px, size};
 use switchyard_core::store::AppPaths;
-use switchyard_core::{Core, ServiceConfig};
+use switchyard_core::{Command, Core, ServiceConfig};
 use tracing_subscriber::EnvFilter;
 
 /// Keeps the core runtime alive for the life of the app.
@@ -84,6 +84,10 @@ fn main() -> Result<()> {
 
     let (core, events) = Core::start(ServiceConfig::from_paths(&paths))?;
     let handle = core.handle();
+    // `swy explain --open` hands plans to this app over a loopback socket.
+    handle.send(Command::StartHandoff {
+        data_dir: paths.data.clone(),
+    });
 
     gpui_kit::application()
         .with_assets(gpui_kit::assets::Assets)

@@ -42,11 +42,15 @@ use crate::bus::{
 use crate::error::{CoreError, Result};
 use crate::runtime::EventSender;
 
+pub mod agent;
+
 /// Where secrets go.
 #[derive(Clone, Debug)]
 pub enum SecretBackendChoice {
     /// OS keychain if available, else the vault at this path.
     Auto(PathBuf),
+    /// The local vault at this path, even when a keychain exists (`SWITCHYARD_SECRETS=vault`).
+    Vault(PathBuf),
     /// In-memory (tests, demos).
     Memory,
 }
@@ -90,6 +94,7 @@ impl ServiceConfig {
     pub fn from_paths(paths: &AppPaths) -> Self {
         let secrets = match std::env::var("SWITCHYARD_SECRETS").as_deref() {
             Ok("memory") => SecretBackendChoice::Memory,
+            Ok("vault") => SecretBackendChoice::Vault(paths.vault_file()),
             _ => SecretBackendChoice::Auto(paths.vault_file()),
         };
         let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
@@ -188,6 +193,10 @@ impl Service {
                         let v = Arc::new(VaultStore::new(vault_path));
                         (v.clone(), Some(v))
                     }
+                }
+                SecretBackendChoice::Vault(vault_path) => {
+                    let v = Arc::new(VaultStore::new(vault_path));
+                    (v.clone(), Some(v))
                 }
             };
         info!(backend = secrets.backend(), "secret backend selected");
@@ -546,6 +555,31 @@ impl Service {
                 request,
                 history_id,
             } => self.load_plan(request, history_id).await,
+            Command::AgentQuery {
+                session,
+                query,
+                sql,
+                row_cap,
+                timeout,
+                tags,
+            } => {
+                let span = info_span!("agent_query", query, session);
+                self.agent_query(session, query, sql, row_cap, timeout, tags)
+                    .instrument(span)
+                    .await
+            }
+            Command::StartHandoff { data_dir } => {
+                tokio::spawn(crate::handoff::serve(
+                    crate::handoff::handoff_file(&data_dir),
+                    self.events.clone(),
+                ));
+            }
+            Command::RecordAgentCall {
+                session,
+                summary,
+                error,
+                tags,
+            } => self.record_agent_call(session, summary, error, tags).await,
             Command::Workload { session, request } => {
                 let span = info_span!("workload", request, session);
                 self.workload(session, request).instrument(span).await

@@ -82,6 +82,7 @@ jobs:
       - run: cargo test -p switchyard-db --lib --test pg --test d1 -- --ignored --test-threads 1
       - run: cargo test -p switchyard-plan --test capture -- --ignored --test-threads 1 postgres
       - run: cargo test -p switchyard-plan --test access -- --ignored --test-threads 1 --skip sql_server
+      - run: cargo test -p switchyard-cli --test cli -- --ignored --test-threads 1 --skip sql_server
       # Named targets: core's `integrated` test needs the Kerberos realm and SQL Server,
       # so it runs in the SQL Server job.
       - run: >-
@@ -134,6 +135,9 @@ jobs:
         env:
           SWITCHYARD_MSSQL_CA: /tmp/switchyard-mssql/ca.pem
       - run: cargo test -p switchyard-plan --test access -- --ignored --test-threads 1 sql_server
+        env:
+          SWITCHYARD_MSSQL_CA: /tmp/switchyard-mssql/ca.pem
+      - run: cargo test -p switchyard-cli --test cli -- --ignored --test-threads 1 sql_server
         env:
           SWITCHYARD_MSSQL_CA: /tmp/switchyard-mssql/ca.pem
       - name: Kerberos test realm

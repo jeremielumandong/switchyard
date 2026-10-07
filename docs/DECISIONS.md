@@ -635,3 +635,34 @@ full port in one go; Snowflake through its SQL REST API with key-pair (JWT) auth
   versioned URLs and SHA-256 in the bundled manifest; macOS ships a .dmg, so that platform
   is guided (*Use existing path*).
 
+## 2026-10-07 — `swy` CLI and MCP server (M5-9 / M5-10)
+
+- One core: `swy` starts `switchyard-core` on the user's profile store and talks to it over
+  the same command/event bus as the app, so guards, history and connection handling are
+  shared. Ids it allocates start at 2^40, clear of the app's.
+- Secrets without a keychain: `SWITCHYARD_SECRETS=vault` forces the fallback vault and
+  `SWITCHYARD_VAULT_PASSWORD` unlocks it (CI, servers, tests). The password is never logged.
+- `swy explain --open`: the app listens on 127.0.0.1 (random port) and writes
+  `<data>/handoff.json` (owner-only) with the port and a random token; `swy` sends one
+  JSON line with the token and the history id. A stale file shows as "not running" and the
+  plan stays in history. No new dependency.
+- MCP tools (the SPEC lists none): `list_connections`, `list_tables`, `describe_table`,
+  `run_query`, `explain`, `workload`, `what_if`. All read-only; annotated `readOnlyHint`.
+- Agent access = the per-connection `agent_access` flag, off by default. Production is
+  visible only when that flag is turned on for it ("explicitly enabled"); the editor says
+  what that allows. Actual plans are refused for every connection until the in-app
+  approval (M5-14) exists.
+- `run_query`: `is_single_select` (sqlparser), then the core's agent query: PostgreSQL and
+  Oracle `BEGIN` + `SET TRANSACTION READ ONLY`, SQL Server `BEGIN`, always rolled back;
+  refused while the session has an open transaction. Row cap 200 by default, 1,000 max;
+  timeout 30 s by default, 120 s max, after which the statement is cancelled on the server.
+  D1 and Snowflake have no read-only transaction here and rely on the SELECT check.
+- `explain` and `what_if` take one query or DML statement (`is_single_plannable`); estimated
+  plans do not execute it. PostgreSQL still checks DML privileges while planning.
+- Scrubbing: every tool result and error passes through a scrubber holding the server,
+  `server:port` and user of every saved database connection and the address and user of
+  every SSH Host (whole-word, case-insensitive). Database names are not shown either.
+- History: `run_query` writes its own entry; other tools send `RecordAgentCall` (explain
+  relies on the core's plan entry when history is on). Tags: `agent` plus `agent:<cli>`
+  from `SWITCHYARD_AGENT` (`claude-code`, `codex`, `gemini`, otherwise `custom`).
+
