@@ -13,8 +13,12 @@ use std::time::{Duration, Instant};
 use futures::StreamExt as _;
 use secrecy::SecretString;
 use serde_json::{Value, json};
+use switchyard_core::agent_run::{
+    AgentRunRequest, SessionToken, TOKEN_ENV, TOKEN_TTL, start_agent_run,
+};
+use switchyard_core::agents::{AgentEvent, AgentKind};
 use switchyard_core::db::{Engine, SslMode};
-use switchyard_core::store::{AppPaths, DbConnection, EnvironmentLabel, Profile, Store};
+use switchyard_core::store::{AppPaths, DbConnection, EnvironmentLabel, Profile, ProfileId, Store};
 use switchyard_core::{Command, Core, Event, SecretBackendChoice, ServiceConfig};
 
 const VAULT_PASSWORD: &str = "test vault password";
@@ -140,10 +144,14 @@ impl Home {
     }
 
     fn mcp(&self) -> Mcp {
+        self.mcp_env(&[("SWITCHYARD_AGENT", "claude-code")])
+    }
+
+    fn mcp_env(&self, env: &[(&str, &str)]) -> Mcp {
         let mut child = self
             .cmd()
             .arg("mcp")
-            .env("SWITCHYARD_AGENT", "claude-code")
+            .envs(env.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -161,6 +169,22 @@ impl Home {
         let init = m.request("initialize", json!({}));
         assert_eq!(init["serverInfo"]["name"], "switchyard");
         m
+    }
+
+    fn data_dir(&self) -> std::path::PathBuf {
+        AppPaths::under(self.dir.path().to_owned(), false).data
+    }
+
+    fn id(&self, name: &str) -> ProfileId {
+        self.store()
+            .profiles()
+            .unwrap()
+            .into_iter()
+            .find_map(|p| match p {
+                Profile::Db(d) if d.name == name => Some(d.id),
+                _ => None,
+            })
+            .unwrap()
     }
 
     fn store(&self) -> Store {
@@ -632,4 +656,142 @@ async fn mcp_sql_server_read_only_capped_and_timed() {
     );
     assert!(!err, "{text}");
     assert!(text.starts_with("Estimated plan"), "{text}");
+}
+
+#[tokio::test]
+#[ignore = "needs docker"]
+async fn mcp_session_token_scopes_and_revokes() {
+    let home = Home::new().await;
+    // "prod" has no agent access, so the token cannot open it; "prod-agents" is not in it.
+    let token = SessionToken::issue(
+        &home.data_dir(),
+        &[home.id("shop"), home.id("prod")],
+        AgentKind::Codex,
+        TOKEN_TTL,
+    )
+    .unwrap();
+    let mut m = home.mcp_env(&[
+        (TOKEN_ENV, token.expose()),
+        ("SWITCHYARD_AGENT", "claude-code"),
+    ]);
+    let (err, text) = m.call("list_connections", json!({}));
+    assert!(!err, "{text}");
+    let list: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 1, "{list}");
+    assert_eq!(list[0]["name"], "shop");
+    for hidden in ["prod", "prod-agents", "admin"] {
+        let (err, text) = m.call(
+            "run_query",
+            json!({"connection": hidden, "sql": "select 1"}),
+        );
+        assert!(err && text.contains("no connection"), "{hidden}: {text}");
+    }
+    let rows = m.rows(json!({"connection": "shop", "sql": "select 1 as one"}));
+    assert_eq!(rows["rows"][0][0], 1, "{rows}");
+    // The token's agent tags history, whatever SWITCHYARD_AGENT says.
+    let tagged = home
+        .store()
+        .search_history("agent:codex", None, 10)
+        .unwrap();
+    assert!(!tagged.is_empty());
+
+    // Revoked: the running server refuses every call.
+    token.revoke();
+    let (err, text) = m.call("list_connections", json!({}));
+    assert!(err && text.contains("ended"), "{text}");
+
+    // A server started with a dead token does not start.
+    let out = home
+        .cmd()
+        .arg("mcp")
+        .env(TOKEN_ENV, "0123abcd")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("ended"), "{}", stderr(&out));
+}
+
+/// One real Claude Code run against the docker PostgreSQL. Needs `claude` signed in:
+/// `SWITCHYARD_LIVE_AGENT=claude cargo test -p switchyard-cli --test cli live_claude -- --ignored`
+/// (`SWITCHYARD_LIVE_CLAUDE` picks the executable, `SWITCHYARD_LIVE_MODEL` the model).
+#[tokio::test]
+#[ignore = "needs docker and a signed-in Claude Code"]
+async fn live_claude_code_run() {
+    if std::env::var("SWITCHYARD_LIVE_AGENT").as_deref() != Ok("claude") {
+        eprintln!("set SWITCHYARD_LIVE_AGENT=claude to run");
+        return;
+    }
+    let home = Home::new().await;
+    let data = home.data_dir();
+    let home_dir = home.dir.path().to_string_lossy().into_owned();
+    let mut run = start_agent_run(
+        &data,
+        AgentRunRequest {
+            agent: AgentKind::ClaudeCode,
+            program: std::env::var_os("SWITCHYARD_LIVE_CLAUDE").map(Into::into),
+            prompt: "On the connection named \"shop\": call describe_table for the orders table, \
+                     then explain `SELECT * FROM orders WHERE customer_id = 42`. Then list the \
+                     connections you can see. Answer in two sentences: the plan's top \
+                     operation, and the connection names."
+                .into(),
+            resume: None,
+            model: Some(std::env::var("SWITCHYARD_LIVE_MODEL").unwrap_or_else(|_| "haiku".into())),
+            connections: vec![home.id("shop")],
+            swy: Some(env!("CARGO_BIN_EXE_swy").into()),
+            // Test-only: the vault password goes to swy through the config's env block.
+            mcp_env: vec![
+                ("SWITCHYARD_HOME".into(), home_dir),
+                ("SWITCHYARD_SECRETS".into(), "vault".into()),
+                ("SWITCHYARD_VAULT_PASSWORD".into(), VAULT_PASSWORD.into()),
+            ],
+            temp_root: None,
+        },
+    )
+    .unwrap();
+    let mut events = Vec::new();
+    tokio::time::timeout(Duration::from_secs(300), async {
+        while let Some(e) = run.next().await {
+            eprintln!("{e:?}");
+            events.push(e);
+        }
+    })
+    .await
+    .expect("the run finished");
+
+    let tools: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolCall { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(tools.contains(&"describe_table"), "{tools:?}");
+    assert!(tools.contains(&"explain"), "{tools:?}");
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ToolResult { is_error: true, .. })),
+        "a tool failed: {events:?}"
+    );
+    let answer = events
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::Done(s) => Some(s.text.clone()),
+            _ => None,
+        })
+        .expect("an answer");
+    assert!(
+        !answer.contains("prod-agents"),
+        "out-of-scope connection seen: {answer}"
+    );
+    assert!(matches!(events.last(), Some(AgentEvent::Exited(Some(0)))));
+    let history = home
+        .store()
+        .search_history("agent:claude-code", None, 50)
+        .unwrap();
+    assert!(history.len() >= 2, "{}", history.len());
+    // Revoked: no live token files remain.
+    let tokens = data.join("agent-tokens");
+    assert_eq!(std::fs::read_dir(tokens).unwrap().count(), 0);
 }

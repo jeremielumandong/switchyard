@@ -2,7 +2,9 @@
 //!
 //! Safety lives here, not in agent settings (CLAUDE.md, agent safety rules):
 //! - only connections with agent access are visible or usable, so Production stays hidden
-//!   unless someone enabled it on purpose;
+//!   unless someone enabled it on purpose; a run the app started carries a session token
+//!   that narrows this further to the run's connections, and every call checks that the
+//!   token is still live (it is revoked when the run ends);
 //! - `run_query` takes one SELECT/WITH and goes through the core's read-only, rolled-back,
 //!   capped, timed agent query;
 //! - plans are estimated only (an actual plan needs approval in the app); no tool runs DDL;
@@ -17,6 +19,7 @@ use std::fmt::Write as _;
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use switchyard_core::agent_run::{TokenScope, verify_token};
 use switchyard_core::db::guard::{is_single_plannable, is_single_select};
 use switchyard_core::db::{CatalogChunk, IntrospectScope, ObjectKind, dialect_for};
 use switchyard_core::store::{DbConnection, Profile};
@@ -134,12 +137,21 @@ fn replace_word(text: &str, term: &str, with: &str) -> String {
     out
 }
 
+/// An app-started run's session token and what it allows.
+pub struct Session {
+    /// The token, re-checked on every call.
+    pub token: String,
+    /// Its scope when the server started.
+    pub scope: TokenScope,
+}
+
 /// The tools, on one core client.
 pub struct Tools {
     client: Client,
     scrub: Scrubber,
     tags: Vec<String>,
     sessions: HashMap<String, SessionId>,
+    session: Option<Session>,
 }
 
 fn s<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
@@ -164,25 +176,42 @@ fn kind_name(k: ObjectKind) -> &'static str {
 const CONNECTION: &str = "Connection name from list_connections.";
 
 impl Tools {
-    /// Serve `client`'s agent-enabled connections.
-    pub fn new(client: Client) -> Self {
+    /// Serve `client`'s agent-enabled connections, narrowed to `session`'s when given.
+    pub fn new(client: Client, session: Option<Session>) -> Self {
         let scrub = Scrubber::from_profiles(client.profiles());
+        let tag = match &session {
+            Some(s) => s.scope.agent.history_tag().to_owned(),
+            None => agent_tag(),
+        };
         Self {
             client,
             scrub,
-            tags: vec!["agent".into(), agent_tag()],
+            tags: vec!["agent".into(), tag],
             sessions: HashMap::new(),
+            session,
         }
     }
 
     /// Connections agents may see: agent access on (it is off by default, so Production
-    /// shows only when someone enabled it for that connection).
+    /// shows only when someone enabled it for that connection), and in the session's
+    /// scope when there is one.
     fn visible(&self) -> Vec<&DbConnection> {
         self.client
             .connections()
             .into_iter()
             .filter(|c| c.agent_access)
+            .filter(|c| self.session.as_ref().is_none_or(|s| s.scope.allows(&c.id)))
             .collect()
+    }
+
+    /// The session token is still live (always true without one).
+    fn check_session(&self) -> Result<(), String> {
+        match &self.session {
+            Some(s) => verify_token(self.client.data_dir(), &s.token)
+                .map(drop)
+                .map_err(|e| e.to_string()),
+            None => Ok(()),
+        }
     }
 
     fn connection(&self, args: &Value) -> Result<DbConnection, String> {
@@ -575,6 +604,9 @@ impl ToolHost for Tools {
     }
 
     async fn call(&mut self, name: &str, args: &Value) -> ToolResult {
+        if let Err(e) = self.check_session() {
+            return ToolResult::error(e);
+        }
         let r = match name {
             "list_connections" => self.list_connections(),
             "list_tables" => self.list_tables(args).await,

@@ -178,6 +178,12 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
   Claude Code `claude -p --output-format stream-json --mcp-config <json>`, resume `--resume <id>`;
   Codex CLI `codex exec --json`, MCP via `[mcp_servers]` in `config.toml`, resume `codex exec resume <id>`;
   Gemini CLI `gemini -p --output-format stream-json`, MCP via `mcpServers` in `.gemini/settings.json`.
+- Claude Code 2.1 stream-json sends each content block of an assistant message as a separate
+  `assistant` event with the same message id (not a growing message); don't diff by length.
+  A `claude` started from inside a Claude Code session inherits its `CLAUDE_CODE_*`
+  environment (same session id); harmless for tests, but don't assert on the id.
+- procps `kill` ignores a negative pid unless it follows `--`: `kill -TERM -- -<pgid>`.
+  Without it the call succeeds and signals nothing.
 - Codex CLI `exec` has been reported to cancel MCP tool calls that need approval (no one can answer
   the prompt), and a generated `CODEX_HOME` hides the user's stored login. See PLAN task M5-12.
 - Reading `shared_preload_libraries` with `current_setting` fails without `pg_read_all_settings`;

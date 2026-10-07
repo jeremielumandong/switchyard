@@ -19,6 +19,7 @@ switchyard-agents.workspace = true
 tokio.workspace = true
 futures.workspace = true
 secrecy.workspace = true
+sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
