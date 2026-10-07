@@ -566,3 +566,211 @@ async fn agent_on_its_own_socket_with_a_chosen_key() {
     let _ = agent.kill();
     let _ = agent.wait();
 }
+
+/// A local echo server; returns its port.
+async fn echo_server() -> u16 {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = l.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = l.accept().await {
+            tokio::spawn(async move {
+                let mut buf = [0u8; 1024];
+                while let Ok(n) = s.read(&mut buf).await {
+                    if n == 0 || s.write_all(&buf[..n]).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    port
+}
+
+async fn round_trip(s: &mut tokio::net::TcpStream, msg: &[u8]) -> Vec<u8> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    s.write_all(msg).await.unwrap();
+    let mut got = vec![0u8; msg.len()];
+    tokio::time::timeout(Duration::from_secs(10), s.read_exact(&mut got))
+        .await
+        .expect("echo timed out")
+        .unwrap();
+    got
+}
+
+#[tokio::test]
+#[ignore = "needs ssh servers"]
+async fn remote_forward_reaches_a_local_service_and_stops() {
+    use switchyard_remote::ssh::{ForwardKind, ForwardSpec, Tunnel, TunnelStatus};
+    let dir = tempfile::tempdir().unwrap();
+    let m = Arc::new(SshManager::new(
+        known(&dir),
+        Prompter::new(HostKeyDecision::TrustOnce),
+    ));
+    let echo = echo_server().await;
+    let spec = ForwardSpec::Remote {
+        bind_address: "127.0.0.1".into(),
+        bind_port: 0,
+        host: "127.0.0.1".into(),
+        port: echo,
+    };
+    let t = Tunnel::start(
+        7,
+        Some("fwd-1".into()),
+        m,
+        target("rfwd", main_port(), key("id_ed25519")),
+        spec,
+    )
+    .await
+    .unwrap();
+    let server_port = t.port();
+    assert_ne!(server_port, 0, "the server picked a port");
+    // The test sshd runs on this machine, so its listening port is reachable here; the
+    // bytes go client → sshd → forwarded-tcpip channel → Switchyard → echo server.
+    let mut s = tokio::net::TcpStream::connect(("127.0.0.1", server_port))
+        .await
+        .unwrap();
+    assert_eq!(
+        round_trip(&mut s, b"through the server").await,
+        b"through the server"
+    );
+    let info = t.info();
+    assert_eq!(info.kind, ForwardKind::Remote);
+    assert_eq!(info.forward_id.as_deref(), Some("fwd-1"));
+    assert_eq!(info.remote, format!("127.0.0.1:{echo}"));
+    assert_eq!(info.status, TunnelStatus::Active);
+    assert!(info.bytes_up >= 18 && info.bytes_down >= 18, "{info:?}");
+    drop(s);
+
+    t.stop();
+    // The server stops listening once the cancel reaches it.
+    let mut refused = false;
+    for _ in 0..50 {
+        if tokio::net::TcpStream::connect(("127.0.0.1", server_port))
+            .await
+            .is_err()
+        {
+            refused = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(refused, "the server still listens after stop");
+}
+
+#[tokio::test]
+#[ignore = "needs ssh servers"]
+async fn remote_forward_to_a_dead_target_reports_it() {
+    use switchyard_remote::ssh::{ForwardSpec, Tunnel, TunnelStatus};
+    let dir = tempfile::tempdir().unwrap();
+    let m = Arc::new(SshManager::new(
+        known(&dir),
+        Prompter::new(HostKeyDecision::TrustOnce),
+    ));
+    // A port with nothing listening.
+    let dead = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let spec = ForwardSpec::Remote {
+        bind_address: "127.0.0.1".into(),
+        bind_port: 0,
+        host: "127.0.0.1".into(),
+        port: dead,
+    };
+    let t = Tunnel::start(
+        8,
+        None,
+        m,
+        target("rfwd-dead", main_port(), key("id_ed25519")),
+        spec,
+    )
+    .await
+    .unwrap();
+    let s = tokio::net::TcpStream::connect(("127.0.0.1", t.port()))
+        .await
+        .unwrap();
+    let mut status = t.info().status;
+    for _ in 0..50 {
+        if matches!(status, TunnelStatus::Failed(_)) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        status = t.info().status;
+    }
+    assert!(
+        matches!(&status, TunnelStatus::Failed(m) if m.contains(&dead.to_string())),
+        "{status:?}"
+    );
+    drop(s);
+}
+
+#[tokio::test]
+#[ignore = "needs ssh servers"]
+async fn dynamic_forward_is_a_socks_proxy() {
+    use switchyard_remote::ssh::{ForwardKind, ForwardSpec, Tunnel};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let dir = tempfile::tempdir().unwrap();
+    let m = Arc::new(SshManager::new(
+        known(&dir),
+        Prompter::new(HostKeyDecision::TrustOnce),
+    ));
+    let echo = echo_server().await;
+    let spec = ForwardSpec::Dynamic {
+        bind_address: "127.0.0.1".into(),
+        bind_port: 0,
+    };
+    let t = Tunnel::start(
+        9,
+        None,
+        m,
+        target("dfwd", main_port(), key("id_ed25519")),
+        spec,
+    )
+    .await
+    .unwrap();
+    assert_eq!(t.info().kind, ForwardKind::Dynamic);
+    assert_eq!(t.info().remote, "SOCKS");
+
+    // SOCKS5 with a domain name, resolved by the server.
+    let mut s = tokio::net::TcpStream::connect(t.local()).await.unwrap();
+    s.write_all(&[5, 1, 0]).await.unwrap();
+    let mut greet = [0u8; 2];
+    s.read_exact(&mut greet).await.unwrap();
+    assert_eq!(greet, [5, 0]);
+    let mut req = vec![5, 1, 0, 3, 9];
+    req.extend_from_slice(b"localhost");
+    req.extend_from_slice(&echo.to_be_bytes());
+    s.write_all(&req).await.unwrap();
+    let mut rep = [0u8; 10];
+    s.read_exact(&mut rep).await.unwrap();
+    assert_eq!(rep[1], 0, "SOCKS5 CONNECT succeeded: {rep:?}");
+    assert_eq!(round_trip(&mut s, b"socks5").await, b"socks5");
+
+    // SOCKS4 to an IPv4 address.
+    let mut s4 = tokio::net::TcpStream::connect(t.local()).await.unwrap();
+    let mut req = vec![4, 1];
+    req.extend_from_slice(&echo.to_be_bytes());
+    req.extend_from_slice(&[127, 0, 0, 1, 0]);
+    s4.write_all(&req).await.unwrap();
+    let mut rep = [0u8; 8];
+    s4.read_exact(&mut rep).await.unwrap();
+    assert_eq!(rep[1], 0x5A);
+    assert_eq!(round_trip(&mut s4, b"socks4").await, b"socks4");
+
+    // A target the server cannot reach is refused, not hung.
+    let dead = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap().port()
+    };
+    let mut s5 = tokio::net::TcpStream::connect(t.local()).await.unwrap();
+    s5.write_all(&[5, 1, 0]).await.unwrap();
+    s5.read_exact(&mut greet).await.unwrap();
+    let mut req = vec![5, 1, 0, 1, 127, 0, 0, 1];
+    req.extend_from_slice(&dead.to_be_bytes());
+    s5.write_all(&req).await.unwrap();
+    let mut rep = [0u8; 10];
+    s5.read_exact(&mut rep).await.unwrap();
+    assert_ne!(rep[1], 0);
+    t.stop();
+}
