@@ -11,6 +11,9 @@ pub enum Flavor {
     TSql,
     /// SQLite (Cloudflare D1): `"ident"`, `[ident]`, `` `ident` ``, flat block comments.
     Sqlite,
+    /// Snowflake: `'..'` with backslash escapes, `"ident"`, `$$` bodies, `//` comments,
+    /// flat block comments.
+    Snowflake,
 }
 
 /// Kind of a lexical segment.
@@ -59,7 +62,9 @@ pub fn segments(sql: &str, flavor: Flavor) -> Vec<Segment> {
         let c = b[i];
         let next = if i + 1 < n { b[i + 1] } else { 0 };
         // Start of a non-code segment?
-        let (kind, end) = if c == b'-' && next == b'-' {
+        let (kind, end) = if (c == b'-' && next == b'-')
+            || (c == b'/' && next == b'/' && flavor == Flavor::Snowflake)
+        {
             let end = sql[i..].find('\n').map_or(n, |p| i + p);
             (SegKind::Comment, end)
         } else if c == b'/' && next == b'*' {
@@ -70,7 +75,7 @@ pub fn segments(sql: &str, flavor: Flavor) -> Vec<Segment> {
                 if b[j] == b'/'
                     && j + 1 < n
                     && b[j + 1] == b'*'
-                    && (depth == 0 || flavor != Flavor::Sqlite)
+                    && (depth == 0 || !matches!(flavor, Flavor::Sqlite | Flavor::Snowflake))
                 {
                     depth += 1;
                     j += 2;
@@ -87,10 +92,11 @@ pub fn segments(sql: &str, flavor: Flavor) -> Vec<Segment> {
             }
             (SegKind::Comment, end)
         } else if c == b'\'' {
-            let backslash = flavor == Flavor::Postgres
-                && i > 0
-                && (b[i - 1] == b'E' || b[i - 1] == b'e')
-                && (i < 2 || !is_ident_char(b[i - 2]));
+            let backslash = flavor == Flavor::Snowflake
+                || (flavor == Flavor::Postgres
+                    && i > 0
+                    && (b[i - 1] == b'E' || b[i - 1] == b'e')
+                    && (i < 2 || !is_ident_char(b[i - 2])));
             let mut j = i + 1;
             let mut end = n;
             while j < n {
@@ -156,6 +162,11 @@ pub fn segments(sql: &str, flavor: Flavor) -> Vec<Segment> {
                 }
             }
             (SegKind::Ident, end)
+        } else if c == b'$' && next == b'$' && flavor == Flavor::Snowflake {
+            // $$ ... $$ (Snowflake has no tags)
+            let body = i + 2;
+            let end = sql[body..].find("$$").map_or(n, |p| body + p + 2);
+            (SegKind::Str, end)
         } else if c == b'$'
             && flavor == Flavor::Postgres
             && (i == 0 || !is_ident_char(b[i - 1]))
@@ -224,6 +235,17 @@ mod tests {
         let k = kinds("select [a]]b], N'x' from t", Flavor::TSql);
         assert!(k.contains(&(SegKind::Ident, "[a]]b]")));
         assert!(k.contains(&(SegKind::Str, "'x'")));
+    }
+
+    #[test]
+    fn snowflake_segments() {
+        let sql = "select 'a\\'b;', $$ x; y $$, \"c\" // d;\n/* e */ 1";
+        let k = kinds(sql, Flavor::Snowflake);
+        assert!(k.contains(&(SegKind::Str, "'a\\'b;'")));
+        assert!(k.contains(&(SegKind::Str, "$$ x; y $$")));
+        assert!(k.contains(&(SegKind::Ident, "\"c\"")));
+        assert!(k.contains(&(SegKind::Comment, "// d;")));
+        assert!(k.contains(&(SegKind::Comment, "/* e */")));
     }
 
     #[test]

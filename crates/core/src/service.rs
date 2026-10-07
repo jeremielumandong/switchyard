@@ -215,6 +215,10 @@ impl Service {
         let mut drivers: HashMap<Engine, Arc<dyn Driver>> = HashMap::new();
         drivers.insert(Engine::Postgres, Arc::new(PgDriver));
         drivers.insert(Engine::D1, Arc::new(D1Driver::default()));
+        drivers.insert(
+            Engine::Snowflake,
+            Arc::new(switchyard_db::snowflake::SnowflakeDriver::default()),
+        );
         drivers.insert(Engine::SqlServer, Arc::new(MssqlDriver));
         for (engine, d) in config.extra_drivers {
             drivers.insert(engine, d);
@@ -1311,6 +1315,7 @@ impl Service {
         }
         cfg.ssl_mode = c.ssl_mode;
         cfg.read_only = c.read_only;
+        cfg.options = c.options.clone();
         Ok(cfg)
     }
 
