@@ -106,6 +106,12 @@ fn tiberius_config(cfg: &DbConfig, host: &str, port: u16) -> Result<Config> {
             })?;
             c.authentication(AuthMethod::aad_token(token.expose_secret()));
         }
+        DbAuthMethod::KeyPair | DbAuthMethod::AccessToken => {
+            return Err(DbError::Unsupported(format!(
+                "{} is not available for SQL Server",
+                cfg.auth.label()
+            )));
+        }
     }
     Ok(c)
 }

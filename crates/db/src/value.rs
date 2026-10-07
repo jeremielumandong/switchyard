@@ -14,6 +14,8 @@ pub enum Engine {
     SqlServer,
     /// Cloudflare D1 (SQLite) over the Cloudflare REST API.
     D1,
+    /// Snowflake over its SQL REST API.
+    Snowflake,
 }
 
 impl Engine {
@@ -23,6 +25,7 @@ impl Engine {
             Engine::Postgres => "PostgreSQL",
             Engine::SqlServer => "SQL Server",
             Engine::D1 => "Cloudflare D1",
+            Engine::Snowflake => "Snowflake",
         }
     }
 
@@ -32,6 +35,7 @@ impl Engine {
             Engine::Postgres => "PG",
             Engine::SqlServer => "MS",
             Engine::D1 => "D1",
+            Engine::Snowflake => "SF",
         }
     }
 
@@ -40,14 +44,14 @@ impl Engine {
         match self {
             Engine::Postgres => 5432,
             Engine::SqlServer => 1433,
-            Engine::D1 => 443,
+            Engine::D1 | Engine::Snowflake => 443,
         }
     }
 
     /// Whether the engine supports interactive transactions (BEGIN ... COMMIT across
-    /// requests). D1's HTTP API runs every request on its own.
+    /// requests). D1's and Snowflake's HTTP APIs run every request on its own.
     pub fn supports_transactions(self) -> bool {
-        !matches!(self, Engine::D1)
+        !matches!(self, Engine::D1 | Engine::Snowflake)
     }
 
     /// Whether the engine is reached through a cloud HTTP API (account and database ids

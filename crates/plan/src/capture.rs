@@ -38,6 +38,9 @@ pub async fn capture(
         Engine::D1 => Err(PlanError::Unsupported(
             "query plans are not available for Cloudflare D1".into(),
         )),
+        Engine::Snowflake => Err(PlanError::Unsupported(
+            "query plans are not available for Snowflake yet".into(),
+        )),
     }
 }
 

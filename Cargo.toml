@@ -117,6 +117,8 @@ psl = "2.1"
 regex = "1"
 serde_yaml = "0.9"
 sha2 = "0.10"
+# Snowflake key-pair auth: parse PKCS#1 / (encrypted) PKCS#8 keys; ring signs.
+rsa = { version = "0.9", default-features = false, features = ["std", "pem", "pkcs5", "u64_digit"] }
 sxd-document = "0.3"
 sxd-xpath = "0.4"
 serde_json_path = "0.7"

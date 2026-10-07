@@ -19,6 +19,7 @@ pub mod guard;
 pub mod mock;
 pub mod mssql;
 pub mod pg;
+pub mod snowflake;
 pub mod stream;
 pub mod tls;
 pub mod value;

@@ -585,3 +585,26 @@ full port in one go; Snowflake through its SQL REST API with key-pair (JWT) auth
   (`TextareaState` for multi-line fields, `EditorState` for the response body) behind a small
   `app::api::compat` shim for AgentOps's theme tokens, dialogs, toasts and settings. Its
   background work runs through `compat::blocking` on core's tokio runtime, never the UI thread.
+
+## 2026-10-07 — Snowflake through the SQL API v2
+
+- Snowflake is reached through its SQL REST API v2 (`/api/v2/statements`), not the
+  undocumented session API AgentOps used: v2 is documented, returns typed column metadata,
+  splits large results into partitions we can stream, runs long statements asynchronously
+  (polled) and has a cancel endpoint, which the "everything cancellable" rule needs.
+- v2 does not accept passwords (and Snowflake is retiring single-factor password sign-in),
+  so the methods are key-pair JWT and programmatic access token. Two `DbAuthMethod`
+  variants were added (`KeyPair`, `AccessToken`); `DbConfig` / `DbConnection` gained a
+  generic `options` map for engine settings without a field (warehouse, role, schema, key
+  path), so the driver traits stay general for Oracle.
+- `rsa` 0.9 (approved by the user) only parses keys (PKCS#1, PKCS#8, encrypted PKCS#8 with
+  PBES2); signing goes through `ring`, whose RSA is constant-time, which sidesteps the
+  `rsa` crate's Marvin timing advisory (RUSTSEC-2023-0071) for the private-key operation.
+  The private key file is read in place on each connect; its passphrase (if any) is the
+  stored secret.
+- Each request is its own server session, so transactions cannot span requests
+  (`supports_transactions` is false) and `USE DATABASE|SCHEMA|WAREHOUSE|ROLE` is applied by
+  the driver to the requests that follow.
+- Partition bodies arrive gzip-compressed; the driver inflates them with `flate2` (already a
+  dependency) rather than turning on reqwest's `gzip` feature for every client.
+

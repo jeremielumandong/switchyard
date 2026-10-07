@@ -359,7 +359,13 @@ faster, and no agent call ever performed a write.
 - [x] API-2 API workspace in the app: title-bar workspace menu switches Default ↔ API; the
   Workbench panel (ported to gpui-component 0.7 inputs) fills the window in API mode.
   Note: AgentOps's UI tests not ported yet (they used its test harness); see Follow-ups.
-- [ ] API-3 Snowflake engine (SQL REST API, key-pair JWT; adds `rsa`).
+- [x] API-3 Snowflake engine: SQL API v2 (`/api/v2/statements`) with async polling, result
+  partitions (gzip), multi-statement requests, server-side cancel, positional `:N` binds;
+  key-pair JWT (rsa parses, ring signs) or programmatic access token; `USE …` carried across
+  requests client-side; INFORMATION_SCHEMA catalog + GET_DDL; Snowflake dialect and lexer
+  flavour (`$$` bodies, backslash escapes, `//` comments); connection editor kind.
+  Note: tested against a local stand-in only (`crates/db/tests/snowflake.rs`); plans and
+  workload stats for Snowflake not done (Follow-ups).
 - [ ] API-4 Oracle engine (Instant Client runtime-loaded by the Driver Manager).
 
 ## M6 — Packaging and beta
@@ -392,6 +398,8 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 ## Follow-ups
 
 (Add items here instead of doing them mid-task.)
+- Snowflake: `EXPLAIN USING JSON` → `PlanNode`; QUERY_HISTORY / ACCESS_HISTORY workload view;
+  exercise the driver against a real account; OAuth (external browser) sign-in.
 - API workspace: port AgentOps's Workbench UI tests; persist workbench preferences (they live
   in session memory for now); per-project collections (`current_project()` returns None).
 - Release workflow for macOS (`build-macos.sh` + notarization) next to the Linux and Windows ones.
