@@ -574,7 +574,9 @@ full port in one go; Snowflake through its SQL REST API with key-pair (JWT) auth
   `regex`, `aho-corasick`, `hex`, `sha2`, `zeroize`. `parking_lot`, `getrandom` and `libc`
   were replaced with std / `ring`.
 - Script sandbox: scripts run in a worker process (the app binary with a hidden argument)
-  killed at the 1.5 s wall-clock deadline, with Boa's loop and recursion budgets. AgentOps
+  killed at the 1.5 s wall-clock deadline (5 s in debug builds, where Boa is several times
+  slower and the Windows CI worker missed 1.5 s loading cheerio), with Boa's loop and
+  recursion budgets. AgentOps
   also capped the worker's CPU and memory with `setrlimit` / a Windows job object; both need
   `unsafe`, which this workspace denies, so those caps are not ported.
 - SQLite journal: WAL, overridable with `SWITCHYARD_SQLITE_JOURNAL_MODE` (AgentOps probed
