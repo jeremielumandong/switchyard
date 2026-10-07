@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::dialog::Dialog;
@@ -63,9 +63,25 @@ pub fn secrets(cx: &App) -> std::sync::Arc<dyn switchyard_core::api::SecretStore
     cx.global::<ApiHost>().runtime.api_secrets()
 }
 
-/// The API workspace's single project: everything lives in one workspace.
+/// The Workbench workspace the panel shows, once one is chosen: the scope
+/// [`super::workbench`]'s `current_workspace_id` resolves to.
 pub fn current_project() -> Option<String> {
-    None
+    selected_project()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+}
+
+/// Choose the Workbench workspace (its id); the panel rehydrates on its next frame.
+pub fn set_current_project(project: Option<String>) {
+    *selected_project()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = project;
+}
+
+fn selected_project() -> &'static Mutex<Option<String>> {
+    static SELECTED: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    SELECTED.get_or_init(Default::default)
 }
 
 gpui_kit::actions!(api_compat, [Save]);

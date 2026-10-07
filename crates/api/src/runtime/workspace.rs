@@ -11,7 +11,8 @@ use std::sync::Arc;
 use crate::{
     AuthConfig, Collection, CollectionId, CollectionRun, CookieJar, Environment, EnvironmentId,
     Example, ExampleId, Exchange, ExchangeId, Folder, FolderId, ImportResult, ImportSelection,
-    RequestId, RequestUrlUpdate, SavedRequest, Scripts, SecretStore, WorkbenchStore, WorkspaceId,
+    RequestId, RequestUrlUpdate, SavedRequest, Scripts, SecretStore, WorkbenchStore,
+    WorkspaceEntry, WorkspaceId,
 };
 
 use super::secrets::DraftSecrets;
@@ -27,6 +28,48 @@ pub fn workspace_id_for(project: Option<&str>) -> WorkspaceId {
                 .and_then(|path| WorkspaceId::new(path.to_string_lossy()).ok())
         })
         .unwrap_or_else(WorkspaceId::default_workspace)
+}
+
+/// The named workspaces and the one to open first (the last one opened).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct WorkspaceList {
+    pub workspaces: Vec<WorkspaceEntry>,
+    pub last_opened: Option<WorkspaceId>,
+}
+
+/// List the named workspaces in `app_data`'s store.
+pub fn list_workspaces(app_data: &Path) -> Result<WorkspaceList, String> {
+    let store = WorkbenchStore::open(app_data).map_err(|error| error.to_string())?;
+    Ok(WorkspaceList {
+        workspaces: store.list_workspaces().map_err(|error| error.to_string())?,
+        last_opened: store
+            .last_opened_workspace()
+            .map_err(|error| error.to_string())?,
+    })
+}
+
+/// Create the next empty workspace, `Workspace N`, numbered past every
+/// name of that form already taken.
+pub fn create_workspace(app_data: &Path) -> Result<WorkspaceEntry, String> {
+    let store = WorkbenchStore::open(app_data).map_err(|error| error.to_string())?;
+    let existing = store.list_workspaces().map_err(|error| error.to_string())?;
+    let next = existing
+        .iter()
+        .filter_map(|workspace| workspace.name.strip_prefix("Workspace "))
+        .filter_map(|number| number.parse::<u32>().ok())
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
+    store
+        .create_workspace(&format!("Workspace {next}"))
+        .map_err(|error| error.to_string())
+}
+
+/// Remember `workspace` as the one to reopen on the next launch.
+pub fn mark_workspace_opened(app_data: &Path, workspace: &WorkspaceId) -> Result<(), String> {
+    WorkbenchStore::open(app_data)
+        .and_then(|store| store.mark_workspace_opened(workspace))
+        .map_err(|error| error.to_string())
 }
 
 /// Preview literal, case-sensitive replacement in every matching request
@@ -787,6 +830,25 @@ mod tests {
                 .any(|request| request.url.contains("imported.example.test"))
         );
         let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn created_workspaces_are_numbered_and_the_last_opened_one_comes_back() {
+        let path = scratch("workspace-list");
+        assert_eq!(list_workspaces(&path).unwrap(), WorkspaceList::default());
+
+        let first = create_workspace(&path).unwrap();
+        let second = create_workspace(&path).unwrap();
+        assert_eq!(first.name, "Workspace 1");
+        assert_eq!(second.name, "Workspace 2");
+
+        mark_workspace_opened(&path, &first.id).unwrap();
+        let listed = list_workspaces(&path).unwrap();
+        assert_eq!(listed.workspaces, vec![first.clone(), second]);
+        assert_eq!(listed.last_opened, Some(first.id.clone()));
+
+        let data = WorkspaceData::open(&path, first.id).unwrap();
+        assert!(data.collections.is_empty() && data.requests.is_empty());
     }
 
     #[test]

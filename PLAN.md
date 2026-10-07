@@ -441,6 +441,13 @@ faster, and no agent call ever performed a write.
   SHA-256, macOS guided); connection editor kind; docker `oracle` profile service.
   Note: plans (EXPLAIN PLAN / DBMS_XPLAN) and workload stats for Oracle not done; Linux
   arm64 Instant Client not in the manifest (x64 only).
+- [x] API-5 Workbench starts empty (user request): with no workspace saved, the API
+  workspace shows a blank page with one "Add workspace" button; each click creates an empty
+  `Workspace N`. A header picker lists the workspaces and adds more; the last one opened
+  comes back on the next launch.
+  Note: named workspaces live in `workbench_workspaces` (Workbench store schema 5); data
+  saved earlier under the project-path scope is listed under that folder's name. Renaming
+  and deleting workspaces not done (Follow-ups).
 
 ## M7 — MobaXterm parity, Tier 1 (user request)
 
@@ -534,6 +541,7 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 
 ## Follow-ups
 
+- API Workbench: rename and delete workspaces (API-5 only adds and switches them).
 - `core/tests/flow.rs` `cancel_stops_a_running_query_quickly` times out (5 s) when the
   machine is busy building (seen twice); passes alone. Look at what it waits on before
   raising the timeout.
