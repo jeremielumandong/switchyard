@@ -267,9 +267,15 @@ impl CommandRunner for SystemRunner {
             let (bin, args) = full
                 .split_first()
                 .ok_or_else(|| DriverError::Command("empty command".into()))?;
-            let out = tokio::process::Command::new(bin)
-                .args(args)
-                .stdin(std::process::Stdio::null())
+            let mut cmd = tokio::process::Command::new(bin);
+            cmd.args(args).stdin(std::process::Stdio::null());
+            if let Some(original) = crate::registry::original_loader_path() {
+                match original {
+                    Some(v) => cmd.env("LD_LIBRARY_PATH", v),
+                    None => cmd.env_remove("LD_LIBRARY_PATH"),
+                };
+            }
+            let out = cmd
                 .output()
                 .await
                 .map_err(|e| DriverError::Command(format!("could not run {bin}: {e}")))?;
@@ -376,12 +382,10 @@ async fn verify_and_unpack(
     let staging = component_dir.join(staging_name("unpack"));
     let final_dir = component_dir.join(version);
     let (s, a) = (staging.clone(), archive.clone());
-    let unpacked = tokio::task::spawn_blocking(move || -> Result<()> {
-        let f = std::fs::File::open(&a)?;
-        crate::archive::extract_tar_gz(std::io::BufReader::new(f), &s)
-    })
-    .await
-    .map_err(|e| DriverError::Io(e.to_string()))?;
+    let unpacked =
+        tokio::task::spawn_blocking(move || -> Result<()> { crate::archive::extract(&a, &s) })
+            .await
+            .map_err(|e| DriverError::Io(e.to_string()))?;
     if let Err(e) = unpacked {
         let _ = tokio::fs::remove_dir_all(&staging).await;
         return Err(e);

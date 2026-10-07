@@ -585,3 +585,140 @@ full port in one go; Snowflake through its SQL REST API with key-pair (JWT) auth
   (`TextareaState` for multi-line fields, `EditorState` for the response body) behind a small
   `app::api::compat` shim for AgentOps's theme tokens, dialogs, toasts and settings. Its
   background work runs through `compat::blocking` on core's tokio runtime, never the UI thread.
+
+## 2026-10-07 — Snowflake through the SQL API v2
+
+- Snowflake is reached through its SQL REST API v2 (`/api/v2/statements`), not the
+  undocumented session API AgentOps used: v2 is documented, returns typed column metadata,
+  splits large results into partitions we can stream, runs long statements asynchronously
+  (polled) and has a cancel endpoint, which the "everything cancellable" rule needs.
+- v2 does not accept passwords (and Snowflake is retiring single-factor password sign-in),
+  so the methods are key-pair JWT and programmatic access token. Two `DbAuthMethod`
+  variants were added (`KeyPair`, `AccessToken`); `DbConfig` / `DbConnection` gained a
+  generic `options` map for engine settings without a field (warehouse, role, schema, key
+  path), so the driver traits stay general for Oracle.
+- `rsa` 0.9 (approved by the user) only parses keys (PKCS#1, PKCS#8, encrypted PKCS#8 with
+  PBES2); signing goes through `ring`, whose RSA is constant-time, which sidesteps the
+  `rsa` crate's Marvin timing advisory (RUSTSEC-2023-0071) for the private-key operation.
+  The private key file is read in place on each connect; its passphrase (if any) is the
+  stored secret.
+- Each request is its own server session, so transactions cannot span requests
+  (`supports_transactions` is false) and `USE DATABASE|SCHEMA|WAREHOUSE|ROLE` is applied by
+  the driver to the requests that follow.
+- Partition bodies arrive gzip-compressed; the driver inflates them with `flate2` (already a
+  dependency) rather than turning on reqwest's `gzip` feature for every client.
+
+## 2026-10-07 — Oracle before beta, through ODPI-C
+
+- The user moved Oracle before beta. CLAUDE.md and SPEC were updated; the rule that the
+  client library is never linked at build time stays.
+- Driver: the `oracle` crate (UPL-1.0 / Apache-2.0). It compiles ODPI-C from source, and
+  ODPI-C `dlopen`s the Oracle Client (Instant Client) at runtime, from the folder the Driver
+  Manager passes (`InitParams::oracle_client_lib_dir`). A failed load is not cached, so a
+  later install works without a restart. Accepted as part of the user's "add Oracle now"
+  decision; AgentOps's approach (piping scripts into `sqlplus`) does not fit a native client.
+- The client API is blocking: calls run on tokio's blocking pool; result rows stream through
+  a bounded channel; Stop calls `OCIBreak` from another thread (ORA-01013 → Cancelled).
+- Autocommit outside an explicit transaction: DML is committed after it succeeds; `begin`
+  only stops that (Oracle opens transactions implicitly).
+- Linux: Instant Client resolves `libclntshcore` / `libnnz` only through the loader path,
+  read once at process start (preloading by full path was tried: `libnnz.so` has no
+  soname, so glibc never matches it). When an app-managed or user-chosen client exists,
+  the app re-executes itself once at startup with that folder prepended to
+  `LD_LIBRARY_PATH` (safe `exec`, before any thread or window); shells and package-manager
+  commands it spawns get the user's original value back. A client installed mid-session
+  asks for a restart. The system `libaio.so.1` is still required; connect errors name the
+  package and, for Ubuntu 24.04+, Oracle's symlink fix.
+- The Driver Manager gained a zip reader (stored / deflate entries, Unix symlinks, CRC
+  checked, zip64 and encryption refused) next to its tar.gz reader, reusing the same
+  path-escape checks; no new dependency (flate2 inflates). Archives are pinned to
+  versioned URLs and SHA-256 in the bundled manifest; macOS ships a .dmg, so that platform
+  is guided (*Use existing path*).
+
+## 2026-10-07 — `swy` CLI and MCP server (M5-9 / M5-10)
+
+- One core: `swy` starts `switchyard-core` on the user's profile store and talks to it over
+  the same command/event bus as the app, so guards, history and connection handling are
+  shared. Ids it allocates start at 2^40, clear of the app's.
+- Secrets without a keychain: `SWITCHYARD_SECRETS=vault` forces the fallback vault and
+  `SWITCHYARD_VAULT_PASSWORD` unlocks it (CI, servers, tests). The password is never logged.
+- `swy explain --open`: the app listens on 127.0.0.1 (random port) and writes
+  `<data>/handoff.json` (owner-only) with the port and a random token; `swy` sends one
+  JSON line with the token and the history id. A stale file shows as "not running" and the
+  plan stays in history. No new dependency.
+- MCP tools (the SPEC lists none): `list_connections`, `list_tables`, `describe_table`,
+  `run_query`, `explain`, `workload`, `what_if`. All read-only; annotated `readOnlyHint`.
+- Agent access = the per-connection `agent_access` flag, off by default. Production is
+  visible only when that flag is turned on for it ("explicitly enabled"); the editor says
+  what that allows. Actual plans are refused for every connection until the in-app
+  approval (M5-14) exists.
+- `run_query`: `is_single_select` (sqlparser), then the core's agent query: PostgreSQL and
+  Oracle `BEGIN` + `SET TRANSACTION READ ONLY`, SQL Server `BEGIN`, always rolled back;
+  refused while the session has an open transaction. Row cap 200 by default, 1,000 max;
+  timeout 30 s by default, 120 s max, after which the statement is cancelled on the server.
+  D1 and Snowflake have no read-only transaction here and rely on the SELECT check.
+- `explain` and `what_if` take one query or DML statement (`is_single_plannable`); estimated
+  plans do not execute it. PostgreSQL still checks DML privileges while planning.
+- Scrubbing: every tool result and error passes through a scrubber holding the server,
+  `server:port` and user of every saved database connection and the address and user of
+  every SSH Host (whole-word, case-insensitive). Database names are not shown either.
+- History: `run_query` writes its own entry; other tools send `RecordAgentCall` (explain
+  relies on the core's plan entry when history is on). Tags: `agent` plus `agent:<cli>`
+  from `SWITCHYARD_AGENT` (`claude-code`, `codex`, `gemini`, otherwise `custom`).
+
+
+## 2026-10-07 — M5-11: agent runner, Claude Code adapter, session tokens
+
+- Runner and adapter code ported from Emulsion's assistant (see the M5 entry above), with
+  one-shot runs instead of Emulsion's persistent bidirectional session: the M5 tools are
+  all read-only server-side and actual-plan approval comes with M5-14, so no permission
+  round-trips are needed yet. Each run is one `claude -p` process; follow-ups use
+  `--resume <session id>`.
+- Claude Code flags (checked against 2.1.292): `--tools ""` (no built-in tools at all),
+  `--restricted` (user, project and local settings files ignored, so they cannot add tools
+  or permissions), `--strict-mcp-config --mcp-config <file>` (only Switchyard's server),
+  `--allowedTools mcp__switchyard` and `--permission-mode dontAsk` (anything else is refused
+  without a prompt). The prompt goes in as one stream-json user message on stdin, never in
+  argv. `MCP_TOOL_TIMEOUT` is 150 s (the longest `run_query` timeout plus connect time).
+- Session token: 32 random bytes (store's RNG), handed to `swy mcp` through the MCP config's
+  `env` block in an owner-only file in the run's private directory. Only its SHA-256 is
+  stored, as `<data>/agent-tokens/<hash>.json` with the connection ids, the CLI and an
+  expiry (2 h). Revoked (file removed) when the CLI exits, is cancelled or the run is
+  dropped; expired files are swept on the next issue. `swy mcp` refuses to start with a dead
+  token and re-checks it on every call, so an MCP server a CLI leaves behind stops working.
+  The token's CLI sets the history tag. Without a token `swy mcp` behaves as in M5-10 (a
+  user's own CLI config): all agent-enabled connections.
+- Agent access still applies inside a token: a token naming a connection without agent
+  access cannot open it.
+- `swy mcp` gets `SWITCHYARD_HOME` and `SWITCHYARD_SECRETS` from the app's environment
+  through the config file when set; never the vault password.
+- Stream-json: Claude Code 2.1 sends each content block of an assistant message as its own
+  event (older versions resent the growing message). The parser tracks emitted text per
+  message id and handles both.
+- Process groups: `process_group(0)` and `kill -TERM -- -<pgid>` (SIGKILL after 2 s if the
+  CLI is still there); `taskkill /T /F` on Windows.
+
+## 2026-10-07 — MobaXterm parity (user request), before the rest of M5
+
+The user asked for MobaXterm's features. Answers recorded from the session: MobaXterm work
+goes first (M5-12 to M5-15 wait; the Codex spike's findings so far are below), Tier 1 only,
+and crates a chosen tier needs are pre-approved (license-checked, recorded here). PLAN gains
+M7; SPEC's scope table moves remote/dynamic/X11 forwarding into v1.
+
+- Tier 1 (in M7): SSH remote and SOCKS forwarding, agent and X11 forwarding, terminal
+  logging, copy-on-select / right-click paste / keyword highlighting, macros, session
+  folders and per-session settings, PuTTY and MobaXterm import, key generator, SFTP that
+  follows the terminal's folder, SCP, Telnet and raw TCP, Mosh/RDP/VNC through external
+  viewers, more local shells and WSL.
+- Not now: serial ports, embedded RDP/VNC, network tools and local servers (Tier 2); an
+  embedded X server or bundled Unix tools on Windows (Tier 3: use VcXsrv/X410 and WSL/Git
+  Bash instead).
+- Codex spike so far (codex-cli 0.160.1): `codex exec --ignore-user-config` skips the
+  user's `config.toml` but keeps the login in `CODEX_HOME`, so no generated home and no
+  copied credentials. Switchyard's server goes in with `-c mcp_servers.switchyard.*`
+  (`env_vars` forwards the token from the environment; `default_tools_approval_mode =
+  "approve"`). The model sees the tools as namespace `mcp__switchyard`. With `-s read-only`
+  and `approval_policy = "never"` Codex still offers `exec_command`, `web_search`,
+  `view_image` and others, so they must be disabled by feature flag; still to check. A `swy`
+  that exits at startup is dropped silently. Verified with a mock Responses API server (no
+  OpenAI login in this environment).

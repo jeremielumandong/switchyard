@@ -309,27 +309,56 @@ faster, and no agent call ever performed a write.
   plans stored with their history entry.
   Done when: comparing two saved plans shows correct deltas.
   Note: plans are stored with their history entry (store migration 2) and `switchyard_plan::compare` matches operators by operation and object. Compare ▾ offers this tab's other plans and the connection's saved plans; the view shows time, planning, rows, pages and cost deltas, both graphs side by side (shared zoom) and a per-operator table (new / gone included) that selects in both. History rows with a stored plan get a "Plan" button. Checked in the app: before/after `CREATE INDEX` on `orders(total)`, loaded from history, showed −63% time, −96% pages, −30% cost.
-- [ ] **M5-7 Access analysis.** PostgreSQL `pg_stat_user_tables`, `pg_stat_user_indexes`,
+- [x] **M5-7 Access analysis.** PostgreSQL `pg_stat_user_tables`, `pg_stat_user_indexes`,
   `pg_stat_statements`; SQL Server index usage, missing-index DMVs, Query Store. Workload view UI.
   Missing extension or permission shows a hint with the GRANT statement.
   Done when: integration tests with and without the extensions and permissions.
-  WIP (parked for the API workspace, user request): `plan::access::workload` (tables, indexes, pg_stat_statements / Query Store, missing-index DMVs, hints with the fixing GRANT / CREATE EXTENSION / ALTER statements; probes under a savepoint inside an open transaction). Test PostgreSQL image now has HypoPG (`docker/postgres-image`), CI uses the compose service. Still to do: integration tests, core command, Workload view.
-- [ ] **M5-8 Hypothetical indexes.** Detect HypoPG; create hypothetical index, explain, drop it,
+  Note: `plan::access::workload`, `Command::Workload`, Workload tab (palette "Workload: Query and
+  Index Statistics"): statements / tables / indexes / missing indexes, flags for mostly-full-scan
+  tables and unused indexes, hints with copyable fixes. `crates/plan/tests/access.rs` covers both
+  engines with and without extensions, Query Store and grants (5 PostgreSQL, 3 SQL Server).
+  Found by the tests: reading `shared_preload_libraries` needs `pg_read_all_settings`, so it now
+  comes from `pg_settings` (hidden rows → "unknown"). Deferred: open a statement from the list in
+  an editor / explain it directly.
+- [x] **M5-8 Hypothetical indexes.** Detect HypoPG; create hypothetical index, explain, drop it,
   all in one session.
   Done when: plan changes with a hypothetical index and no real index is created.
-- [ ] **M5-9 `swy` CLI.** `clap` binary with `connections`, `query`, `explain [--analyze] [--open]`,
+  Note: `plan::whatif` (definitions checked with sqlparser: exactly one CREATE INDEX each;
+  `hypopg_reset()` before and after, also on error), `Command::WhatIf`; plan view "What if…"
+  pre-filled from findings' CREATE INDEX suggestions, results open in the compare view. Test:
+  cost of `total = 123.45` on 1M orders drops >10× and `pg_indexes` is unchanged.
+- [x] **M5-9 `swy` CLI.** `clap` binary with `connections`, `query`, `explain [--analyze] [--open]`,
   `workload`; table, CSV and JSON output; `--open` hands off to the running app.
   Done when: CLI integration tests against docker for each command.
-- [ ] **M5-10 MCP server.** `swy mcp` over stdio with `rmcp`: tools from SPEC "MCP tools" with every
+  Note: `crates/cli` drives the shared core over its bus (scripts split by the dialect,
+  Production confirmation via `--yes`); `--open` uses a loopback handoff (token file in the
+  data dir, `core::handoff`). Keychain-less use: `SWITCHYARD_SECRETS=vault` +
+  `SWITCHYARD_VAULT_PASSWORD`. Tests: `crates/cli/tests/cli.rs`.
+- [x] **M5-10 MCP server.** `swy mcp` over stdio with `rmcp`: tools from SPEC "MCP tools" with every
   guard from CLAUDE.md "Agent safety rules"; per-connection agent access setting in the app.
   Done when: tests prove writes are rejected, row caps and timeouts hold, Production is hidden by
   default, and no tool output contains hostnames or secrets.
-- [ ] **M5-11 Agent adapter core + Claude Code.** In `switchyard-agents`: `AgentAdapter` trait and normalized
+  Note: hand-rolled stdio JSON-RPC (ported from Emulsion, see DECISIONS) instead of `rmcp`.
+  Tools: list_connections, list_tables, describe_table, run_query, explain (estimated
+  only; ANALYZE refused until M5-14's approval), workload, what_if. "Allow coding agents"
+  checkbox in the connection editor. Session token scoping is M5-11.
+- [x] **M5-11 Agent adapter core + Claude Code.** In `switchyard-agents`: `AgentAdapter` trait and normalized
   `AgentEvent` stream; shared runner (temp workdir, session token for `swy mcp`, child process, cancel kills the
   process tree, cleanup). Claude Code adapter: `claude -p --output-format stream-json
   --mcp-config <generated>`, resume via `--resume`, allow only Switchyard MCP tools.
   Done when: tested with a fake `claude` binary replaying recorded stream-json, plus one live run
   against the docker PostgreSQL behind a manual flag.
+  Note: `agents::runner` (private 0700 temp dir per run, CLI in its own process group, prompt
+  on stdin, cancel kills the tree, dir removed and guards dropped before `Exited`) and
+  `agents::claude` (`--restricted --tools "" --strict-mcp-config --allowedTools
+  mcp__switchyard --permission-mode dontAsk`). Session tokens: `core::agent_run`
+  (`<data>/agent-tokens/<sha256>.json`, 2 h expiry, revoked at run end); `swy mcp` with
+  `SWITCHYARD_MCP_TOKEN` serves only the token's agent-enabled connections and re-checks the
+  token on every call. Tests: `agents/tests/claude_replay.rs` (stream recorded from Claude
+  Code 2.1.292), `cli/tests/cli.rs` `mcp_session_token_scopes_and_revokes` and
+  `live_claude_code_run` (`SWITCHYARD_LIVE_AGENT=claude`; passed with haiku). Not yet on the
+  core bus (the assistant panel, M5-15, adds the command). Vault-only systems: `swy mcp`
+  needs `SWITCHYARD_VAULT_PASSWORD` in the app's environment (see Follow-ups).
 - [ ] **M5-12 Codex CLI adapter (spike first).** `codex exec --json`, MCP via `[mcp_servers]` in a
   generated config, resume via `codex exec resume`. Spike: how to auto-approve only Switchyard's MCP
   tools in non-interactive mode without bypassing approvals globally, and how to keep the user's
@@ -359,8 +388,67 @@ faster, and no agent call ever performed a write.
 - [x] API-2 API workspace in the app: title-bar workspace menu switches Default ↔ API; the
   Workbench panel (ported to gpui-component 0.7 inputs) fills the window in API mode.
   Note: AgentOps's UI tests not ported yet (they used its test harness); see Follow-ups.
-- [ ] API-3 Snowflake engine (SQL REST API, key-pair JWT; adds `rsa`).
-- [ ] API-4 Oracle engine (Instant Client runtime-loaded by the Driver Manager).
+- [x] API-3 Snowflake engine: SQL API v2 (`/api/v2/statements`) with async polling, result
+  partitions (gzip), multi-statement requests, server-side cancel, positional `:N` binds;
+  key-pair JWT (rsa parses, ring signs) or programmatic access token; `USE …` carried across
+  requests client-side; INFORMATION_SCHEMA catalog + GET_DDL; Snowflake dialect and lexer
+  flavour (`$$` bodies, backslash escapes, `//` comments); connection editor kind.
+  Note: tested against a local stand-in only (`crates/db/tests/snowflake.rs`); plans and
+  workload stats for Snowflake not done (Follow-ups).
+- [x] API-4 Oracle engine: `oracle` crate (ODPI-C, which dlopens Instant Client), blocking
+  calls on tokio's blocking pool with rows streamed through a bounded channel, OCIBreak
+  cancel, named binds (`:p1`), DBMS_OUTPUT as notices, ALL_* catalog + DBMS_METADATA DDL;
+  Oracle dialect (PL/SQL units to a `/` line, `q'[..]'` quoting); Driver Manager zip
+  extraction and an `oracle-instant-client` component (Linux/Windows archives pinned by
+  SHA-256, macOS guided); connection editor kind; docker `oracle` profile service.
+  Note: plans (EXPLAIN PLAN / DBMS_XPLAN) and workload stats for Oracle not done; Linux
+  arm64 Instant Client not in the manifest (x64 only).
+
+## M7 — MobaXterm parity, Tier 1 (user request)
+
+Taken before the rest of M5 at the user's request (M5-12 spike notes are kept; see
+DECISIONS 2026-10-07). Tier 1 only: features that fit the current architecture. Crates a
+task needs are pre-approved (license checked, no GPL, recorded in DECISIONS). Not in scope:
+embedded RDP/VNC, serial ports, network tools and local servers (Tier 2), an embedded X
+server or bundled Unix tools on Windows (Tier 3).
+
+- [ ] **MX-1 Remote and dynamic forwarding.** `-R` (server port → local target) through
+  `tcpip_forward` and `-D` SOCKS5 (no auth, CONNECT, IPv4/IPv6/domain) on the shared Host
+  session; both in the tunnel registry and manager UI (add, stop, bytes), defined on a Host
+  and optionally started with it.
+  Done when: integration tests against the docker OpenSSH forward traffic both ways and
+  through SOCKS5.
+- [ ] **MX-2 Agent and X11 forwarding.** Per-Host toggles. Agent forwarding answers
+  `auth-agent@openssh.com` channels from the local agent (finishes M2-5's scope); X11 opens
+  `x11` channels to the local display (`DISPLAY`: Unix socket or TCP) with a generated
+  MIT-MAGIC-COOKIE replaced by the real one from `xauth`. Windows: detect VcXsrv / X410 /
+  Xming through the Driver Manager and point at its display.
+  Done when: tests prove a forwarded agent signs and an X11 channel reaches a fake display.
+- [ ] **MX-3 Terminal logging.** Per-session "log to file" (plain text, ANSI stripped, or
+  raw), file name template with host and timestamp, started from settings or the tab menu.
+- [ ] **MX-4 Terminal conveniences.** Copy on select, right-click paste (settings, default
+  off like today), paste confirmation for multi-line text, keyword highlighting of output
+  (error/warning/fail/ok… with user rules), font zoom per tab.
+- [ ] **MX-5 Macros.** Record keystrokes in a terminal, save with a name, replay into the
+  current terminal or all broadcast panes, run one on connect.
+- [ ] **MX-6 Session folders and per-session settings.** Folders and favorites in the
+  sidebar; per-Host startup command, remote start directory, terminal font/colors override,
+  environment variables; duplicate and bulk edit.
+- [ ] **MX-7 Session import.** PuTTY sessions (Windows registry, `~/.putty/sessions`) and
+  MobaXterm bookmarks (`MobaXterm.ini` / `.mxtsessions`) into Hosts, with the same preview
+  as the `~/.ssh/config` import.
+- [ ] **MX-8 SSH key generator.** Ed25519, ECDSA, RSA; passphrase; OpenSSH and PuTTY
+  `.ppk` output; copy public key, "install on Host" (append to `authorized_keys`).
+- [ ] **MX-9 Follow terminal folder.** The SFTP sidebar follows the shell's current
+  directory (OSC 7, with an opt-in shell snippet when the shell does not emit it).
+- [ ] **MX-10 SCP.** Upload/download through `scp` when the server has no SFTP subsystem.
+- [ ] **MX-11 Telnet and raw TCP sessions.** In-house Telnet client (option negotiation,
+  NAWS, terminal type, binary), raw TCP; new session kinds in the connection model.
+- [ ] **MX-12 External viewers.** Mosh, RDP (`xfreerdp`/`mstsc`/Microsoft Remote Desktop)
+  and VNC sessions launched through tools the Driver Manager detects, with install hints.
+- [ ] **MX-13 More local shells.** Shell picker (bash, zsh, fish, pwsh, cmd, Git Bash) and
+  WSL distributions on Windows.
+- Also counted for parity: M2-5 (SSH agent) and M4-2 (FTP/FTPS) above.
 
 ## M6 — Packaging and beta
 
@@ -391,7 +479,15 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 
 ## Follow-ups
 
+- Agent runs on systems with only the fallback vault: `swy mcp` cannot unlock it unless
+  `SWITCHYARD_VAULT_PASSWORD` is in the app's environment. Option: let `swy mcp` borrow the
+  running app's unlocked secrets over the loopback handoff, scoped by the session token.
+
 (Add items here instead of doing them mid-task.)
+- Oracle: EXPLAIN PLAN / DBMS_XPLAN → `PlanNode`; V$SQL workload view; arm64 Linux archive;
+  CI job with the `oracle` compose profile + Instant Client; TCPS / wallet sign-in.
+- Snowflake: `EXPLAIN USING JSON` → `PlanNode`; QUERY_HISTORY / ACCESS_HISTORY workload view;
+  exercise the driver against a real account; OAuth (external browser) sign-in.
 - API workspace: port AgentOps's Workbench UI tests; persist workbench preferences (they live
   in session memory for now); per-project collections (`current_project()` returns None).
 - Release workflow for macOS (`build-macos.sh` + notarization) next to the Linux and Windows ones.
@@ -400,8 +496,7 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 
 - Smoke tests for the SQL Server, SSH and FTP containers (M0-2).
 - Grid frame-time harness (M1-16).
-- Driver Manager: fetch the signed manifest from the update server; zip archives (Oracle
-  Instant Client ships zip) once a zip reader is approved.
+- Driver Manager: fetch the signed manifest from the update server.
 - SQL Server: upstream tiberius patches for INFO tokens (notices) and reading the attention
   acknowledgement across a message boundary (would remove the reconnect after cancel).
 - Approval pending for `tokio-postgres-rustls`/`rustls-native-certs` and `lsp-types` (see DECISIONS).

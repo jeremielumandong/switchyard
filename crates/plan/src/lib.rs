@@ -14,6 +14,7 @@ pub mod findings;
 pub mod model;
 pub mod mssql;
 pub mod pg;
+pub mod whatif;
 
 pub use compare::{Comparison, NodeDelta, Pair, compare};
 pub use findings::{Finding, Rule, Severity, Thresholds, analyze};
