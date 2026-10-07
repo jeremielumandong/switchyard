@@ -571,6 +571,14 @@ pub enum Command {
     },
     /// Report the live tunnels ([`Event::Tunnels`]).
     ListTunnels,
+    /// Start one of a Host's saved port forwards (no-op if it is running). Failures come
+    /// back as [`Event::Error`] with context "Port forward".
+    StartForward {
+        /// Host.
+        host: ProfileId,
+        /// [`switchyard_store::PortForward::id`].
+        forward: String,
+    },
     /// Answer a prompt the runtime raised.
     AnswerPrompt {
         /// The prompt's request id.

@@ -20,7 +20,8 @@ use secrecy::{ExposeSecret, SecretString};
 use tracing::{debug, info};
 
 pub use known_hosts::{HostKeyStatus, KnownHosts, fingerprint};
-pub use tunnel::{Tunnel, TunnelInfo, TunnelStatus};
+use tunnel::RemoteRoutes;
+pub use tunnel::{ForwardKind, ForwardSpec, Tunnel, TunnelInfo, TunnelStatus};
 
 /// Why an SSH operation failed.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -196,6 +197,8 @@ struct ClientHandler {
     port: u16,
     prompter: Arc<dyn SshPrompter>,
     outcome: Arc<Mutex<KeyOutcome>>,
+    /// Remote forwards on this connection.
+    routes: Arc<RemoteRoutes>,
 }
 
 fn record(outcome: &Mutex<KeyOutcome>, e: SshError) {
@@ -276,6 +279,20 @@ impl client::Handler for ClientHandler {
             }
         }
     }
+
+    async fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        _connected_address: &str,
+        connected_port: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        self.routes.open(connected_port, channel, reply);
+        Ok(())
+    }
 }
 
 fn key_kind(key: &PublicKey) -> &'static str {
@@ -308,6 +325,11 @@ pub struct SshConn {
     pub label: String,
     /// `user@address · ed25519 · via bastion`.
     pub description: String,
+    /// Where the server's forwarded connections go (remote forwards).
+    routes: Arc<RemoteRoutes>,
+    /// Remote forward requests go one at a time (a port-0 request learns its port only
+    /// from the reply).
+    forward_requests: tokio::sync::Mutex<()>,
 }
 
 impl std::fmt::Debug for SshConn {
@@ -428,7 +450,9 @@ async fn connect_one(
         ..Default::default()
     });
     let outcome: Arc<Mutex<KeyOutcome>> = Arc::default();
+    let routes: Arc<RemoteRoutes> = Arc::default();
     let handler = ClientHandler {
+        routes: routes.clone(),
         known: known.clone(),
         accept_changed,
         label: target.label.clone(),
@@ -483,6 +507,8 @@ async fn connect_one(
         id: target.id.clone(),
         label: target.label.clone(),
         description,
+        routes,
+        forward_requests: tokio::sync::Mutex::new(()),
     })
 }
 

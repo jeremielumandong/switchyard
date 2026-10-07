@@ -149,7 +149,7 @@ One SSH session per Host is shared by its terminals, SFTP browser and database t
 
 **Tunnels**
 
-- Local port forwards defined on a Host. A DB connection set to "via Host" opens its tunnel automatically on an ephemeral local port.
+- Port forwards saved on a Host: local (`-L`), remote (`-R`, the Host listens) and dynamic (`-D`, a SOCKS4/5 proxy), each optionally started when a terminal connects to the Host. A DB connection set to "via Host" opens its tunnel automatically on an ephemeral local port.
 - Tunnels are shared across sessions that need them and reconnect with the Host.
 - A tunnel manager lists active tunnels with local port, target, status and bytes transferred, and can stop them.
 
