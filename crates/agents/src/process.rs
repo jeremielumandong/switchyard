@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(unix)]
 use std::time::Duration;
 
 /// How long a CLI has to exit after SIGTERM before it gets SIGKILL.
@@ -271,11 +272,10 @@ pub(crate) fn write_private(path: &Path, contents: &[u8]) -> std::io::Result<()>
     file.flush()
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     #[test]
     fn finds_programs_on_path() {
         assert!(find_program("sh", None).is_some());
@@ -287,7 +287,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn private_files_are_owner_only() {
         use std::os::unix::fs::PermissionsExt as _;
