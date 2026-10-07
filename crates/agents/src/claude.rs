@@ -127,6 +127,45 @@ impl AgentAdapter for ClaudeCode {
     fn parser(&self) -> Box<dyn StreamParser> {
         Box::new(Parser::default())
     }
+
+    fn interactive(&self, ctx: &RunContext<'_>) -> Option<Result<Invocation, AgentError>> {
+        Some((|| {
+            let path = ctx.workdir.join("mcp.json");
+            let config =
+                serde_json::to_vec_pretty(&mcp_config(ctx)).map_err(std::io::Error::other)?;
+            write_private(&path, &config)?;
+            // The same restrictions as a run, minus the headless stream: no built-in tools,
+            // only Switchyard's server; the person in the terminal answers any prompt.
+            let mut a: Vec<String> = [
+                "--restricted",
+                "--tools",
+                "",
+                "--strict-mcp-config",
+                "--mcp-config",
+            ]
+            .map(String::from)
+            .into();
+            a.push(path.to_string_lossy().into_owned());
+            a.extend([
+                "--allowedTools".into(),
+                format!("mcp__{MCP_SERVER_NAME}"),
+                "--append-system-prompt".into(),
+                ctx.system_prompt.to_owned(),
+            ]);
+            if let Some(m) = ctx.model.filter(|m| !m.trim().is_empty()) {
+                a.extend(["--model".into(), m.to_owned()]);
+            }
+            if let Some(r) = ctx.resume.filter(|r| !r.trim().is_empty()) {
+                a.extend(["--resume".into(), r.to_owned()]);
+            }
+            a.extend(ctx.extra_args.iter().cloned());
+            Ok(Invocation {
+                args: a,
+                env: vec![("MCP_TOOL_TIMEOUT".into(), MCP_TOOL_TIMEOUT_MS.to_string())],
+                stdin: None,
+            })
+        })())
+    }
 }
 
 /// Claude Code's stream-json output → [`AgentEvent`]s.

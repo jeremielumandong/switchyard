@@ -101,6 +101,11 @@ pub struct TerminalTab {
     _search_sub: Option<Subscription>,
     /// Typed into the first pane once its shell is up (e.g. `cd` to a folder).
     startup: Option<Vec<u8>>,
+    /// A coding CLI with Switchyard's tools ("Open in terminal"): (CLI, connection).
+    agent: Option<(
+        Option<switchyard_core::agents::AgentKind>,
+        Option<ProfileId>,
+    )>,
 }
 
 impl TerminalTab {
@@ -127,6 +132,34 @@ impl TerminalTab {
             search: None,
             _search_sub: None,
             startup: None,
+            agent: None,
+        };
+        this.add_pane(cx);
+        this
+    }
+
+    /// A coding CLI running interactively with Switchyard's tools attached; `agent` `None`
+    /// is the configured one, `connection` the one it may use (all agent-enabled ones when
+    /// `None`).
+    pub fn new_agent(
+        core: RuntimeHandle,
+        title: String,
+        agent: Option<switchyard_core::agents::AgentKind>,
+        connection: Option<ProfileId>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut this = Self {
+            title: title.into(),
+            env: EnvironmentLabel::Local,
+            core,
+            target: TermTarget::Local { profile: None },
+            panes: Vec::new(),
+            active: 0,
+            broadcast: false,
+            search: None,
+            _search_sub: None,
+            startup: None,
+            agent: Some((agent, connection)),
         };
         this.add_pane(cx);
         this
@@ -190,11 +223,19 @@ impl TerminalTab {
                 cols: 100,
                 rows: 30,
             });
-        self.core.send(Command::OpenTerminal {
-            term: id,
-            target: self.target.clone(),
-            size,
-        });
+        match &self.agent {
+            Some((agent, connection)) => self.core.send(Command::OpenAgentTerminal {
+                term: id,
+                agent: *agent,
+                connection: connection.clone(),
+                size,
+            }),
+            None => self.core.send(Command::OpenTerminal {
+                term: id,
+                target: self.target.clone(),
+                size,
+            }),
+        }
         self.panes.push(Pane {
             id,
             terminal: None,

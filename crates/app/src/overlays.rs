@@ -27,16 +27,18 @@ pub enum SettingsPage {
     Appearance,
     Keybindings,
     Drivers,
+    Assistant,
     Security,
 }
 
 impl SettingsPage {
-    const ALL: [SettingsPage; 6] = [
+    const ALL: [SettingsPage; 7] = [
         SettingsPage::General,
         SettingsPage::Editor,
         SettingsPage::Appearance,
         SettingsPage::Keybindings,
         SettingsPage::Drivers,
+        SettingsPage::Assistant,
         SettingsPage::Security,
     ];
 
@@ -47,6 +49,7 @@ impl SettingsPage {
             SettingsPage::Appearance => "Appearance",
             SettingsPage::Keybindings => "Keybindings",
             SettingsPage::Drivers => "Drivers",
+            SettingsPage::Assistant => "Assistant",
             SettingsPage::Security => "Security",
         }
     }
@@ -1181,6 +1184,32 @@ impl Workspace {
     ) -> AnyElement {
         let body: AnyElement = match page {
             SettingsPage::Drivers => self.render_drivers(p, window, cx),
+            SettingsPage::Assistant => {
+                let view = match &self.assistant_view {
+                    Some(v) => v.clone(),
+                    None => {
+                        let (core, s, comps) = (
+                            self.core.clone(),
+                            self.assistant.clone(),
+                            self.components.clone(),
+                        );
+                        let v = cx.new(|cx| {
+                            crate::assistant_settings::AssistantSettingsView::new(
+                                core, &s, &comps, window, cx,
+                            )
+                        });
+                        cx.subscribe(&v, |this, _, ev, cx| {
+                            let crate::assistant_settings::AssistantSettingsEvent::Saved(s) = ev;
+                            this.assistant = s.clone();
+                            cx.notify();
+                        })
+                        .detach();
+                        self.assistant_view = Some(v.clone());
+                        v
+                    }
+                };
+                crate::assistant_settings::element(&view)
+            }
             SettingsPage::Appearance => div()
                 .flex()
                 .flex_col()

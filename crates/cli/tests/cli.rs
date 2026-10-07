@@ -731,6 +731,7 @@ async fn live_claude_code_run() {
         &data,
         AgentRunRequest {
             agent: AgentKind::ClaudeCode,
+            custom: None,
             program: std::env::var_os("SWITCHYARD_LIVE_CLAUDE").map(Into::into),
             prompt: "On the connection named \"shop\": call describe_table for the orders table, \
                      then explain `SELECT * FROM orders WHERE customer_id = 42`. Then list the \
@@ -834,6 +835,7 @@ async fn codex_runs_switchyard_tools_with_a_scripted_model() {
         &data,
         AgentRunRequest {
             agent: AgentKind::Codex,
+            custom: None,
             program: Some(codex.into()),
             prompt: "Why is the orders lookup slow?".into(),
             resume: None,
@@ -962,6 +964,7 @@ async fn gemini_runs_switchyard_tools_with_a_scripted_model() {
     let data = home.data_dir();
     let request = |prompt: &str, resume: Option<String>| AgentRunRequest {
         agent: AgentKind::Gemini,
+        custom: None,
         program: Some(gemini.clone().into()),
         prompt: prompt.into(),
         resume,

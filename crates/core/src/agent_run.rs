@@ -16,10 +16,10 @@ use secrecy::{ExposeSecret as _, SecretString};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use switchyard_agents::{
-    AgentAdapter, AgentError, AgentKind, AgentRun, ClaudeCode, McpServer, RunRequest,
+    AgentAdapter, AgentError, AgentKind, AgentRun, ClaudeCode, CustomCli, McpServer, RunRequest,
 };
 use switchyard_store::random::{hex, random_hex};
-use switchyard_store::{ProfileId, now_ms};
+use switchyard_store::{DbConnection, ProfileId, now_ms};
 
 use crate::error::{CoreError, Result};
 
@@ -176,13 +176,15 @@ fn remove_expired(dir: &Path) {
     }
 }
 
-/// The adapter for a CLI, where one exists yet.
-pub fn adapter_for(kind: AgentKind) -> Option<Arc<dyn AgentAdapter>> {
+/// The adapter for a CLI; the custom one needs its settings.
+pub fn adapter_for(kind: AgentKind, custom: Option<&CustomCli>) -> Option<Arc<dyn AgentAdapter>> {
     match kind {
         AgentKind::ClaudeCode => Some(Arc::new(ClaudeCode)),
         AgentKind::Codex => Some(Arc::new(switchyard_agents::Codex)),
         AgentKind::Gemini => Some(Arc::new(switchyard_agents::Gemini)),
-        AgentKind::Custom => None,
+        AgentKind::Custom => custom
+            .filter(|c| !c.program.trim().is_empty())
+            .map(|c| Arc::new(switchyard_agents::Custom(c.clone())) as Arc<dyn AgentAdapter>),
     }
 }
 
@@ -197,6 +199,108 @@ pub fn swy_path() -> Option<PathBuf> {
         .and_then(|exe| exe.parent().map(|d| d.join(&name)))
         .filter(|p| p.is_file())
         .or_else(|| switchyard_agents::find_program("swy", None))
+}
+
+/// Settings key of [`AssistantSettings`] (Settings → Assistant).
+pub const ASSISTANT_SETTINGS_KEY: &str = "assistant";
+
+/// One CLI's settings.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CliSettings {
+    /// Executable; empty looks it up on PATH.
+    pub path: String,
+    /// Model; empty keeps the CLI's default.
+    pub model: String,
+    /// Extra arguments, added to every run.
+    pub extra_args: Vec<String>,
+}
+
+/// Settings → Assistant.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AssistantSettings {
+    /// The CLI used unless a connection names another.
+    pub default_agent: AgentKind,
+    /// Claude Code.
+    pub claude_code: CliSettings,
+    /// Codex CLI.
+    pub codex: CliSettings,
+    /// Gemini CLI.
+    pub gemini: CliSettings,
+    /// The custom CLI's model and extra arguments (its program is in `custom`).
+    pub custom_settings: CliSettings,
+    /// The custom CLI.
+    pub custom: CustomCli,
+}
+
+impl Default for AssistantSettings {
+    fn default() -> Self {
+        Self {
+            default_agent: AgentKind::ClaudeCode,
+            claude_code: CliSettings::default(),
+            codex: CliSettings::default(),
+            gemini: CliSettings::default(),
+            custom_settings: CliSettings::default(),
+            custom: CustomCli::example(),
+        }
+    }
+}
+
+impl AssistantSettings {
+    /// One CLI's settings.
+    pub fn cli(&self, kind: AgentKind) -> &CliSettings {
+        match kind {
+            AgentKind::ClaudeCode => &self.claude_code,
+            AgentKind::Codex => &self.codex,
+            AgentKind::Gemini => &self.gemini,
+            AgentKind::Custom => &self.custom_settings,
+        }
+    }
+
+    /// One CLI's settings, to change.
+    pub fn cli_mut(&mut self, kind: AgentKind) -> &mut CliSettings {
+        match kind {
+            AgentKind::ClaudeCode => &mut self.claude_code,
+            AgentKind::Codex => &mut self.codex,
+            AgentKind::Gemini => &mut self.gemini,
+            AgentKind::Custom => &mut self.custom_settings,
+        }
+    }
+
+    /// The CLI for a connection: its override, else the default.
+    pub fn agent_for(&self, connection: Option<&DbConnection>) -> AgentKind {
+        connection
+            .and_then(|c| c.assistant_agent.as_deref())
+            .and_then(AgentKind::from_id)
+            .unwrap_or(self.default_agent)
+    }
+
+    /// A run request for `kind` from these settings.
+    pub fn request(
+        &self,
+        kind: AgentKind,
+        prompt: String,
+        resume: Option<String>,
+        connections: Vec<ProfileId>,
+    ) -> AgentRunRequest {
+        let cli = self.cli(kind);
+        let some = |s: &str| (!s.trim().is_empty()).then(|| s.trim().to_owned());
+        AgentRunRequest {
+            agent: kind,
+            program: some(&cli.path).map(PathBuf::from),
+            prompt,
+            resume,
+            model: some(&cli.model),
+            connections,
+            swy: None,
+            mcp_env: Vec::new(),
+            temp_root: None,
+            extra_args: cli.extra_args.clone(),
+            extra_env: Vec::new(),
+            custom: (kind == AgentKind::Custom).then(|| self.custom.clone()),
+        }
+    }
 }
 
 /// A request to run a coding agent.
@@ -224,13 +328,24 @@ pub struct AgentRunRequest {
     pub extra_args: Vec<String>,
     /// Extra environment for the CLI (Settings → Assistant).
     pub extra_env: Vec<(String, String)>,
+    /// The custom CLI, for [`AgentKind::Custom`].
+    pub custom: Option<CustomCli>,
 }
 
-/// Start a run: issue its token, then start the CLI with `swy mcp` attached. The token is
-/// revoked when the CLI exits (or the run is cancelled or dropped).
-pub fn start_agent_run(data_dir: &Path, req: AgentRunRequest) -> Result<AgentRun> {
-    let adapter = adapter_for(req.agent).ok_or_else(|| {
-        CoreError::Unsupported(format!("{} is not supported yet", req.agent.display_name()))
+fn agent_error(e: AgentError) -> CoreError {
+    match e {
+        AgentError::NotFound(name) => CoreError::NotFound(name),
+        AgentError::Io(e) => CoreError::Internal(e.to_string()),
+    }
+}
+
+/// Issue the token and describe the run for the agents runner.
+fn build(data_dir: &Path, req: AgentRunRequest) -> Result<(Arc<dyn AgentAdapter>, RunRequest)> {
+    let adapter = adapter_for(req.agent, req.custom.as_ref()).ok_or_else(|| {
+        CoreError::Unsupported(format!(
+            "{} is not set up: give it a program in Settings → Assistant",
+            req.agent.display_name()
+        ))
     })?;
     let swy = req
         .swy
@@ -253,7 +368,7 @@ pub fn start_agent_run(data_dir: &Path, req: AgentRunRequest) -> Result<AgentRun
         env.retain(|(e, _)| *e != k);
         env.push((k, v));
     }
-    switchyard_agents::runner::start(
+    Ok((
         adapter,
         RunRequest {
             program: req.program,
@@ -270,11 +385,24 @@ pub fn start_agent_run(data_dir: &Path, req: AgentRunRequest) -> Result<AgentRun
             extra_env: req.extra_env,
             guards: vec![Box::new(token)],
         },
-    )
-    .map_err(|e| match e {
-        AgentError::NotFound(name) => CoreError::NotFound(name),
-        AgentError::Io(e) => CoreError::Internal(e.to_string()),
-    })
+    ))
+}
+
+/// Start a run: issue its token, then start the CLI with `swy mcp` attached. The token is
+/// revoked when the CLI exits (or the run is cancelled or dropped).
+pub fn start_agent_run(data_dir: &Path, req: AgentRunRequest) -> Result<AgentRun> {
+    let (adapter, run) = build(data_dir, req)?;
+    switchyard_agents::runner::start(adapter, run).map_err(agent_error)
+}
+
+/// Prepare the CLI to run interactively in a terminal with `swy mcp` attached. The
+/// session's guards revoke the token and remove the run directory when dropped.
+pub fn prepare_agent_terminal(
+    data_dir: &Path,
+    req: AgentRunRequest,
+) -> Result<switchyard_agents::InteractiveSession> {
+    let (adapter, run) = build(data_dir, req)?;
+    switchyard_agents::runner::prepare_interactive(adapter, run).map_err(agent_error)
 }
 
 #[cfg(test)]
@@ -334,6 +462,7 @@ mod tests {
                 temp_root: None,
                 extra_args: vec![],
                 extra_env: vec![],
+                custom: None,
             },
         );
         assert!(matches!(r, Err(CoreError::Unsupported(_))));

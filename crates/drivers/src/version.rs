@@ -25,6 +25,15 @@ pub fn compare(a: &str, b: &str) -> Ordering {
     Ordering::Equal
 }
 
+/// The first dotted version in a program's `--version` output (`2.1.292 (Claude Code)`,
+/// `codex-cli 0.160.1`).
+pub fn parse_version(text: &str) -> Option<String> {
+    text.split(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .map(|t| t.trim_matches('.'))
+        .find(|t| t.contains('.') && t.split('.').all(|p| !p.is_empty()))
+        .map(str::to_owned)
+}
+
 /// Whether `found` satisfies `minimum`.
 pub fn at_least(found: &str, minimum: &str) -> bool {
     compare(found, minimum) != Ordering::Less
@@ -33,6 +42,22 @@ pub fn at_least(found: &str, minimum: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_cli_versions() {
+        assert_eq!(
+            parse_version("2.1.292 (Claude Code)").as_deref(),
+            Some("2.1.292")
+        );
+        assert_eq!(
+            parse_version("codex-cli 0.160.1\n").as_deref(),
+            Some("0.160.1")
+        );
+        assert_eq!(parse_version("0.63.0").as_deref(), Some("0.63.0"));
+        assert_eq!(parse_version("v1.2"), Some("1.2".into()));
+        assert_eq!(parse_version("no version"), None);
+        assert_eq!(parse_version("build 42"), None);
+    }
 
     #[test]
     fn ordering() {

@@ -240,6 +240,18 @@ impl ConnEditor {
                     format!("{} {version} is too old", c.name),
                     format!("{} needs {required} or newer.", c.needed_for),
                 ),
+                ComponentStatus::TooNew {
+                    version,
+                    supported_below,
+                    ..
+                } => (
+                    "UNTESTED",
+                    warn,
+                    format!("{} {version} is newer than Switchyard supports", c.name),
+                    format!(
+                        "Switchyard was tested with versions below {supported_below}; its options may have changed."
+                    ),
+                ),
                 _ => (
                     "MISSING",
                     warn,

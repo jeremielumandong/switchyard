@@ -130,6 +130,108 @@
           ]
         }
       }
+    },
+    {
+      "id": "claude-code",
+      "name": "Claude Code",
+      "needed_for": "Assistant with Claude Code (your own Anthropic sign-in)",
+      "required_by": ["assistant.claude-code"],
+      "detect": {
+        "programs": ["claude"],
+        "min_version": "2.1.0",
+        "below_version": "3.0.0"
+      },
+      "platforms": {
+        "windows": {
+          "strategy": "manual",
+          "steps": [
+            "Install: npm install -g @anthropic-ai/claude-code (needs Node.js 18+), or the native installer from claude.com/claude-code.",
+            "Run claude once in a terminal and sign in; Switchyard uses that sign-in."
+          ]
+        },
+        "macos": {
+          "strategy": "manual",
+          "steps": [
+            "Install: brew install --cask claude-code, or npm install -g @anthropic-ai/claude-code.",
+            "Run claude once in a terminal and sign in; Switchyard uses that sign-in."
+          ]
+        },
+        "linux": {
+          "strategy": "manual",
+          "steps": [
+            "Install: curl -fsSL https://claude.ai/install.sh | bash, or npm install -g @anthropic-ai/claude-code.",
+            "Run claude once in a terminal and sign in; Switchyard uses that sign-in."
+          ]
+        }
+      }
+    },
+    {
+      "id": "codex-cli",
+      "name": "Codex CLI",
+      "needed_for": "Assistant with OpenAI Codex CLI (your own OpenAI sign-in)",
+      "required_by": ["assistant.codex-cli"],
+      "detect": {
+        "programs": ["codex"],
+        "min_version": "0.160.0",
+        "below_version": "1.0.0"
+      },
+      "platforms": {
+        "windows": {
+          "strategy": "manual",
+          "steps": [
+            "Install: npm install -g @openai/codex (needs Node.js 18+).",
+            "Run codex login once; Switchyard uses that sign-in."
+          ]
+        },
+        "macos": {
+          "strategy": "manual",
+          "steps": [
+            "Install: brew install --cask codex, or npm install -g @openai/codex.",
+            "Run codex login once; Switchyard uses that sign-in."
+          ]
+        },
+        "linux": {
+          "strategy": "manual",
+          "steps": [
+            "Install: npm install -g @openai/codex (needs Node.js 18+).",
+            "Run codex login once; Switchyard uses that sign-in."
+          ]
+        }
+      }
+    },
+    {
+      "id": "gemini-cli",
+      "name": "Gemini CLI",
+      "needed_for": "Assistant with Google Gemini CLI (your own Google sign-in)",
+      "required_by": ["assistant.gemini-cli"],
+      "detect": {
+        "programs": ["gemini"],
+        "min_version": "0.63.0",
+        "below_version": "1.0.0"
+      },
+      "platforms": {
+        "windows": {
+          "strategy": "manual",
+          "steps": [
+            "Install: npm install -g @google/gemini-cli (needs Node.js 20+).",
+            "Run gemini once in a terminal and sign in; Switchyard uses that sign-in."
+          ]
+        },
+        "macos": {
+          "strategy": "manual",
+          "steps": [
+            "Install: brew install gemini-cli, or npm install -g @google/gemini-cli.",
+            "Run gemini once in a terminal and sign in; Switchyard uses that sign-in."
+          ]
+        },
+        "linux": {
+          "strategy": "manual",
+          "steps": [
+            "Install: npm install -g @google/gemini-cli (needs Node.js 20+).",
+            "Run gemini once in a terminal and sign in; Switchyard uses that sign-in."
+          ]
+        }
+      }
     }
   ]
 }
