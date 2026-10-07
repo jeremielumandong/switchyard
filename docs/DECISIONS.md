@@ -666,3 +666,34 @@ full port in one go; Snowflake through its SQL REST API with key-pair (JWT) auth
   relies on the core's plan entry when history is on). Tags: `agent` plus `agent:<cli>`
   from `SWITCHYARD_AGENT` (`claude-code`, `codex`, `gemini`, otherwise `custom`).
 
+
+## 2026-10-07 — M5-11: agent runner, Claude Code adapter, session tokens
+
+- Runner and adapter code ported from Emulsion's assistant (see the M5 entry above), with
+  one-shot runs instead of Emulsion's persistent bidirectional session: the M5 tools are
+  all read-only server-side and actual-plan approval comes with M5-14, so no permission
+  round-trips are needed yet. Each run is one `claude -p` process; follow-ups use
+  `--resume <session id>`.
+- Claude Code flags (checked against 2.1.292): `--tools ""` (no built-in tools at all),
+  `--restricted` (user, project and local settings files ignored, so they cannot add tools
+  or permissions), `--strict-mcp-config --mcp-config <file>` (only Switchyard's server),
+  `--allowedTools mcp__switchyard` and `--permission-mode dontAsk` (anything else is refused
+  without a prompt). The prompt goes in as one stream-json user message on stdin, never in
+  argv. `MCP_TOOL_TIMEOUT` is 150 s (the longest `run_query` timeout plus connect time).
+- Session token: 32 random bytes (store's RNG), handed to `swy mcp` through the MCP config's
+  `env` block in an owner-only file in the run's private directory. Only its SHA-256 is
+  stored, as `<data>/agent-tokens/<hash>.json` with the connection ids, the CLI and an
+  expiry (2 h). Revoked (file removed) when the CLI exits, is cancelled or the run is
+  dropped; expired files are swept on the next issue. `swy mcp` refuses to start with a dead
+  token and re-checks it on every call, so an MCP server a CLI leaves behind stops working.
+  The token's CLI sets the history tag. Without a token `swy mcp` behaves as in M5-10 (a
+  user's own CLI config): all agent-enabled connections.
+- Agent access still applies inside a token: a token naming a connection without agent
+  access cannot open it.
+- `swy mcp` gets `SWITCHYARD_HOME` and `SWITCHYARD_SECRETS` from the app's environment
+  through the config file when set; never the vault password.
+- Stream-json: Claude Code 2.1 sends each content block of an assistant message as its own
+  event (older versions resent the growing message). The parser tracks emitted text per
+  message id and handles both.
+- Process groups: `process_group(0)` and `kill -TERM -- -<pgid>` (SIGKILL after 2 s if the
+  CLI is still there); `taskkill /T /F` on Windows.

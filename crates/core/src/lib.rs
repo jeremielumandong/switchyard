@@ -2,6 +2,7 @@
 //! and runtime, and services for profiles, secrets, sessions, queries, history and the
 //! schema cache. The desktop app and the `swy` CLI share this crate.
 
+pub mod agent_run;
 pub mod api_secrets;
 pub mod bus;
 pub mod components;
@@ -26,6 +27,8 @@ pub use runtime::{Core, EventReceiver, EventSender, RuntimeHandle};
 pub use service::agent::{AgentRows, cell_json};
 pub use service::{SecretBackendChoice, ServiceConfig};
 
+/// Coding-CLI adapters and the agent runner, re-exported.
+pub use switchyard_agents as agents;
 /// The API workspace, re-exported for the app.
 pub use switchyard_api as api;
 /// Re-exported database contracts.

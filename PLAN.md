@@ -342,12 +342,23 @@ faster, and no agent call ever performed a write.
   Tools: list_connections, list_tables, describe_table, run_query, explain (estimated
   only; ANALYZE refused until M5-14's approval), workload, what_if. "Allow coding agents"
   checkbox in the connection editor. Session token scoping is M5-11.
-- [ ] **M5-11 Agent adapter core + Claude Code.** In `switchyard-agents`: `AgentAdapter` trait and normalized
+- [x] **M5-11 Agent adapter core + Claude Code.** In `switchyard-agents`: `AgentAdapter` trait and normalized
   `AgentEvent` stream; shared runner (temp workdir, session token for `swy mcp`, child process, cancel kills the
   process tree, cleanup). Claude Code adapter: `claude -p --output-format stream-json
   --mcp-config <generated>`, resume via `--resume`, allow only Switchyard MCP tools.
   Done when: tested with a fake `claude` binary replaying recorded stream-json, plus one live run
   against the docker PostgreSQL behind a manual flag.
+  Note: `agents::runner` (private 0700 temp dir per run, CLI in its own process group, prompt
+  on stdin, cancel kills the tree, dir removed and guards dropped before `Exited`) and
+  `agents::claude` (`--restricted --tools "" --strict-mcp-config --allowedTools
+  mcp__switchyard --permission-mode dontAsk`). Session tokens: `core::agent_run`
+  (`<data>/agent-tokens/<sha256>.json`, 2 h expiry, revoked at run end); `swy mcp` with
+  `SWITCHYARD_MCP_TOKEN` serves only the token's agent-enabled connections and re-checks the
+  token on every call. Tests: `agents/tests/claude_replay.rs` (stream recorded from Claude
+  Code 2.1.292), `cli/tests/cli.rs` `mcp_session_token_scopes_and_revokes` and
+  `live_claude_code_run` (`SWITCHYARD_LIVE_AGENT=claude`; passed with haiku). Not yet on the
+  core bus (the assistant panel, M5-15, adds the command). Vault-only systems: `swy mcp`
+  needs `SWITCHYARD_VAULT_PASSWORD` in the app's environment (see Follow-ups).
 - [ ] **M5-12 Codex CLI adapter (spike first).** `codex exec --json`, MCP via `[mcp_servers]` in a
   generated config, resume via `codex exec resume`. Spike: how to auto-approve only Switchyard's MCP
   tools in non-interactive mode without bypassing approvals globally, and how to keep the user's
@@ -421,6 +432,10 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 - Workload-wide index advisor, snippet library, import wizard, data compare, folder sync.
 
 ## Follow-ups
+
+- Agent runs on systems with only the fallback vault: `swy mcp` cannot unlock it unless
+  `SWITCHYARD_VAULT_PASSWORD` is in the app's environment. Option: let `swy mcp` borrow the
+  running app's unlocked secrets over the loopback handoff, scoped by the session token.
 
 (Add items here instead of doing them mid-task.)
 - Oracle: EXPLAIN PLAN / DBMS_XPLAN → `PlanNode`; V$SQL workload view; arm64 Linux archive;

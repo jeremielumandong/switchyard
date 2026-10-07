@@ -13,9 +13,10 @@ use std::io::{IsTerminal as _, Read as _};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, anyhow, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use switchyard_core::QueryEvent;
+use switchyard_core::agent_run::{TOKEN_ENV, verify_token};
 use switchyard_core::handoff::{self, Handoff, HandoffError};
 use switchyard_core::store::AppPaths;
 
@@ -246,7 +247,15 @@ async fn workload(connection: &str, json: bool) -> Result<()> {
 
 async fn mcp() -> Result<()> {
     let client = Client::start().await?;
-    let mut tools = mcp::Tools::new(client);
+    // A run started by the app carries a session token naming its connections.
+    let session = match std::env::var(TOKEN_ENV) {
+        Ok(token) if !token.trim().is_empty() => {
+            let scope = verify_token(client.data_dir(), &token).map_err(|e| anyhow!("{e}"))?;
+            Some(mcp::Session { token, scope })
+        }
+        _ => None,
+    };
+    let mut tools = mcp::Tools::new(client, session);
     let r = mcp::server::serve(
         &mut tools,
         tokio::io::BufReader::new(tokio::io::stdin()),

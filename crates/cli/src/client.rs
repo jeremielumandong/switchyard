@@ -41,9 +41,15 @@ pub struct Client {
     core: Core,
     events: EventReceiver,
     profiles: Vec<Profile>,
+    data_dir: std::path::PathBuf,
 }
 
 impl Client {
+    /// Switchyard's data directory.
+    pub fn data_dir(&self) -> &std::path::Path {
+        &self.data_dir
+    }
+
     /// Start a core on the user's profile store. With `SWITCHYARD_VAULT_PASSWORD` set, the
     /// fallback vault (no OS keychain) is unlocked first.
     pub async fn start() -> Result<Self> {
@@ -53,6 +59,7 @@ impl Client {
             core,
             events,
             profiles: Vec::new(),
+            data_dir: paths.data.clone(),
         };
         if let Ok(pw) = std::env::var("SWITCHYARD_VAULT_PASSWORD") {
             c.send(Command::UnlockVault {
