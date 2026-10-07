@@ -8718,7 +8718,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-api"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "aho-corasick",
  "base64 0.23.1",
