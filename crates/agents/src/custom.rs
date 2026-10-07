@@ -189,12 +189,11 @@ impl Custom {
             return Ok(None);
         };
         let rel = std::path::Path::new(t.file.trim());
-        // Inside the run directory only.
-        if rel.is_absolute()
-            || rel
-                .components()
-                .any(|c| matches!(c, std::path::Component::ParentDir))
-        {
+        // Inside the run directory only: plain names, no root, drive or `..` (on Windows
+        // `\etc` is not absolute but joins onto the drive root).
+        use std::path::Component::{CurDir, Normal};
+        let plain = rel.components().all(|c| matches!(c, Normal(_) | CurDir));
+        if !plain || !rel.components().any(|c| matches!(c, Normal(_))) {
             return Err(AgentError::Io(std::io::Error::other(
                 "the MCP config file must be a relative path inside the run directory",
             )));
@@ -476,7 +475,7 @@ mod tests {
             extra_args: &[],
             extra_env: &[],
         };
-        for bad in ["../evil.json", "/etc/evil.json"] {
+        for bad in ["../evil.json", "/etc/evil.json", "a/../../evil.json", "."] {
             let mut cli = CustomCli::example();
             cli.mcp_config = Some(McpConfigTemplate {
                 file: bad.into(),
