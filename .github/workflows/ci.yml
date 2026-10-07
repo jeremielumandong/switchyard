@@ -67,28 +67,14 @@ jobs:
   integration:
     name: integration (PostgreSQL, SSH, tunnels)
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: switchyard
-          POSTGRES_PASSWORD: switchyard
-          POSTGRES_DB: shop
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U switchyard -d shop"
-          --health-interval 2s --health-timeout 3s --health-retries 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
-      - name: Seed sample schema
-        env:
-          PGPASSWORD: switchyard
-        run: |
-          for f in docker/postgres/*.sql; do
-            psql -h localhost -U switchyard -d shop -v ON_ERROR_STOP=1 -f "$f"
-          done
+      # The compose service, not a job service: it preloads pg_stat_statements, adds HypoPG
+      # (docker/postgres-image) and seeds itself from docker/postgres.
+      - name: Start PostgreSQL
+        run: docker compose -f docker/compose.yml up -d --build --wait postgres
       - name: Install OpenSSH server
         run: sudo apt-get update && sudo apt-get install -y openssh-server
       - name: Start SSH test servers

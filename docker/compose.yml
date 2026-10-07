@@ -4,7 +4,9 @@ name: switchyard-test
 
 services:
   postgres:
-    image: postgres:16
+    # postgres:16 plus HypoPG (docker/postgres-image/Dockerfile).
+    build: ./postgres-image
+    image: switchyard-test-postgres:16-hypopg
     environment:
       POSTGRES_USER: switchyard
       POSTGRES_PASSWORD: switchyard
