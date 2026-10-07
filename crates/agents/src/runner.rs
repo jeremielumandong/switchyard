@@ -37,6 +37,10 @@ pub struct RunRequest {
     pub mcp: McpServer,
     /// Parent of the run's temp directory; `None` is the system temp directory.
     pub temp_root: Option<PathBuf>,
+    /// Extra CLI arguments (user settings).
+    pub extra_args: Vec<String>,
+    /// Extra environment for the CLI process (user settings).
+    pub extra_env: Vec<(String, String)>,
     /// Dropped when the process has ended (before [`AgentEvent::Exited`]): the session
     /// token's revocation, for one.
     pub guards: Vec<Box<dyn Send>>,
@@ -134,6 +138,7 @@ pub fn start(adapter: Arc<dyn AgentAdapter>, req: RunRequest) -> Result<AgentRun
         model: req.model.as_deref(),
         mcp: &req.mcp,
         system_prompt: SYSTEM_PROMPT,
+        extra_args: &req.extra_args,
     })?;
 
     let mut cmd = process::command(&program);
@@ -145,7 +150,7 @@ pub fn start(adapter: Arc<dyn AgentAdapter>, req: RunRequest) -> Result<AgentRun
         .env("PATH", process::child_path())
         .env("NO_COLOR", "1")
         .env("FORCE_COLOR", "0");
-    for (k, v) in &invocation.env {
+    for (k, v) in invocation.env.iter().chain(&req.extra_env) {
         cmd.env(k, v);
     }
     let mut child = cmd.spawn()?;
@@ -306,6 +311,8 @@ mod tests {
                 env: vec![],
             },
             temp_root: Some(root.to_path_buf()),
+            extra_args: Vec::new(),
+            extra_env: Vec::new(),
             guards: vec![Box::new(Flag(Arc::clone(dropped)))],
         }
     }

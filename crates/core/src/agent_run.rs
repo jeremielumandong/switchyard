@@ -180,7 +180,8 @@ fn remove_expired(dir: &Path) {
 pub fn adapter_for(kind: AgentKind) -> Option<Arc<dyn AgentAdapter>> {
     match kind {
         AgentKind::ClaudeCode => Some(Arc::new(ClaudeCode)),
-        AgentKind::Codex | AgentKind::Gemini | AgentKind::Custom => None,
+        AgentKind::Codex => Some(Arc::new(switchyard_agents::Codex)),
+        AgentKind::Gemini | AgentKind::Custom => None,
     }
 }
 
@@ -218,6 +219,10 @@ pub struct AgentRunRequest {
     pub mcp_env: Vec<(String, String)>,
     /// Parent of the run's temp directory; `None` is the system temp directory.
     pub temp_root: Option<PathBuf>,
+    /// Extra CLI arguments (Settings → Assistant).
+    pub extra_args: Vec<String>,
+    /// Extra environment for the CLI (Settings → Assistant).
+    pub extra_env: Vec<(String, String)>,
 }
 
 /// Start a run: issue its token, then start the CLI with `swy mcp` attached. The token is
@@ -260,6 +265,8 @@ pub fn start_agent_run(data_dir: &Path, req: AgentRunRequest) -> Result<AgentRun
                 env,
             },
             temp_root: req.temp_root,
+            extra_args: req.extra_args,
+            extra_env: req.extra_env,
             guards: vec![Box::new(token)],
         },
     )
@@ -324,6 +331,8 @@ mod tests {
                 swy: Some("swy".into()),
                 mcp_env: vec![],
                 temp_root: None,
+                extra_args: vec![],
+                extra_env: vec![],
             },
         );
         assert!(matches!(r, Err(CoreError::Unsupported(_))));

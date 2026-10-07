@@ -759,3 +759,33 @@ M7; SPEC's scope table moves remote/dynamic/X11 forwarding into v1.
   used as is; `host:N` is TCP port 6000 + N.
 - The Driver Manager's "X server" component detects by path (Linux's X0 socket, XQuartz,
   VcXsrv, Xming; X410 is a Store app and is not found by path) and shows install steps.
+
+## 2026-10-07 — M5 resumed before MX-3 (user request); M5-12 Codex spike outcome
+
+The user asked to finish M5-12 to M5-15 now; M7 (MX-3 onwards) waits until then.
+
+Codex spike (codex-cli 0.160.1, verified by running the real binary against a mock
+Responses API server and the real `swy mcp`):
+- Login: `codex exec --ignore-user-config` skips `$CODEX_HOME/config.toml` but still reads the
+  login from `CODEX_HOME`. Nothing is generated or copied; the user's own Codex home is used.
+- MCP: `-c mcp_servers.switchyard.{command,args,env_vars,default_tools_approval_mode,
+  tool_timeout_sec}`. These overrides are Codex's own TOML config syntax (the "native
+  format"); a config file would have to live in `CODEX_HOME`. `env_vars` names the variables
+  Codex passes to `swy mcp` from its own environment, so the session token is in the
+  process environment only, never in argv or a file.
+- Approvals: with `default_tools_approval_mode = "approve"` (and `approval_policy = "never"`)
+  MCP calls run in `exec`; the reported cancellation of approval-needing calls does not occur.
+  Codex also auto-allows tools annotated read-only, which all of Switchyard's are; the
+  explicit setting keeps that independent of annotation handling.
+- Built-in tools: off by feature flag (`--disable shell_tool unified_exec view_image
+  image_generation multi_agent goals browser_use in_app_browser computer_use apps plugins
+  skill_search tool_suggest sleep_tool`), `web_search = "disabled"`, `sandbox_mode =
+  "read-only"`. What remains offered: the `mcp__switchyard` namespace, the generic MCP
+  resource readers and `request_user_input`.
+- Instructions: `developer_instructions` (arrives as a developer message). Prompt on stdin.
+- Resume: `codex exec resume [options] <thread id> -` (options before the id); sessions
+  persist in the user's Codex home, as their own Codex sessions do.
+- Event stream: `thread.started` (thread id), `item.started`/`item.completed` with
+  `mcp_tool_call` (server, tool, arguments, result content, error, status),
+  `agent_message`, `reasoning`, warning `error` items, `turn.completed` (usage),
+  `turn.failed`, top-level `error`.

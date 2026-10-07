@@ -6,6 +6,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod mock_model;
+
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::process::{Child, ChildStdin, ChildStdout, Command as Proc, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -746,6 +748,8 @@ async fn live_claude_code_run() {
                 ("SWITCHYARD_VAULT_PASSWORD".into(), VAULT_PASSWORD.into()),
             ],
             temp_root: None,
+            extra_args: Vec::new(),
+            extra_env: Vec::new(),
         },
     )
     .unwrap();
@@ -794,4 +798,130 @@ async fn live_claude_code_run() {
     // Revoked: no live token files remain.
     let tokens = data.join("agent-tokens");
     assert_eq!(std::fs::read_dir(tokens).unwrap().count(), 0);
+}
+
+/// The real Codex CLI with a scripted model (no OpenAI account needed) against the docker
+/// PostgreSQL: `SWITCHYARD_CODEX=<path to codex> cargo test -p switchyard-cli --test cli
+/// codex_ -- --ignored`. Proves the adapter's config: Codex offers only Switchyard's tools,
+/// runs them without an approval prompt, and the calls reach `swy mcp` with the token.
+#[tokio::test]
+#[ignore = "needs docker and the Codex CLI"]
+async fn codex_runs_switchyard_tools_with_a_scripted_model() {
+    let Some(codex) = std::env::var_os("SWITCHYARD_CODEX") else {
+        eprintln!("set SWITCHYARD_CODEX to the codex executable to run");
+        return;
+    };
+    let home = Home::new().await;
+    let mock = mock_model::start(
+        vec![
+            mock_model::Call {
+                ns: "mcp__switchyard",
+                name: "describe_table",
+                args: json!({"connection": "shop", "table": "orders"}),
+            },
+            mock_model::Call {
+                ns: "mcp__switchyard",
+                name: "explain",
+                args: json!({"connection": "shop", "sql": "SELECT * FROM orders WHERE customer_id = 42"}),
+            },
+        ],
+        "The plan uses orders_customer_id_idx.",
+    )
+    .await;
+    let codex_home = tempfile::tempdir().unwrap();
+    let data = home.data_dir();
+    let mut run = start_agent_run(
+        &data,
+        AgentRunRequest {
+            agent: AgentKind::Codex,
+            program: Some(codex.into()),
+            prompt: "Why is the orders lookup slow?".into(),
+            resume: None,
+            model: None,
+            connections: vec![home.id("shop")],
+            swy: Some(env!("CARGO_BIN_EXE_swy").into()),
+            mcp_env: vec![
+                (
+                    "SWITCHYARD_HOME".into(),
+                    home.dir.path().to_string_lossy().into_owned(),
+                ),
+                ("SWITCHYARD_SECRETS".into(), "vault".into()),
+                ("SWITCHYARD_VAULT_PASSWORD".into(), VAULT_PASSWORD.into()),
+            ],
+            temp_root: None,
+            extra_args: mock.codex_args(),
+            extra_env: vec![(
+                "CODEX_HOME".into(),
+                codex_home.path().to_string_lossy().into_owned(),
+            )],
+        },
+    )
+    .unwrap();
+    let mut events = Vec::new();
+    tokio::time::timeout(Duration::from_secs(120), async {
+        while let Some(e) = run.next().await {
+            events.push(e);
+        }
+    })
+    .await
+    .expect("the run finished");
+
+    let results: Vec<(String, bool, String)> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolResult { id, is_error, text } => {
+                Some((id.clone(), *is_error, text.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 2, "{events:#?}");
+    assert!(results.iter().all(|r| !r.1), "{results:#?}");
+    assert!(results[0].2.contains("customer_id"), "{}", results[0].2);
+    assert!(results[1].2.contains("Estimated plan"), "{}", results[1].2);
+    let done = events.iter().find_map(|e| match e {
+        AgentEvent::Done(s) => Some(s.clone()),
+        _ => None,
+    });
+    assert_eq!(done.unwrap().text, "The plan uses orders_customer_id_idx.");
+    assert!(matches!(events.last(), Some(AgentEvent::Exited(Some(0)))));
+
+    // The model was offered Switchyard's tools and nothing that runs commands or edits.
+    let first = mock.requests.lock().unwrap()[0].clone();
+    let offered: Vec<String> = first["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| {
+            t["name"]
+                .as_str()
+                .or(t["type"].as_str())
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .collect();
+    for t in &offered {
+        assert!(
+            [
+                "mcp__switchyard",
+                "list_mcp_resources",
+                "list_mcp_resource_templates",
+                "read_mcp_resource",
+                "request_user_input"
+            ]
+            .contains(&t.as_str()),
+            "unexpected tool offered: {t} in {offered:?}"
+        );
+    }
+    let history = home
+        .store()
+        .search_history("agent:codex", None, 50)
+        .unwrap();
+    assert!(history.len() >= 2, "{}", history.len());
+    assert_eq!(
+        std::fs::read_dir(data.join("agent-tokens"))
+            .unwrap()
+            .count(),
+        0
+    );
 }

@@ -57,6 +57,8 @@ fn request(program: &Path, root: &Path, resume: Option<&str>) -> RunRequest {
             ],
         },
         temp_root: Some(root.to_owned()),
+        extra_args: Vec::new(),
+        extra_env: Vec::new(),
         guards: Vec::new(),
     }
 }
