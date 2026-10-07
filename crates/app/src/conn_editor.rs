@@ -142,6 +142,8 @@ pub struct ConnEditor {
     env: EnvironmentLabel,
     read_only: bool,
     history: bool,
+    /// Coding agents (`swy mcp`) may use this connection.
+    agents: bool,
     test: TestState,
     card: Option<driver_card::DriverCard>,
     driver_path: Entity<InputState>,
@@ -208,6 +210,7 @@ impl ConnEditor {
                 .unwrap_or(EnvironmentLabel::Development),
             read_only: matches!(&existing, Some(Profile::Db(d)) if d.read_only),
             history: !matches!(&existing, Some(Profile::Db(d)) if !d.history_enabled),
+            agents: matches!(&existing, Some(Profile::Db(d)) if d.agent_access),
             test: TestState::Idle,
             card: None,
             driver_path: driver_card::path_input(window, cx),
@@ -700,6 +703,7 @@ impl ConnEditor {
                 d.environment = self.env;
                 d.read_only = self.read_only;
                 d.history_enabled = self.history;
+                d.agent_access = self.agents;
                 Profile::Db(d)
             }
             ConnKind::D1 => {
@@ -718,6 +722,7 @@ impl ConnEditor {
                 d.environment = self.env;
                 d.read_only = self.read_only;
                 d.history_enabled = self.history;
+                d.agent_access = self.agents;
                 Profile::Db(d)
             }
             ConnKind::Snowflake => {
@@ -747,6 +752,7 @@ impl ConnEditor {
                 d.environment = self.env;
                 d.read_only = self.read_only;
                 d.history_enabled = self.history;
+                d.agent_access = self.agents;
                 Profile::Db(d)
             }
             ConnKind::Ssh => {
@@ -1685,6 +1691,21 @@ impl Render for ConnEditor {
                                         },
                                     )),
                                 )
+                            })
+                            .when(is_db, |d| {
+                                let label = if self.env.is_production() {
+                                    "Allow coding agents (Production: read-only queries and \
+                                     estimated plans; every call is recorded in history)"
+                                } else {
+                                    "Allow coding agents (read-only queries, plans, statistics; \
+                                     every call is recorded in history)"
+                                };
+                                d.child(ui::checkbox("agents", self.agents, label, &p).on_click(
+                                    cx.listener(|this, _, _, cx| {
+                                        this.agents = !this.agents;
+                                        cx.notify();
+                                    }),
+                                ))
                             })
                             .when(self.test == TestState::Missing, |d| {
                                 d.child(self.render_driver_card(&p, cx))

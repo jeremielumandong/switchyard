@@ -9,6 +9,7 @@ mod entra;
 pub mod env;
 pub mod error;
 pub mod files;
+pub mod handoff;
 pub mod prompts;
 pub mod runtime;
 pub mod service;
@@ -22,6 +23,7 @@ pub use bus::{
 };
 pub use error::{CoreError, Result};
 pub use runtime::{Core, EventReceiver, EventSender, RuntimeHandle};
+pub use service::agent::{AgentRows, cell_json};
 pub use service::{SecretBackendChoice, ServiceConfig};
 
 /// The API workspace, re-exported for the app.
