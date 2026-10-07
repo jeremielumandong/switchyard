@@ -95,6 +95,7 @@ impl Terminals {
         size: TermSize,
         scrollback: usize,
         events: EventSender,
+        guards: Vec<Box<dyn Send>>,
     ) -> switchyard_term::Result<Terminal> {
         let (tx, rx) = std::sync::mpsc::channel::<PtyInput>();
         let input: InputFn = Arc::new(move |msg| {
@@ -114,6 +115,9 @@ impl Terminals {
             feeder,
             rx,
             Box::new(move |code| {
+                // The program ended: release what it needed (an agent's run directory and
+                // session token).
+                drop(guards);
                 registry.remove(term);
                 events.emit(Event::TerminalExited {
                     term,

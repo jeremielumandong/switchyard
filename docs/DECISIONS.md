@@ -760,6 +760,99 @@ M7; SPEC's scope table moves remote/dynamic/X11 forwarding into v1.
 - The Driver Manager's "X server" component detects by path (Linux's X0 socket, XQuartz,
   VcXsrv, Xming; X410 is a Store app and is not found by path) and shows install steps.
 
+## 2026-10-07 — M5 resumed before MX-3 (user request); M5-12 Codex spike outcome
+
+The user asked to finish M5-12 to M5-15 now; M7 (MX-3 onwards) waits until then.
+
+Codex spike (codex-cli 0.160.1, verified by running the real binary against a mock
+Responses API server and the real `swy mcp`):
+- Login: `codex exec --ignore-user-config` skips `$CODEX_HOME/config.toml` but still reads the
+  login from `CODEX_HOME`. Nothing is generated or copied; the user's own Codex home is used.
+- MCP: `-c mcp_servers.switchyard.{command,args,env_vars,default_tools_approval_mode,
+  tool_timeout_sec}`. These overrides are Codex's own TOML config syntax (the "native
+  format"); a config file would have to live in `CODEX_HOME`. `env_vars` names the variables
+  Codex passes to `swy mcp` from its own environment, so the session token is in the
+  process environment only, never in argv or a file.
+- Approvals: with `default_tools_approval_mode = "approve"` (and `approval_policy = "never"`)
+  MCP calls run in `exec`; the reported cancellation of approval-needing calls does not occur.
+  Codex also auto-allows tools annotated read-only, which all of Switchyard's are; the
+  explicit setting keeps that independent of annotation handling.
+- Built-in tools: off by feature flag (`--disable shell_tool unified_exec view_image
+  image_generation multi_agent goals browser_use in_app_browser computer_use apps plugins
+  skill_search tool_suggest sleep_tool`), `web_search = "disabled"`, `sandbox_mode =
+  "read-only"`. What remains offered: the `mcp__switchyard` namespace, the generic MCP
+  resource readers and `request_user_input`.
+- Instructions: `developer_instructions` (arrives as a developer message). Prompt on stdin.
+- Resume: `codex exec resume [options] <thread id> -` (options before the id); sessions
+  persist in the user's Codex home, as their own Codex sessions do.
+- Event stream: `thread.started` (thread id), `item.started`/`item.completed` with
+  `mcp_tool_call` (server, tool, arguments, result content, error, status),
+  `agent_message`, `reasoning`, warning `error` items, `turn.completed` (usage),
+  `turn.failed`, top-level `error`.
+
+## 2026-10-07 — M5-13: Gemini CLI adapter (spike outcome, Gemini CLI 0.63)
+
+Verified with the real CLI against a mock Gemini API (`GOOGLE_GEMINI_BASE_URL`, API-key
+auth) and the real `swy mcp`:
+- MCP config goes in `<run dir>/.gemini/settings.json` (workspace settings), owner-only, with
+  the token in the server's `env`. Workspace MCP servers connect only in trusted folders;
+  `--skip-trust` alone left the server "Disabled". `GEMINI_CLI_TRUST_WORKSPACE=true` in the
+  CLI's environment (with `--skip-trust`) trusts the run directory without writing to the
+  user's `trustedFolders.json`.
+- Tools: policy files in the workspace tier are disabled in this version, so the rules go in
+  an `--admin-policy` file (highest tier: the user's policies cannot override it): allow
+  `mcpName = "switchyard"` + `toolName = "*"` (an `mcpName`-only rule is rejected by this
+  version's validator), deny `toolName = "*"` below it. Denied tools are not offered to the
+  model at all: it saw exactly the seven Switchyard tools. `--allowed-mcp-server-names
+  switchyard` and `-e none` keep the user's other servers and extensions out.
+- Prompt on stdin (`-p ""` is appended to it); instructions in `GEMINI.md` (workspace
+  context).
+- Resume: sessions are stored per project directory (`~/.gemini/tmp/<dir name>/chats/`),
+  and each run has a new directory, so `--resume <id>` reports "No previous sessions found
+  for this project". `--session-file` with the saved chat works from any directory; the
+  adapter finds `session-*-<id[..8]>.jsonl` under Gemini's home (`GEMINI_CLI_HOME`, else the
+  user's home) and checks its first record names the session. Continuing gets a new session
+  id, which the next follow-up uses. Each run also leaves a small project entry in Gemini's
+  own data (`projects.json`, `tmp/<name>`); that is Gemini's bookkeeping and stays.
+- Claude Code, checked at the same time: `claude --resume <id>` works from a different
+  directory, so its per-run directories need nothing extra.
+- Stream: `init` (session_id, model), `message` (role, content, delta), `tool_use`
+  (tool_name `mcp_switchyard_<tool>`, tool_id, parameters), `tool_result` (status, output,
+  error), `error` (warnings), `result` (status, stats, error).
+
+## 2026-10-07 — M5-14: custom CLI, detection, settings
+
+- Supported ranges (Driver Manager `min_version` / `below_version`): Claude Code ≥ 2.1.0 < 3,
+  Codex CLI ≥ 0.160.0 < 1.0, Gemini CLI ≥ 0.63.0 < 1.0, from the versions the adapters were
+  verified against. A newer major shows "Untested version" (it may still work; the user
+  decides); an older one "Too old". A version that cannot be read counts as installed.
+- Install hints are manual steps (npm / Homebrew / Anthropic's installer, then the CLI's own
+  sign-in); Switchyard never installs or signs in a coding CLI for the user.
+- A custom CLI's own tools are whatever its command allows: Switchyard cannot restrict an
+  unknown CLI, so its safety is the MCP server's (every tool read-only server-side). Its MCP
+  config file must be a relative path inside the run directory.
+- Runs are scoped to the connection the question is about (token names only it) and refused
+  when that connection does not allow agents; with no connection, all agent-enabled ones.
+- "Open in terminal" applies the same restrictions as headless runs (Claude Code: no built-in
+  tools, only Switchyard's server; Codex: the same feature disables and overrides, but its TUI
+  has no `--ignore-user-config`, so the user's own Codex config applies there; Gemini: the
+  same workspace settings and admin policy). The token and run directory live until the
+  terminal's program exits.
+
+## 2026-10-07 — M5-15: assistant panel
+
+- One panel for every CLI: it consumes only `AgentEvent`s from `Event::Agent`, so nothing in
+  `app` knows which CLI answered.
+- Suggestions are the answer's fenced SQL blocks (```sql and friends, or unlabelled blocks that
+  parse as a known kind), classified by their first statement: CREATE INDEX → Index, ANALYZE /
+  UPDATE STATISTICS / CREATE STATISTICS → Statistics, SELECT / WITH → Rewrite, else Other.
+  Nothing in a card runs DDL: an index is compared with a hypothetical index (HypoPG) where
+  available, else only opened in the editor; statistics are re-planned after the user runs them.
+- "Compare" always uses estimated plans, so comparing a suggestion never executes it; the base
+  is the statement the user asked about, captured again if the plan view holds another one.
+- Agent ANALYZE stays refused by the MCP server until the in-app approval prompt exists
+  (Follow-ups); the panel itself never asks for actual plans on the agent's behalf.
+
 ## 2026-10-07 — Vendored ssh-key for short ECDSA scalars
 
 - `ssh-key` 0.7.0-rc.11 (russh's key parser, latest release, still unfixed on master)

@@ -223,6 +223,8 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
 - Script splitting must respect strings, comments, PostgreSQL dollar-quoted bodies, and treat
   `GO` as a separator only when it stands alone on its line (SQL Server).
 - `keyring` on Linux needs a Secret Service. Detect absence and fall back to the vault.
+- Windows Credential Manager holds at most 2,560 bytes (1,280 UTF-16 units) per item; an Entra
+  token cache is longer. `KeychainStore` splits long values over `<key>#1..n` items.
 - GPUI: children of a scrolling flex column shrink to fit by default. A card with
   `overflow_hidden` inside one gets its bottom clipped instead of the column scrolling;
   give such children `flex_none()`. Text in a flex row needs `min_w_0()` to wrap.

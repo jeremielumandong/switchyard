@@ -145,6 +145,22 @@ pub(crate) fn command(path: &Path) -> Command {
     }
 }
 
+/// The program and leading arguments that launch `path` without a shell: on Windows an npm
+/// `.cmd` shim becomes its Node script or native executable (terminals start programs
+/// directly, and `.cmd` files need `cmd.exe`).
+pub(crate) fn launch_parts(path: &Path) -> (PathBuf, Vec<String>) {
+    #[cfg(windows)]
+    if let Some((program, script)) = npm_target(path) {
+        return (
+            program,
+            script
+                .map(|s| vec![s.to_string_lossy().into_owned()])
+                .unwrap_or_default(),
+        );
+    }
+    (path.to_owned(), Vec::new())
+}
+
 #[cfg(windows)]
 fn npm_target(shim: &Path) -> Option<(PathBuf, Option<PathBuf>)> {
     let ext = shim.extension()?.to_str()?;

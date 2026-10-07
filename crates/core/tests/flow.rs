@@ -371,7 +371,15 @@ async fn driver_manager_commands_report_on_the_bus() {
     let ids: Vec<_> = comps.iter().map(|c| c.id.as_str()).collect();
     assert_eq!(
         ids,
-        ["oracle-instant-client", "gssapi", "ssh-agent", "x-server"]
+        [
+            "oracle-instant-client",
+            "gssapi",
+            "ssh-agent",
+            "x-server",
+            "claude-code",
+            "codex-cli",
+            "gemini-cli"
+        ]
     );
 
     // A path without the library is refused with a reason.

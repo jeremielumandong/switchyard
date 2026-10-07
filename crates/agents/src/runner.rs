@@ -37,6 +37,10 @@ pub struct RunRequest {
     pub mcp: McpServer,
     /// Parent of the run's temp directory; `None` is the system temp directory.
     pub temp_root: Option<PathBuf>,
+    /// Extra CLI arguments (user settings).
+    pub extra_args: Vec<String>,
+    /// Extra environment for the CLI process (user settings).
+    pub extra_env: Vec<(String, String)>,
     /// Dropped when the process has ended (before [`AgentEvent::Exited`]): the session
     /// token's revocation, for one.
     pub guards: Vec<Box<dyn Send>>,
@@ -120,6 +124,77 @@ fn spawn_thread(name: &str, f: impl FnOnce() + Send + 'static) -> std::io::Resul
         .map(drop)
 }
 
+/// What a terminal needs to run a CLI interactively ("Open in terminal").
+pub struct InteractiveSession {
+    /// Program to start.
+    pub program: PathBuf,
+    /// Its arguments.
+    pub args: Vec<String>,
+    /// Extra environment (the MCP token travels here or in the run directory's config).
+    pub env: Vec<(String, String)>,
+    /// The private run directory to start in.
+    pub cwd: PathBuf,
+    /// Drop when the terminal's program ends: removes the run directory and revokes the
+    /// session token.
+    pub guards: Vec<Box<dyn Send>>,
+}
+
+impl std::fmt::Debug for InteractiveSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InteractiveSession")
+            .field("program", &self.program)
+            .field("cwd", &self.cwd)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Prepare an interactive session of `adapter`'s CLI with Switchyard's MCP server attached.
+pub fn prepare_interactive(
+    adapter: Arc<dyn AgentAdapter>,
+    req: RunRequest,
+) -> Result<InteractiveSession, AgentError> {
+    let kind = adapter.kind();
+    let program = process::find_program(adapter.program(), req.program.as_deref())
+        .ok_or_else(|| AgentError::NotFound(kind.display_name().into()))?;
+    let root = req.temp_root.clone().unwrap_or_else(workdir::default_root);
+    let workdir = WorkDir::create(&root)?;
+    let invocation = adapter
+        .interactive(&RunContext {
+            workdir: workdir.path(),
+            prompt: &req.prompt,
+            resume: req.resume.as_deref(),
+            model: req.model.as_deref(),
+            mcp: &req.mcp,
+            system_prompt: SYSTEM_PROMPT,
+            extra_args: &req.extra_args,
+            extra_env: &req.extra_env,
+        })
+        .ok_or_else(|| {
+            AgentError::Io(std::io::Error::other(format!(
+                "{} has no interactive mode configured",
+                kind.display_name()
+            )))
+        })??;
+    let (program, mut args) = process::launch_parts(&program);
+    args.extend(invocation.args);
+    let mut env = invocation.env;
+    env.push((
+        "PATH".into(),
+        process::child_path().to_string_lossy().into_owned(),
+    ));
+    env.extend(req.extra_env);
+    let cwd = workdir.path().to_owned();
+    let mut guards = req.guards;
+    guards.push(Box::new(workdir));
+    Ok(InteractiveSession {
+        program,
+        args,
+        env,
+        cwd,
+        guards,
+    })
+}
+
 /// Start a run.
 pub fn start(adapter: Arc<dyn AgentAdapter>, req: RunRequest) -> Result<AgentRun, AgentError> {
     let kind = adapter.kind();
@@ -134,6 +209,8 @@ pub fn start(adapter: Arc<dyn AgentAdapter>, req: RunRequest) -> Result<AgentRun
         model: req.model.as_deref(),
         mcp: &req.mcp,
         system_prompt: SYSTEM_PROMPT,
+        extra_args: &req.extra_args,
+        extra_env: &req.extra_env,
     })?;
 
     let mut cmd = process::command(&program);
@@ -145,7 +222,7 @@ pub fn start(adapter: Arc<dyn AgentAdapter>, req: RunRequest) -> Result<AgentRun
         .env("PATH", process::child_path())
         .env("NO_COLOR", "1")
         .env("FORCE_COLOR", "0");
-    for (k, v) in &invocation.env {
+    for (k, v) in invocation.env.iter().chain(&req.extra_env) {
         cmd.env(k, v);
     }
     let mut child = cmd.spawn()?;
@@ -185,6 +262,7 @@ pub fn start(adapter: Arc<dyn AgentAdapter>, req: RunRequest) -> Result<AgentRun
                     let _ = out_tx.send(e);
                 }
             });
+            parser
         })?;
     let tail = Arc::new(Mutex::new(VecDeque::new()));
     let (err_tx, err_tail) = (tx.clone(), Arc::clone(&tail));
@@ -212,8 +290,18 @@ pub fn start(adapter: Arc<dyn AgentAdapter>, req: RunRequest) -> Result<AgentRun
         let code = child.wait().ok().and_then(|s| s.code());
         group.reaped.store(true, Ordering::SeqCst);
         // All output before the outcome.
-        let _ = out.join();
+        let parser = out.join();
         let _ = err.join();
+        if let Ok(mut parser) = parser
+            && !cancelled.load(Ordering::SeqCst)
+        {
+            for e in parser.finish(code) {
+                if e.is_outcome() {
+                    outcome.store(true, Ordering::SeqCst);
+                }
+                let _ = tx.send(e);
+            }
+        }
         if !outcome.load(Ordering::SeqCst) {
             let name = kind.display_name();
             let msg = if cancelled.load(Ordering::SeqCst) {
@@ -306,6 +394,8 @@ mod tests {
                 env: vec![],
             },
             temp_root: Some(root.to_path_buf()),
+            extra_args: Vec::new(),
+            extra_env: Vec::new(),
             guards: vec![Box::new(Flag(Arc::clone(dropped)))],
         }
     }

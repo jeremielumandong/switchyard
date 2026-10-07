@@ -46,6 +46,37 @@ pub enum PlanViewEvent {
     Rerun(ExplainRequest),
     /// Show a toast.
     Toast(String),
+    /// Ask the assistant to optimize the plan's statement (with the plan's findings).
+    Optimize {
+        /// The statement.
+        sql: String,
+        /// The findings, one line each.
+        findings: Vec<String>,
+    },
+}
+
+/// What the assistant's suggestion cards ask the plan view to do.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AfterPlan {
+    /// Plan this rewrite and compare it with the current plan.
+    Compare(String),
+    /// Plan the current statement with these hypothetical indexes and compare.
+    WhatIf(Vec<String>),
+    /// Plan the current statement again and compare (statistics changed).
+    Replan,
+}
+
+/// Whitespace- and semicolon-insensitive statement equality.
+fn same_sql(a: &str, b: &str) -> bool {
+    let norm = |s: &str| {
+        s.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .trim_end_matches(';')
+            .trim()
+            .to_lowercase()
+    };
+    norm(a) == norm(b)
 }
 
 /// A plan capture the tab asked for.
@@ -85,6 +116,8 @@ enum Status {
         query: QueryId,
         req: ExplainRequest,
         started: Instant,
+        /// Compare the result with the plan that was current when it started.
+        against: Option<usize>,
     },
     Loading {
         request: RequestId,
@@ -171,6 +204,8 @@ pub struct PlanView {
     session: Option<SessionId>,
     /// `CREATE INDEX` statements for the what-if panel, one per line.
     what_if_input: Option<Entity<TextareaState>>,
+    /// An assistant comparison waiting for the original statement's plan.
+    pending: Option<AfterPlan>,
 }
 
 impl EventEmitter<PlanViewEvent> for PlanView {}
@@ -205,6 +240,7 @@ impl PlanView {
             ticker: None,
             session: None,
             what_if_input: None,
+            pending: None,
         }
     }
 
@@ -245,6 +281,111 @@ impl PlanView {
 
     /// Capture a plan on `session`.
     pub fn explain(&mut self, session: SessionId, req: ExplainRequest, cx: &mut Context<Self>) {
+        self.pending = None;
+        self.capture(session, req, None, cx);
+    }
+
+    /// For an assistant suggestion: plan the rewrite (or the statement with hypothetical
+    /// indexes, or again) and compare with the plan of `base`, capturing that first when it
+    /// is not the current plan.
+    pub fn assistant_compare(
+        &mut self,
+        session: SessionId,
+        base: Option<String>,
+        then: AfterPlan,
+        cx: &mut Context<Self>,
+    ) {
+        let current_sql = self
+            .current
+            .and_then(|i| self.entries.get(i))
+            .map(|e| e.plan.sql.clone());
+        let ready = match (&base, &current_sql) {
+            (Some(b), Some(c)) => same_sql(b, c),
+            (None, Some(_)) => true,
+            _ => false,
+        };
+        if ready {
+            self.session = Some(session);
+            self.run_after(session, then, cx);
+            return;
+        }
+        match base {
+            Some(b) => {
+                self.capture(
+                    session,
+                    ExplainRequest {
+                        sql: b,
+                        offset: None,
+                        analyze: false,
+                        confirmed: false,
+                    },
+                    None,
+                    cx,
+                );
+                self.pending = Some(then);
+            }
+            // Nothing to compare with: just show the suggestion's plan.
+            None => {
+                if let AfterPlan::Compare(sql) = then {
+                    self.capture(
+                        session,
+                        ExplainRequest {
+                            sql,
+                            offset: None,
+                            analyze: false,
+                            confirmed: false,
+                        },
+                        None,
+                        cx,
+                    );
+                } else {
+                    cx.emit(PlanViewEvent::Toast("Explain the statement first".into()));
+                }
+            }
+        }
+    }
+
+    fn run_after(&mut self, session: SessionId, then: AfterPlan, cx: &mut Context<Self>) {
+        let Some(cur) = self.current else {
+            return;
+        };
+        let sql = self.entries[cur].plan.sql.clone();
+        let estimated = |sql: String| ExplainRequest {
+            sql,
+            offset: None,
+            analyze: false,
+            confirmed: false,
+        };
+        match then {
+            AfterPlan::Compare(rewrite) => self.capture(session, estimated(rewrite), Some(cur), cx),
+            AfterPlan::Replan => self.capture(session, estimated(sql), Some(cur), cx),
+            AfterPlan::WhatIf(indexes) => {
+                self.stop(cx);
+                let query = next_id();
+                self.core.send(Command::WhatIf {
+                    session,
+                    query,
+                    sql,
+                    indexes,
+                });
+                self.status = Status::WhatIf {
+                    query,
+                    started: Instant::now(),
+                };
+                self.menu = None;
+                self.tick(cx);
+                cx.notify();
+            }
+        }
+    }
+
+    fn capture(
+        &mut self,
+        session: SessionId,
+        req: ExplainRequest,
+        against: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
         self.stop(cx);
         self.session = Some(session);
         let query = next_id();
@@ -260,6 +401,7 @@ impl PlanView {
             query,
             req,
             started: Instant::now(),
+            against,
         };
         self.menu = None;
         self.tick(cx);
@@ -327,10 +469,10 @@ impl PlanView {
         findings: Vec<Finding>,
         cx: &mut Context<Self>,
     ) {
-        let (offset, purpose) = match &self.status {
-            Status::Capturing { req, .. } => (req.offset, Purpose::Show),
-            Status::Loading { purpose, .. } => (None, *purpose),
-            _ => (None, Purpose::Show),
+        let (offset, purpose, against) = match &self.status {
+            Status::Capturing { req, against, .. } => (req.offset, Purpose::Show, *against),
+            Status::Loading { purpose, .. } => (None, *purpose, None),
+            _ => (None, Purpose::Show, None),
         };
         self.status = Status::Idle;
         self.ticker = None;
@@ -345,12 +487,18 @@ impl PlanView {
             _ => format!("{kind} · {time}"),
         };
         let ix = self.add_entry(plan, findings, history_id, offset, label);
-        match (purpose, self.current) {
-            (Purpose::Compare, Some(cur)) => self.start_compare(ix, cur, cx),
+        // The baseline of an assistant comparison may have moved when the list was trimmed.
+        let against = against.filter(|b| *b < self.entries.len() && *b != ix);
+        match (purpose, self.current, against) {
+            (_, _, Some(base)) => self.start_compare(base, ix, cx),
+            (Purpose::Compare, Some(cur), _) => self.start_compare(ix, cur, cx),
             _ => {
                 self.set_current(ix, cx);
                 self.fit_pending = true;
             }
+        }
+        if let (Some(then), Some(session)) = (self.pending.take(), self.session) {
+            self.run_after(session, then, cx);
         }
         // A new history entry exists: refresh the saved list next time the menu opens.
         self.saved.clear();
@@ -987,6 +1135,32 @@ impl PlanView {
                 },
             )
             .when(entry.is_some(), |d| {
+                let optimize = self.current.and_then(|i| self.entries.get(i)).map(|e| {
+                    (
+                        e.plan.sql.clone(),
+                        e.findings
+                            .iter()
+                            .map(|f| match &f.suggestion {
+                                Some(s) => format!("{} ({}; {})", f.title, f.detail, s),
+                                None => format!("{} ({})", f.title, f.detail),
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                });
+                let d = d.when_some(optimize, |d, (sql, findings)| {
+                    d.child(
+                        ui::button("plan-optimize", "Optimize ✦", Kind::Secondary, p)
+                            .h(px(22.))
+                            .px(px(8.))
+                            .text_size(px(11.5))
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.emit(PlanViewEvent::Optimize {
+                                    sql: sql.clone(),
+                                    findings: findings.clone(),
+                                })
+                            })),
+                    )
+                });
                 if self.compare.is_some() {
                     d.child(
                         ui::button("compare-exit", "Exit compare", Kind::Secondary, p)

@@ -31,6 +31,10 @@ pub struct RunContext<'a> {
     pub mcp: &'a McpServer,
     /// Instructions to append to the CLI's system prompt.
     pub system_prompt: &'a str,
+    /// Extra arguments from the user's settings, placed before any positional arguments.
+    pub extra_args: &'a [String],
+    /// Extra environment the CLI will get (an adapter may read its own settings from it).
+    pub extra_env: &'a [(String, String)],
 }
 
 /// The process to start, as an adapter describes it.
@@ -48,6 +52,13 @@ pub struct Invocation {
 pub trait StreamParser: Send {
     /// Parse one line. Lines that mean nothing yield nothing.
     fn feed(&mut self, line: &str) -> Vec<AgentEvent>;
+
+    /// The process exited with `exit` (`None`: by a signal) after its last line. CLIs that
+    /// end a run only by exiting report their outcome here.
+    fn finish(&mut self, exit: Option<i32>) -> Vec<AgentEvent> {
+        let _ = exit;
+        Vec::new()
+    }
 }
 
 /// One coding CLI.
@@ -61,4 +72,11 @@ pub trait AgentAdapter: Send + Sync {
     fn prepare(&self, ctx: &RunContext<'_>) -> Result<Invocation, AgentError>;
     /// A fresh parser for one run's output.
     fn parser(&self) -> Box<dyn StreamParser>;
+
+    /// The invocation for an interactive session in a terminal ("Open in terminal"), with
+    /// the same MCP server and restrictions; `None` when the CLI has none.
+    fn interactive(&self, ctx: &RunContext<'_>) -> Option<Result<Invocation, AgentError>> {
+        let _ = ctx;
+        None
+    }
 }
