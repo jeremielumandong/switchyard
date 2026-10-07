@@ -117,6 +117,8 @@ psl = "2.1"
 regex = "1"
 serde_yaml = "0.9"
 sha2 = "0.10"
+# Oracle: ODPI-C built from source; it loads Instant Client at runtime (no build-time link).
+oracle = "0.6"
 # Snowflake key-pair auth: parse PKCS#1 / (encrypted) PKCS#8 keys; ring signs.
 rsa = { version = "0.9", default-features = false, features = ["std", "pem", "pkcs5", "u64_digit"] }
 sxd-document = "0.3"

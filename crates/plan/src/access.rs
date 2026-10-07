@@ -197,6 +197,9 @@ pub async fn workload(session: &mut dyn DbSession, engine: Engine) -> Result<Wor
         Engine::Snowflake => Err(PlanError::Unsupported(
             "workload statistics are not available for Snowflake yet".into(),
         )),
+        Engine::Oracle => Err(PlanError::Unsupported(
+            "workload statistics are not available for Oracle yet".into(),
+        )),
     }
 }
 

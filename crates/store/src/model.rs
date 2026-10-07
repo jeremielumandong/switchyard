@@ -565,6 +565,32 @@ impl Profile {
                     ));
                 }
             }
+            Profile::Db(d) if d.engine == Engine::Oracle => {
+                if d.server.trim().is_empty() && d.database.trim().is_empty() {
+                    return Err(ValidationError::new(
+                        "server",
+                        "Host is required (or a TNS alias as the service name)",
+                    ));
+                }
+                if !d.server.trim().is_empty() && d.port == 0 {
+                    return Err(ValidationError::new("port", "Port must be 1–65535"));
+                }
+                if d.user.trim().is_empty() {
+                    return Err(ValidationError::new("user", "User is required"));
+                }
+                if d.auth != DbAuthMethod::Password {
+                    return Err(ValidationError::new(
+                        "auth",
+                        "Oracle connections sign in with a user and password",
+                    ));
+                }
+                if d.fetch_limit == Some(0) {
+                    return Err(ValidationError::new(
+                        "fetch_limit",
+                        "Fetch limit must be positive",
+                    ));
+                }
+            }
             Profile::Db(d) if d.engine.is_cloud_api() => {
                 if d.server.trim().is_empty() {
                     return Err(ValidationError::new("server", "Account ID is required"));

@@ -19,11 +19,11 @@ Switchyard is a fast, native, cross-platform desktop app that puts database quer
 
 ## Scope
 
-v1 ships PostgreSQL, SQL Server, SSH and file transfer on macOS, Windows and Linux. Oracle is TBD and will arrive through the Driver Manager.
+v1 ships PostgreSQL, SQL Server, Oracle, Snowflake, Cloudflare D1, SSH and file transfer on macOS, Windows and Linux. Oracle connects through Oracle Instant Client, installed and loaded at runtime by the Driver Manager.
 
 | Area | v1 | Later |
 | --- | --- | --- |
-| Databases | PostgreSQL, SQL Server | Oracle (TBD), MySQL/MariaDB, SQLite |
+| Databases | PostgreSQL, SQL Server, Oracle, Snowflake, Cloudflare D1 | MySQL/MariaDB, SQLite |
 | Remote access | SSH terminal, local shell, jump hosts, local port forwarding | Remote and dynamic forwarding, X11 forwarding |
 | File transfer | SFTP, FTP, FTPS, transfer queue, remote file edit | Folder sync, S3-compatible storage |
 | Editor | SQL highlighting, schema completion, run statement/selection/script, format, history | Explain-plan viewer, snippet library |
@@ -60,7 +60,7 @@ A fresh install connects to PostgreSQL, SQL Server, SSH, SFTP and FTP with nothi
 | Kerberos / GSSAPI | SQL Server integrated (Active Directory) auth | Built in (SSPI) | Built in | Install via package manager (apt, dnf, pacman, zypper) |
 | SSH agent | Agent-based SSH auth | Enable OpenSSH agent service, or detect Pageant | Built in | Detect `SSH_AUTH_SOCK`; offer to start an agent |
 | Corporate CA certificates | TLS to servers with internal certificates | Import from Windows cert store | Import from Keychain | Import from system bundle or a file |
-| Oracle Instant Client | Oracle (when added) | Vendor archive into app directory | Vendor archive into app directory | Vendor archive into app directory |
+| Oracle Instant Client | Oracle connections | Vendor archive (zip) into app directory | Guided: Oracle ships a .dmg; point *Use existing path* at the installed folder | Vendor archive (zip) into app directory; needs the system `libaio` |
 
 ### Setup flow
 
@@ -185,7 +185,7 @@ The UI sends commands and receives events over channels; database connections re
 
 ### Driver contract
 
-Dialect-specific behavior (identifier quoting, catalog queries, LIMIT vs TOP, batch separators) lives behind `Dialect`, so Oracle and others slot in later without touching the UI.
+Dialect-specific behavior (identifier quoting, catalog queries, LIMIT vs TOP, batch separators) lives behind `Dialect`, so further engines slot in without touching the UI.
 
 ```rust
 #[async_trait]
@@ -336,7 +336,7 @@ Each milestone ends with a working, usable app; PostgreSQL plus the editor and g
 6. **M5 Packaging and beta.** Signed builds for all three platforms, auto-update, performance gates in CI.
    - Exit: every performance target passes on all three platforms.
 
-Oracle follows after beta through the Driver Manager (Instant Client auto-install).
+Oracle moved before beta (user decision, 2026-10-07): Instant Client auto-install through the Driver Manager.
 
 ## Open questions
 

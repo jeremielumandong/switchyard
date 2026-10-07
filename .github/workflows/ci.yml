@@ -90,6 +90,33 @@ jobs:
         env:
           SWITCHYARD_SSH_KEYS: /tmp/switchyard-ssh
 
+  integration-oracle:
+    name: integration (Oracle)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Start Oracle Database Free
+        run: docker compose -f docker/compose.yml --profile oracle up -d --wait oracle
+      # Ubuntu 24.04 renamed libaio; Oracle documents the link.
+      - name: Install libaio
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libaio1t64
+          sudo ln -sf /usr/lib/x86_64-linux-gnu/libaio.so.1t64 /usr/lib/x86_64-linux-gnu/libaio.so.1
+      # The archive and hash the Driver Manager installs (crates/drivers/manifest.json).
+      - name: Oracle Instant Client
+        run: |
+          curl -fsSL -o /tmp/ic.zip https://download.oracle.com/otn_software/linux/instantclient/2326000/instantclient-basic-linux.x64-23.26.0.0.0.zip
+          echo "d6c79cbcf0ff209363e779855c690d4fc730aed847e9198a2c439bcf34760af5  /tmp/ic.zip" | sha256sum -c
+          unzip -q /tmp/ic.zip -d /tmp/ic
+          echo "IC=/tmp/ic/instantclient_23_26" >> "$GITHUB_ENV"
+      - run: cargo test -p switchyard-db --test oracle -- --ignored --test-threads 1
+        env:
+          LD_LIBRARY_PATH: ${{ env.IC }}
+          SWITCHYARD_ORACLE_CLIENT: ${{ env.IC }}
+
   integration-mssql:
     name: integration (SQL Server)
     runs-on: ubuntu-latest

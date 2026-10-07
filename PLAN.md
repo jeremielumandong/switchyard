@@ -366,7 +366,14 @@ faster, and no agent call ever performed a write.
   flavour (`$$` bodies, backslash escapes, `//` comments); connection editor kind.
   Note: tested against a local stand-in only (`crates/db/tests/snowflake.rs`); plans and
   workload stats for Snowflake not done (Follow-ups).
-- [ ] API-4 Oracle engine (Instant Client runtime-loaded by the Driver Manager).
+- [x] API-4 Oracle engine: `oracle` crate (ODPI-C, which dlopens Instant Client), blocking
+  calls on tokio's blocking pool with rows streamed through a bounded channel, OCIBreak
+  cancel, named binds (`:p1`), DBMS_OUTPUT as notices, ALL_* catalog + DBMS_METADATA DDL;
+  Oracle dialect (PL/SQL units to a `/` line, `q'[..]'` quoting); Driver Manager zip
+  extraction and an `oracle-instant-client` component (Linux/Windows archives pinned by
+  SHA-256, macOS guided); connection editor kind; docker `oracle` profile service.
+  Note: plans (EXPLAIN PLAN / DBMS_XPLAN) and workload stats for Oracle not done; Linux
+  arm64 Instant Client not in the manifest (x64 only).
 
 ## M6 — Packaging and beta
 
@@ -398,6 +405,8 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 ## Follow-ups
 
 (Add items here instead of doing them mid-task.)
+- Oracle: EXPLAIN PLAN / DBMS_XPLAN → `PlanNode`; V$SQL workload view; arm64 Linux archive;
+  CI job with the `oracle` compose profile + Instant Client; TCPS / wallet sign-in.
 - Snowflake: `EXPLAIN USING JSON` → `PlanNode`; QUERY_HISTORY / ACCESS_HISTORY workload view;
   exercise the driver against a real account; OAuth (external browser) sign-in.
 - API workspace: port AgentOps's Workbench UI tests; persist workbench preferences (they live
@@ -408,8 +417,7 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 
 - Smoke tests for the SQL Server, SSH and FTP containers (M0-2).
 - Grid frame-time harness (M1-16).
-- Driver Manager: fetch the signed manifest from the update server; zip archives (Oracle
-  Instant Client ships zip) once a zip reader is approved.
+- Driver Manager: fetch the signed manifest from the update server.
 - SQL Server: upstream tiberius patches for INFO tokens (notices) and reading the attention
   acknowledgement across a message boundary (would remove the reconnect after cancel).
 - Approval pending for `tokio-postgres-rustls`/`rustls-native-certs` and `lsp-types` (see DECISIONS).

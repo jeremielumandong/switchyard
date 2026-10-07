@@ -16,6 +16,8 @@ pub enum Engine {
     D1,
     /// Snowflake over its SQL REST API.
     Snowflake,
+    /// Oracle Database through Oracle Instant Client, loaded at runtime.
+    Oracle,
 }
 
 impl Engine {
@@ -26,6 +28,7 @@ impl Engine {
             Engine::SqlServer => "SQL Server",
             Engine::D1 => "Cloudflare D1",
             Engine::Snowflake => "Snowflake",
+            Engine::Oracle => "Oracle",
         }
     }
 
@@ -36,6 +39,7 @@ impl Engine {
             Engine::SqlServer => "MS",
             Engine::D1 => "D1",
             Engine::Snowflake => "SF",
+            Engine::Oracle => "OR",
         }
     }
 
@@ -45,6 +49,7 @@ impl Engine {
             Engine::Postgres => 5432,
             Engine::SqlServer => 1433,
             Engine::D1 | Engine::Snowflake => 443,
+            Engine::Oracle => 1521,
         }
     }
 

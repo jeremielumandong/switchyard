@@ -216,6 +216,10 @@ impl Service {
         drivers.insert(Engine::Postgres, Arc::new(PgDriver));
         drivers.insert(Engine::D1, Arc::new(D1Driver::default()));
         drivers.insert(
+            Engine::Oracle,
+            Arc::new(switchyard_db::oracle::OracleDriver),
+        );
+        drivers.insert(
             Engine::Snowflake,
             Arc::new(switchyard_db::snowflake::SnowflakeDriver::default()),
         );
@@ -1316,6 +1320,16 @@ impl Service {
         cfg.ssl_mode = c.ssl_mode;
         cfg.read_only = c.read_only;
         cfg.options = c.options.clone();
+        if c.engine == Engine::Oracle {
+            // ODPI-C loads the client from the Driver Manager's folder; without one it
+            // searches the usual places and says what is missing.
+            let reg = self.components.clone();
+            let dir = tokio::task::spawn_blocking(move || reg.oracle_client()).await;
+            if let Ok(Ok(dir)) = dir {
+                cfg.options
+                    .insert("client_lib_dir".into(), dir.display().to_string());
+            }
+        }
         Ok(cfg)
     }
 

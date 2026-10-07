@@ -46,6 +46,23 @@ services:
     entrypoint: ["/bin/bash", "-c", "/opt/mssql-tools18/bin/sqlcmd -C -S mssql -U sa -P 'Switchyard!2026' -i /seed/seed.sql"]
     restart: "no"
 
+  oracle:
+    # Oracle Database Free (gvenzl's image, mirrored on ghcr.io). Large, so it only starts
+    # with `--profile oracle`. The tests also need Oracle Instant Client (see
+    # crates/db/tests/oracle.rs).
+    image: ghcr.io/gvenzl/oracle-free:23-slim-faststart
+    profiles: ["oracle"]
+    environment:
+      ORACLE_PASSWORD: Switchyard1
+      APP_USER: app
+      APP_USER_PASSWORD: Switchyard1
+    ports: ["1521:1521"]
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+
   ssh:
     image: lscr.io/linuxserver/openssh-server:latest
     environment:

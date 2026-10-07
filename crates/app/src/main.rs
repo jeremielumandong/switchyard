@@ -71,13 +71,16 @@ fn main() -> Result<()> {
         );
         std::process::exit(i32::from(code));
     }
+    let paths = AppPaths::resolve().context("could not determine a home directory")?;
+    // Oracle Instant Client needs its folder on the loader path from process start.
+    #[cfg(target_os = "linux")]
+    switchyard_core::drivers::registry::reexec_with_loader_path(&paths.drivers_dir());
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_env("SWITCHYARD_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
 
-    let paths = AppPaths::resolve().context("could not determine a home directory")?;
     let (core, events) = Core::start(ServiceConfig::from_paths(&paths))?;
     let handle = core.handle();
 
