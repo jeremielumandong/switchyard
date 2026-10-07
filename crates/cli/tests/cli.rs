@@ -925,3 +925,143 @@ async fn codex_runs_switchyard_tools_with_a_scripted_model() {
         0
     );
 }
+
+/// The real Gemini CLI with a scripted model (a mock Gemini API, a fake API key) against the
+/// docker PostgreSQL: `SWITCHYARD_GEMINI=<path to gemini> cargo test -p switchyard-cli --test
+/// cli gemini_ -- --ignored`. Also proves a follow-up continues the conversation.
+#[tokio::test]
+#[ignore = "needs docker and the Gemini CLI"]
+async fn gemini_runs_switchyard_tools_with_a_scripted_model() {
+    let Some(gemini) = std::env::var_os("SWITCHYARD_GEMINI") else {
+        eprintln!("set SWITCHYARD_GEMINI to the gemini executable to run");
+        return;
+    };
+    let home = Home::new().await;
+    let mock = mock_model::start_gemini(
+        vec![
+            (
+                "mcp_switchyard_describe_table",
+                json!({"connection": "shop", "table": "orders"}),
+            ),
+            (
+                "mcp_switchyard_explain",
+                json!({"connection": "shop", "sql": "SELECT * FROM orders WHERE customer_id = 42"}),
+            ),
+        ],
+        "The plan uses orders_customer_id_idx.",
+    )
+    .await;
+    // Gemini's own home for the test: API-key sign-in pointed at the mock.
+    let gemini_home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(gemini_home.path().join(".gemini")).unwrap();
+    std::fs::write(
+        gemini_home.path().join(".gemini/settings.json"),
+        r#"{"security":{"auth":{"selectedType":"gemini-api-key"}}}"#,
+    )
+    .unwrap();
+    let data = home.data_dir();
+    let request = |prompt: &str, resume: Option<String>| AgentRunRequest {
+        agent: AgentKind::Gemini,
+        program: Some(gemini.clone().into()),
+        prompt: prompt.into(),
+        resume,
+        model: Some("gemini-2.5-flash".into()),
+        connections: vec![home.id("shop")],
+        swy: Some(env!("CARGO_BIN_EXE_swy").into()),
+        mcp_env: vec![
+            (
+                "SWITCHYARD_HOME".into(),
+                home.dir.path().to_string_lossy().into_owned(),
+            ),
+            ("SWITCHYARD_SECRETS".into(), "vault".into()),
+            ("SWITCHYARD_VAULT_PASSWORD".into(), VAULT_PASSWORD.into()),
+        ],
+        temp_root: None,
+        extra_args: Vec::new(),
+        extra_env: vec![
+            (
+                "GEMINI_CLI_HOME".into(),
+                gemini_home.path().to_string_lossy().into_owned(),
+            ),
+            ("GEMINI_API_KEY".into(), "fake-key".into()),
+            (
+                "GOOGLE_GEMINI_BASE_URL".into(),
+                format!("http://127.0.0.1:{}", mock.port),
+            ),
+        ],
+    };
+    let run_all = |mut run: switchyard_core::agents::AgentRun| async move {
+        let mut events = Vec::new();
+        tokio::time::timeout(Duration::from_secs(120), async {
+            while let Some(e) = run.next().await {
+                events.push(e);
+            }
+        })
+        .await
+        .expect("the run finished");
+        events
+    };
+    let events =
+        run_all(start_agent_run(&data, request("Why is the orders lookup slow?", None)).unwrap())
+            .await;
+    let results: Vec<(bool, String)> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolResult { is_error, text, .. } => Some((*is_error, text.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results.len(), 2, "{events:#?}");
+    assert!(results.iter().all(|r| !r.0), "{results:#?}");
+    assert!(results[0].1.contains("customer_id"), "{}", results[0].1);
+    assert!(results[1].1.contains("Estimated plan"), "{}", results[1].1);
+    let done = events
+        .iter()
+        .find_map(|e| match e {
+            AgentEvent::Done(s) => Some(s.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{events:#?}"));
+    assert_eq!(done.text, "The plan uses orders_customer_id_idx.");
+
+    // Only Switchyard's tools were offered.
+    let first = mock.requests.lock().unwrap()[0].clone();
+    let offered: Vec<String> = first["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|t| {
+            t["functionDeclarations"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .map(|f| f["name"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert!(!offered.is_empty());
+    assert!(
+        offered.iter().all(|t| t.starts_with("mcp_switchyard_")),
+        "{offered:?}"
+    );
+
+    // A follow-up continues the same conversation.
+    let before = mock.requests.lock().unwrap().len();
+    run_all(start_agent_run(&data, request("And the second question?", done.session_id)).unwrap())
+        .await;
+    let follow_up = mock.requests.lock().unwrap()[before].clone();
+    let texts = follow_up["contents"].to_string();
+    assert!(texts.contains("Why is the orders lookup slow?"), "{texts}");
+    assert!(texts.contains("And the second question?"));
+
+    let history = home
+        .store()
+        .search_history("agent:gemini", None, 50)
+        .unwrap();
+    assert!(history.len() >= 2, "{}", history.len());
+    assert_eq!(
+        std::fs::read_dir(data.join("agent-tokens"))
+            .unwrap()
+            .count(),
+        0
+    );
+}

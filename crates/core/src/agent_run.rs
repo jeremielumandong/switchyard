@@ -181,7 +181,8 @@ pub fn adapter_for(kind: AgentKind) -> Option<Arc<dyn AgentAdapter>> {
     match kind {
         AgentKind::ClaudeCode => Some(Arc::new(ClaudeCode)),
         AgentKind::Codex => Some(Arc::new(switchyard_agents::Codex)),
-        AgentKind::Gemini | AgentKind::Custom => None,
+        AgentKind::Gemini => Some(Arc::new(switchyard_agents::Gemini)),
+        AgentKind::Custom => None,
     }
 }
 
@@ -322,7 +323,7 @@ mod tests {
         let r = start_agent_run(
             dir.path(),
             AgentRunRequest {
-                agent: AgentKind::Gemini,
+                agent: AgentKind::Custom,
                 program: None,
                 prompt: String::new(),
                 resume: None,

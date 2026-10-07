@@ -128,3 +128,69 @@ impl MockModel {
         .collect()
     }
 }
+
+/// The same, as the Gemini API (`…:streamGenerateContent?alt=sse`): each request answers
+/// with the next scripted function call (by its Gemini name), then `final_text`.
+pub async fn start_gemini(
+    script: Vec<(&'static str, Value)>,
+    final_text: &'static str,
+) -> MockModel {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let requests: Arc<Mutex<Vec<Value>>> = Arc::default();
+    let script = Arc::new(script);
+    let seen = requests.clone();
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = listener.accept().await {
+            let (script, seen) = (script.clone(), seen.clone());
+            tokio::spawn(async move {
+                // The request line tells streaming from helper calls.
+                let mut peek = [0u8; 512];
+                let n = s.peek(&mut peek).await.unwrap_or(0);
+                let line = String::from_utf8_lossy(&peek[..n]).into_owned();
+                let Some(body) = read_request(&mut s).await else {
+                    return;
+                };
+                let done = body["contents"].as_array().map_or(0, |c| {
+                    c.iter()
+                        .flat_map(|m| m["parts"].as_array().cloned().unwrap_or_default())
+                        .filter(|p| p.get("functionResponse").is_some())
+                        .count()
+                });
+                let part = match script.get(done) {
+                    Some((name, args)) => json!({"functionCall": {"name": name, "args": args}}),
+                    None => json!({"text": final_text}),
+                };
+                let reply = json!({
+                    "candidates": [{"content": {"role": "model", "parts": [part]},
+                                    "finishReason": "STOP", "index": 0}],
+                    "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5,
+                                      "totalTokenCount": 15}
+                });
+                let out = if line.contains(":streamGenerateContent") {
+                    seen.lock().unwrap().push(body);
+                    format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\ndata: {reply}\r\n\r\n"
+                    )
+                } else {
+                    let r = if line.contains(":countTokens") {
+                        json!({"totalTokens": 10})
+                    } else {
+                        json!({"candidates": [{"content": {"role": "model", "parts": [{"text":
+                            "{\"reasoning\":\"done\",\"next_speaker\":\"user\",\"model_choice\":\"flash\"}"}]},
+                            "finishReason": "STOP"}],
+                            "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2}})
+                    };
+                    let body = r.to_string();
+                    format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                };
+                let _ = s.write_all(out.as_bytes()).await;
+                let _ = s.shutdown().await;
+            });
+        }
+    });
+    MockModel { port, requests }
+}

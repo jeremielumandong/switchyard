@@ -33,6 +33,8 @@ pub struct RunContext<'a> {
     pub system_prompt: &'a str,
     /// Extra arguments from the user's settings, placed before any positional arguments.
     pub extra_args: &'a [String],
+    /// Extra environment the CLI will get (an adapter may read its own settings from it).
+    pub extra_env: &'a [(String, String)],
 }
 
 /// The process to start, as an adapter describes it.
