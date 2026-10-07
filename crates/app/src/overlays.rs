@@ -809,6 +809,20 @@ impl Workspace {
                                 .child(h.tags.join(" ")),
                         )
                     })
+                    .when(h.has_plan, |d| {
+                        let (id, sql) = (h.id, h.sql.clone());
+                        d.child(
+                            ui::button(("hist-plan", i), "Plan", Kind::Secondary, p)
+                                .h(px(20.))
+                                .px(px(7.))
+                                .text_size(px(11.))
+                                .on_click(cx.listener(move |this, _, w, cx| {
+                                    cx.stop_propagation();
+                                    this.open_saved_plan(id, &sql, w, cx);
+                                    this.dismiss(w, cx);
+                                })),
+                        )
+                    })
                     .into_any_element()
             })
             .collect();

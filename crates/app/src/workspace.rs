@@ -467,8 +467,40 @@ impl Workspace {
                     }
                 }
             }
-            Event::History { entries, .. } => {
-                self.history = entries;
+            Event::History { request, entries } => {
+                match self.plan_tab(cx, |v| v.owns_history(request)) {
+                    Some(tab) => tab.update(cx, |t, cx| {
+                        t.plan_view().update(cx, |v, cx| v.on_history(entries, cx))
+                    }),
+                    None => self.history = entries,
+                }
+            }
+            Event::Plan {
+                request,
+                history_id,
+                plan,
+                findings,
+            } => {
+                if let Some(tab) = self.plan_tab(cx, |v| v.owns(request)) {
+                    tab.update(cx, |t, cx| {
+                        t.plan_view()
+                            .update(cx, |v, cx| v.on_plan(history_id, plan, findings, cx));
+                        cx.notify();
+                    });
+                }
+            }
+            Event::PlanFailed {
+                request,
+                error,
+                needs_confirmation,
+            } => {
+                if let Some(tab) = self.plan_tab(cx, |v| v.owns(request)) {
+                    tab.update(cx, |t, cx| {
+                        t.plan_view()
+                            .update(cx, |v, cx| v.on_failed(error, needs_confirmation, cx));
+                        cx.notify();
+                    });
+                }
             }
             Event::Workspace(w) => self.restore(w, window, cx),
             Event::FsListing { .. }
@@ -535,9 +567,6 @@ impl Workspace {
                 cx.notify();
             }
             Event::Error { context, message } => self.toast(format!("{context}: {message}"), cx),
-            // The plan view (M5-5) consumes these; until it lands, failures still surface.
-            Event::Plan { .. } => {}
-            Event::PlanFailed { error, .. } => self.toast(format!("Plan: {error}"), cx),
         }
         if let Some(id) = self.pending_open.clone()
             && self.profiles.db(&id).is_some()
@@ -693,6 +722,39 @@ impl Workspace {
             }
         })
         .detach();
+    }
+
+    /// Show the plan stored with a history entry in the active SQL tab, or in a new tab
+    /// holding its statement.
+    pub(crate) fn open_saved_plan(
+        &mut self,
+        history_id: i64,
+        sql: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let tab = match self.active_sql() {
+            Some(t) => t,
+            None => {
+                self.new_query_tab(window, cx);
+                let Some(t) = self.active_sql() else { return };
+                t.update(cx, |t, cx| t.insert_text(sql, window, cx));
+                t
+            }
+        };
+        tab.update(cx, |t, cx| t.open_saved_plan(history_id, cx));
+    }
+
+    /// The SQL tab whose plan view matches `f` (a pending capture, load or search).
+    fn plan_tab(
+        &self,
+        cx: &App,
+        f: impl Fn(&crate::plan_view::PlanView) -> bool,
+    ) -> Option<Entity<SqlTab>> {
+        self.tabs.iter().find_map(|t| match t {
+            Tab::Sql(tab) if f(tab.read(cx).plan_view().read(cx)) => Some(tab.clone()),
+            _ => None,
+        })
     }
 
     pub(crate) fn active_sql(&self) -> Option<Entity<SqlTab>> {
@@ -1473,6 +1535,12 @@ impl Workspace {
             CommandId::StopQuery => {
                 if let Some(t) = self.active_sql() {
                     t.update(cx, |t, cx| t.stop(cx));
+                }
+            }
+            CommandId::Explain | CommandId::ExplainAnalyze => {
+                let analyze = id == CommandId::ExplainAnalyze;
+                if let Some(t) = self.active_sql() {
+                    t.update(cx, |t, cx| t.explain(analyze, window, cx));
                 }
             }
             CommandId::FormatSql => {
@@ -2336,6 +2404,12 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &actions::StopQuery, w, cx| {
                 this.run_command(CommandId::StopQuery, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::Explain, w, cx| {
+                this.run_command(CommandId::Explain, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::ExplainAnalyze, w, cx| {
+                this.run_command(CommandId::ExplainAnalyze, w, cx)
             }))
             .on_action(cx.listener(|this, _: &actions::NewTerminal, w, cx| {
                 this.run_command(CommandId::NewTerminal, w, cx)

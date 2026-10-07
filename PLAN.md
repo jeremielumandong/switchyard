@@ -300,13 +300,15 @@ faster, and no agent call ever performed a write.
   configurable thresholds; ranked output linked to node ids.
   Done when: each rule has a positive and a negative fixture.
   Note: `findings::analyze` with `Thresholds` (serde, defaults in DECISIONS): full scan, bad estimate (not over-estimates below a LIMIT/TOP), rows removed by filter, spill, expensive nested loop (inner side's share), key lookup, implicit conversion, missing index (SQL Server's, or a PostgreSQL CREATE INDEX on a full scan's filter columns). Ranked by rule weight × time/cost share; each rule has a positive and a negative fixture.
-- [ ] **M5-5 Plan view UI.** Plan graph (color by share of self time, edge width by rows), flame
+- [x] **M5-5 Plan view UI.** Plan graph (color by share of self time, edge width by rows), flame
   view toggle, node detail panel, SQL highlight of the selected node, hotspot list, Explain and
   Explain Analyze actions in the editor.
   Done when: a 200-node plan renders and pans smoothly; every SPEC state is reachable.
-- [ ] **M5-6 Plan compare and history.** Side-by-side compare with time, row and I/O deltas;
+  Note: `app/src/plan_view` is the SQL tab's "Plan" result tab. Graph (root left, inputs right, heat stripe by share of time or cost, edges by rows on a log scale, culled to the viewport, drag/wheel pan, Ctrl/Cmd+wheel zoom, Fit at ≥ 80%) and flame (icicle by inclusive time or cost); hotspot list (collapses below 720 px) that selects and reveals the node; detail panel; the selected node's table, alias or CTE highlighted in the editor with range decorations. Explain ⌘E / Ctrl+E and Analyze ⇧⌘E / Ctrl+Shift+E in the toolbar, palette and keymap; Stop cancels a capture. States (SPEC lists none): empty, capturing, loading, failed with Retry, Production confirmation (Run actual plan / Explain instead), ready. Checked in the app against the docker PostgreSQL, including a 199-node plan (renders and drag-pans; frame times not measured under llvmpipe). Fixed parallel plans in M5-2's parser: times under a Gather counted CPU time across workers (a scan showed 154 ms of a 69 ms query); now wall time.
+- [x] **M5-6 Plan compare and history.** Side-by-side compare with time, row and I/O deltas;
   plans stored with their history entry.
   Done when: comparing two saved plans shows correct deltas.
+  Note: plans are stored with their history entry (store migration 2) and `switchyard_plan::compare` matches operators by operation and object. Compare ▾ offers this tab's other plans and the connection's saved plans; the view shows time, planning, rows, pages and cost deltas, both graphs side by side (shared zoom) and a per-operator table (new / gone included) that selects in both. History rows with a stored plan get a "Plan" button. Checked in the app: before/after `CREATE INDEX` on `orders(total)`, loaded from history, showed −63% time, −96% pages, −30% cost.
 - [ ] **M5-7 Access analysis.** PostgreSQL `pg_stat_user_tables`, `pg_stat_user_indexes`,
   `pg_stat_statements`; SQL Server index usage, missing-index DMVs, Query Store. Workload view UI.
   Missing extension or permission shows a hint with the GRANT statement.

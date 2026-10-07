@@ -525,3 +525,20 @@ on main for the exact commit, which merging the PR provides.
 - Not ported: Emulsion's Codex setup copies the user's `auth.json` into a scoped
   `CODEX_HOME`, which CLAUDE.md forbids (never copy a coding CLI's credentials). Codex gets
   Switchyard's MCP server through `-c mcp_servers.…` overrides on its own home instead.
+
+## 2026-10-07 — M5-5/6: plan view placement, shortcuts, parallel plan times
+
+- The plan view is a "Plan" result tab of the SQL tab, not a tab of its own, so a selected
+  node can be highlighted in the statement it came from and Explain stays next to Run. Plans
+  captured in a tab stay in that tab (up to 12) for switching and comparing; older ones remain
+  in history.
+- SPEC has no plan view design or state list. States implemented: empty, capturing (Stop),
+  loading a saved plan, failed (Retry), Production confirmation for an actual plan of a writing
+  statement (Run actual plan / Explain instead / Cancel), ready, compare.
+- Shortcuts: Explain ⌘E / Ctrl+E, Explain Analyze ⇧⌘E / Ctrl+Shift+E (SPEC lists none).
+- Colour is by share of self time (actual plans) or self cost (estimated): under 5% neutral,
+  5–15% light amber, 15–40% amber, 40% and up red, matching the High finding threshold.
+- PostgreSQL parallel plans: inside a Gather, "Actual Total Time" is each process's average
+  and "Actual Loops" counts every process's executions, so time × loops is CPU time across
+  workers. The parser divides by the processes (workers launched + leader, or workers alone
+  for a single-copy Gather) to get wall time, which shares and self times assume.
