@@ -41,6 +41,9 @@ pub async fn capture(
         Engine::Snowflake => Err(PlanError::Unsupported(
             "query plans are not available for Snowflake yet".into(),
         )),
+        Engine::Oracle => Err(PlanError::Unsupported(
+            "query plans are not available for Oracle yet".into(),
+        )),
     }
 }
 

@@ -2,6 +2,44 @@
   "schema": 1,
   "components": [
     {
+      "id": "oracle-instant-client",
+      "name": "Oracle Instant Client",
+      "needed_for": "Oracle Database connections",
+      "required_by": ["oracle.connect"],
+      "license": {
+        "name": "Oracle Instant Client license (Oracle Technology Network)",
+        "url": "https://www.oracle.com/downloads/licenses/instant-client-lic.html",
+        "accept_required": true
+      },
+      "detect": { "libraries": ["libclntsh.so", "libclntsh.dylib", "oci.dll"] },
+      "platforms": {
+        "windows": {
+          "strategy": "archive",
+          "version": "23.26.0.0.0",
+          "url": "https://download.oracle.com/otn_software/nt/instantclient/2326000/instantclient-basic-windows.x64-23.26.0.0.0.zip",
+          "sha256": "82d3db392438b662df6fae7e84a68223cb70b28775304920427f5f8aeb08056e",
+          "size": 141271063,
+          "lib_dir": "instantclient_23_0"
+        },
+        "macos": {
+          "strategy": "manual",
+          "steps": [
+            "Download the Basic package (.dmg) for your Mac from oracle.com/database/technologies/instant-client/downloads.html",
+            "Open it and run install_ic.sh: it copies the client to ~/Downloads/instantclient_23_…",
+            "In Settings → Drivers, choose Use existing path and pick that folder."
+          ]
+        },
+        "linux": {
+          "strategy": "archive",
+          "version": "23.26.0.0.0",
+          "url": "https://download.oracle.com/otn_software/linux/instantclient/2326000/instantclient-basic-linux.x64-23.26.0.0.0.zip",
+          "sha256": "d6c79cbcf0ff209363e779855c690d4fc730aed847e9198a2c439bcf34760af5",
+          "size": 133613627,
+          "lib_dir": "instantclient_23_26"
+        }
+      }
+    },
+    {
       "id": "gssapi",
       "name": "Kerberos / GSSAPI",
       "needed_for": "SQL Server integrated (Active Directory) auth",

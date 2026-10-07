@@ -608,3 +608,30 @@ full port in one go; Snowflake through its SQL REST API with key-pair (JWT) auth
 - Partition bodies arrive gzip-compressed; the driver inflates them with `flate2` (already a
   dependency) rather than turning on reqwest's `gzip` feature for every client.
 
+## 2026-10-07 — Oracle before beta, through ODPI-C
+
+- The user moved Oracle before beta. CLAUDE.md and SPEC were updated; the rule that the
+  client library is never linked at build time stays.
+- Driver: the `oracle` crate (UPL-1.0 / Apache-2.0). It compiles ODPI-C from source, and
+  ODPI-C `dlopen`s the Oracle Client (Instant Client) at runtime, from the folder the Driver
+  Manager passes (`InitParams::oracle_client_lib_dir`). A failed load is not cached, so a
+  later install works without a restart. Accepted as part of the user's "add Oracle now"
+  decision; AgentOps's approach (piping scripts into `sqlplus`) does not fit a native client.
+- The client API is blocking: calls run on tokio's blocking pool; result rows stream through
+  a bounded channel; Stop calls `OCIBreak` from another thread (ORA-01013 → Cancelled).
+- Autocommit outside an explicit transaction: DML is committed after it succeeds; `begin`
+  only stops that (Oracle opens transactions implicitly).
+- Linux: Instant Client resolves `libclntshcore` / `libnnz` only through the loader path,
+  read once at process start (preloading by full path was tried: `libnnz.so` has no
+  soname, so glibc never matches it). When an app-managed or user-chosen client exists,
+  the app re-executes itself once at startup with that folder prepended to
+  `LD_LIBRARY_PATH` (safe `exec`, before any thread or window); shells and package-manager
+  commands it spawns get the user's original value back. A client installed mid-session
+  asks for a restart. The system `libaio.so.1` is still required; connect errors name the
+  package and, for Ubuntu 24.04+, Oracle's symlink fix.
+- The Driver Manager gained a zip reader (stored / deflate entries, Unix symlinks, CRC
+  checked, zip64 and encryption refused) next to its tar.gz reader, reusing the same
+  path-escape checks; no new dependency (flate2 inflates). Archives are pinned to
+  versioned URLs and SHA-256 in the bundled manifest; macOS ships a .dmg, so that platform
+  is guided (*Use existing path*).
+

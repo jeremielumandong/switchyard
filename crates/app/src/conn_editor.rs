@@ -36,6 +36,8 @@ pub enum ConnKind {
     D1,
     /// Snowflake.
     Snowflake,
+    /// Oracle Database.
+    Oracle,
     /// SSH Host.
     Ssh,
     /// SFTP over a Host.
@@ -45,9 +47,10 @@ pub enum ConnKind {
 }
 
 impl ConnKind {
-    const ALL: [ConnKind; 7] = [
+    const ALL: [ConnKind; 8] = [
         ConnKind::Postgres,
         ConnKind::SqlServer,
+        ConnKind::Oracle,
         ConnKind::Snowflake,
         ConnKind::D1,
         ConnKind::Ssh,
@@ -61,6 +64,7 @@ impl ConnKind {
             ConnKind::SqlServer => "MS",
             ConnKind::D1 => "D1",
             ConnKind::Snowflake => "SF",
+            ConnKind::Oracle => "OR",
             ConnKind::Ssh => "SSH",
             ConnKind::Sftp => "SFTP",
             ConnKind::Ftp => "FTP",
@@ -73,6 +77,7 @@ impl ConnKind {
             ConnKind::SqlServer => "SQL Server",
             ConnKind::D1 => "Cloudflare D1",
             ConnKind::Snowflake => "Snowflake",
+            ConnKind::Oracle => "Oracle",
             ConnKind::Ssh => "SSH Host",
             ConnKind::Sftp => "SFTP",
             ConnKind::Ftp => "FTP / FTPS",
@@ -82,13 +87,17 @@ impl ConnKind {
     fn is_db(self) -> bool {
         matches!(
             self,
-            ConnKind::Postgres | ConnKind::SqlServer | ConnKind::D1 | ConnKind::Snowflake
+            ConnKind::Postgres
+                | ConnKind::SqlServer
+                | ConnKind::Oracle
+                | ConnKind::D1
+                | ConnKind::Snowflake
         )
     }
 
     fn sub(self) -> &'static str {
         match self {
-            ConnKind::Postgres | ConnKind::SqlServer => "Database",
+            ConnKind::Postgres | ConnKind::SqlServer | ConnKind::Oracle => "Database",
             ConnKind::D1 => "SQLite over HTTPS",
             ConnKind::Snowflake => "Cloud warehouse",
             ConnKind::Ssh => "Terminal + tunnels",
@@ -176,6 +185,7 @@ impl ConnEditor {
             Some(Profile::Db(d)) if d.engine == Engine::SqlServer => ConnKind::SqlServer,
             Some(Profile::Db(d)) if d.engine == Engine::D1 => ConnKind::D1,
             Some(Profile::Db(d)) if d.engine == Engine::Snowflake => ConnKind::Snowflake,
+            Some(Profile::Db(d)) if d.engine == Engine::Oracle => ConnKind::Oracle,
             Some(Profile::Db(_)) => ConnKind::Postgres,
             Some(Profile::Host(_)) => ConnKind::Ssh,
             Some(Profile::File(f)) => match f.protocol {
@@ -250,20 +260,20 @@ impl ConnEditor {
             Select { options, chosen }
         };
         match self.kind {
-            ConnKind::Postgres | ConnKind::SqlServer => {
-                let engine = if self.kind == ConnKind::Postgres {
-                    Engine::Postgres
-                } else {
-                    Engine::SqlServer
+            ConnKind::Postgres | ConnKind::SqlServer | ConnKind::Oracle => {
+                let engine = match self.kind {
+                    ConnKind::Postgres => Engine::Postgres,
+                    ConnKind::Oracle => Engine::Oracle,
+                    _ => Engine::SqlServer,
                 };
                 let d = match existing {
                     Some(Profile::Db(d)) => d.clone(),
                     _ => {
                         let mut d = DbConnection::new("", engine);
-                        d.database = if engine == Engine::Postgres {
-                            "postgres".into()
-                        } else {
-                            "master".into()
+                        d.database = match engine {
+                            Engine::Postgres => "postgres".into(),
+                            Engine::Oracle => String::new(),
+                            _ => "master".into(),
                         };
                         d
                     }
@@ -272,16 +282,26 @@ impl ConnEditor {
                     self,
                     "name",
                     &d.name,
-                    if engine == Engine::Postgres {
-                        "shop_prod"
-                    } else {
-                        "Reporting"
+                    match engine {
+                        Engine::Postgres => "shop_prod",
+                        Engine::Oracle => "erp",
+                        _ => "Reporting",
                     },
                     false,
                 );
                 add(self, "host", &d.server, "localhost", false);
                 add(self, "port", &d.port.to_string(), "", false);
-                add(self, "database", &d.database, "", false);
+                add(
+                    self,
+                    "database",
+                    &d.database,
+                    if engine == Engine::Oracle {
+                        "FREEPDB1"
+                    } else {
+                        ""
+                    },
+                    false,
+                );
                 add(self, "user", &d.user, "app_ro", false);
                 add(
                     self,
@@ -646,11 +666,11 @@ impl ConnEditor {
             .as_ref()
             .and_then(|i| self.profiles.all.iter().find(|p| p.id() == i));
         Ok(match self.kind {
-            ConnKind::Postgres | ConnKind::SqlServer => {
-                let engine = if self.kind == ConnKind::Postgres {
-                    Engine::Postgres
-                } else {
-                    Engine::SqlServer
+            ConnKind::Postgres | ConnKind::SqlServer | ConnKind::Oracle => {
+                let engine = match self.kind {
+                    ConnKind::Postgres => Engine::Postgres,
+                    ConnKind::Oracle => Engine::Oracle,
+                    _ => Engine::SqlServer,
                 };
                 let mut d = match existing {
                     Some(Profile::Db(d)) => d.clone(),
@@ -832,7 +852,16 @@ impl ConnEditor {
     fn test(&mut self, cx: &mut Context<Self>) {
         self.error = None;
         match (self.kind, self.build(cx)) {
-            (ConnKind::Postgres | ConnKind::D1 | ConnKind::Snowflake, Ok(Profile::Db(d))) => {
+            (ConnKind::Oracle, Ok(Profile::Db(_))) if self.oracle_client_missing() => {
+                self.test = TestState::Missing;
+                if self.card.as_ref().is_none_or(|c| c.id != ORACLE_CLIENT) {
+                    self.card = Some(driver_card::DriverCard::new(ORACLE_CLIENT));
+                }
+            }
+            (
+                ConnKind::Postgres | ConnKind::Oracle | ConnKind::D1 | ConnKind::Snowflake,
+                Ok(Profile::Db(d)),
+            ) => {
                 let request = next_id();
                 self.test = TestState::Testing(request);
                 self.core.send(Command::TestConnection {
@@ -908,6 +937,12 @@ impl ConnEditor {
         self.request = None;
         self.error = Some((field, message));
         cx.notify();
+    }
+
+    fn oracle_client_missing(&self) -> bool {
+        self.components
+            .iter()
+            .any(|c| c.id == ORACLE_CLIENT && !c.status.is_installed())
     }
 
     fn set_kind(&mut self, kind: ConnKind, window: &mut Window, cx: &mut Context<Self>) {
@@ -1230,6 +1265,39 @@ impl ConnEditor {
                     6,
                     false,
                     Some("Stored in the OS keychain · needs the D1 Read or D1 Edit permission"),
+                    p,
+                    cx,
+                ));
+            }
+            ConnKind::Oracle => {
+                v.push(self.field("name", "Name", 6, false, None, p, cx));
+                v.push(self.field("host", "Host", 4, true, None, p, cx));
+                v.push(self.field("port", "Port", 2, true, None, p, cx));
+                v.push(self.field(
+                    "database",
+                    "Service name",
+                    6,
+                    true,
+                    Some("FREEPDB1, ORCLPDB1… or, with Host empty, a TNS alias or descriptor"),
+                    p,
+                    cx,
+                ));
+                v.push(self.field("user", "User", 3, false, None, p, cx));
+                v.push(self.field(
+                    "password",
+                    "Password",
+                    3,
+                    false,
+                    Some("Stored in the OS keychain"),
+                    p,
+                    cx,
+                ));
+                v.push(self.field(
+                    "via",
+                    "Connect via Host",
+                    6,
+                    false,
+                    Some("Opens an ephemeral local port automatically"),
                     p,
                     cx,
                 ));
@@ -1695,6 +1763,9 @@ const MSSQL_AUTH: [(&str, DbAuthMethod); 7] = [
     ("integrated", DbAuthMethod::Integrated),
     ("windows", DbAuthMethod::WindowsPassword),
 ];
+
+/// The Driver Manager component Oracle connections need.
+const ORACLE_CLIENT: &str = "oracle-instant-client";
 
 /// Snowflake sign-in methods (its SQL API takes no passwords).
 const SNOWFLAKE_AUTH: [(&str, DbAuthMethod); 2] = [
