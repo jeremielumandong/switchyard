@@ -189,6 +189,8 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
 - Reading `shared_preload_libraries` with `current_setting` fails without `pg_read_all_settings`;
   `pg_settings` just hides the row. SQL Server records no missing indexes for trivial plans,
   so tests need a query that goes through full optimization (aggregate, ORDER BY).
+- SQL Server 2022 turns Query Store on for new databases with `QUERY_CAPTURE_MODE = AUTO`,
+  which skips cheap queries run a few times; tests that expect a query there set it to `ALL`.
 - `pg_stat_statements`, HypoPG and Query Store are optional. Detect them and degrade gracefully;
   missing permissions (`pg_read_all_stats`, `VIEW SERVER STATE`) produce a hint, not an error.
 
