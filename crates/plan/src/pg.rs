@@ -22,6 +22,7 @@ const PREDICATES: &[&str] = &[
 
 /// Keys copied into [`PlanNode::details`] when present.
 const DETAILS: &[&str] = &[
+    "Alias",
     "Join Type",
     "Strategy",
     "Partial Mode",
@@ -55,7 +56,7 @@ pub fn parse(json: &str, sql: &str) -> Result<Plan> {
         .or(Some(&doc))
         .filter(|t| t.get("Plan").is_some())
         .ok_or_else(|| PlanError::Parse("no \"Plan\" in EXPLAIN output".into()))?;
-    let mut root = node(&top["Plan"]);
+    let mut root = node(&top["Plan"], 1.0);
     nest_ctes(&mut root);
     let kind = if root.actual_rows.is_some() {
         PlanKind::Actual
@@ -137,7 +138,12 @@ fn text(v: &Value) -> Option<String> {
     }
 }
 
-fn node(v: &Value) -> PlanNode {
+/// Convert one plan node. `procs` is how many processes run it at once: 1, or the workers
+/// plus the leader inside a parallel section (below a Gather). There PostgreSQL reports each
+/// process's average time with `loops` counting every process's executions, so time × loops
+/// is CPU time summed across processes; dividing by `procs` gives the wall time the plan's
+/// shares and self times are measured in.
+fn node(v: &Value, procs: f64) -> PlanNode {
     let f = |k: &str| v[k].as_f64();
     let operation = match (v["Node Type"].as_str(), v["Join Type"].as_str()) {
         // DML: "ModifyTable" with "Operation": "Delete" reads as "Delete", like EXPLAIN's text.
@@ -162,8 +168,19 @@ fn node(v: &Value) -> PlanNode {
     let loops = f("Actual Loops");
     // Never-executed nodes report loops 0 and no meaningful time.
     let total_time_ms = match (f("Actual Total Time"), loops) {
-        (Some(t), Some(l)) => Some(t * l),
+        (Some(t), Some(l)) => Some(t * (l / procs).max(l.min(1.0))),
         _ => None,
+    };
+    let child_procs = match v["Node Type"].as_str() {
+        Some("Gather" | "Gather Merge") => {
+            // The leader runs the plan too unless it is a single-copy Gather.
+            let leader = if v["Single Copy"] == true { 0.0 } else { 1.0 };
+            let workers = f("Workers Launched")
+                .or(f("Workers Planned"))
+                .unwrap_or(0.0);
+            (workers + leader).max(1.0)
+        }
+        _ => procs,
     };
     let mut warnings = Vec::new();
     if v["Sort Space Type"] == "Disk" {
@@ -224,7 +241,7 @@ fn node(v: &Value) -> PlanNode {
         details,
         children: v["Plans"]
             .as_array()
-            .map(|a| a.iter().map(node).collect())
+            .map(|a| a.iter().map(|c| node(c, child_procs)).collect())
             .unwrap_or_default(),
     }
 }
@@ -260,5 +277,28 @@ mod tests {
         assert_eq!(inner.object.as_deref(), Some("t.ix"));
         assert!((inner.total_time_ms.unwrap_or(0.0) - 4.0).abs() < 1e-9);
         assert!((p.root.self_time_ms().unwrap_or(0.0) - 6.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn parallel_workers_count_wall_time_not_cpu_time() {
+        // Two workers plus the leader each scanned for ~50 ms; the query took 60 ms.
+        let p = parse(
+            r#"[{"Plan":{"Node Type":"Gather","Workers Planned":2,"Workers Launched":2,"Actual Total Time":60,"Actual Loops":1,"Actual Rows":30,"Plan Rows":30,
+                "Plans":[{"Node Type":"Nested Loop","Actual Total Time":55,"Actual Loops":3,"Actual Rows":10,"Plan Rows":10,
+                  "Plans":[{"Node Type":"Seq Scan","Relation Name":"o","Actual Total Time":50,"Actual Loops":3,"Actual Rows":10,"Plan Rows":10},
+                           {"Node Type":"Index Scan","Relation Name":"c","Actual Total Time":0.01,"Actual Loops":30,"Actual Rows":1,"Plan Rows":1}]}]},
+              "Execution Time":60.5}]"#,
+            "x",
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        let join = &p.root.children[0];
+        let (scan, probe) = (&join.children[0], &join.children[1]);
+        assert!((scan.total_time_ms.unwrap_or(0.0) - 50.0).abs() < 1e-9);
+        // 30 probes across 3 processes: 10 each, run side by side.
+        assert!((probe.total_time_ms.unwrap_or(0.0) - 0.1).abs() < 1e-9);
+        assert!((join.self_time_ms().unwrap_or(0.0) - 4.9).abs() < 1e-9);
+        assert!(p.self_share(scan).unwrap_or(1.0) < 0.85);
+        // Rows still add up across processes.
+        assert_eq!(scan.actual_rows_total(), Some(30.0));
     }
 }
