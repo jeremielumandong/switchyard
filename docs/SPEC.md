@@ -24,7 +24,7 @@ v1 ships PostgreSQL, SQL Server, Oracle, Snowflake, Cloudflare D1, SSH and file 
 | Area | v1 | Later |
 | --- | --- | --- |
 | Databases | PostgreSQL, SQL Server, Oracle, Snowflake, Cloudflare D1 | MySQL/MariaDB, SQLite |
-| Remote access | SSH terminal, local shell, jump hosts, local port forwarding | Remote and dynamic forwarding, X11 forwarding |
+| Remote access | SSH terminal, local shell, jump hosts, local, remote and dynamic (SOCKS) forwarding, agent and X11 forwarding, Telnet and raw TCP, external Mosh/RDP/VNC viewers (M7) | Embedded RDP/VNC, serial ports |
 | File transfer | SFTP, FTP, FTPS, transfer queue, remote file edit | Folder sync, S3-compatible storage |
 | Editor | SQL highlighting, schema completion, run statement/selection/script, format, history | Explain-plan viewer, snippet library |
 | Data | Virtualized grid, inline edit with staged commit, export CSV/JSON/SQL | Import wizard, data compare |
