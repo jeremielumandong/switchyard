@@ -1921,7 +1921,28 @@ impl Service {
             let mut rows_total: i64 = 0;
             let mut outcome: (HistoryStatus, Option<String>, Option<i64>) =
                 (HistoryStatus::Ok, None, None);
-            match inner.session.execute(&st.sql, &st.params).await {
+            let started = {
+                let exec = inner.session.execute(&st.sql, &st.params);
+                tokio::pin!(exec);
+                loop {
+                    tokio::select! {
+                        // The statement is polled first: drivers clear their cancel flag as
+                        // it starts, so a Cancel that arrived just before is set again here.
+                        biased;
+                        r = &mut exec => break r,
+                        Some(msg) = resume_rx.recv() => match msg {
+                            Resume::Cancel => {
+                                if let Err(e) = cancel.cancel().await {
+                                    self.error("Cancel", e);
+                                }
+                            }
+                            Resume::More => limit = limit.map(|l| l + FETCH_STEP),
+                            Resume::All => limit = None,
+                        },
+                    }
+                }
+            };
+            match started {
                 Err(e) => {
                     outcome = self.fail(query, index, dialect, st, e, &mut cancelled);
                     self.record(

@@ -189,6 +189,8 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
 - Reading `shared_preload_libraries` with `current_setting` fails without `pg_read_all_settings`;
   `pg_settings` just hides the row. SQL Server records no missing indexes for trivial plans,
   so tests need a query that goes through full optimization (aggregate, ORDER BY).
+- SQL Server 2022 turns Query Store on for new databases with `QUERY_CAPTURE_MODE = AUTO`,
+  which skips cheap queries run a few times; tests that expect a query there set it to `ALL`.
 - `pg_stat_statements`, HypoPG and Query Store are optional. Detect them and degrade gracefully;
   missing permissions (`pg_read_all_stats`, `VIEW SERVER STATE`) produce a hint, not an error.
 
@@ -196,6 +198,8 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
   matching `gpui` version before bumping either.
 - `tiberius` takes a `futures` AsyncRead/AsyncWrite stream: wrap tokio streams with
   `tokio_util::compat` (`compat_write()`).
+- `ssh-key` (russh's key parser) is vendored (`vendor/ssh-key`) to accept OpenSSH P-256 keys
+  with a 31-byte scalar (one in 256); read `vendor/ssh-key/VENDORED.md` before bumping russh.
 - `tiberius` is vendored (`vendor/tiberius`, patched via `[patch.crates-io]`) for the
   `AuthMethod::External` hook; read `vendor/tiberius/VENDORED.md` before updating it. Never
   enable its `integrated-auth-gssapi` feature (links GSSAPI at build time); Kerberos goes
