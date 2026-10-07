@@ -542,3 +542,15 @@ on main for the exact commit, which merging the PR provides.
   and "Actual Loops" counts every process's executions, so time × loops is CPU time across
   workers. The parser divides by the processes (workers launched + leader, or workers alone
   for a single-copy Gather) to get wall time, which shares and self times assume.
+
+## 2026-10-07 — Entra sign-in falls back to Microsoft's SQL client id (user request)
+
+Users who cannot register an Entra app (or whose app has no access to Azure SQL) could not
+sign in at all: password, browser/MFA and device code all need a client id. When neither the
+connection nor the build (`SWITCHYARD_ENTRA_CLIENT_ID`) names one, Switchyard now signs in as
+`2fd908ad-0664-4344-b9be-cd3e8b574c38`, the public client Microsoft.Data.SqlClient (SSMS,
+`sqlcmd -G`) uses for Azure SQL. It is a Microsoft first-party app, so tenants accept it
+without registration or consent, and it allows the `http://localhost` redirect, ROPC and
+device code. A connection's own client id, or a build's, still wins. The user reported that
+AgentOps connects the same way (it shells out to `sqlcmd -G`).
+

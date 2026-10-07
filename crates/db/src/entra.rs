@@ -30,6 +30,13 @@ pub const SQL_SCOPE: &str = "https://database.windows.net//.default";
 /// `SWITCHYARD_ENTRA_CLIENT_ID` (see `docs/entra-app.md`).
 pub const BUILTIN_CLIENT_ID: Option<&str> = option_env!("SWITCHYARD_ENTRA_CLIENT_ID");
 
+/// The public client Microsoft's own SQL drivers sign in with (Microsoft.Data.SqlClient,
+/// used by SSMS and `sqlcmd -G`). It is a Microsoft first-party app, so tenants accept it
+/// without anyone registering or consenting to an app, and it allows the `http://localhost`
+/// browser redirect, password and device-code sign-in for Azure SQL. Used when neither the
+/// connection nor the build names an app.
+pub const MICROSOFT_SQL_CLIENT_ID: &str = "2fd908ad-0664-4344-b9be-cd3e8b574c38";
+
 /// The Microsoft identity platform.
 pub const LOGIN_BASE: &str = "https://login.microsoftonline.com";
 
@@ -48,21 +55,15 @@ pub struct EntraApp {
 }
 
 impl EntraApp {
-    /// The app for a connection: its own client id or Switchyard's, its tenant or any
-    /// organization.
+    /// The app for a connection: its own client id, else the build's, else Microsoft's SQL
+    /// client; its tenant or any organization.
     pub fn resolve(tenant: Option<&str>, client_id: Option<&str>) -> Result<Self> {
         fn nonempty(s: Option<&str>) -> Option<&str> {
             s.map(str::trim).filter(|s| !s.is_empty())
         }
         let client_id = nonempty(client_id)
             .or(nonempty(BUILTIN_CLIENT_ID))
-            .ok_or_else(|| {
-                DbError::Unsupported(
-                    "this build has no Microsoft Entra app registration; set an application \
-                     (client) id in the connection's advanced settings"
-                        .into(),
-                )
-            })?
+            .unwrap_or(MICROSOFT_SQL_CLIENT_ID)
             .to_owned();
         let tenant = nonempty(tenant).unwrap_or(ANY_ORGANIZATION).to_owned();
         Ok(Self { tenant, client_id })
@@ -625,6 +626,14 @@ mod tests {
         assert_eq!(app.client_id, "abc");
         let app = EntraApp::resolve(None, Some("abc")).unwrap();
         assert_eq!(app.tenant, ANY_ORGANIZATION);
+        // No app anywhere: Microsoft's SQL client, never an error.
+        let app = EntraApp::resolve(None, Some("  ")).unwrap();
+        assert_eq!(
+            app.client_id,
+            BUILTIN_CLIENT_ID
+                .filter(|c| !c.trim().is_empty())
+                .unwrap_or(MICROSOFT_SQL_CLIENT_ID)
+        );
     }
 
     #[test]
