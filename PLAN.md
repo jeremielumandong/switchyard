@@ -359,11 +359,17 @@ faster, and no agent call ever performed a write.
   `live_claude_code_run` (`SWITCHYARD_LIVE_AGENT=claude`; passed with haiku). Not yet on the
   core bus (the assistant panel, M5-15, adds the command). Vault-only systems: `swy mcp`
   needs `SWITCHYARD_VAULT_PASSWORD` in the app's environment (see Follow-ups).
-- [ ] **M5-12 Codex CLI adapter (spike first).** `codex exec --json`, MCP via `[mcp_servers]` in a
+- [x] **M5-12 Codex CLI adapter (spike first).** `codex exec --json`, MCP via `[mcp_servers]` in a
   generated config, resume via `codex exec resume`. Spike: how to auto-approve only Switchyard's MCP
   tools in non-interactive mode without bypassing approvals globally, and how to keep the user's
   existing login when using a generated config. Record the outcome in `docs/DECISIONS.md`.
   Done when: replay tests pass and a live run completes a `describe_table` + `explain` tool sequence.
+  Note: `agents::codex` (spike outcome in DECISIONS). Tests: `agents/tests/codex_replay.rs`
+  (stream recorded from codex-cli 0.160.1) and `cli/tests/cli.rs`
+  `codex_runs_switchyard_tools_with_a_scripted_model`: the real Codex binary with a mock
+  Responses API (`cli/tests/mock_model`) completes describe_table + explain against the
+  docker PostgreSQL (no OpenAI login exists in this environment for a model-backed run).
+  Run requests gained `extra_args` / `extra_env` (settings; M5-14 uses them).
 - [ ] **M5-13 Gemini CLI adapter.** `gemini -p --output-format stream-json`, MCP via `mcpServers`
   in a generated `.gemini/settings.json` inside the temp workdir, resume support.
   Done when: replay tests pass and a live run completes the same tool sequence.

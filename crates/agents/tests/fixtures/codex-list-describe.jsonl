@@ -1,0 +1,9 @@
+{"type":"thread.started","thread_id":"recorded-thread-1"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata for `mock-model` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"switchyard","tool":"list_connections","arguments":{},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"switchyard","tool":"list_connections","arguments":{},"result":{"content":[{"type":"text","text":"No connections are enabled for agents. In Switchyard, edit a connection and turn on \"Allow coding agents\"."}],"structured_content":null},"error":null,"status":"completed"}}
+{"type":"item.started","item":{"id":"item_2","type":"mcp_tool_call","server":"switchyard","tool":"describe_table","arguments":{"connection":"shop","table":"orders"},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_2","type":"mcp_tool_call","server":"switchyard","tool":"describe_table","arguments":{"connection":"shop","table":"orders"},"result":{"content":[{"type":"text","text":"no connection named \"shop\" is available to agents (see list_connections)"}],"structured_content":null},"error":null,"status":"failed"}}
+{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"Plan: Bitmap Heap Scan on orders."}}
+{"type":"turn.completed","usage":{"input_tokens":30,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":15,"reasoning_output_tokens":0}}

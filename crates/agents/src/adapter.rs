@@ -31,6 +31,8 @@ pub struct RunContext<'a> {
     pub mcp: &'a McpServer,
     /// Instructions to append to the CLI's system prompt.
     pub system_prompt: &'a str,
+    /// Extra arguments from the user's settings, placed before any positional arguments.
+    pub extra_args: &'a [String],
 }
 
 /// The process to start, as an adapter describes it.

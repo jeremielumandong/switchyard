@@ -89,6 +89,7 @@ pub fn args(ctx: &RunContext<'_>, mcp_config: &std::path::Path) -> Vec<String> {
     if let Some(r) = ctx.resume.filter(|r| !r.trim().is_empty()) {
         a.extend(["--resume".into(), r.to_owned()]);
     }
+    a.extend(ctx.extra_args.iter().cloned());
     a
 }
 
@@ -411,6 +412,7 @@ mod tests {
             model: Some("sonnet"),
             mcp: &mcp,
             system_prompt: "be brief",
+            extra_args: &[],
         };
         let inv = ClaudeCode.prepare(&ctx).unwrap();
         let a = &inv.args;

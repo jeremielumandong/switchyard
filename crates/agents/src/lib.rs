@@ -7,6 +7,7 @@
 
 mod adapter;
 pub mod claude;
+pub mod codex;
 mod process;
 pub mod runner;
 mod workdir;
@@ -16,6 +17,7 @@ use serde_json::Value;
 
 pub use adapter::{AgentAdapter, Invocation, McpServer, RunContext, StreamParser};
 pub use claude::ClaudeCode;
+pub use codex::Codex;
 pub use process::find_program;
 pub use runner::{AgentRun, CancelHandle, RunRequest};
 
