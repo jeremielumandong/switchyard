@@ -8,6 +8,7 @@ use gpui_kit::{
     IntoElement, MouseButton, ParentElement as _, SharedString, StatefulInteractiveElement as _,
     Styled as _, Window, div, px,
 };
+use switchyard_core::remote::ssh::ForwardKind;
 use switchyard_core::store::{EnvironmentLabel, HistoryStatus};
 
 use crate::conn_editor::{ConnEditor, ConnKind};
@@ -191,12 +192,29 @@ impl Workspace {
     }
 
     fn render_tunnels(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        // Saved forwards that are not running, with their Host.
+        let saved: Vec<_> = self
+            .profiles
+            .hosts()
+            .flat_map(|h| {
+                h.forwards
+                    .iter()
+                    .map(move |f| (h.id.clone(), h.name.clone(), f.clone()))
+            })
+            .filter(|(host_id, _, f)| {
+                !self.tunnels.iter().any(|t| {
+                    t.host_id == host_id.0 && t.forward_id.as_deref() == Some(f.id.as_str())
+                })
+            })
+            .collect();
         div()
             .id("tunnels")
             .absolute()
             .left(px(250.))
             .bottom(px(30.))
             .w(px(540.))
+            .max_h(px(480.))
+            .overflow_y_scroll()
             .bg(p.elev)
             .rounded(px(8.))
             .shadow(ui::shadow(p))
@@ -231,7 +249,7 @@ impl Workspace {
                         .py(px(14.))
                         .text_size(px(12.))
                         .text_color(p.fg2)
-                        .child("No active tunnels. A database connection set to “Connect via Host” opens one on an ephemeral local port when it connects."),
+                        .child("No active tunnels. Start a saved forward below, add forwards in a Host's settings, or connect a database “via Host”."),
                 )
             })
             .children(self.tunnels.iter().map(|t| {
@@ -264,6 +282,13 @@ impl Workspace {
                     .border_color(p.line)
                     .font_family(MONO)
                     .text_size(px(11.5))
+                    .child(
+                        div()
+                            .w(px(16.))
+                            .flex_none()
+                            .text_color(p.fg3)
+                            .child(t.kind.flag()),
+                    )
                     .child(div().w(px(54.)).flex_none().child(format!(":{}", t.local_port)))
                     .child(
                         div()
@@ -271,7 +296,11 @@ impl Workspace {
                             .min_w_0()
                             .truncate()
                             .text_color(p.fg2)
-                            .child(format!("{} → {}", t.host, t.remote)),
+                            .child(match t.kind {
+                                ForwardKind::Remote => format!("{} :{} → {}", t.host, t.local_port, t.remote),
+                                ForwardKind::Dynamic => format!("{} · SOCKS on {}", t.host, t.listen),
+                                ForwardKind::Local => format!("{} → {}", t.host, t.remote),
+                            }),
                     )
                     .child(
                         div()
@@ -313,6 +342,64 @@ impl Workspace {
                             .child("Stop"),
                     )
             }))
+            .when(!saved.is_empty(), |d| {
+                d.child(
+                    div()
+                        .px(px(12.))
+                        .pt(px(10.))
+                        .pb(px(4.))
+                        .text_size(px(11.))
+                        .text_color(p.fg3)
+                        .child("Saved forwards"),
+                )
+                .children(saved.into_iter().enumerate().map(|(i, (host_id, host, f))| {
+                    let forward = f.id.clone();
+                    let label = if f.name.trim().is_empty() {
+                        f.summary()
+                    } else {
+                        format!("{} · {}", f.name.trim(), f.summary())
+                    };
+                    div()
+                        .id(("saved-forward", i))
+                        .h(px(30.))
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .px(px(12.))
+                        .border_b_1()
+                        .border_color(p.line)
+                        .text_size(px(11.5))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(p.fg2)
+                                .child(format!("{host} · {label}")),
+                        )
+                        .when(f.auto_start, |d| {
+                            d.child(div().flex_none().text_color(p.fg3).child("auto"))
+                        })
+                        .child(
+                            div()
+                                .id(("saved-forward-start", i))
+                                .w(px(36.))
+                                .flex_none()
+                                .flex()
+                                .justify_end()
+                                .text_color(p.acc)
+                                .hover(|s| s.opacity(0.8))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.core.send(switchyard_core::Command::StartForward {
+                                        host: host_id.clone(),
+                                        forward: forward.clone(),
+                                    });
+                                    cx.notify();
+                                }))
+                                .child("Start"),
+                        )
+                }))
+            })
             .into_any_element()
     }
 

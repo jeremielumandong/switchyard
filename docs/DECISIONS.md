@@ -722,3 +722,22 @@ M7; SPEC's scope table moves remote/dynamic/X11 forwarding into v1.
   `view_image` and others, so they must be disabled by feature flag; still to check. A `swy`
   that exits at startup is dropped silently. Verified with a mock Responses API server (no
   OpenAI login in this environment).
+
+## 2026-10-07 — MX-1: remote and dynamic forwards
+
+- Remote forwards: russh calls the handler for each `forwarded-tcpip` channel; a per-session
+  route table (server port → local target) answers it. The handler connects to the local
+  target first (10 s timeout) and only then accepts the channel, so a dead target is a
+  rejected channel on the server side and a "Failed" status here. Requests for port 0
+  learn their port from the reply; such requests go one at a time per session.
+- After the Host session drops, a remote forward logs in again and asks for the same port
+  (the one the server gave first), with 1 s → 60 s backoff. Local and dynamic forwards keep
+  logging in again on the next connection, as before.
+- Remote forwards bind `localhost` when no address is given (OpenSSH's default);
+  non-loopback addresses need `GatewayPorts` on the server. Local and dynamic forwards bind
+  127.0.0.1 unless the user enters another address (MobaXterm-style gateway use).
+- SOCKS: 4, 4a and 5 with no authentication, CONNECT only (BIND and UDP ASSOCIATE are
+  refused). Names are resolved on the server side, as `ssh -D` does.
+- Saved forwards are held by the core until stopped (database tunnels stay weak, owned by
+  their sessions). Auto-start runs when a terminal opens on the Host, beside its login; an
+  auto-start forward needs a fixed port.
