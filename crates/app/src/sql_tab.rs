@@ -457,6 +457,29 @@ impl SqlTab {
         cx.notify();
     }
 
+    /// Grid edits staged but not applied yet.
+    pub fn has_staged_edits(&self) -> bool {
+        self.edit.as_ref().is_some_and(|e| !e.staged.is_empty())
+    }
+
+    /// Close the tab's session but keep its connection (connection menu "Disconnect").
+    /// An open transaction is rolled back by the server; the next run reconnects.
+    pub fn disconnect(&mut self, cx: &mut Context<Self>) {
+        let Some(s) = self.session.take() else {
+            return;
+        };
+        self.core.send(Command::CloseSession { session: s });
+        self.session_state = SessionState::Failed("Disconnected".into());
+        self.txn_open = false;
+        self.txn_statements = 0;
+        self.queued_run = None;
+        self.queued_explain = None;
+        self.context = SessionContext::default();
+        self.context_request = None;
+        cx.emit(SqlTabEvent::Changed);
+        cx.notify();
+    }
+
     /// Session lifecycle updates from the workspace.
     pub fn on_session(&mut self, state: SessionState, cx: &mut Context<Self>) {
         let opened = matches!(state, SessionState::Open { .. });
@@ -2398,7 +2421,7 @@ impl SqlTab {
     }
 
     /// The database the tab's session uses.
-    fn current_database(&self) -> Option<String> {
+    pub(crate) fn current_database(&self) -> Option<String> {
         self.context.database.clone().or_else(|| {
             self.connection
                 .as_ref()

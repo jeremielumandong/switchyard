@@ -5,6 +5,7 @@ use super::{
     COMMON_KEYWORDS, Dialect, ParamRef, ParamStyle, StatementSpan, is_plain_ident, quote_string,
     split_on_semicolons, temporal_text,
 };
+use crate::catalog::ObjectKind;
 use crate::value::{self, Engine, Value};
 
 /// PostgreSQL dialect.
@@ -158,6 +159,26 @@ impl Dialect for PostgresDialect {
             "SELECT{}\nFROM {qualified}\nLIMIT {limit};",
             super::select_list(self, cols)
         )
+    }
+
+    /// Named notation (`cid => NULL`); `SELECT * FROM` also expands set-returning and
+    /// record results.
+    fn script_exec(&self, kind: ObjectKind, qualified: &str, params: &[String]) -> String {
+        let args = params
+            .iter()
+            .map(|p| {
+                if p.is_empty() {
+                    "NULL".to_owned()
+                } else {
+                    format!("{} => NULL", self.quote_ident(p))
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        match kind {
+            ObjectKind::Procedure => format!("CALL {qualified}({args});"),
+            _ => format!("SELECT * FROM {qualified}({args});"),
+        }
     }
 
     fn find_params(&self, sql: &str) -> Vec<ParamRef> {

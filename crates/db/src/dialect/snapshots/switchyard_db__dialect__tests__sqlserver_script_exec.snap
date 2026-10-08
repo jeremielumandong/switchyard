@@ -1,0 +1,13 @@
+---
+source: crates/db/src/dialect/mod.rs
+expression: "[d.script_exec(ObjectKind::Procedure, &p, &params),\nd.script_exec(ObjectKind::Procedure, &p, &[]),\nd.script_exec(ObjectKind::Function, &p, &params),\nd.script_exec(ObjectKind::Function, &p, &[String::new()]),].join(\"\\n\\n\")"
+---
+EXEC sales.archive
+    @cid = NULL,
+    @since = NULL;
+
+EXEC sales.archive;
+
+SELECT sales.archive(/* @cid */ NULL, /* @since */ NULL);
+
+SELECT sales.archive(NULL);

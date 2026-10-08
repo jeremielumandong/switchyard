@@ -128,6 +128,55 @@ fn ddl_type(kind: ObjectKind) -> &'static str {
     }
 }
 
+/// Script as CREATE: `DBMS_METADATA.GET_DDL(type, name, owner)`.
+const ROUTINE_DDL_SQL: &str = "SELECT DBMS_METADATA.GET_DDL(:1, :2, :3) FROM DUAL";
+
+/// Fallback when `GET_DDL` is refused (another user's routine without
+/// `SELECT_CATALOG_ROLE`): the source lines the user can see (`:1` owner, `:2` name,
+/// `:3` type), which start at `PROCEDURE` / `FUNCTION`.
+const ROUTINE_SOURCE_SQL: &str =
+    "SELECT TEXT FROM ALL_SOURCE WHERE OWNER = :1 AND NAME = :2 AND TYPE = :3 ORDER BY LINE";
+
+/// Script as EXEC: the input parameters of a standalone routine (`:1` owner, `:2` name).
+/// Position 0 is a function's return value; a routine without parameters has one row
+/// with a NULL name.
+const ROUTINE_PARAMS_SQL: &str = "SELECT ARGUMENT_NAME, DATA_TYPE FROM ALL_ARGUMENTS \
+     WHERE OWNER = :1 AND OBJECT_NAME = :2 AND PACKAGE_NAME IS NULL AND DATA_LEVEL = 0 \
+       AND POSITION > 0 AND ARGUMENT_NAME IS NOT NULL AND IN_OUT IN ('IN', 'IN/OUT') \
+     ORDER BY POSITION";
+
+/// [`IntrospectScope::RoutineDefinition`]: `GET_DDL`, else `ALL_SOURCE`.
+fn routine_definition(
+    conn: &Connection,
+    schema: &str,
+    name: &str,
+    kind: ObjectKind,
+) -> Result<CatalogChunk> {
+    let ddl_kind = ddl_type(kind);
+    let ddl = rows(conn, ROUTINE_DDL_SQL, &[&ddl_kind, &name, &schema])
+        .ok()
+        .and_then(|r| r.first().map(|row| text(row, 0).trim().to_owned()))
+        .filter(|d| !d.is_empty());
+    let ddl = match ddl {
+        Some(d) => d,
+        None => {
+            let lines = rows(conn, ROUTINE_SOURCE_SQL, &[&schema, &name, &ddl_kind])?;
+            if lines.is_empty() {
+                return Err(DbError::Unsupported(format!("{name} no longer exists")));
+            }
+            let body: String = lines.iter().map(|r| text(r, 0)).collect();
+            format!("CREATE OR REPLACE {}", body.trim())
+        }
+    };
+    let params = rows(conn, ROUTINE_PARAMS_SQL, &[&schema, &name])?
+        .iter()
+        .map(|r| (text(r, 0), text(r, 1)))
+        .collect();
+    Ok(CatalogChunk::Detail(Box::new(ObjectDetail::routine(
+        schema, name, kind, ddl, params,
+    ))))
+}
+
 pub(super) fn introspect(conn: &Connection, scope: IntrospectScope) -> Result<CatalogChunk> {
     match scope {
         IntrospectScope::Databases => {
@@ -205,6 +254,9 @@ pub(super) fn introspect(conn: &Connection, scope: IntrospectScope) -> Result<Ca
                     .collect(),
             ))
         }
+        IntrospectScope::RoutineDefinition {
+            schema, name, kind, ..
+        } => routine_definition(conn, &schema, &name, kind),
         IntrospectScope::AllColumns => {
             let sql = format!(
                 "{COLUMNS} WHERE OWNER = SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') \
@@ -342,5 +394,13 @@ mod tests {
     fn search_sql_snapshot() {
         insta::assert_snapshot!("oracle_search_sql", search_sql(true));
         insta::assert_snapshot!("oracle_search_sql_pre12c", search_sql(false));
+    }
+
+    #[test]
+    fn routine_sql_snapshot() {
+        insta::assert_snapshot!(
+            "oracle_routine_sql",
+            [ROUTINE_DDL_SQL, ROUTINE_SOURCE_SQL, ROUTINE_PARAMS_SQL].join("\n")
+        );
     }
 }

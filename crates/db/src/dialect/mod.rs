@@ -123,6 +123,33 @@ pub trait Dialect: Send + Sync {
     fn script_drop(&self, kind: ObjectKind, qualified: &str) -> String {
         format!("DROP {} {qualified};", drop_keyword(kind))
     }
+    /// Script as CREATE: catalog DDL (`ObjectDetail::ddl`) ready to run, ending with the
+    /// terminator the engine's script runner expects.
+    fn script_create(&self, _kind: ObjectKind, ddl: &str) -> String {
+        terminated(ddl)
+    }
+    /// Script as DROP + CREATE: [`Self::script_drop`] then [`Self::script_create`],
+    /// separated by the engine's batch separator where it needs one.
+    fn script_drop_create(&self, kind: ObjectKind, qualified: &str, ddl: &str) -> String {
+        format!(
+            "{}\n\n{}",
+            self.script_drop(kind, qualified),
+            self.script_create(kind, ddl)
+        )
+    }
+    /// Script as EXEC: a call of the function or procedure `qualified` with a `NULL` for
+    /// each of its input `params` (parameter names; empty for an unnamed one).
+    fn script_exec(&self, kind: ObjectKind, qualified: &str, params: &[String]) -> String {
+        let args = params
+            .iter()
+            .map(|p| commented_null(p))
+            .collect::<Vec<_>>()
+            .join(", ");
+        match kind {
+            ObjectKind::Procedure => format!("CALL {qualified}({args});"),
+            _ => format!("SELECT {qualified}({args});"),
+        }
+    }
     /// Placeholders in one statement, in order of appearance.
     fn find_params(&self, sql: &str) -> Vec<ParamRef>;
     /// Rewrite named placeholders to the engine's native form. Returns the SQL and the
@@ -217,6 +244,29 @@ fn where_clause<D: Dialect + ?Sized>(d: &D, key: &[String]) -> String {
         .map(|c| format!("{} = NULL", d.quote_ident(c)))
         .collect();
     format!("WHERE {}", conds.join("\n  AND "))
+}
+
+/// `ddl` trimmed and ending with `;` (on its own line after a trailing `--` comment).
+pub(crate) fn terminated(ddl: &str) -> String {
+    let ddl = ddl.trim();
+    if ddl.is_empty() || ddl.ends_with(';') {
+        return ddl.to_owned();
+    }
+    let last = ddl.lines().last().unwrap_or("");
+    if last.contains("--") {
+        format!("{ddl}\n;")
+    } else {
+        format!("{ddl};")
+    }
+}
+
+/// `NULL`, labelled with the parameter name in a comment when there is one.
+pub(crate) fn commented_null(param: &str) -> String {
+    if param.is_empty() {
+        "NULL".to_owned()
+    } else {
+        format!("/* {} */ NULL", param.replace("*/", "* /"))
+    }
 }
 
 /// The select list of a template: `*`, or one quoted column per line.
@@ -518,6 +568,57 @@ mod tests {
             );
             let drops: Vec<String> = KINDS.iter().map(|k| d.script_drop(*k, &q)).collect();
             insta::assert_snapshot!(format!("{name}_drop"), drops.join("\n"));
+        }
+    }
+
+    /// Script as CREATE, DROP + CREATE and EXEC of every dialect, for a table and a
+    /// procedure, and calls with and without parameters.
+    #[test]
+    fn scripts() {
+        let table = "CREATE TABLE sales.orders (id int)";
+        let proc = "CREATE PROCEDURE sales.archive AS\nBEGIN\n  NULL;\nEND;";
+        let commented = "CREATE VIEW sales.v AS SELECT 1 AS x -- one";
+        for engine in [
+            Engine::Postgres,
+            Engine::SqlServer,
+            Engine::Oracle,
+            Engine::Snowflake,
+            Engine::D1,
+        ] {
+            let d = dialect_for(engine);
+            let name = format!("{engine:?}").to_lowercase();
+            let t = d.qualified("sales", "orders");
+            let p = d.qualified("sales", "archive");
+            insta::assert_snapshot!(
+                format!("{name}_script_create"),
+                [
+                    d.script_create(ObjectKind::Table, table),
+                    d.script_create(ObjectKind::Procedure, proc),
+                    d.script_create(ObjectKind::View, commented),
+                    d.script_create(ObjectKind::Table, "CREATE TABLE t (id int);\n"),
+                ]
+                .join("\n\n")
+            );
+            insta::assert_snapshot!(
+                format!("{name}_script_drop_create"),
+                format!(
+                    "{}\n\n{}",
+                    d.script_drop_create(ObjectKind::Table, &t, table),
+                    d.script_drop_create(ObjectKind::Procedure, &p, proc)
+                )
+            );
+            let at = if engine == Engine::SqlServer { "@" } else { "" };
+            let params = vec![format!("{at}cid"), format!("{at}since")];
+            insta::assert_snapshot!(
+                format!("{name}_script_exec"),
+                [
+                    d.script_exec(ObjectKind::Procedure, &p, &params),
+                    d.script_exec(ObjectKind::Procedure, &p, &[]),
+                    d.script_exec(ObjectKind::Function, &p, &params),
+                    d.script_exec(ObjectKind::Function, &p, &[String::new()]),
+                ]
+                .join("\n\n")
+            );
         }
     }
 

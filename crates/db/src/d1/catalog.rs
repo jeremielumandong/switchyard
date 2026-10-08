@@ -31,6 +31,9 @@ fn search_sql(include_system: bool) -> String {
     )
 }
 
+/// Script as CREATE for [`IntrospectScope::RoutineDefinition`]: the stored `CREATE` text.
+const ROUTINE_DEFINITION_SQL: &str = "SELECT sql FROM sqlite_master WHERE name = ?1";
+
 /// Column lookup by name in one result set.
 struct Table<'a> {
     columns: &'a [String],
@@ -143,6 +146,24 @@ pub(super) async fn introspect(s: &D1Session, scope: IntrospectScope) -> Result<
                     })
                     .collect(),
             ))
+        }
+        IntrospectScope::RoutineDefinition { name, kind, .. } => {
+            // D1 has no routines; this answers with whatever `sqlite_master` holds.
+            let results = s
+                .query(ROUTINE_DEFINITION_SQL, vec![Json::from(name.as_str())])
+                .await?;
+            let t = Table::of(results.first());
+            let Some(row) = t.rows.first() else {
+                return Err(DbError::Unsupported(format!("{name} no longer exists")));
+            };
+            let ddl = t.text(row, "sql");
+            Ok(CatalogChunk::Detail(Box::new(ObjectDetail::routine(
+                SCHEMA,
+                &name,
+                kind,
+                ddl,
+                Vec::new(),
+            ))))
         }
         IntrospectScope::AllColumns => {
             let sql = format!(
@@ -288,5 +309,10 @@ mod tests {
     #[test]
     fn search_sql_snapshot() {
         insta::assert_snapshot!("d1_search_sql", search_sql(false));
+    }
+
+    #[test]
+    fn routine_definition_sql_snapshot() {
+        insta::assert_snapshot!("d1_routine_definition_sql", ROUTINE_DEFINITION_SQL);
     }
 }

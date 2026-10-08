@@ -552,8 +552,13 @@ impl Workspace {
                 cached_at,
             } => {
                 if self.schema.session == Some(session) {
-                    if matches!(scope, switchyard_core::db::IntrospectScope::Detail { .. }) {
-                        // Object detail asked for by a schema-tree action (template, DDL).
+                    if matches!(
+                        scope,
+                        switchyard_core::db::IntrospectScope::Detail { .. }
+                            | switchyard_core::db::IntrospectScope::RoutineDefinition { .. }
+                    ) {
+                        // Object detail asked for by a schema-tree action (template, DDL,
+                        // Script as) or an expanded relation.
                         self.on_schema_detail(scope, result, window, cx);
                     } else {
                         self.schema.on_catalog(scope, result, cached_at);
@@ -2349,10 +2354,10 @@ impl Workspace {
                     .on_mouse_down(
                         gpui_kit::MouseButton::Right,
                         cx.listener(move |this, ev: &gpui_kit::MouseDownEvent, _, cx| {
-                            this.ctx = Some(crate::sidebar::CtxMenu {
-                                at: ev.position,
-                                target: crate::sidebar::CtxTarget::Tab(i),
-                            });
+                            this.ctx = Some(crate::sidebar::CtxMenu::new(
+                                ev.position,
+                                crate::sidebar::CtxTarget::Tab(i),
+                            ));
                             cx.notify();
                         }),
                     )

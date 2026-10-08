@@ -1,0 +1,5 @@
+---
+source: crates/db/src/d1/catalog.rs
+expression: ROUTINE_DEFINITION_SQL
+---
+SELECT sql FROM sqlite_master WHERE name = ?1

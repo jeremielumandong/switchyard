@@ -110,6 +110,46 @@ fn search_sql() -> String {
     )
 }
 
+/// Script as CREATE / EXEC: a routine's definition (`OBJECT_DEFINITION`, NULL when the
+/// module is encrypted) and its parameters (`@name`, type), `id` being an
+/// `OBJECT_ID(…)` expression.
+fn routine_sql(id: &str) -> (String, String) {
+    (
+        format!("SELECT {id}, OBJECT_DEFINITION({id})"),
+        format!(
+            "SELECT p.name, TYPE_NAME(p.user_type_id) FROM sys.parameters p \
+             WHERE p.object_id = {id} AND p.parameter_id > 0 ORDER BY p.parameter_id"
+        ),
+    )
+}
+
+/// [`IntrospectScope::RoutineDefinition`].
+async fn routine_definition(
+    client: &mut TdsClient,
+    schema: &str,
+    name: &str,
+    kind: ObjectKind,
+) -> Result<CatalogChunk> {
+    let full = format!("{}.{}", quote(schema), quote(name));
+    let (def_sql, params_sql) = routine_sql(&format!("OBJECT_ID({})", lit(&full)));
+    let rows = simple_rows(client, &def_sql).await?;
+    let Some(row) = rows
+        .first()
+        .filter(|r| !matches!(r.first(), None | Some(Value::Null)))
+    else {
+        return Err(DbError::Unsupported(format!("{full} no longer exists")));
+    };
+    let ddl = text(row, 1);
+    let params = simple_rows(client, &params_sql)
+        .await?
+        .iter()
+        .map(|r| (text(r, 0), text(r, 1)))
+        .collect();
+    Ok(CatalogChunk::Detail(Box::new(ObjectDetail::routine(
+        schema, name, kind, ddl, params,
+    ))))
+}
+
 /// Run one parameterized query and collect its first result set.
 async fn param_rows(
     client: &mut TdsClient,
@@ -273,6 +313,9 @@ pub(super) async fn introspect(
                     .collect(),
             ))
         }
+        IntrospectScope::RoutineDefinition {
+            schema, name, kind, ..
+        } => routine_definition(client, &schema, &name, kind).await,
         IntrospectScope::AllColumns => {
             let rows = simple_rows(client, &columns_sql("1 = 1")).await?;
             Ok(CatalogChunk::AllColumns(
@@ -450,5 +493,11 @@ mod tests {
     #[test]
     fn search_sql_snapshot() {
         insta::assert_snapshot!("mssql_search_sql", search_sql());
+    }
+
+    #[test]
+    fn routine_sql_snapshot() {
+        let (def, params) = routine_sql("OBJECT_ID(N'[dbo].[usp_orders]')");
+        insta::assert_snapshot!("mssql_routine_sql", format!("{def}\n{params}"));
     }
 }

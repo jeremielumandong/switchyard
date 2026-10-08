@@ -84,6 +84,21 @@ pub enum IntrospectScope {
         /// Object kind.
         kind: ObjectKind,
     },
+    /// Definition and parameters of one function or procedure (Script as CREATE / EXEC).
+    /// Answered with [`CatalogChunk::Detail`]: `ddl` holds the `CREATE` text and `columns`
+    /// the input parameters in order (`name` may be empty for an unnamed one, `data_type`
+    /// is the type); the other lists are empty.
+    RoutineDefinition {
+        /// Schema name.
+        schema: String,
+        /// Routine name.
+        name: String,
+        /// [`ObjectKind::Function`] or [`ObjectKind::Procedure`].
+        kind: ObjectKind,
+        /// The routine's [`ObjectInfo::detail`] from the tree, if any. PostgreSQL reads it
+        /// as the identity arguments `(…)` to pick one overload; other engines ignore it.
+        signature: Option<String>,
+    },
     /// Every relation and column in the database (completion and fuzzy search).
     AllColumns,
     /// Objects whose name contains `pattern` (case-insensitive), across every schema of the
@@ -253,6 +268,48 @@ pub struct ObjectDetail {
     pub triggers: Vec<String>,
     /// Generated DDL.
     pub ddl: String,
+}
+
+impl ObjectDetail {
+    /// The answer to [`IntrospectScope::RoutineDefinition`]: the routine's `CREATE` text
+    /// in `ddl` and its input parameters as `columns`, everything else empty.
+    pub fn routine(
+        schema: &str,
+        name: &str,
+        kind: ObjectKind,
+        ddl: String,
+        params: Vec<(String, String)>,
+    ) -> Self {
+        let columns = params
+            .into_iter()
+            .enumerate()
+            .map(|(i, (param, data_type))| ColumnInfo {
+                schema: schema.to_owned(),
+                table: name.to_owned(),
+                name: param,
+                data_type,
+                nullable: true,
+                default: None,
+                ordinal: i as i32 + 1,
+                is_primary_key: false,
+            })
+            .collect();
+        ObjectDetail {
+            object: ObjectInfo {
+                schema: schema.to_owned(),
+                name: name.to_owned(),
+                kind,
+                estimated_rows: None,
+                detail: None,
+            },
+            columns,
+            indexes: Vec::new(),
+            constraints: Vec::new(),
+            foreign_keys: Vec::new(),
+            triggers: Vec::new(),
+            ddl,
+        }
+    }
 }
 
 /// The answer to an [`IntrospectScope`].
