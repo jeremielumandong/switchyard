@@ -338,6 +338,11 @@ impl Dialect for TSqlDialect {
         ]
     }
 
+    fn server_folders(&self) -> &'static [crate::catalog::ObjectKind] {
+        use crate::catalog::ObjectKind as K;
+        &[K::Role, K::Job]
+    }
+
     fn default_schema(&self) -> &'static str {
         "dbo"
     }

@@ -298,7 +298,14 @@ impl Dialect for SnowflakeDialect {
             ObjectKind::Table,
             ObjectKind::View,
             ObjectKind::MaterializedView,
+            ObjectKind::Stage,
+            ObjectKind::Task,
+            ObjectKind::Pipe,
         ]
+    }
+
+    fn server_folders(&self) -> &'static [ObjectKind] {
+        &[ObjectKind::Role]
     }
 
     fn use_database(&self, database: &str) -> Option<String> {

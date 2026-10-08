@@ -211,6 +211,10 @@ pub(super) async fn introspect(s: &D1Session, scope: IntrospectScope) -> Result<
                 Vec::new(),
             ))))
         }
+        // The explorer hides dependencies for D1 (`Dialect::supports_dependencies`).
+        IntrospectScope::Dependencies { .. } => Err(DbError::Unsupported(
+            "D1 keeps no dependency catalog".into(),
+        )),
         IntrospectScope::AllColumns => {
             let sql = format!(
                 "SELECT m.name AS tbl, p.cid, p.name, p.type, p.\"notnull\", p.dflt_value, p.pk \

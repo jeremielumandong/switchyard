@@ -4,8 +4,9 @@ use tokio_postgres::Client;
 
 use super::map_error;
 use crate::catalog::{
-    CatalogChunk, ColumnInfo, ConstraintInfo, ForeignKeyInfo, IndexInfo, IntrospectScope,
-    ObjectDetail, ObjectInfo, ObjectKind, SchemaInfo, TriggerInfo, like_contains, search_hit,
+    CatalogChunk, ColumnInfo, ConstraintInfo, Dependencies, DependencyInfo, ForeignKeyInfo,
+    IndexInfo, IntrospectScope, ObjectDetail, ObjectInfo, ObjectKind, SchemaInfo, TriggerInfo,
+    like_contains, search_hit, search_kind,
 };
 use crate::dialect::{Dialect, postgres::PostgresDialect};
 use crate::error::Result;
@@ -178,12 +179,212 @@ SELECT s.schema_name, s.object_name, s.kind FROM (
   FROM pg_catalog.pg_proc p
   JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
   WHERE p.prokind IN ('f', 'p') AND p.proname ILIKE $1 ESCAPE '!'
+  UNION ALL
+  SELECT '', e.extname::text, 'extension'
+  FROM pg_catalog.pg_extension e WHERE e.extname ILIKE $1 ESCAPE '!'
+  UNION ALL
+  SELECT '', r.rolname::text, 'role'
+  FROM pg_catalog.pg_roles r
+  WHERE r.rolname ILIKE $1 ESCAPE '!' AND ($3::bool OR r.rolname NOT LIKE 'pg\\_%')
 ) s
 WHERE s.schema_name NOT LIKE 'pg\\_toast%' AND s.schema_name NOT LIKE 'pg\\_temp%'
   AND ($3::bool OR s.schema_name NOT IN ('pg_catalog', 'information_schema'))
 GROUP BY s.schema_name, s.object_name, s.kind
 ORDER BY length(s.object_name), s.object_name, s.schema_name
 LIMIT $2::int8";
+
+/// Users and roles (DBX-5c), `pg_*` predefined roles left out: name and attributes
+/// (`user · superuser · create db`).
+pub const ROLES_SQL: &str = "\
+SELECT r.rolname::text,
+       concat_ws(' · ', CASE WHEN r.rolcanlogin THEN 'user' ELSE 'role' END,
+                 CASE WHEN r.rolsuper THEN 'superuser' END,
+                 CASE WHEN r.rolcreatedb THEN 'create db' END,
+                 CASE WHEN r.rolcreaterole THEN 'create role' END,
+                 CASE WHEN r.rolreplication THEN 'replication' END,
+                 CASE WHEN r.rolbypassrls THEN 'bypass RLS' END)
+FROM pg_catalog.pg_roles r
+WHERE r.rolname NOT LIKE 'pg\\_%'
+ORDER BY 1";
+
+/// One role's attributes, the roles it is a member of and its comment (`$1` name).
+pub const ROLE_DETAIL_SQL: &str = "\
+SELECT r.rolname::text, r.rolcanlogin, r.rolsuper, r.rolinherit, r.rolcreaterole,
+       r.rolcreatedb, r.rolreplication, r.rolbypassrls, r.rolconnlimit,
+       r.rolvaliduntil::text,
+       ARRAY(SELECT g.rolname::text FROM pg_catalog.pg_auth_members m
+             JOIN pg_catalog.pg_roles g ON g.oid = m.roleid
+             WHERE m.member = r.oid ORDER BY 1)::text[],
+       pg_catalog.shobj_description(r.oid, 'pg_authid')
+FROM pg_catalog.pg_roles r WHERE r.rolname = $1";
+
+/// Installed extensions of the database (DBX-5c): name and `version · schema`.
+pub const EXTENSIONS_SQL: &str = "\
+SELECT e.extname::text, e.extversion || ' · ' || n.nspname
+FROM pg_catalog.pg_extension e
+JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace
+ORDER BY 1";
+
+/// One extension's schema, version and description (`$1` name).
+pub const EXTENSION_DETAIL_SQL: &str = "\
+SELECT n.nspname::text, e.extversion, pg_catalog.obj_description(e.oid, 'pg_extension')
+FROM pg_catalog.pg_extension e
+JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace
+WHERE e.extname = $1";
+
+/// Dependencies (DBX-5a) of `$1.$2`, a relation (`$3` = `class`), routine (`proc`, every
+/// overload) or type (`type`). Edges come from `pg_depend`, with a view's rewrite rule,
+/// a column default and a trigger read as their relation, plus foreign keys from
+/// `pg_constraint`. One row per direction (`uses` / `used_by`), object and link.
+pub const DEPENDENCIES_SQL: &str = "\
+WITH target AS (
+  SELECT 'pg_catalog.pg_class'::regclass::oid AS cls, c.oid
+  FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+  WHERE $3::text = 'class' AND n.nspname = $1 AND c.relname = $2
+  UNION ALL
+  SELECT 'pg_catalog.pg_proc'::regclass::oid, p.oid
+  FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+  WHERE $3::text = 'proc' AND n.nspname = $1 AND p.proname = $2
+  UNION ALL
+  SELECT 'pg_catalog.pg_type'::regclass::oid, t.oid
+  FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+  WHERE $3::text = 'type' AND n.nspname = $1 AND t.typname = $2
+), edge AS (
+  SELECT CASE WHEN rw.oid IS NOT NULL OR ad.oid IS NOT NULL OR tg.oid IS NOT NULL
+              THEN 'pg_catalog.pg_class'::regclass::oid ELSE d.classid END AS from_cls,
+         COALESCE(rw.ev_class, ad.adrelid, tg.tgrelid, d.objid) AS from_oid,
+         d.refclassid AS to_cls, d.refobjid AS to_oid,
+         CASE WHEN rw.oid IS NOT NULL THEN 'query'
+              WHEN ad.oid IS NOT NULL THEN 'column default'
+              WHEN tg.oid IS NOT NULL THEN 'trigger ' || tg.tgname
+              WHEN d.deptype = 'a' THEN 'owned by'
+              ELSE 'reference' END AS how
+  FROM pg_catalog.pg_depend d
+  LEFT JOIN pg_catalog.pg_rewrite rw
+         ON d.classid = 'pg_catalog.pg_rewrite'::regclass AND rw.oid = d.objid
+  LEFT JOIN pg_catalog.pg_attrdef ad
+         ON d.classid = 'pg_catalog.pg_attrdef'::regclass AND ad.oid = d.objid
+  LEFT JOIN pg_catalog.pg_trigger tg
+         ON d.classid = 'pg_catalog.pg_trigger'::regclass AND tg.oid = d.objid
+  WHERE d.deptype IN ('n', 'a')
+    AND d.classid IN ('pg_catalog.pg_class'::regclass, 'pg_catalog.pg_proc'::regclass,
+                      'pg_catalog.pg_type'::regclass, 'pg_catalog.pg_rewrite'::regclass,
+                      'pg_catalog.pg_attrdef'::regclass, 'pg_catalog.pg_trigger'::regclass)
+    AND d.refclassid IN ('pg_catalog.pg_class'::regclass, 'pg_catalog.pg_proc'::regclass,
+                         'pg_catalog.pg_type'::regclass)
+  UNION ALL
+  SELECT 'pg_catalog.pg_class'::regclass::oid, con.conrelid,
+         'pg_catalog.pg_class'::regclass::oid, con.confrelid, 'foreign key ' || con.conname
+  FROM pg_catalog.pg_constraint con WHERE con.contype = 'f'
+), dep AS (
+  SELECT 'uses' AS direction, e.to_cls AS cls, e.to_oid AS oid, e.how
+  FROM edge e JOIN target t ON e.from_cls = t.cls AND e.from_oid = t.oid
+  WHERE NOT (e.to_cls = e.from_cls AND e.to_oid = e.from_oid)
+  UNION
+  SELECT 'used_by', e.from_cls, e.from_oid, e.how
+  FROM edge e JOIN target t ON e.to_cls = t.cls AND e.to_oid = t.oid
+  WHERE NOT (e.to_cls = e.from_cls AND e.to_oid = e.from_oid)
+)
+SELECT dep.direction, o.schema_name, o.object_name, o.kind, dep.how
+FROM dep
+JOIN LATERAL (
+  SELECT n.nspname::text, c.relname::text,
+         CASE c.relkind WHEN 'v' THEN 'view' WHEN 'm' THEN 'mview' WHEN 'S' THEN 'sequence'
+                        ELSE 'table' END
+  FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+  WHERE dep.cls = 'pg_catalog.pg_class'::regclass AND c.oid = dep.oid
+    AND c.relkind IN ('r', 'p', 'f', 'v', 'm', 'S')
+  UNION ALL
+  SELECT n.nspname::text, p.proname::text,
+         CASE p.prokind WHEN 'p' THEN 'procedure' ELSE 'function' END
+  FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+  WHERE dep.cls = 'pg_catalog.pg_proc'::regclass AND p.oid = dep.oid
+  UNION ALL
+  SELECT n.nspname::text, t.typname::text, 'type'
+  FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+  WHERE dep.cls = 'pg_catalog.pg_type'::regclass AND t.oid = dep.oid
+    AND t.typrelid = 0 AND t.typcategory <> 'A'
+) o(schema_name, object_name, kind) ON true
+WHERE o.schema_name NOT IN ('pg_catalog', 'information_schema')
+ORDER BY 1 DESC, 4, 2, 3, 5";
+
+/// The `$3` of [`DEPENDENCIES_SQL`] for a kind, or `None` when it has no dependencies.
+fn dependency_class(kind: ObjectKind) -> Option<&'static str> {
+    Some(match kind {
+        ObjectKind::Table
+        | ObjectKind::View
+        | ObjectKind::MaterializedView
+        | ObjectKind::Sequence => "class",
+        ObjectKind::Function | ObjectKind::Procedure => "proc",
+        ObjectKind::Type => "type",
+        _ => return None,
+    })
+}
+
+/// A role's `CREATE ROLE` statement from its attributes, then its memberships and
+/// comment (the "DDL" of a role, DBX-5c).
+#[allow(clippy::too_many_arguments)]
+pub fn role_ddl(
+    name: &str,
+    login: bool,
+    superuser: bool,
+    inherit: bool,
+    create_role: bool,
+    create_db: bool,
+    replication: bool,
+    bypass_rls: bool,
+    conn_limit: i32,
+    valid_until: Option<&str>,
+    member_of: &[String],
+    comment: Option<&str>,
+) -> String {
+    let d = PostgresDialect;
+    let flag = |on: bool, word: &str| {
+        if on {
+            word.to_owned()
+        } else {
+            format!("NO{word}")
+        }
+    };
+    let mut attrs = vec![
+        flag(login, "LOGIN"),
+        flag(superuser, "SUPERUSER"),
+        flag(inherit, "INHERIT"),
+        flag(create_role, "CREATEROLE"),
+        flag(create_db, "CREATEDB"),
+        flag(replication, "REPLICATION"),
+        flag(bypass_rls, "BYPASSRLS"),
+    ];
+    if conn_limit >= 0 {
+        attrs.push(format!("CONNECTION LIMIT {conn_limit}"));
+    }
+    if let Some(v) = valid_until.filter(|v| !v.is_empty() && *v != "infinity") {
+        attrs.push(format!("VALID UNTIL '{}'", v.replace('\'', "''")));
+    }
+    let role = d.quote_ident(name);
+    let mut ddl = format!("CREATE ROLE {role} WITH {};\n", attrs.join(" "));
+    for g in member_of {
+        ddl.push_str(&format!("GRANT {} TO {role};\n", d.quote_ident(g)));
+    }
+    if let Some(c) = comment.filter(|c| !c.is_empty()) {
+        ddl.push_str(&format!(
+            "COMMENT ON ROLE {role} IS '{}';\n",
+            c.replace('\'', "''")
+        ));
+    }
+    ddl
+}
+
+/// `CREATE EXTENSION` of an installed extension (DBX-5c).
+pub fn extension_ddl(name: &str, schema: &str, version: &str) -> String {
+    let d = PostgresDialect;
+    format!(
+        "CREATE EXTENSION IF NOT EXISTS {} WITH SCHEMA {} VERSION '{}';\n",
+        d.quote_ident(name),
+        d.quote_ident(schema),
+        version.replace('\'', "''")
+    )
+}
 
 /// Timing and events of a trigger from its `pg_trigger.tgtype` bits
 /// (row 1, before 2, insert 4, delete 8, update 16, truncate 32, instead 64).
@@ -367,9 +568,63 @@ pub async fn introspect(client: &Client, scope: IntrospectScope) -> Result<Catal
                         })
                         .collect()
                 }
-                ObjectKind::Synonym => Vec::new(),
+                ObjectKind::Role | ObjectKind::Extension => {
+                    let sql = if kind == ObjectKind::Role {
+                        ROLES_SQL
+                    } else {
+                        EXTENSIONS_SQL
+                    };
+                    let rows = client.query(sql, &[]).await.map_err(err)?;
+                    rows.iter()
+                        .map(|r| ObjectInfo {
+                            schema: String::new(),
+                            name: r.get(0),
+                            kind,
+                            estimated_rows: None,
+                            detail: r.get(1),
+                        })
+                        .collect()
+                }
+                _ => Vec::new(),
             };
             Ok(CatalogChunk::Objects(objects))
+        }
+        IntrospectScope::Detail { name, kind, .. }
+            if matches!(kind, ObjectKind::Role | ObjectKind::Extension) =>
+        {
+            admin_detail(client, &name, kind).await
+        }
+        IntrospectScope::Dependencies { schema, name, kind } => {
+            let Some(class) = dependency_class(kind) else {
+                return Ok(CatalogChunk::Dependencies(Box::default()));
+            };
+            let deps = match client
+                .query(DEPENDENCIES_SQL, &[&schema, &name, &class])
+                .await
+            {
+                Ok(rows) => {
+                    let mut deps = Dependencies::default();
+                    for r in &rows {
+                        let tag: String = r.get(3);
+                        deps.push(
+                            r.get::<_, &str>(0),
+                            DependencyInfo {
+                                schema: r.get(1),
+                                name: r.get(2),
+                                kind: search_kind(&tag),
+                                type_label: tag,
+                                dependency: r.get(4),
+                            },
+                        );
+                    }
+                    deps
+                }
+                // The catalogs are readable by every role; anything else is a hint.
+                Err(e) => {
+                    Dependencies::hint(format!("Dependencies unavailable: {}", map_error(e, false)))
+                }
+            };
+            Ok(CatalogChunk::Dependencies(Box::new(deps)))
         }
         IntrospectScope::Detail { schema, name, kind } => {
             let columns = load_columns(client, Some(&schema), Some(&name)).await?;
@@ -542,6 +797,58 @@ pub async fn introspect(client: &Client, scope: IntrospectScope) -> Result<Catal
     }
 }
 
+/// `Detail` of a role or an extension (DBX-5c): its `CREATE` text and comment.
+async fn admin_detail(client: &Client, name: &str, kind: ObjectKind) -> Result<CatalogChunk> {
+    let err = |e| map_error(e, false);
+    let gone = || crate::error::DbError::Unsupported(format!("{name} no longer exists"));
+    let (ddl, comment) = if kind == ObjectKind::Role {
+        let r = client
+            .query_opt(ROLE_DETAIL_SQL, &[&name])
+            .await
+            .map_err(err)?
+            .ok_or_else(gone)?;
+        let comment: Option<String> = r.get(11);
+        let member_of: Vec<String> = r.get(10);
+        let valid: Option<String> = r.get(9);
+        let ddl = role_ddl(
+            name,
+            r.get(1),
+            r.get(2),
+            r.get(3),
+            r.get(4),
+            r.get(5),
+            r.get(6),
+            r.get(7),
+            r.get(8),
+            valid.as_deref(),
+            &member_of,
+            comment.as_deref(),
+        );
+        (ddl, comment)
+    } else {
+        let r = client
+            .query_opt(EXTENSION_DETAIL_SQL, &[&name])
+            .await
+            .map_err(err)?
+            .ok_or_else(gone)?;
+        let schema: String = r.get(0);
+        let version: String = r.get(1);
+        (extension_ddl(name, &schema, &version), r.get(2))
+    };
+    Ok(CatalogChunk::Detail(Box::new(ObjectDetail {
+        object: ObjectInfo {
+            schema: String::new(),
+            name: name.to_owned(),
+            kind,
+            estimated_rows: None,
+            detail: None,
+        },
+        ddl,
+        comment,
+        ..ObjectDetail::default()
+    })))
+}
+
 /// The identity arguments inside a tree signature `(…)`.
 fn identity_args(signature: Option<&str>) -> Option<&str> {
     signature?.trim().strip_prefix('(')?.strip_suffix(')')
@@ -614,6 +921,65 @@ mod tests {
     #[test]
     fn search_sql_snapshot() {
         insta::assert_snapshot!("pg_search_sql", SEARCH_SQL);
+    }
+
+    #[test]
+    fn admin_sql_snapshots() {
+        insta::assert_snapshot!("pg_roles_sql", ROLES_SQL);
+        insta::assert_snapshot!("pg_role_detail_sql", ROLE_DETAIL_SQL);
+        insta::assert_snapshot!("pg_extensions_sql", EXTENSIONS_SQL);
+        insta::assert_snapshot!("pg_extension_detail_sql", EXTENSION_DETAIL_SQL);
+        insta::assert_snapshot!("pg_dependencies_sql", DEPENDENCIES_SQL);
+    }
+
+    #[test]
+    fn role_and_extension_ddl() {
+        let ddl = role_ddl(
+            "app",
+            true,
+            false,
+            true,
+            false,
+            true,
+            false,
+            false,
+            5,
+            Some("2030-01-01 00:00:00+00"),
+            &["readers".into()],
+            Some("it's the app"),
+        );
+        insta::assert_snapshot!("pg_role_ddl", ddl);
+        let plain = role_ddl(
+            "Ops",
+            false,
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            -1,
+            None,
+            &[],
+            None,
+        );
+        assert_eq!(
+            plain,
+            "CREATE ROLE \"Ops\" WITH NOLOGIN NOSUPERUSER INHERIT NOCREATEROLE NOCREATEDB \
+             NOREPLICATION NOBYPASSRLS;\n"
+        );
+        assert_eq!(
+            extension_ddl("hypopg", "public", "1.4.1"),
+            "CREATE EXTENSION IF NOT EXISTS hypopg WITH SCHEMA public VERSION '1.4.1';\n"
+        );
+    }
+
+    #[test]
+    fn dependency_classes() {
+        assert_eq!(dependency_class(ObjectKind::View), Some("class"));
+        assert_eq!(dependency_class(ObjectKind::Procedure), Some("proc"));
+        assert_eq!(dependency_class(ObjectKind::Type), Some("type"));
+        assert_eq!(dependency_class(ObjectKind::Role), None);
     }
 
     #[test]

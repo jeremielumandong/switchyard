@@ -1,0 +1,8 @@
+---
+source: crates/db/src/pg/catalog.rs
+expression: EXTENSION_DETAIL_SQL
+---
+SELECT n.nspname::text, e.extversion, pg_catalog.obj_description(e.oid, 'pg_extension')
+FROM pg_catalog.pg_extension e
+JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace
+WHERE e.extname = $1

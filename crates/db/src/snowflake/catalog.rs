@@ -2,8 +2,8 @@
 
 use super::SnowflakeSession;
 use crate::catalog::{
-    CatalogChunk, ColumnInfo, IntrospectScope, ObjectDetail, ObjectInfo, ObjectKind, SchemaInfo,
-    like_contains, search_hit,
+    CatalogChunk, ColumnInfo, Dependencies, DependencyInfo, IntrospectScope, ObjectDetail,
+    ObjectInfo, ObjectKind, SchemaInfo, dependency_kind, like_contains, search_hit,
 };
 use crate::error::{DbError, Result};
 use crate::value::Value;
@@ -40,6 +40,23 @@ pub(crate) fn objects_sql(kind: ObjectKind) -> Option<String> {
         ObjectKind::Table => "TABLE_TYPE IN ('BASE TABLE', 'TEMPORARY TABLE', 'EXTERNAL TABLE')",
         ObjectKind::View => "TABLE_TYPE = 'VIEW'",
         ObjectKind::MaterializedView => "TABLE_TYPE = 'MATERIALIZED VIEW'",
+        ObjectKind::Stage => {
+            return Some(
+                "SELECT STAGE_NAME AS TABLE_NAME, NULL AS ROW_COUNT, \
+                 LOWER(STAGE_TYPE) || COALESCE(' · ' || STAGE_URL, '') AS COMMENT \
+                 FROM INFORMATION_SCHEMA.STAGES WHERE STAGE_SCHEMA = ? ORDER BY STAGE_NAME"
+                    .into(),
+            );
+        }
+        ObjectKind::Pipe => {
+            return Some(
+                "SELECT PIPE_NAME AS TABLE_NAME, NULL AS ROW_COUNT, \
+                 CASE WHEN IS_AUTOINGEST_ENABLED = 'YES' THEN 'auto-ingest' ELSE 'manual' END \
+                 || COALESCE(' · ' || COMMENT, '') AS COMMENT \
+                 FROM INFORMATION_SCHEMA.PIPES WHERE PIPE_SCHEMA = ? ORDER BY PIPE_NAME"
+                    .into(),
+            );
+        }
         _ => return None,
     };
     Some(format!(
@@ -93,9 +110,221 @@ fn search_sql(limit: u32, include_system: bool) -> String {
            UNION ALL \
            SELECT PROCEDURE_SCHEMA, PROCEDURE_NAME, 'procedure' \
            FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_NAME ILIKE ? ESCAPE '!' \
+           UNION ALL \
+           SELECT STAGE_SCHEMA, STAGE_NAME, 'stage' \
+           FROM INFORMATION_SCHEMA.STAGES WHERE STAGE_NAME ILIKE ? ESCAPE '!' \
+           UNION ALL \
+           SELECT PIPE_SCHEMA, PIPE_NAME, 'pipe' \
+           FROM INFORMATION_SCHEMA.PIPES WHERE PIPE_NAME ILIKE ? ESCAPE '!' \
          ) GROUP BY SCHEMA_NAME, OBJECT_NAME, KIND \
          ORDER BY LENGTH(OBJECT_NAME), OBJECT_NAME, SCHEMA_NAME LIMIT {limit}"
     )
+}
+
+/// Tasks of one schema (DBX-5c; Snowflake has no `INFORMATION_SCHEMA` view of them).
+fn tasks_sql(schema: &str) -> String {
+    format!("SHOW TASKS IN SCHEMA \"{}\"", schema.replace('"', "\"\""))
+}
+
+/// A task's tree line: `started · USING CRON 0 3 * * * UTC`.
+fn task_summary(state: &str, schedule: Option<&str>, predecessors: Option<&str>) -> String {
+    let mut parts = vec![state.to_ascii_lowercase()];
+    if let Some(s) = schedule.filter(|s| !s.is_empty()) {
+        parts.push(s.to_owned());
+    } else if predecessors.is_some_and(|p| !p.is_empty() && p != "[]") {
+        parts.push("after predecessors".into());
+    }
+    parts.join(" · ")
+}
+
+/// `SHOW ROLES` / `SHOW USERS` narrowed to one name (`LIKE` is a pattern; callers keep
+/// only the exact name).
+fn show_like(what: &str, name: &str) -> String {
+    format!("SHOW {what} LIKE '{}'", name.replace('\'', "''"))
+}
+
+/// One stage's description from `INFORMATION_SCHEMA.STAGES` (`?` schema, `?` name).
+const STAGE_SQL: &str = "SELECT STAGE_TYPE, STAGE_URL, STAGE_REGION, STORAGE_INTEGRATION, \
+     STAGE_OWNER, COMMENT, CREATED FROM INFORMATION_SCHEMA.STAGES \
+     WHERE STAGE_SCHEMA = ? AND STAGE_NAME = ?";
+
+/// Dependencies (DBX-5a) from `SNOWFLAKE.ACCOUNT_USAGE.OBJECT_DEPENDENCIES`: `?` schema
+/// and `?` name twice. Objects in another database show as `DB.SCHEMA` (`OTHER_DB`).
+const DEPENDENCIES_SQL: &str = "SELECT 'uses' AS DIRECTION, \
+       REFERENCED_DATABASE <> CURRENT_DATABASE() AS OTHER_DB, \
+       IFF(REFERENCED_DATABASE = CURRENT_DATABASE(), REFERENCED_SCHEMA, \
+           REFERENCED_DATABASE || '.' || REFERENCED_SCHEMA) AS SCHEMA_NAME, \
+       REFERENCED_OBJECT_NAME AS OBJECT_NAME, REFERENCED_OBJECT_DOMAIN AS DOMAIN, \
+       DEPENDENCY_TYPE \
+     FROM SNOWFLAKE.ACCOUNT_USAGE.OBJECT_DEPENDENCIES \
+     WHERE REFERENCING_DATABASE = CURRENT_DATABASE() AND REFERENCING_SCHEMA = ? \
+       AND REFERENCING_OBJECT_NAME = ? \
+     UNION ALL \
+     SELECT 'used_by', REFERENCING_DATABASE <> CURRENT_DATABASE(), \
+       IFF(REFERENCING_DATABASE = CURRENT_DATABASE(), REFERENCING_SCHEMA, \
+           REFERENCING_DATABASE || '.' || REFERENCING_SCHEMA), \
+       REFERENCING_OBJECT_NAME, REFERENCING_OBJECT_DOMAIN, DEPENDENCY_TYPE \
+     FROM SNOWFLAKE.ACCOUNT_USAGE.OBJECT_DEPENDENCIES \
+     WHERE REFERENCED_DATABASE = CURRENT_DATABASE() AND REFERENCED_SCHEMA = ? \
+       AND REFERENCED_OBJECT_NAME = ? \
+     ORDER BY 1 DESC, 5, 3, 4";
+
+/// Shown with every Snowflake dependency answer.
+const DEPENDENCIES_LATENCY: &str =
+    "From SNOWFLAKE.ACCOUNT_USAGE, which lags up to 3 hours: recent changes may be missing";
+
+/// Shown when `ACCOUNT_USAGE` cannot be read.
+const DEPENDENCIES_PRIVILEGE: &str = "Dependencies need IMPORTED PRIVILEGES on the SNOWFLAKE \
+     database (SNOWFLAKE.ACCOUNT_USAGE.OBJECT_DEPENDENCIES)";
+
+/// `-- column: value` lines of one `SHOW` / `INFORMATION_SCHEMA` row (empty values left out).
+fn described(title: &str, r: &Rows, row: &[Option<String>]) -> String {
+    let mut out = format!("-- {title}\n");
+    for (name, v) in r.names.iter().zip(row) {
+        if let Some(v) = v.as_deref().filter(|v| !v.is_empty() && *v != "null") {
+            out.push_str(&format!(
+                "-- {}: {}\n",
+                name.to_ascii_lowercase(),
+                v.replace('\n', " ")
+            ));
+        }
+    }
+    out
+}
+
+/// Users and roles: `SHOW ROLES`, then `SHOW USERS` when permitted.
+async fn roles(s: &SnowflakeSession) -> Result<Vec<ObjectInfo>> {
+    let r = Rows::of(s, "SHOW ROLES", &[]).await?;
+    let mut out: Vec<ObjectInfo> = r
+        .rows
+        .iter()
+        .map(|row| ObjectInfo {
+            schema: String::new(),
+            name: r.text(row, "name"),
+            kind: ObjectKind::Role,
+            estimated_rows: None,
+            detail: Some(match r.get(row, "comment").filter(|c| !c.is_empty()) {
+                Some(c) => format!("role · {c}"),
+                None => "role".into(),
+            }),
+        })
+        .collect();
+    // SHOW USERS needs MANAGE GRANTS (or ownership); without it only roles show.
+    if let Ok(u) = Rows::of(s, "SHOW USERS", &[]).await {
+        out.extend(u.rows.iter().map(|row| ObjectInfo {
+            schema: String::new(),
+            name: u.text(row, "name"),
+            kind: ObjectKind::Role,
+            estimated_rows: None,
+            detail: Some(if u.get(row, "disabled") == Some("true") {
+                "user · disabled".into()
+            } else {
+                "user".into()
+            }),
+        }));
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out.dedup_by(|a, b| a.name == b.name);
+    Ok(out)
+}
+
+/// `Detail` of a role, stage, task or pipe (DBX-5c): `GET_DDL` for tasks and pipes, the
+/// `SHOW` / `INFORMATION_SCHEMA` row as text for the others.
+async fn admin_detail(
+    s: &SnowflakeSession,
+    schema: &str,
+    name: &str,
+    kind: ObjectKind,
+) -> Result<CatalogChunk> {
+    let gone = || DbError::Unsupported(format!("{name} no longer exists"));
+    let ddl = match kind {
+        ObjectKind::Task | ObjectKind::Pipe => {
+            let ty = if kind == ObjectKind::Task {
+                "TASK"
+            } else {
+                "PIPE"
+            };
+            let d = Rows::of(
+                s,
+                "SELECT GET_DDL(?, ?) AS DDL",
+                &[Value::Text(ty.into()), Value::Text(quoted(schema, name))],
+            )
+            .await?;
+            d.rows
+                .first()
+                .map(|row| d.text(row, "DDL"))
+                .ok_or_else(gone)?
+        }
+        ObjectKind::Stage => {
+            let r = Rows::of(
+                s,
+                STAGE_SQL,
+                &[Value::Text(schema.into()), Value::Text(name.into())],
+            )
+            .await?;
+            let row = r.rows.first().ok_or_else(gone)?;
+            described(&format!("Stage {}", quoted(schema, name)), &r, row)
+        }
+        _ => {
+            let mut found = None;
+            for (what, title) in [("ROLES", "Role"), ("USERS", "User")] {
+                let Ok(r) = Rows::of(s, &show_like(what, name), &[]).await else {
+                    continue;
+                };
+                if let Some(row) = r.rows.iter().find(|row| r.text(row, "name") == name) {
+                    found = Some(described(&format!("{title} {name}"), &r, row));
+                    break;
+                }
+            }
+            found.ok_or_else(gone)?
+        }
+    };
+    Ok(CatalogChunk::Detail(Box::new(ObjectDetail {
+        object: ObjectInfo {
+            schema: if kind.is_server_level() {
+                String::new()
+            } else {
+                schema.to_owned()
+            },
+            name: name.to_owned(),
+            kind,
+            estimated_rows: None,
+            detail: None,
+        },
+        ddl,
+        ..ObjectDetail::default()
+    })))
+}
+
+/// [`IntrospectScope::Dependencies`]: always with a hint (latency, or the privilege).
+async fn dependencies(s: &SnowflakeSession, schema: &str, name: &str) -> CatalogChunk {
+    let (schema, name) = (Value::Text(schema.into()), Value::Text(name.into()));
+    let params = [schema.clone(), name.clone(), schema, name];
+    let deps = match Rows::of(s, DEPENDENCIES_SQL, &params).await {
+        Ok(r) => {
+            let mut deps = Dependencies::hint(DEPENDENCIES_LATENCY);
+            for row in &r.rows {
+                let domain = r.text(row, "DOMAIN");
+                let other_db = r.get(row, "OTHER_DB") == Some("true");
+                deps.push(
+                    &r.text(row, "DIRECTION"),
+                    DependencyInfo {
+                        schema: r.text(row, "SCHEMA_NAME"),
+                        name: r.text(row, "OBJECT_NAME"),
+                        kind: (!other_db).then(|| dependency_kind(&domain)).flatten(),
+                        type_label: domain.to_ascii_lowercase(),
+                        dependency: r.text(row, "DEPENDENCY_TYPE").to_ascii_lowercase(),
+                    },
+                );
+            }
+            deps
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, "account usage unavailable");
+            Dependencies::hint(DEPENDENCIES_PRIVILEGE)
+        }
+    };
+    CatalogChunk::Dependencies(Box::new(deps))
 }
 
 /// `"schema"."name"`, quoted exactly as stored.
@@ -229,6 +458,38 @@ pub(super) async fn introspect(
                     .collect(),
             ))
         }
+        IntrospectScope::Objects {
+            kind: ObjectKind::Role,
+            ..
+        } => Ok(CatalogChunk::Objects(roles(s).await?)),
+        IntrospectScope::Objects {
+            schema,
+            kind: ObjectKind::Task,
+        } => {
+            let r = Rows::of(s, &tasks_sql(&schema), &[]).await?;
+            Ok(CatalogChunk::Objects(
+                r.rows
+                    .iter()
+                    .map(|row| ObjectInfo {
+                        schema: schema.clone(),
+                        name: r.text(row, "name"),
+                        kind: ObjectKind::Task,
+                        estimated_rows: None,
+                        detail: Some(task_summary(
+                            &r.text(row, "state"),
+                            r.get(row, "schedule"),
+                            r.get(row, "predecessors"),
+                        )),
+                    })
+                    .collect(),
+            ))
+        }
+        IntrospectScope::Detail { schema, name, kind } if kind.is_admin() => {
+            admin_detail(s, &schema, &name, kind).await
+        }
+        IntrospectScope::Dependencies { schema, name, .. } => {
+            Ok(dependencies(s, &schema, &name).await)
+        }
         IntrospectScope::Objects { schema, kind } => {
             let Some(sql) = objects_sql(kind) else {
                 return Ok(CatalogChunk::Objects(Vec::new()));
@@ -256,7 +517,7 @@ pub(super) async fn introspect(
             let r = Rows::of(
                 s,
                 &search_sql(limit, include_system),
-                &[like.clone(), like.clone(), like],
+                &[like.clone(), like.clone(), like.clone(), like.clone(), like],
             )
             .await?;
             Ok(CatalogChunk::Objects(
@@ -364,6 +625,38 @@ mod tests {
         .map(|k| format!("{k:?}: {}", objects_sql(k).unwrap_or_else(|| "-".into())))
         .collect();
         insta::assert_snapshot!("snowflake_objects_sql", all.join("\n"));
+    }
+
+    #[test]
+    fn admin_sql_snapshots() {
+        let objects: Vec<String> = [ObjectKind::Stage, ObjectKind::Pipe]
+            .into_iter()
+            .map(|k| format!("{k:?}: {}", objects_sql(k).unwrap_or_default()))
+            .collect();
+        insta::assert_snapshot!(
+            "snowflake_admin_sql",
+            [
+                objects.join("\n"),
+                tasks_sql("ETL \"x\""),
+                show_like("ROLES", "o'brien"),
+                STAGE_SQL.into(),
+            ]
+            .join("\n")
+        );
+        insta::assert_snapshot!("snowflake_dependencies_sql", DEPENDENCIES_SQL);
+    }
+
+    #[test]
+    fn task_lines() {
+        assert_eq!(
+            task_summary("started", Some("USING CRON 0 3 * * * UTC"), None),
+            "started · USING CRON 0 3 * * * UTC"
+        );
+        assert_eq!(
+            task_summary("suspended", None, Some("[\"DB.S.ROOT\"]")),
+            "suspended · after predecessors"
+        );
+        assert_eq!(task_summary("STARTED", Some(""), Some("[]")), "started");
     }
 
     #[test]

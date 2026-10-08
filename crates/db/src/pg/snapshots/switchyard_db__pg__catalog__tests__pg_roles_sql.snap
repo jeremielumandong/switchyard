@@ -1,0 +1,14 @@
+---
+source: crates/db/src/pg/catalog.rs
+expression: ROLES_SQL
+---
+SELECT r.rolname::text,
+       concat_ws(' · ', CASE WHEN r.rolcanlogin THEN 'user' ELSE 'role' END,
+                 CASE WHEN r.rolsuper THEN 'superuser' END,
+                 CASE WHEN r.rolcreatedb THEN 'create db' END,
+                 CASE WHEN r.rolcreaterole THEN 'create role' END,
+                 CASE WHEN r.rolreplication THEN 'replication' END,
+                 CASE WHEN r.rolbypassrls THEN 'bypass RLS' END)
+FROM pg_catalog.pg_roles r
+WHERE r.rolname NOT LIKE 'pg\_%'
+ORDER BY 1

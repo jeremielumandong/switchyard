@@ -679,3 +679,118 @@ async fn use_database_switches_the_session() {
     // SQL Server has no per-session default schema to switch.
     assert_eq!(TSqlDialect.use_schema("sales"), None);
 }
+
+/// `direction kind schema.name (link)` lines of `dbx5a.<name>`'s dependencies.
+async fn dependency_lines(s: &mut dyn DbSession, name: &str, kind: ObjectKind) -> Vec<String> {
+    let CatalogChunk::Dependencies(d) = s
+        .introspect(IntrospectScope::Dependencies {
+            schema: "dbx5a".into(),
+            name: name.into(),
+            kind,
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("dependencies answer with Dependencies")
+    };
+    assert_eq!(d.hint, None);
+    let line = |dir: &str, x: &switchyard_db::DependencyInfo| {
+        format!(
+            "{dir} {:?} {}.{} ({})",
+            x.kind, x.schema, x.name, x.dependency
+        )
+    };
+    d.uses
+        .iter()
+        .map(|x| line("uses", x))
+        .chain(d.used_by.iter().map(|x| line("used_by", x)))
+        .collect()
+}
+
+/// DBX-5a: a view on a table and a foreign key, both directions, on a scratch schema.
+#[tokio::test]
+#[ignore = "needs sql server"]
+async fn dependencies_both_directions() {
+    let mut s = shop().await;
+    for sql in [
+        "IF OBJECT_ID('dbx5a.parent_v') IS NOT NULL DROP VIEW dbx5a.parent_v",
+        "IF OBJECT_ID('dbx5a.child') IS NOT NULL DROP TABLE dbx5a.child",
+        "IF OBJECT_ID('dbx5a.parent') IS NOT NULL DROP TABLE dbx5a.parent",
+        "IF SCHEMA_ID('dbx5a') IS NOT NULL DROP SCHEMA dbx5a",
+        "CREATE SCHEMA dbx5a",
+        "CREATE TABLE dbx5a.parent (id int PRIMARY KEY)",
+        "CREATE TABLE dbx5a.child (id int PRIMARY KEY, \
+         parent_id int CONSTRAINT child_parent_fk REFERENCES dbx5a.parent (id))",
+        "CREATE VIEW dbx5a.parent_v AS SELECT p.id FROM dbx5a.parent p",
+    ] {
+        drain(s.as_mut(), sql, &[]).await.expect(sql);
+    }
+    let parent = dependency_lines(s.as_mut(), "parent", ObjectKind::Table).await;
+    let view = dependency_lines(s.as_mut(), "parent_v", ObjectKind::View).await;
+    let child = dependency_lines(s.as_mut(), "child", ObjectKind::Table).await;
+    for sql in [
+        "DROP VIEW dbx5a.parent_v",
+        "DROP TABLE dbx5a.child",
+        "DROP TABLE dbx5a.parent",
+        "DROP SCHEMA dbx5a",
+    ] {
+        drain(s.as_mut(), sql, &[]).await.expect(sql);
+    }
+    assert_eq!(
+        parent,
+        [
+            "used_by Some(Table) dbx5a.child (foreign key child_parent_fk)",
+            "used_by Some(View) dbx5a.parent_v (reference)",
+        ]
+    );
+    assert_eq!(view, ["uses Some(Table) dbx5a.parent (reference)"]);
+    assert_eq!(
+        child,
+        ["uses Some(Table) dbx5a.parent (foreign key child_parent_fk)"]
+    );
+}
+
+/// DBX-5c: users and roles at the database level; Agent jobs list, or a hint without
+/// msdb access (never an error).
+#[tokio::test]
+#[ignore = "needs sql server"]
+async fn users_roles_and_jobs() {
+    let mut s = shop().await;
+    let CatalogChunk::Objects(roles) = s
+        .introspect(IntrospectScope::Objects {
+            schema: String::new(),
+            kind: ObjectKind::Role,
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("roles are objects")
+    };
+    let dbo = roles.iter().find(|r| r.name == "dbo").expect("dbo user");
+    assert!(dbo.schema.is_empty());
+    assert!(dbo.detail.as_deref().unwrap().starts_with("sql user"));
+    let CatalogChunk::Detail(d) = s
+        .introspect(IntrospectScope::Detail {
+            schema: String::new(),
+            name: "dbo".into(),
+            kind: ObjectKind::Role,
+        })
+        .await
+        .unwrap()
+    else {
+        panic!("role detail")
+    };
+    assert!(d.ddl.contains("CREATE USER [dbo]"), "{}", d.ddl);
+    match s
+        .introspect(IntrospectScope::Objects {
+            schema: String::new(),
+            kind: ObjectKind::Job,
+        })
+        .await
+        .unwrap()
+    {
+        CatalogChunk::Objects(jobs) => assert!(jobs.iter().all(|j| j.detail.is_some())),
+        CatalogChunk::Hint(h) => assert!(h.contains("msdb")),
+        other => panic!("unexpected {other:?}"),
+    }
+}

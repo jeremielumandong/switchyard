@@ -397,9 +397,14 @@ impl Dialect for OracleDialect {
             ObjectKind::MaterializedView,
             ObjectKind::Procedure,
             ObjectKind::Function,
+            ObjectKind::Package,
             ObjectKind::Sequence,
             ObjectKind::Synonym,
         ]
+    }
+
+    fn server_folders(&self) -> &'static [ObjectKind] {
+        &[ObjectKind::Role]
     }
 
     fn use_schema(&self, schema: &str) -> Option<String> {

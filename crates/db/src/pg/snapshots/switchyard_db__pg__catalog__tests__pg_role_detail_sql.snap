@@ -1,0 +1,12 @@
+---
+source: crates/db/src/pg/catalog.rs
+expression: ROLE_DETAIL_SQL
+---
+SELECT r.rolname::text, r.rolcanlogin, r.rolsuper, r.rolinherit, r.rolcreaterole,
+       r.rolcreatedb, r.rolreplication, r.rolbypassrls, r.rolconnlimit,
+       r.rolvaliduntil::text,
+       ARRAY(SELECT g.rolname::text FROM pg_catalog.pg_auth_members m
+             JOIN pg_catalog.pg_roles g ON g.oid = m.roleid
+             WHERE m.member = r.oid ORDER BY 1)::text[],
+       pg_catalog.shobj_description(r.oid, 'pg_authid')
+FROM pg_catalog.pg_roles r WHERE r.rolname = $1

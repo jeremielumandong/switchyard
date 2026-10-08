@@ -320,6 +320,11 @@ impl Dialect for SqliteDialect {
         &[ObjectKind::Table, ObjectKind::View]
     }
 
+    /// D1 keeps no dependency catalog.
+    fn supports_dependencies(&self) -> bool {
+        false
+    }
+
     fn switches_context(&self) -> bool {
         // A D1 database is the whole connection; there is nothing to switch to.
         false
