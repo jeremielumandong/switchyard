@@ -306,3 +306,48 @@ async fn introspection_snapshots() {
             .any(|c| c.name == "id" && c.is_primary_key)
     );
 }
+
+/// `schema.name Kind` of every hit of a global object search.
+async fn search(s: &mut dyn DbSession, pattern: &str) -> Vec<String> {
+    let chunk = s
+        .introspect(IntrospectScope::Search {
+            pattern: pattern.into(),
+            limit: 200,
+            include_system: false,
+        })
+        .await
+        .expect("search");
+    let CatalogChunk::Objects(hits) = chunk else {
+        panic!("search returns objects");
+    };
+    hits.iter()
+        .map(|o| format!("{}.{} {:?}", o.schema, o.name, o.kind))
+        .collect()
+}
+
+#[tokio::test]
+#[ignore = "needs docker postgres"]
+async fn global_object_search() {
+    let mut s = session().await;
+    // Case-insensitive, across kinds, shortest names first.
+    let hits = search(s.as_mut(), "REVENUE").await;
+    assert_eq!(
+        hits,
+        [
+            "public.daily_revenue MaterializedView",
+            "public.customer_revenue Function"
+        ]
+    );
+    let hits = search(s.as_mut(), "order").await;
+    assert_eq!(hits[0], "public.orders Table");
+    assert!(hits.contains(&"public.order_items Table".to_owned()));
+    assert!(hits.contains(&"public.orders_id_seq Sequence".to_owned()));
+    // `_` is literal: "e_s" matches type_samples, not customers or orders.
+    assert_eq!(
+        search(s.as_mut(), "e_s").await,
+        ["public.type_samples Table"]
+    );
+    assert!(search(s.as_mut(), "100%").await.is_empty());
+    // System schemas are left out by default.
+    assert!(search(s.as_mut(), "pg_class").await.is_empty());
+}
