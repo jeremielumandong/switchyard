@@ -156,6 +156,13 @@ impl Dialect for SnowflakeDialect {
         format!("SELECT * FROM {qualified} LIMIT {limit}")
     }
 
+    fn select_template(&self, qualified: &str, cols: &[String], limit: u64) -> String {
+        format!(
+            "SELECT{}\nFROM {qualified}\nLIMIT {limit};",
+            super::select_list(self, cols)
+        )
+    }
+
     /// `?` placeholders, `:1` positions and `:name` parameters. `::` casts and
     /// `col:path` lookups into semi-structured data are not parameters.
     fn find_params(&self, sql: &str) -> Vec<ParamRef> {
@@ -287,7 +294,11 @@ impl Dialect for SnowflakeDialect {
     }
 
     fn object_folders(&self) -> &'static [ObjectKind] {
-        &[ObjectKind::Table, ObjectKind::View]
+        &[
+            ObjectKind::Table,
+            ObjectKind::View,
+            ObjectKind::MaterializedView,
+        ]
     }
 }
 

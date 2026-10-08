@@ -1,0 +1,12 @@
+---
+source: crates/db/src/dialect/mod.rs
+expression: "drops.join(\"\\n\")"
+---
+DROP TABLE sales.[order];
+DROP VIEW sales.[order];
+DROP MATERIALIZED VIEW sales.[order];
+DROP FUNCTION sales.[order];
+DROP PROCEDURE sales.[order];
+DROP SEQUENCE sales.[order];
+DROP TYPE sales.[order];
+DROP SYNONYM sales.[order];
