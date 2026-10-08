@@ -74,6 +74,55 @@ pub trait Dialect: Send + Sync {
     fn split_script(&self, sql: &str) -> Vec<StatementSpan>;
     /// `SELECT * FROM <qualified> ` limited to `limit` rows.
     fn select_rows(&self, qualified: &str, limit: u64) -> String;
+    /// `SELECT` of `cols` (all columns when empty) from `qualified`, limited to `limit`
+    /// rows with the engine's own syntax. Column names are quoted here.
+    fn select_template(&self, qualified: &str, cols: &[String], limit: u64) -> String;
+    /// `INSERT` of `cols` into `qualified`, with `NULL` values to fill in.
+    fn insert_template(&self, qualified: &str, cols: &[String]) -> String {
+        let (names, values) = if cols.is_empty() {
+            ("column1".to_owned(), "NULL".to_owned())
+        } else {
+            (
+                cols.iter()
+                    .map(|c| self.quote_ident(c))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                vec!["NULL"; cols.len()].join(", "),
+            )
+        };
+        format!("INSERT INTO {qualified} ({names})\nVALUES ({values});")
+    }
+    /// `UPDATE` setting the non-key `cols` of the row picked by `pk` (every column when
+    /// there is no key). Values are `NULL` placeholders, so it changes nothing as written.
+    fn update_template(&self, qualified: &str, cols: &[String], pk: &[String]) -> String {
+        let set: Vec<&String> = cols.iter().filter(|c| !pk.contains(c)).collect();
+        let set: Vec<&String> = if set.is_empty() {
+            cols.iter().collect()
+        } else {
+            set
+        };
+        let set = if set.is_empty() {
+            "  column1 = NULL".to_owned()
+        } else {
+            set.iter()
+                .map(|c| format!("  {} = NULL", self.quote_ident(c)))
+                .collect::<Vec<_>>()
+                .join(",\n")
+        };
+        let key = if pk.is_empty() { cols } else { pk };
+        format!(
+            "UPDATE {qualified}\nSET\n{set}\n{};",
+            where_clause(self, key)
+        )
+    }
+    /// `DELETE` of the row picked by `pk`.
+    fn delete_template(&self, qualified: &str, pk: &[String]) -> String {
+        format!("DELETE FROM {qualified}\n{};", where_clause(self, pk))
+    }
+    /// `DROP` statement for an object of `kind`.
+    fn script_drop(&self, kind: ObjectKind, qualified: &str) -> String {
+        format!("DROP {} {qualified};", drop_keyword(kind))
+    }
     /// Placeholders in one statement, in order of appearance.
     fn find_params(&self, sql: &str) -> Vec<ParamRef>;
     /// Rewrite named placeholders to the engine's native form. Returns the SQL and the
@@ -137,6 +186,45 @@ pub fn dialect_for(engine: Engine) -> &'static dyn Dialect {
         Engine::D1 => &sqlite::SqliteDialect,
         Engine::Snowflake => &snowflake::SnowflakeDialect,
         Engine::Oracle => &oracle::OracleDialect,
+    }
+}
+
+/// `WHERE k1 = NULL AND k2 = NULL` over `key`; without a key, a condition that matches
+/// nothing so the template is harmless until edited.
+fn where_clause<D: Dialect + ?Sized>(d: &D, key: &[String]) -> String {
+    if key.is_empty() {
+        return "-- No primary key: write the condition\nWHERE 1 = 0".to_owned();
+    }
+    let conds: Vec<String> = key
+        .iter()
+        .map(|c| format!("{} = NULL", d.quote_ident(c)))
+        .collect();
+    format!("WHERE {}", conds.join("\n  AND "))
+}
+
+/// The select list of a template: `*`, or one quoted column per line.
+pub(crate) fn select_list<D: Dialect + ?Sized>(d: &D, cols: &[String]) -> String {
+    if cols.is_empty() {
+        return " *".to_owned();
+    }
+    let cols: Vec<String> = cols
+        .iter()
+        .map(|c| format!("  {}", d.quote_ident(c)))
+        .collect();
+    format!("\n{}", cols.join(",\n"))
+}
+
+/// The object-type keyword of `DROP <kind>`.
+pub(crate) fn drop_keyword(kind: ObjectKind) -> &'static str {
+    match kind {
+        ObjectKind::Table => "TABLE",
+        ObjectKind::View => "VIEW",
+        ObjectKind::MaterializedView => "MATERIALIZED VIEW",
+        ObjectKind::Function => "FUNCTION",
+        ObjectKind::Procedure => "PROCEDURE",
+        ObjectKind::Sequence => "SEQUENCE",
+        ObjectKind::Type => "TYPE",
+        ObjectKind::Synonym => "SYNONYM",
     }
 }
 
@@ -347,6 +435,74 @@ pub(crate) const COMMON_KEYWORDS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const KINDS: [ObjectKind; 8] = [
+        ObjectKind::Table,
+        ObjectKind::View,
+        ObjectKind::MaterializedView,
+        ObjectKind::Function,
+        ObjectKind::Procedure,
+        ObjectKind::Sequence,
+        ObjectKind::Type,
+        ObjectKind::Synonym,
+    ];
+
+    fn names(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    /// Every template of every dialect, for a table with a quoted column and a
+    /// two-column key, and for one without columns or key.
+    #[test]
+    fn templates() {
+        for engine in [
+            Engine::Postgres,
+            Engine::SqlServer,
+            Engine::Oracle,
+            Engine::Snowflake,
+            Engine::D1,
+        ] {
+            let d = dialect_for(engine);
+            let q = d.qualified("sales", "order");
+            let cols = names(&["id", "line", "Order Date", "total"]);
+            let pk = names(&["id", "line"]);
+            let name = format!("{engine:?}").to_lowercase();
+            insta::assert_snapshot!(
+                format!("{name}_select"),
+                format!(
+                    "{}\n\n{}",
+                    d.select_template(&q, &cols, 100),
+                    d.select_template(&q, &[], 100)
+                )
+            );
+            insta::assert_snapshot!(
+                format!("{name}_insert"),
+                format!(
+                    "{}\n\n{}",
+                    d.insert_template(&q, &cols),
+                    d.insert_template(&q, &[])
+                )
+            );
+            insta::assert_snapshot!(
+                format!("{name}_update"),
+                format!(
+                    "{}\n\n{}",
+                    d.update_template(&q, &cols, &pk),
+                    d.update_template(&q, &cols, &[])
+                )
+            );
+            insta::assert_snapshot!(
+                format!("{name}_delete"),
+                format!(
+                    "{}\n\n{}",
+                    d.delete_template(&q, &pk),
+                    d.delete_template(&q, &[])
+                )
+            );
+            let drops: Vec<String> = KINDS.iter().map(|k| d.script_drop(*k, &q)).collect();
+            insta::assert_snapshot!(format!("{name}_drop"), drops.join("\n"));
+        }
+    }
 
     #[test]
     fn line_col() {

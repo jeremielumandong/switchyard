@@ -1,0 +1,12 @@
+---
+source: crates/db/src/dialect/mod.rs
+expression: "drops.join(\"\\n\")"
+---
+DROP TABLE sales."order";
+DROP VIEW sales."order";
+-- SQLite has no DROP MATERIALIZED VIEW
+-- SQLite has no DROP FUNCTION
+-- SQLite has no DROP PROCEDURE
+-- SQLite has no DROP SEQUENCE
+-- SQLite has no DROP TYPE
+-- SQLite has no DROP SYNONYM

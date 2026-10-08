@@ -182,6 +182,13 @@ impl Dialect for TSqlDialect {
         format!("SELECT TOP ({limit}) * FROM {qualified}")
     }
 
+    fn select_template(&self, qualified: &str, cols: &[String], limit: u64) -> String {
+        format!(
+            "SELECT TOP ({limit}){}\nFROM {qualified};",
+            super::select_list(self, cols)
+        )
+    }
+
     fn find_params(&self, sql: &str) -> Vec<ParamRef> {
         let segs = lexer::segments(sql, Flavor::TSql);
         let b = sql.as_bytes();

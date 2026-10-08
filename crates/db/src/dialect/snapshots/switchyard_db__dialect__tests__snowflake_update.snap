@@ -1,0 +1,21 @@
+---
+source: crates/db/src/dialect/mod.rs
+expression: "format!(\"{}\\n\\n{}\", d.update_template(&q, &cols, &pk),\nd.update_template(&q, &cols, &[]))"
+---
+UPDATE "sales"."order"
+SET
+  "Order Date" = NULL,
+  "total" = NULL
+WHERE "id" = NULL
+  AND "line" = NULL;
+
+UPDATE "sales"."order"
+SET
+  "id" = NULL,
+  "line" = NULL,
+  "Order Date" = NULL,
+  "total" = NULL
+WHERE "id" = NULL
+  AND "line" = NULL
+  AND "Order Date" = NULL
+  AND "total" = NULL;

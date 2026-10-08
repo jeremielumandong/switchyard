@@ -1,0 +1,11 @@
+---
+source: crates/db/src/dialect/mod.rs
+expression: "format!(\"{}\\n\\n{}\", d.delete_template(&q, &pk), d.delete_template(&q, &[]))"
+---
+DELETE FROM sales."order"
+WHERE id = NULL
+  AND line = NULL;
+
+DELETE FROM sales."order"
+-- No primary key: write the condition
+WHERE 1 = 0;
