@@ -902,6 +902,7 @@ impl WorkbenchPanel {
     fn render_header(&self, cx: &mut Context<Self>) -> Div {
         let colors = cx.theme().colors;
         let environment_name = self.environment_display_name();
+        let env_label_color = self.environment_label_color(cx);
         div()
             .flex()
             .items_center()
@@ -983,13 +984,16 @@ impl WorkbenchPanel {
                         menu_trigger(
                             "workbench-env-chip",
                             cx.theme().transparent,
-                            colors.input,
-                            palette::text_secondary(cx),
+                            env_label_color.unwrap_or(colors.input),
+                            env_label_color.unwrap_or_else(|| palette::text_secondary(cx)),
                             div()
                                 .flex()
                                 .items_center()
                                 .gap(px(6.))
-                                .child(dot(6., self.environment_dot(cx)))
+                                .child(dot(
+                                    6.,
+                                    env_label_color.unwrap_or_else(|| self.environment_dot(cx)),
+                                ))
                                 .child(
                                     div()
                                         .font_family(crate::api::compat::fonts::mono(cx))
@@ -2066,6 +2070,7 @@ impl WorkbenchPanel {
         let method = self.current_method(cx);
         let tint = self.method_tint_label(&method, cx);
         let url_focused = self.url.focus_handle(cx).is_focused(window);
+        let env_edge = self.environment_label_color(cx);
         // A relative URL shows what it will be prefixed with — or that
         // nothing will, which is the click-through to the Envs tab.
         let base_prefix = switchyard_api::is_relative_url(&self.url.read(cx).value())
@@ -2192,6 +2197,9 @@ impl WorkbenchPanel {
             .flex()
             .flex_col()
             .flex_none()
+            // The environment's colour down the request's edge, like a
+            // database editor's.
+            .when_some(env_edge, |el, color| el.border_l_2().border_color(color))
             .child(
                 div()
                     .flex()
@@ -2221,6 +2229,10 @@ impl WorkbenchPanel {
                                 colors.ring
                             } else {
                                 colors.input
+                            })
+                            // Production is red whatever the focus.
+                            .when(self.environment_label_in_force().is_production(), |el| {
+                                el.border_color(env_edge.unwrap_or(colors.danger))
                             })
                             .bg(colors.sidebar)
                             .font_family(crate::api::compat::fonts::mono(cx))
@@ -4492,9 +4504,9 @@ impl WorkbenchPanel {
                                     colors.danger
                                 },
                             ))
-                            .on_click(cx.listener(|this, _, _, cx| {
+                            .on_click(cx.listener(|this, _, window, cx| {
                                 if this.send_state == SendState::Idle {
-                                    this.run_collection(cx)
+                                    this.run_collection_confirmed(window, cx)
                                 } else if matches!(
                                     this.send_state,
                                     SendState::PreparingRun | SendState::Sending
@@ -4513,9 +4525,9 @@ impl WorkbenchPanel {
                                     "workbench-run-menu-start".into(),
                                     "Run collection",
                                     &handle,
-                                    |this, _, cx| {
+                                    |this, window, cx| {
                                         if this.send_state == SendState::Idle {
-                                            this.run_collection(cx);
+                                            this.run_collection_confirmed(window, cx);
                                         }
                                     },
                                 )
@@ -5058,6 +5070,9 @@ impl WorkbenchPanel {
                                 },
                             ))
                             .child(div().flex_1().min_w(px(0.)).truncate().child(environment.name.clone()))
+                            .when_some(environment_label::label_color(environment.label, cx), |el, color| {
+                                el.child(div().text_size(text::S9).font_weight(text::weight::BOLD).text_color(color).child(environment_label::badge(environment.label)))
+                            })
                             .child(
                                 div()
                                     .font_family(crate::api::compat::fonts::mono(cx))
@@ -5208,6 +5223,7 @@ impl WorkbenchPanel {
                                     .flex_col()
                                     .gap(space::SP_3)
                                     .p(space::SP_4)
+                                    .child(self.render_env_label(cx))
                                     .child(self.render_env_base_url(window, cx))
                                     .child(self.render_env_auth(cx))
                                     .child(heading("Variables", colors.muted_foreground))

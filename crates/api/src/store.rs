@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 const DATABASE_FILE: &str = "workbench.db";
-const SCHEMA_VERSION: i32 = 5;
+const SCHEMA_VERSION: i32 = 6;
 const MMAP_SIZE_BYTES: i64 = 128 * 1024 * 1024;
 pub const DEFAULT_HISTORY_BODY_BYTES: usize = 256 * 1024;
 pub const DEFAULT_HISTORY_ENTRIES: usize = 1_000;
@@ -701,13 +701,14 @@ impl WorkbenchStore {
             }
         }
         transaction.execute(
-            "INSERT INTO workbench_environments(id, workspace_id, name, active, definition_json, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, unixepoch() * 1000)
+            "INSERT INTO workbench_environments(id, workspace_id, name, active, label, definition_json, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, unixepoch() * 1000)
              ON CONFLICT(id) DO UPDATE SET name=excluded.name, active=excluded.active,
-               definition_json=excluded.definition_json, updated_at=excluded.updated_at",
+               label=excluded.label, definition_json=excluded.definition_json,
+               updated_at=excluded.updated_at",
             params![
                 safe.id.as_str(), safe.workspace_id.as_str(), safe.name,
-                i64::from(safe.active), definition
+                i64::from(safe.active), safe.label.as_str(), definition
             ],
         )?;
         transaction.commit()?;
@@ -1777,9 +1778,9 @@ fn insert_environment(transaction: &Transaction<'_>, value: &Environment) -> Sto
     validate_name("environment", &value.name)?;
     let safe = persistence_safe_environment(value);
     transaction.execute(
-        "INSERT INTO workbench_environments(id, workspace_id, name, active, definition_json, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, unixepoch() * 1000)",
-        params![safe.id.as_str(), safe.workspace_id.as_str(), safe.name, i64::from(safe.active), serde_json::to_string(&safe)?],
+        "INSERT INTO workbench_environments(id, workspace_id, name, active, label, definition_json, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, unixepoch() * 1000)",
+        params![safe.id.as_str(), safe.workspace_id.as_str(), safe.name, i64::from(safe.active), safe.label.as_str(), serde_json::to_string(&safe)?],
     )?;
     Ok(())
 }
@@ -2194,6 +2195,28 @@ fn migrate(connection: &mut Connection) -> StoreResult<()> {
         transaction.pragma_update(None, "user_version", 5)?;
         transaction.commit()?;
     }
+    if current < 6 {
+        let transaction = connection.transaction()?;
+        // The label (Production / Staging / Development / Local) lives in
+        // definition_json like every other field; the column mirrors it so
+        // it can be read without decoding the definition.
+        transaction.execute_batch(
+            "ALTER TABLE workbench_environments
+                 ADD COLUMN label TEXT NOT NULL DEFAULT 'local'
+                 CHECK(label IN ('production', 'staging', 'development', 'local'));
+             UPDATE workbench_environments
+                 SET label=json_extract(definition_json, '$.label')
+                 WHERE json_extract(definition_json, '$.label')
+                     IN ('production', 'staging', 'development');",
+        )?;
+        transaction.execute(
+            "INSERT INTO workbench_schema_migrations(version, applied_at)
+             VALUES (6, unixepoch() * 1000)",
+            [],
+        )?;
+        transaction.pragma_update(None, "user_version", 6)?;
+        transaction.commit()?;
+    }
     Ok(())
 }
 
@@ -2212,9 +2235,9 @@ fn implicit_workspace_name(id: &str) -> String {
 mod tests {
     use super::*;
     use crate::{
-        AuthConfig, Body, Example, ExampleId, HttpMethod, ImportFormat, ImportSelection,
-        MemorySecretStore, RequestSettings, ResponseSnapshot, Scripts, SecretRef, Variable,
-        VariableValue,
+        AuthConfig, Body, EnvironmentLabel, Example, ExampleId, HttpMethod, ImportFormat,
+        ImportSelection, MemorySecretStore, RequestSettings, ResponseSnapshot, Scripts, SecretRef,
+        Variable, VariableValue,
     };
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2739,6 +2762,7 @@ mod tests {
             extensions: Default::default(),
         };
         let environment = Environment {
+            label: Default::default(),
             id: EnvironmentId::new(),
             workspace_id: workspace,
             name: "Environment".into(),
@@ -3416,14 +3440,15 @@ mod tests {
                  DROP TABLE workbench_cookie_jars;
                  DROP TABLE workbench_globals;
                  DROP TABLE workbench_workspaces;
-                 DELETE FROM workbench_schema_migrations WHERE version IN (2, 3, 4, 5);
+                 ALTER TABLE workbench_environments DROP COLUMN label;
+                 DELETE FROM workbench_schema_migrations WHERE version IN (2, 3, 4, 5, 6);
                  PRAGMA user_version=1;",
             )
             .unwrap();
         drop(connection);
 
         let migrated = WorkbenchStore::open_database(&path).unwrap();
-        assert_eq!(migrated.schema_version().unwrap(), 5);
+        assert_eq!(migrated.schema_version().unwrap(), 6);
         assert_eq!(
             migrated.list_workspaces().unwrap(),
             vec![WorkspaceEntry {
@@ -3450,6 +3475,107 @@ mod tests {
         );
     }
 
+    fn labelled_environment(
+        workspace: &WorkspaceId,
+        name: &str,
+        label: EnvironmentLabel,
+    ) -> Environment {
+        Environment {
+            id: EnvironmentId::new(),
+            workspace_id: workspace.clone(),
+            name: name.into(),
+            label,
+            base_url: String::new(),
+            auth: Default::default(),
+            variables: Vec::new(),
+            active: false,
+            extensions: Default::default(),
+        }
+    }
+
+    fn stored_labels(store: &WorkbenchStore) -> Vec<(String, String)> {
+        let connection = store.conn();
+        let mut statement = connection
+            .prepare("SELECT name, label FROM workbench_environments ORDER BY name")
+            .unwrap();
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn environment_labels_round_trip() {
+        let scratch = Scratch::new("env-label");
+        let workspace = WorkspaceId::new("project").unwrap();
+        let store = WorkbenchStore::open_database(scratch.0.join(DATABASE_FILE)).unwrap();
+        let mut production = labelled_environment(&workspace, "Prod", EnvironmentLabel::Production);
+        let plain = labelled_environment(&workspace, "Sandbox", EnvironmentLabel::Local);
+        store.upsert_environment(&production).unwrap();
+        store.upsert_environment(&plain).unwrap();
+        let mut listed = store.list_environments(&workspace).unwrap();
+        listed.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(listed, vec![production.clone(), plain.clone()]);
+        assert_eq!(
+            stored_labels(&store),
+            vec![
+                ("Prod".into(), "production".into()),
+                ("Sandbox".into(), "local".into())
+            ]
+        );
+
+        production.label = EnvironmentLabel::Staging;
+        store.upsert_environment(&production).unwrap();
+        store
+            .set_active_environment(&workspace, Some(&production.id))
+            .unwrap();
+        let reloaded = store
+            .list_environments(&workspace)
+            .unwrap()
+            .into_iter()
+            .find(|value| value.id == production.id)
+            .unwrap();
+        assert_eq!(reloaded.label, EnvironmentLabel::Staging);
+        assert!(reloaded.active);
+        assert_eq!(stored_labels(&store)[0].1, "staging");
+    }
+
+    #[test]
+    fn version_five_database_migrates_environment_labels() {
+        let scratch = Scratch::new("v5-migration");
+        let path = scratch.0.join(DATABASE_FILE);
+        let workspace = WorkspaceId::new("project").unwrap();
+        let production = labelled_environment(&workspace, "Prod", EnvironmentLabel::Production);
+        let plain = labelled_environment(&workspace, "Sandbox", EnvironmentLabel::Local);
+        let store = WorkbenchStore::open_database(&path).unwrap();
+        store.upsert_environment(&production).unwrap();
+        store.upsert_environment(&plain).unwrap();
+        drop(store);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "ALTER TABLE workbench_environments DROP COLUMN label;
+                 DELETE FROM workbench_schema_migrations WHERE version=6;
+                 PRAGMA user_version=5;",
+            )
+            .unwrap();
+        drop(connection);
+
+        let migrated = WorkbenchStore::open_database(&path).unwrap();
+        assert_eq!(migrated.schema_version().unwrap(), 6);
+        assert_eq!(
+            stored_labels(&migrated),
+            vec![
+                ("Prod".into(), "production".into()),
+                ("Sandbox".into(), "local".into())
+            ]
+        );
+        let mut listed = migrated.list_environments(&workspace).unwrap();
+        listed.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(listed, vec![production, plain]);
+    }
+
     #[test]
     fn examples_environments_and_history_survive_workspace_hydration() {
         let scratch = Scratch::new("hydrate");
@@ -3457,6 +3583,7 @@ mod tests {
         let collection = collection(&workspace, "API");
         let request = request(&collection, "List");
         let first_environment = Environment {
+            label: Default::default(),
             id: EnvironmentId::new(),
             workspace_id: workspace.clone(),
             name: "First".into(),
@@ -3467,6 +3594,7 @@ mod tests {
             extensions: Default::default(),
         };
         let second_environment = Environment {
+            label: Default::default(),
             id: EnvironmentId::new(),
             workspace_id: workspace.clone(),
             name: "Second".into(),
@@ -3747,6 +3875,7 @@ mod tests {
         ));
 
         let environment = Environment {
+            label: Default::default(),
             id: EnvironmentId::new(),
             workspace_id: first_workspace.clone(),
             name: "Environment".into(),
@@ -4209,6 +4338,7 @@ mod tests {
         }))
         .unwrap();
         let mut environment = Environment {
+            label: Default::default(),
             id: EnvironmentId::new(),
             workspace_id: workspace.clone(),
             name: "Production".into(),
@@ -4266,6 +4396,7 @@ mod tests {
         let scratch = Scratch::new("environment-base-url-auth");
         let workspace = WorkspaceId::new("project").unwrap();
         let environment = Environment {
+            label: Default::default(),
             id: EnvironmentId::new(),
             workspace_id: workspace.clone(),
             name: "Staging".into(),
