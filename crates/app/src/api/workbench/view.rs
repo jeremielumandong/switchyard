@@ -2989,14 +2989,6 @@ impl WorkbenchPanel {
 // Compose: response
 // ---------------------------------------------------------------------------
 
-/// One painted row of the Trace pane.
-struct TraceRow {
-    offset_ms: u64,
-    tag: &'static str,
-    text: String,
-    duration: Option<u64>,
-}
-
 impl WorkbenchPanel {
     /// `flex-1 · border-t · bg sidebar`: tab chips, readouts, the lavender
     /// "Explain · write tests" menu, then the selected pane.
@@ -3097,35 +3089,59 @@ impl WorkbenchPanel {
             (ResponseTab::Raw, Some(_)) => self.render_response_editor(false, cx),
             (ResponseTab::Headers, Some(response)) => {
                 let cols = [Col::Px(220.), Col::Flex];
+                let all = response_copy::headers_text(&response.headers);
+                let table =
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(1.))
+                        .rounded(radius::md())
+                        .overflow_hidden()
+                        .bg(colors.muted)
+                        .font_family(crate::api::compat::fonts::mono(cx))
+                        .text_size(text::S11)
+                        .children(response.headers.iter().enumerate().map(
+                            |(index, (name, value))| {
+                                table_row(
+                                    &cols,
+                                    vec![
+                                        tinted_cell(name.clone(), colors.muted_foreground),
+                                        cell(value.clone()),
+                                    ],
+                                    false,
+                                    cx,
+                                )
+                                .bg(colors.sidebar)
+                                .items_center()
+                                .child(
+                                    div().flex_none().px(space::SP_1).child(self.copy_row_icon(
+                                        format!("workbench-header-copy-{index}"),
+                                        response_copy::header_line(name, value),
+                                        cx,
+                                    )),
+                                )
+                            },
+                        ))
+                        .when(response.headers.is_empty(), |el| {
+                            el.child(
+                                div()
+                                    .p(space::SP_2)
+                                    .text_color(palette::text_tertiary(cx))
+                                    .child("(no headers)"),
+                            )
+                        });
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(1.))
-                    .rounded(radius::md())
-                    .overflow_hidden()
-                    .bg(colors.muted)
-                    .font_family(crate::api::compat::fonts::mono(cx))
-                    .text_size(text::S11)
-                    .children(response.headers.iter().map(|(name, value)| {
-                        table_row(
-                            &cols,
-                            vec![
-                                tinted_cell(name.clone(), colors.muted_foreground),
-                                cell(value.clone()),
-                            ],
-                            false,
-                            cx,
-                        )
-                        .bg(colors.sidebar)
-                    }))
-                    .when(response.headers.is_empty(), |el| {
-                        el.child(
-                            div()
-                                .p(space::SP_2)
-                                .text_color(palette::text_tertiary(cx))
-                                .child("(no headers)"),
-                        )
-                    })
+                    .gap(space::SP_2)
+                    .child(div().flex().justify_end().child(self.copy_chip(
+                        "workbench-headers-copy-all",
+                        "Copy all",
+                        !all.is_empty(),
+                        move |_, _| all.clone(),
+                        cx,
+                    )))
+                    .child(table)
                     .into_any_element()
             }
             (ResponseTab::Trace, Some(response)) => self.render_trace(response, cx),
@@ -3137,15 +3153,24 @@ impl WorkbenchPanel {
                         .child("No test results. Add assertions in Compose → Scripts, then send the request." )
                         .into_any_element()
                 } else {
+                    let all = response_copy::tests_text(&response.test_results);
                     div()
                         .flex()
                         .flex_col()
                         .gap(px(6.))
+                        .child(div().flex().justify_end().child(self.copy_chip(
+                            "workbench-tests-copy-all",
+                            "Copy all",
+                            true,
+                            move |_, _| all.clone(),
+                            cx,
+                        )))
                         .children(
                             response
                                 .test_results
                                 .iter()
-                                .map(|result| self.response_test_row(result, cx)),
+                                .enumerate()
+                                .map(|(index, result)| self.response_test_row(index, result, cx)),
                         )
                         .into_any_element()
                 }
@@ -3204,9 +3229,9 @@ impl WorkbenchPanel {
                         | pretty::BodyPresentation::Virtualized { text, .. } => text.clone(),
                     },
                 ),
-                ResponseTab::Raw => Some(body.raw.clone()),
                 _ => None,
             });
+        let has_request = self.response_request.is_some();
         div()
             .id("workbench-response-pane")
             .debug_selector(|| "workbench-response-pane".into())
@@ -3277,26 +3302,34 @@ impl WorkbenchPanel {
                         )
                     })
                     .when_some(copy_payload, |el, payload| {
-                        el.child(
-                            outline_chip("workbench-copy-response".into(), "Copy view", cx)
-                                .child(icon("copy", 11., palette::text_secondary(cx)))
-                                .on_click(move |_, _, cx| {
-                                    if payload.is_empty() {
-                                        crate::api::compat::notify::warning(
-                                            cx,
-                                            "Response output is empty — nothing to copy.",
-                                        );
-                                    } else {
-                                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
-                                            payload.to_string(),
-                                        ));
-                                        crate::api::compat::notify::success(
-                                            cx,
-                                            "Response output copied.",
-                                        );
-                                    }
-                                }),
-                        )
+                        el.child(self.copy_chip(
+                            "workbench-copy-response",
+                            "Copy view",
+                            !payload.is_empty(),
+                            move |_, _| payload.to_string(),
+                            cx,
+                        ))
+                    })
+                    .when(response.is_some(), |el| {
+                        el.child(self.copy_chip(
+                            "workbench-copy-response-body",
+                            "Copy response",
+                            true,
+                            |this, _| this.response_raw_text(),
+                            cx,
+                        ))
+                        .child(self.copy_chip(
+                            "workbench-copy-curl",
+                            "Copy as cURL",
+                            has_request,
+                            |this, _| {
+                                this.response_request
+                                    .as_ref()
+                                    .map(response_copy::curl_text)
+                                    .unwrap_or_default()
+                            },
+                            cx,
+                        ))
                     })
                     .child(ask_menu)
                     .context_menu({
@@ -3390,118 +3423,36 @@ impl WorkbenchPanel {
             .into_any_element()
     }
 
-    /// Trace rows built from the real exchange: connection timings, each
-    /// redirect, `done`, and the error line — no synthetic events.
-    fn render_trace(&self, response: &transport::Response, cx: &App) -> AnyElement {
+    /// The Trace pane: [`response_copy::trace_rows`] painted one per line,
+    /// each with a copy icon, under a "Copy all" chip.
+    fn render_trace(&self, response: &transport::Response, cx: &mut Context<Self>) -> AnyElement {
         let colors = cx.theme().colors;
-        let timings = &response.timings;
-        let mut rows = Vec::new();
-        let target = self
-            .response_request
-            .as_ref()
-            .map(|request| format!("{} {}", request.method, request.url))
-            .unwrap_or_else(|| response.final_url.clone());
-        rows.push(TraceRow {
-            offset_ms: 0,
-            tag: "send",
-            text: target,
-            duration: None,
-        });
-        // What the request authenticated with — the redacted snapshot keeps a
-        // bearer JWT's public claims, which is how two tokens are told apart.
-        if let Some((_, value)) = self.response_request.as_ref().and_then(|request| {
-            request
-                .headers
-                .iter()
-                .find(|(name, _)| name.eq_ignore_ascii_case("Authorization"))
-        }) {
-            rows.push(TraceRow {
-                offset_ms: 0,
-                tag: "auth",
-                text: value.clone(),
-                duration: None,
-            });
-        }
-        let mut offset = 0;
-        for (tag, value) in [
-            ("dns", timings.dns_ms),
-            ("conn", timings.connect_ms),
-            ("tls", timings.tls_ms),
-        ] {
-            if let Some(ms) = value {
-                rows.push(TraceRow {
-                    offset_ms: offset,
-                    tag,
-                    text: format!("{tag} resolved"),
-                    duration: Some(ms),
-                });
-                offset += ms;
-            }
-        }
-        if let Some(ms) = timings.first_byte_ms {
-            rows.push(TraceRow {
-                offset_ms: ms,
-                tag: "ttfb",
-                text: format!("first byte · HTTP {}", response.http_version),
-                duration: None,
-            });
-        }
-        for redirect in &response.redirects {
-            rows.push(TraceRow {
-                offset_ms: timings.first_byte_ms.unwrap_or(0),
-                tag: "redir",
-                text: format!(
-                    "{} {} → {}{}",
-                    redirect.status,
-                    redirect.from,
-                    redirect.to,
-                    if redirect.cross_origin {
-                        " · cross-origin credentials/body stripped"
-                    } else {
-                        ""
-                    }
-                ),
-                duration: None,
-            });
-        }
-        if let Some(ms) = timings.download_ms {
-            rows.push(TraceRow {
-                offset_ms: response.duration_ms.saturating_sub(ms),
-                tag: "body",
-                text: format!("{} received", pretty::human_size(response.received_bytes)),
-                duration: Some(ms),
-            });
-        }
-        rows.push(TraceRow {
-            offset_ms: response.duration_ms,
-            tag: if response.truncated { "warn" } else { "done" },
-            text: format!(
-                "{} {} · {}{}",
-                response.status,
-                response.reason,
-                response.final_url,
-                if response.truncated {
-                    " · response truncated at limit"
-                } else {
-                    ""
-                }
-            ),
-            duration: Some(response.duration_ms),
-        });
-        if let Some(error) = &self.error {
-            rows.push(TraceRow {
-                offset_ms: response.duration_ms,
-                tag: "error",
-                text: error.clone(),
-                duration: None,
-            });
-        }
+        let rows = response_copy::trace_rows(
+            response,
+            self.response_request.as_ref(),
+            self.error.as_deref(),
+        );
+        let all = response_copy::trace_text(&rows);
         div()
             .flex()
             .flex_col()
             .font_family(crate::api::compat::fonts::mono(cx))
             .text_size(text::S11)
-            .children(rows.into_iter().map(|row| {
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .pb(space::SP_1)
+                    .child(self.copy_chip(
+                        "workbench-trace-copy-all",
+                        "Copy all",
+                        !all.is_empty(),
+                        move |_, _| all.clone(),
+                        cx,
+                    )),
+            )
+            .children(rows.into_iter().enumerate().map(|(index, row)| {
+                let line = response_copy::trace_line(&row);
                 let tint = match row.tag {
                     "send" => colors.primary,
                     "dns" | "conn" | "tls" | "ttfb" | "body" | "auth" => colors.info,
@@ -3541,12 +3492,18 @@ impl WorkbenchPanel {
                                 .child(format!("{ms} ms")),
                         )
                     })
+                    .child(self.copy_row_icon(format!("workbench-trace-copy-{index}"), line, cx))
             }))
             .into_any_element()
     }
 
     /// `PASS name … ms` / `FAIL name` + detail line, on a `muted` row.
-    fn response_test_row(&self, result: &switchyard_api::TestResult, cx: &App) -> Div {
+    fn response_test_row(
+        &self,
+        index: usize,
+        result: &switchyard_api::TestResult,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let colors = cx.theme().colors;
         div()
             .flex()
@@ -3593,7 +3550,12 @@ impl WorkbenchPanel {
                             .min_w(px(0.))
                             .truncate()
                             .child(result.name.clone()),
-                    ),
+                    )
+                    .child(self.copy_row_icon(
+                        format!("workbench-test-copy-{index}"),
+                        response_copy::test_line(result),
+                        cx,
+                    )),
             )
             .when_some(result.error.clone(), |el, error| {
                 el.child(
