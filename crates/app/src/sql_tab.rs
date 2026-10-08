@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::component::highlighter::{Diagnostic, DiagnosticSeverity};
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState, Position};
+use gpui_kit::component::scroll::{Scrollbar, ScrollbarHandle as _, ScrollbarMode};
 use gpui_kit::component::table::{DataTable, TableEvent, TableState};
 use gpui_kit::component::{Sizable as _, Size};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -133,7 +134,10 @@ pub struct ResultSet {
     sql: String,
     rows: usize,
     completion: Option<Completion>,
+    /// The columns are wider than the grid: show the horizontal scrollbar strip.
+    h_overflow: bool,
     _sub: Subscription,
+    _observe: Subscription,
 }
 
 /// Value viewer format.
@@ -1086,6 +1090,10 @@ impl SqlTab {
                 }
             },
         );
+        // Column resizes and new rows change the grid's width; recheck after it lays out.
+        let observe = cx.observe_in(&table, window, |this, _, window, cx| {
+            this.watch_grid_overflow(window, cx)
+        });
         if self.results.is_empty() {
             self.active_result = 0;
         }
@@ -1100,7 +1108,26 @@ impl SqlTab {
             sql,
             rows: 0,
             completion: None,
+            h_overflow: false,
             _sub: sub,
+            _observe: observe,
+        });
+    }
+
+    /// After the next frame lays out the active grid, show or hide its horizontal
+    /// scrollbar strip depending on whether the columns overflow the viewport.
+    fn watch_grid_overflow(&self, window: &mut Window, cx: &mut Context<Self>) {
+        cx.on_next_frame(window, |this, _, cx| {
+            let ix = this.active_result;
+            let Some(r) = this.results.get_mut(ix) else {
+                return;
+            };
+            let h = &r.table.read(cx).horizontal_scroll_handle;
+            let overflow = h.content_size().width > h.viewport_bounds().size.width + px(1.);
+            if overflow != r.h_overflow {
+                r.h_overflow = overflow;
+                cx.notify();
+            }
         });
     }
 
@@ -1680,7 +1707,6 @@ impl SqlTab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let _ = window;
         let messages_ix = self.results.len();
         let mut tabs: Vec<(usize, String, String)> = self
             .results
@@ -1871,6 +1897,25 @@ impl SqlTab {
             let staged_panel = self.render_staged_panel(p, cx);
             let streaming = matches!(self.run, RunState::Running { .. });
             let (_, _, meta, _) = self.status(p);
+            self.watch_grid_overflow(window, cx);
+            let h_scrollbar = r.h_overflow.then(|| {
+                let table = r.table.read(cx);
+                // Always visible, so wide results show they scroll; starts after the
+                // pinned row-number column like the table's own overlay scrollbar.
+                div()
+                    .flex_none()
+                    .h(Scrollbar::width())
+                    .flex()
+                    .bg(p.surface)
+                    .child(div().flex_none().w(table.delegate().row_number_width()))
+                    .child(
+                        div().flex_1().h_full().relative().child(
+                            Scrollbar::horizontal(&table.horizontal_scroll_handle)
+                                .mode(ScrollbarMode::Always)
+                                .viewport_from_layout(),
+                        ),
+                    )
+            });
             div()
                 .flex_1()
                 .min_h_0()
@@ -1913,9 +1958,11 @@ impl SqlTab {
                         DataTable::new(&r.table)
                             .bordered(false)
                             .stripe(false)
+                            .scrollbar_visible(true, false)
                             .with_size(Size::XSmall),
                     ),
                 )
+                .children(h_scrollbar)
                 .children(edit_bar)
                 .children(staged_panel)
                 .when(streaming, |d| {
