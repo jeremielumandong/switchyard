@@ -31,6 +31,7 @@ mod response_query;
 mod scope_editor;
 mod script_variables;
 mod tab_menu;
+mod tab_session;
 mod transport;
 mod ux;
 mod view;
@@ -442,6 +443,11 @@ pub struct WorkbenchPanel {
     bound_workspace: WorkspaceId,
     pending_workspace: Option<WorkspaceId>,
     workspace_data: Option<persistence::WorkspaceData>,
+    /// The tab session last read from or written to the store, and its
+    /// workspace; `None` until a hydration restored one.
+    persisted_tab_session: Option<(WorkspaceId, switchyard_api::TabSession)>,
+    tab_session_sequence: u64,
+    tab_session_order: tab_session::WriteOrder,
     /// The named workspaces; `None` until listed. Empty shows only the
     /// "Add project" page.
     workspaces: Option<Vec<switchyard_api::WorkspaceEntry>>,
@@ -900,6 +906,9 @@ impl WorkbenchPanel {
             bound_workspace: workspace.clone(),
             pending_workspace: None,
             workspace_data,
+            persisted_tab_session: None,
+            tab_session_sequence: 0,
+            tab_session_order: Default::default(),
             workspaces: None,
             _workspace_work: None,
             // A tab opens only when a request is opened or created.
@@ -975,14 +984,6 @@ impl WorkbenchPanel {
             assist_generation: 0,
             _assist_work: None,
         };
-        if let Some(request) = panel
-            .workspace_data
-            .as_ref()
-            .and_then(|data| data.requests.first())
-            .cloned()
-        {
-            panel.load_saved_request(&request, window, cx);
-        }
         let environment = panel
             .workspace_data
             .as_ref()
@@ -1015,6 +1016,8 @@ impl WorkbenchPanel {
             cx.notify();
             return;
         }
+        // Save the outgoing project's tabs before its data is replaced.
+        self.sync_tab_session(cx);
         if self.bound_workspace != workspace {
             self.invalidate_export();
         }
@@ -1034,14 +1037,24 @@ impl WorkbenchPanel {
             let opened = crate::api::compat::blocking(move || {
                 let data = data_dir
                     .ok_or_else(|| "Cannot resolve AgentOps user data directory.".to_string())
-                    .and_then(|path| persistence::WorkspaceData::open(&path, opened_workspace))?;
+                    .and_then(|path| {
+                        persistence::WorkspaceData::open(&path, opened_workspace.clone())
+                    })?;
+                // A session that cannot be read opens the project with no tabs.
+                let tabs = data
+                    .store
+                    .tab_session(&opened_workspace)
+                    .unwrap_or_else(|error| {
+                        tracing::warn!(%error, "could not read the Workbench tab session");
+                        Default::default()
+                    });
                 let history = data
                     .history
                     .iter()
                     .cloned()
                     .map(HistoryEntry::from_exchange)
                     .collect();
-                Ok::<_, String>((data, history))
+                Ok::<_, String>((data, history, tabs))
             })
             .await;
             let _ = this.update_in(cx, |panel, window, cx| {
@@ -1120,7 +1133,14 @@ impl WorkbenchPanel {
 
     fn apply_workspace_hydration(
         &mut self,
-        opened: Result<(persistence::WorkspaceData, Vec<HistoryEntry>), String>,
+        opened: Result<
+            (
+                persistence::WorkspaceData,
+                Vec<HistoryEntry>,
+                switchyard_api::TabSession,
+            ),
+            String,
+        >,
         workspace: WorkspaceId,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1128,7 +1148,7 @@ impl WorkbenchPanel {
         self.storage_loading = false;
         self._storage_work = None;
         match opened {
-            Ok((data, history)) => {
+            Ok((data, history, tabs)) => {
                 self.history = history;
                 self.active_environment_id = data
                     .active_environment()
@@ -1139,15 +1159,15 @@ impl WorkbenchPanel {
                     .map(|collection| collection.id.clone());
                 self.collection_tree_expanded = true;
                 self.collapsed_folder_ids.clear();
-                let request = data.requests.first().cloned();
                 let environment = data.active_environment().cloned();
                 self.cookie_jar = data.cookies.clone();
                 self.workspace_data = Some(data);
                 self.ux.request_settings.clear();
                 self.ux.creation = Default::default();
-                // No blank tab: `load_saved_request` opens one for the
-                // first request, and an empty project shows the empty state.
+                // No blank tab: the project's remembered tabs reopen below,
+                // and with none the Compose area shows the empty state.
                 self.request_tabs.clear();
+                self.persisted_tab_session = None;
                 self.active_request_tab = 0;
                 self.current_request_id = None;
                 self.current_definition = None;
@@ -1162,11 +1182,8 @@ impl WorkbenchPanel {
                 self.active_run = None;
                 self.error = None;
                 self.storage_error = None;
-                if let Some(request) = request {
-                    self.load_saved_request(&request, window, cx);
-                } else {
-                    self.clear_request_editor(window, cx);
-                }
+                self.clear_request_editor(window, cx);
+                self.restore_tab_session(tabs, window, cx);
                 self.load_environment_editor(environment.as_ref(), window, cx);
             }
             Err(error) => {

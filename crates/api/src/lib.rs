@@ -53,6 +53,6 @@ pub use snippet::{SnippetLanguage, generate_snippet};
 pub use store::{
     DEFAULT_HISTORY_BODY_BYTES, DEFAULT_HISTORY_ENTRIES, DEFAULT_RUN_ENTRIES,
     DEFAULT_RUN_ITEM_RESULTS, DEFAULT_RUN_RESPONSE_BODY_BYTES, HistoryBodyPolicy, HistoryQuery,
-    RunStoragePolicy, StoreError, StoreResult, WorkbenchStore, WorkspaceEntry, WorkspaceSnapshot,
-    validate_import_graph,
+    RunStoragePolicy, StoreError, StoreResult, TabSession, WorkbenchStore, WorkspaceEntry,
+    WorkspaceSnapshot, validate_import_graph,
 };
