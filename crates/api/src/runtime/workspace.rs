@@ -737,6 +737,7 @@ mod tests {
         let mut data = WorkspaceData::open(&path, workspace.clone()).unwrap();
         let collection_id = data.ensure_collection().unwrap();
         let first_environment = Environment {
+            label: Default::default(),
             id: EnvironmentId::new(),
             workspace_id: workspace.clone(),
             name: "Staging".into(),
@@ -748,6 +749,7 @@ mod tests {
         };
         data.save_environment(first_environment.clone()).unwrap();
         let second_environment = Environment {
+            label: Default::default(),
             id: EnvironmentId::new(),
             workspace_id: workspace.clone(),
             name: "Production".into(),

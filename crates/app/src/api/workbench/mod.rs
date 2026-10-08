@@ -10,6 +10,7 @@ mod collection_urls;
 mod coordinator;
 mod draft;
 mod entries;
+mod environment_label;
 mod globals;
 mod keys;
 mod layout;
@@ -408,6 +409,8 @@ pub struct WorkbenchPanel {
     /// chip and the `key=value` text the typed form serializes into.
     environment_auth_mode: draft::AuthMode,
     environment_auth: Entity<TextareaState>,
+    /// The Envs editor's Production / Staging / Development / Local picker.
+    environment_label: switchyard_api::EnvironmentLabel,
     /// Outcome of the last "Sign in now" for the Envs status line.
     environment_login_status: Option<String>,
     _login_work: Option<gpui_kit::Task<()>>,
@@ -856,6 +859,7 @@ impl WorkbenchPanel {
             environment_base_url,
             environment_auth_mode: draft::AuthMode::None,
             environment_auth,
+            environment_label: Default::default(),
             environment_login_status: None,
             _login_work: None,
             environment_variables,
@@ -2597,7 +2601,8 @@ impl WorkbenchPanel {
         }
     }
 
-    fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Send without the Production confirmation; see `send`.
+    fn send_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.ux.console_cleared_error = None;
         if self.bound_workspace != current_workspace_id() {
             self.error =
@@ -4793,6 +4798,7 @@ impl WorkbenchPanel {
             variables,
             active: true,
             extensions: Default::default(),
+            label: self.environment_label,
         };
         self.active_environment_id = Some(environment.id.clone());
         self.run_storage_command(
@@ -4843,6 +4849,7 @@ impl WorkbenchPanel {
         self.environment_auth_mode = environment
             .map(|value| auth_mode(&value.auth))
             .unwrap_or(draft::AuthMode::None);
+        self.environment_label = environment.map(|value| value.label).unwrap_or_default();
         set_input(
             &self.environment_auth,
             &environment
@@ -4974,7 +4981,7 @@ impl WorkbenchPanel {
         self.runner_request_ids.clear();
         self.runner_request_selection_active = false;
         self.tab = Tab::Data;
-        self.run_collection(cx);
+        self.run_collection_confirmed(window, cx);
     }
 
     fn run_collection(&mut self, cx: &mut Context<Self>) {
@@ -7385,6 +7392,7 @@ mod tests {
                 id: environment_id,
                 workspace_id: workspace.clone(),
                 name: "Staging".into(),
+                label: Default::default(),
                 base_url: "https://api.test/".into(),
                 auth,
                 variables: vec![Variable {
