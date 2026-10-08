@@ -54,6 +54,11 @@ actions!(
         TreeRefresh,
         PeekTable,
         ClosePeek,
+        MenuUp,
+        MenuDown,
+        MenuOpenSub,
+        MenuCloseSub,
+        MenuConfirm,
     ]
 );
 
@@ -106,6 +111,13 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("enter", TreeOpen, Some("SchemaTree")),
         KeyBinding::new("secondary-c", TreeCopy, Some("SchemaTree")),
         KeyBinding::new("f5", TreeRefresh, Some("SchemaTree")),
+        // Context menu (focused while open): arrows move and open submenus.
+        KeyBinding::new("up", MenuUp, Some("CtxMenu")),
+        KeyBinding::new("down", MenuDown, Some("CtxMenu")),
+        KeyBinding::new("right", MenuOpenSub, Some("CtxMenu")),
+        KeyBinding::new("left", MenuCloseSub, Some("CtxMenu")),
+        KeyBinding::new("enter", MenuConfirm, Some("CtxMenu")),
+        KeyBinding::new("escape", Dismiss, Some("CtxMenu")),
         // Peek table: the columns of the table under the cursor; Escape closes it (the
         // binding only exists while the popover is open, so the editor keeps Escape).
         KeyBinding::new("f12", PeekTable, Some("SqlTab > Input")),

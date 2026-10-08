@@ -247,6 +247,41 @@ impl Dialect for OracleDialect {
         )
     }
 
+    /// PL/SQL units (`GET_DDL` of a procedure, function, type) run to a `/` line;
+    /// everything else ends at `;`.
+    fn script_create(&self, _kind: ObjectKind, ddl: &str) -> String {
+        let ddl = ddl.trim();
+        if is_plsql(ddl) {
+            format!("{ddl}\n/")
+        } else {
+            super::terminated(ddl)
+        }
+    }
+
+    /// Procedures run in an anonymous block, functions from `DUAL`; named notation.
+    fn script_exec(&self, kind: ObjectKind, qualified: &str, params: &[String]) -> String {
+        let args = params
+            .iter()
+            .map(|p| {
+                if p.is_empty() {
+                    "NULL".to_owned()
+                } else {
+                    format!("{} => NULL", self.quote_ident(p))
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let call = if args.is_empty() {
+            qualified.to_owned()
+        } else {
+            format!("{qualified}({args})")
+        };
+        match kind {
+            ObjectKind::Procedure => format!("BEGIN\n  {call};\nEND;\n/"),
+            _ => format!("SELECT {call} FROM DUAL;"),
+        }
+    }
+
     /// `:name` and `:1` placeholders; `:=` assignments and trigger `:NEW.x` / `:OLD.x`
     /// references are not parameters.
     fn find_params(&self, sql: &str) -> Vec<ParamRef> {

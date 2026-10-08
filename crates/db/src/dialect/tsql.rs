@@ -5,6 +5,7 @@ use super::{
     COMMON_KEYWORDS, Dialect, ParamRef, ParamStyle, StatementSpan, is_plain_ident, line_of_byte,
     quote_string, temporal_text,
 };
+use crate::catalog::ObjectKind;
 use crate::value::{self, Engine, Value};
 
 /// SQL Server dialect.
@@ -187,6 +188,32 @@ impl Dialect for TSqlDialect {
             "SELECT TOP ({limit}){}\nFROM {qualified};",
             super::select_list(self, cols)
         )
+    }
+
+    /// `CREATE PROCEDURE | FUNCTION | VIEW | TRIGGER` must start its batch: `GO` around it.
+    fn script_drop_create(&self, kind: ObjectKind, qualified: &str, ddl: &str) -> String {
+        format!(
+            "{}\nGO\n\n{}\nGO",
+            self.script_drop(kind, qualified),
+            self.script_create(kind, ddl)
+        )
+    }
+
+    /// `EXEC` with one `@param = NULL` per line; functions are selected.
+    fn script_exec(&self, kind: ObjectKind, qualified: &str, params: &[String]) -> String {
+        if kind == ObjectKind::Procedure {
+            let args: Vec<String> = params
+                .iter()
+                .filter(|p| !p.is_empty())
+                .map(|p| format!("    {p} = NULL"))
+                .collect();
+            if args.is_empty() {
+                return format!("EXEC {qualified};");
+            }
+            return format!("EXEC {qualified}\n{};", args.join(",\n"));
+        }
+        let args: Vec<String> = params.iter().map(|p| super::commented_null(p)).collect();
+        format!("SELECT {qualified}({});", args.join(", "))
     }
 
     fn find_params(&self, sql: &str) -> Vec<ParamRef> {
