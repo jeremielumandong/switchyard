@@ -455,11 +455,76 @@ pub struct SavedRequest {
     pub sort_key: i64,
 }
 
+/// How dangerous an environment is: the same four levels as database
+/// connections. Drives the workbench colour and the confirmation asked
+/// before a write is sent to Production.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EnvironmentLabel {
+    /// Red; non-safe methods ask for confirmation before they are sent.
+    Production,
+    /// Amber.
+    Staging,
+    /// Green.
+    Development,
+    /// No label (neutral).
+    #[default]
+    Local,
+}
+
+impl EnvironmentLabel {
+    /// All labels in UI order.
+    pub const ALL: [EnvironmentLabel; 4] = [
+        EnvironmentLabel::Production,
+        EnvironmentLabel::Staging,
+        EnvironmentLabel::Development,
+        EnvironmentLabel::Local,
+    ];
+
+    /// Title-case name.
+    pub fn name(self) -> &'static str {
+        match self {
+            EnvironmentLabel::Production => "Production",
+            EnvironmentLabel::Staging => "Staging",
+            EnvironmentLabel::Development => "Development",
+            EnvironmentLabel::Local => "Local",
+        }
+    }
+
+    /// Stored form (`production`, `staging`, `development`, `local`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EnvironmentLabel::Production => "production",
+            EnvironmentLabel::Staging => "staging",
+            EnvironmentLabel::Development => "development",
+            EnvironmentLabel::Local => "local",
+        }
+    }
+
+    pub fn is_production(self) -> bool {
+        self == EnvironmentLabel::Production
+    }
+
+    pub fn is_local(&self) -> bool {
+        *self == EnvironmentLabel::Local
+    }
+}
+
+/// Whether sending `method` under an environment labelled `label` must be
+/// confirmed first: Production and anything but GET, HEAD or OPTIONS.
+/// Methods are case-sensitive on the wire, so `get` is not treated as safe.
+pub fn send_needs_confirmation(method: &str, label: EnvironmentLabel) -> bool {
+    label.is_production() && !matches!(method, "GET" | "HEAD" | "OPTIONS")
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Environment {
     pub id: EnvironmentId,
     pub workspace_id: WorkspaceId,
     pub name: String,
+    /// Production / Staging / Development / Local; absent means Local.
+    #[serde(default, skip_serializing_if = "EnvironmentLabel::is_local")]
+    pub label: EnvironmentLabel,
     /// Prefixed onto relative request URLs; also readable as `{{base_url}}`.
     #[serde(default)]
     pub base_url: String,
@@ -817,7 +882,54 @@ pub enum RunStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthConfig, CollectionRun, HttpMethod, RequestSettings};
+    use super::{
+        AuthConfig, CollectionRun, Environment, EnvironmentLabel, HttpMethod, RequestSettings,
+        send_needs_confirmation,
+    };
+
+    #[test]
+    fn only_unsafe_methods_against_production_need_confirmation() {
+        for label in EnvironmentLabel::ALL {
+            for method in ["GET", "HEAD", "OPTIONS"] {
+                assert!(
+                    !send_needs_confirmation(method, label),
+                    "{method} {label:?}"
+                );
+            }
+            for method in ["POST", "PUT", "PATCH", "DELETE", "PURGE", "get"] {
+                assert_eq!(
+                    send_needs_confirmation(method, label),
+                    label == EnvironmentLabel::Production,
+                    "{method} {label:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn environment_label_is_optional_in_json() {
+        let legacy: Environment = serde_json::from_value(serde_json::json!({
+            "id": "6f1b8e4e-8f0e-4f6e-9a57-2c1d5d0f8a11",
+            "workspace_id": "project",
+            "name": "Legacy"
+        }))
+        .unwrap();
+        assert_eq!(legacy.label, EnvironmentLabel::Local);
+        assert!(
+            serde_json::to_value(&legacy)
+                .unwrap()
+                .get("label")
+                .is_none()
+        );
+        let production = Environment {
+            label: EnvironmentLabel::Production,
+            ..legacy
+        };
+        let value = serde_json::to_value(&production).unwrap();
+        assert_eq!(value["label"], "production");
+        let back: Environment = serde_json::from_value(value).unwrap();
+        assert_eq!(back, production);
+    }
 
     #[test]
     fn legacy_login_auth_defaults_to_no_basic_credentials() {

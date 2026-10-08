@@ -1614,6 +1614,7 @@ mod tests {
 
     fn environment(data: &WorkspaceData) -> Environment {
         Environment {
+            label: Default::default(),
             id: crate::EnvironmentId::new(),
             workspace_id: data.workspace.clone(),
             name: "Test".into(),

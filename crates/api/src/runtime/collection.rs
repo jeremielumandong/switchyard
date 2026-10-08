@@ -2009,6 +2009,7 @@ mod tests {
             SecretRef::new(format!("workbench.{scope}.auth.client_secret")).unwrap();
         let stale_access = SecretRef::new(format!("workbench.{scope}.auth.token")).unwrap();
         let environment = Environment {
+            label: Default::default(),
             id: environment_id.clone(),
             workspace_id: fixture.workspace.clone(),
             name: "QA".into(),
