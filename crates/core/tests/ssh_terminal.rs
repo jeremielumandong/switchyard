@@ -114,14 +114,20 @@ async fn ssh_terminal_prompts_runs_and_reconnects() {
     .await;
 
     // Drop the connection from the server side: the terminal reconnects on its own.
+    // Kill only the user's sshd session process (`sshd: swy@pts/N`, `sshd-session:` on
+    // OpenSSH 9.8+), not every process of the user: killing its `systemd --user` too can
+    // stall the next PAM login while logind cleans up, and the reconnected shell then
+    // never answers.
     // The test user's processes belong to someone else on CI runners: fall back to sudo.
+    let session = ["-KILL", "-u", "swy", "-f", "^sshd(-session)?: swy"];
     let killed = std::process::Command::new("pkill")
-        .args(["-KILL", "-u", "swy"])
+        .args(session)
         .status()
         .unwrap();
     if !killed.success() {
         std::process::Command::new("sudo")
-            .args(["-n", "pkill", "-KILL", "-u", "swy"])
+            .args(["-n", "pkill"])
+            .args(session)
             .status()
             .unwrap();
     }
@@ -148,7 +154,7 @@ async fn ssh_terminal_prompts_runs_and_reconnects() {
     // before it sets up the terminal can be discarded. Ask it to set the title until it
     // does, then type.
     let mut ready = false;
-    for _ in 0..10 {
+    for _ in 0..20 {
         h.send(Command::TerminalInput {
             term: 9,
             bytes: b"printf '\\033]0;swy-again\\007'\r".to_vec(),
