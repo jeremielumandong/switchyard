@@ -1,0 +1,5 @@
+---
+source: crates/db/src/mysql/catalog.rs
+expression: search_sql(false)
+---
+SELECT TABLE_SCHEMA AS s, TABLE_NAME AS n, CASE WHEN TABLE_TYPE IN ('VIEW', 'SYSTEM VIEW') THEN 'view' ELSE 'table' END AS k FROM information_schema.TABLES WHERE LOWER(TABLE_NAME) LIKE LOWER(?) ESCAPE '!' AND TABLE_SCHEMA NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys') UNION ALL SELECT ROUTINE_SCHEMA, ROUTINE_NAME, LOWER(ROUTINE_TYPE) FROM information_schema.ROUTINES WHERE LOWER(ROUTINE_NAME) LIKE LOWER(?) ESCAPE '!' AND ROUTINE_SCHEMA NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys') ORDER BY LENGTH(n), n LIMIT ?

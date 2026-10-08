@@ -1,0 +1,15 @@
+---
+source: crates/db/src/dialect/mod.rs
+expression: "format!(\"{}\\n\\n{}\", d.select_template(&q, &cols, 100),\nd.select_template(&q, &[], 100))"
+---
+SELECT
+  id,
+  line,
+  `Order Date`,
+  total
+FROM sales.`order`
+LIMIT 100;
+
+SELECT *
+FROM sales.`order`
+LIMIT 100;

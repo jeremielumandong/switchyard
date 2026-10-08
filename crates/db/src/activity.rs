@@ -8,6 +8,7 @@
 //!   `ALTER SYSTEM KILL SESSION … IMMEDIATE`.
 //! * Snowflake: running queries from `INFORMATION_SCHEMA.QUERY_HISTORY`;
 //!   `SYSTEM$CANCEL_QUERY`.
+//! * MySQL / MariaDB: `information_schema.PROCESSLIST`; `KILL QUERY <id>` / `KILL <id>`.
 //! * Cloudflare D1: not supported.
 //!
 //! Missing privileges become an [`ActivityHint`], never an error. Session ids only reach
@@ -230,6 +231,7 @@ pub fn supports(engine: Engine, action: ActivityAction, server_version: &str) ->
         (Engine::Oracle, ActivityAction::Terminate) => true,
         (Engine::Snowflake, ActivityAction::CancelQuery) => true,
         (Engine::Snowflake, ActivityAction::Terminate) => false,
+        (Engine::MySql, _) => true,
         (Engine::D1, _) => false,
     }
 }
@@ -331,6 +333,24 @@ WHERE execution_status IN ('RUNNING', 'QUEUED', 'RESUMING_WAREHOUSE', 'BLOCKED')
 ORDER BY start_time
 LIMIT 500";
 
+/// MySQL / MariaDB: client threads. Without the `PROCESS` privilege the server lists
+/// only the user's own.
+pub const MYSQL_LIST: &str = "\
+SELECT CAST(p.ID AS CHAR) AS id,
+       p.USER AS username,
+       p.DB AS database_name,
+       p.HOST AS client,
+       p.COMMAND AS state,
+       NULLIF(p.STATE, '') AS wait,
+       p.TIME * 1000 AS age_ms,
+       CASE WHEN p.COMMAND NOT IN ('Sleep', 'Binlog Dump') THEN 1 ELSE 0 END AS running,
+       p.INFO AS sql_text,
+       CASE WHEN p.ID = CONNECTION_ID() THEN 1 ELSE 0 END AS is_self
+FROM information_schema.PROCESSLIST p
+WHERE p.COMMAND <> 'Daemon'
+ORDER BY running DESC, p.TIME DESC
+LIMIT 500";
+
 /// The listing statement for `engine`.
 pub fn list_sql(engine: Engine) -> Option<&'static str> {
     match engine {
@@ -338,6 +358,7 @@ pub fn list_sql(engine: Engine) -> Option<&'static str> {
         Engine::SqlServer => Some(MSSQL_LIST),
         Engine::Oracle => Some(ORACLE_LIST),
         Engine::Snowflake => Some(SNOWFLAKE_LIST),
+        Engine::MySql => Some(MYSQL_LIST),
         Engine::D1 => None,
     }
 }
@@ -349,6 +370,7 @@ pub fn own_session_sql(engine: Engine) -> Option<&'static str> {
         Engine::SqlServer => Some("SELECT CAST(@@SPID AS varchar(11)) AS id"),
         Engine::Oracle => Some("SELECT SYS_CONTEXT('USERENV', 'SID') AS id FROM dual"),
         Engine::Snowflake => Some("SELECT CURRENT_SESSION() AS id"),
+        Engine::MySql => Some("SELECT CAST(CONNECTION_ID() AS CHAR) AS id"),
         Engine::D1 => None,
     }
 }
@@ -380,6 +402,13 @@ pub fn action_sql(
             Ok(match action {
                 CancelQuery => format!("ALTER SYSTEM CANCEL SQL '{sid},{serial}'"),
                 Terminate => format!("ALTER SYSTEM KILL SESSION '{sid},{serial}' IMMEDIATE"),
+            })
+        }
+        (Engine::MySql, SessionTarget::Backend { id }) => {
+            let id = positive(*id)?;
+            Ok(match action {
+                CancelQuery => format!("KILL QUERY {id}"),
+                Terminate => format!("KILL {id}"),
             })
         }
         (Engine::Snowflake, SessionTarget::SnowflakeQuery { query_id, .. }) => match action {
@@ -432,7 +461,9 @@ fn parse_int(s: &str) -> Result<i64> {
 /// `sid,serial` pair, or a Snowflake query id with its session (`session` column).
 pub fn parse_target(engine: Engine, id: &str, session: Option<&str>) -> Result<SessionTarget> {
     match engine {
-        Engine::Postgres | Engine::SqlServer => Ok(SessionTarget::Backend { id: parse_int(id)? }),
+        Engine::Postgres | Engine::SqlServer | Engine::MySql => {
+            Ok(SessionTarget::Backend { id: parse_int(id)? })
+        }
         Engine::Oracle => {
             let (sid, serial) = id
                 .split_once(',')
@@ -540,10 +571,22 @@ fn permission_denied(e: &DbError) -> bool {
         return false;
     };
     // PostgreSQL 42501; SQL Server 297/300 (server state), 229/262; Oracle ORA-00942
-    // (view not visible), ORA-01031 (insufficient privileges); Snowflake 003001.
+    // (view not visible), ORA-01031 (insufficient privileges); Snowflake 003001; MySQL
+    // 1227 (needs a privilege), 1142 (table access denied).
     matches!(
         s.code.as_deref(),
-        Some("42501" | "297" | "300" | "229" | "262" | "ORA-00942" | "ORA-01031" | "003001")
+        Some(
+            "42501"
+                | "297"
+                | "300"
+                | "229"
+                | "262"
+                | "ORA-00942"
+                | "ORA-01031"
+                | "003001"
+                | "1227"
+                | "1142"
+        )
     ) || s.message.to_ascii_lowercase().contains("permission")
         || s.message
             .to_ascii_lowercase()
@@ -668,6 +711,11 @@ fn denied_hint(engine: Engine, e: &DbError) -> ActivityHint {
              with MONITOR on the warehouse).",
             None,
         ),
+        Engine::MySql => (
+            "Reading the process list was refused; other users' sessions need the PROCESS \
+             privilege.",
+            Some("GRANT PROCESS ON *.* TO <user>;"),
+        ),
         Engine::D1 => ("Not available.", None),
     };
     ActivityHint {
@@ -723,11 +771,13 @@ mod tests {
         insta::assert_snapshot!("activity_mssql_permission", MSSQL_PERMISSION);
         insta::assert_snapshot!("activity_oracle_list", ORACLE_LIST);
         insta::assert_snapshot!("activity_snowflake_list", SNOWFLAKE_LIST);
+        insta::assert_snapshot!("activity_mysql_list", MYSQL_LIST);
         let own: Vec<String> = [
             Engine::Postgres,
             Engine::SqlServer,
             Engine::Oracle,
             Engine::Snowflake,
+            Engine::MySql,
         ]
         .into_iter()
         .map(|e| format!("{e:?}: {}", own_session_sql(e).unwrap_or_default()))
@@ -755,6 +805,7 @@ mod tests {
             (Engine::SqlServer, &b),
             (Engine::Oracle, &o),
             (Engine::Snowflake, &s),
+            (Engine::MySql, &b),
         ] {
             for action in [CancelQuery, Terminate] {
                 let sql = action_sql(engine, action, target).unwrap_or_else(|e| format!("<{e}>"));
@@ -813,6 +864,7 @@ mod tests {
         ] {
             assert!(parse_target(Engine::Postgres, bad, None).is_err(), "{bad}");
             assert!(parse_target(Engine::SqlServer, bad, None).is_err(), "{bad}");
+            assert!(parse_target(Engine::MySql, bad, None).is_err(), "{bad}");
         }
         assert_eq!(
             parse_target(Engine::Oracle, "12,345", None).ok(),
@@ -888,6 +940,8 @@ mod tests {
         assert!(supports(Engine::Oracle, Terminate, "12.2.0.1.0"));
         assert!(supports(Engine::Snowflake, CancelQuery, ""));
         assert!(!supports(Engine::Snowflake, Terminate, ""));
+        assert!(supports(Engine::MySql, CancelQuery, "MySQL 8.4.2"));
+        assert!(supports(Engine::MySql, Terminate, "MariaDB 11.4.2"));
         assert!(!supported(Engine::D1));
         assert!(!supports(Engine::D1, Terminate, ""));
     }

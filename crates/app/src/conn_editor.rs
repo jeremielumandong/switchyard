@@ -32,6 +32,8 @@ pub enum ConnKind {
     Postgres,
     /// SQL Server.
     SqlServer,
+    /// MySQL (and MariaDB).
+    MySql,
     /// Cloudflare D1.
     D1,
     /// Snowflake.
@@ -47,9 +49,10 @@ pub enum ConnKind {
 }
 
 impl ConnKind {
-    const ALL: [ConnKind; 8] = [
+    const ALL: [ConnKind; 9] = [
         ConnKind::Postgres,
         ConnKind::SqlServer,
+        ConnKind::MySql,
         ConnKind::Oracle,
         ConnKind::Snowflake,
         ConnKind::D1,
@@ -62,6 +65,7 @@ impl ConnKind {
         match self {
             ConnKind::Postgres => "PG",
             ConnKind::SqlServer => "MS",
+            ConnKind::MySql => "MY",
             ConnKind::D1 => "D1",
             ConnKind::Snowflake => "SF",
             ConnKind::Oracle => "OR",
@@ -75,6 +79,7 @@ impl ConnKind {
         match self {
             ConnKind::Postgres => "PostgreSQL",
             ConnKind::SqlServer => "SQL Server",
+            ConnKind::MySql => "MySQL",
             ConnKind::D1 => "Cloudflare D1",
             ConnKind::Snowflake => "Snowflake",
             ConnKind::Oracle => "Oracle",
@@ -89,6 +94,7 @@ impl ConnKind {
             self,
             ConnKind::Postgres
                 | ConnKind::SqlServer
+                | ConnKind::MySql
                 | ConnKind::Oracle
                 | ConnKind::D1
                 | ConnKind::Snowflake
@@ -98,6 +104,7 @@ impl ConnKind {
     fn sub(self) -> &'static str {
         match self {
             ConnKind::Postgres | ConnKind::SqlServer | ConnKind::Oracle => "Database",
+            ConnKind::MySql => "Database · MariaDB too",
             ConnKind::D1 => "SQLite over HTTPS",
             ConnKind::Snowflake => "Cloud warehouse",
             ConnKind::Ssh => "Terminal + tunnels",
@@ -191,6 +198,7 @@ impl ConnEditor {
     ) -> Self {
         let kind = match &existing {
             Some(Profile::Db(d)) if d.engine == Engine::SqlServer => ConnKind::SqlServer,
+            Some(Profile::Db(d)) if d.engine == Engine::MySql => ConnKind::MySql,
             Some(Profile::Db(d)) if d.engine == Engine::D1 => ConnKind::D1,
             Some(Profile::Db(d)) if d.engine == Engine::Snowflake => ConnKind::Snowflake,
             Some(Profile::Db(d)) if d.engine == Engine::Oracle => ConnKind::Oracle,
@@ -272,9 +280,10 @@ impl ConnEditor {
             Select { options, chosen }
         };
         match self.kind {
-            ConnKind::Postgres | ConnKind::SqlServer | ConnKind::Oracle => {
+            ConnKind::Postgres | ConnKind::SqlServer | ConnKind::MySql | ConnKind::Oracle => {
                 let engine = match self.kind {
                     ConnKind::Postgres => Engine::Postgres,
+                    ConnKind::MySql => Engine::MySql,
                     ConnKind::Oracle => Engine::Oracle,
                     _ => Engine::SqlServer,
                 };
@@ -284,7 +293,7 @@ impl ConnEditor {
                         let mut d = DbConnection::new("", engine);
                         d.database = match engine {
                             Engine::Postgres => "postgres".into(),
-                            Engine::Oracle => String::new(),
+                            Engine::Oracle | Engine::MySql => String::new(),
                             _ => "master".into(),
                         };
                         d
@@ -297,6 +306,7 @@ impl ConnEditor {
                     match engine {
                         Engine::Postgres => "shop_prod",
                         Engine::Oracle => "erp",
+                        Engine::MySql => "shop",
                         _ => "Reporting",
                     },
                     false,
@@ -743,9 +753,10 @@ impl ConnEditor {
             .as_ref()
             .and_then(|i| self.profiles.all.iter().find(|p| p.id() == i));
         Ok(match self.kind {
-            ConnKind::Postgres | ConnKind::SqlServer | ConnKind::Oracle => {
+            ConnKind::Postgres | ConnKind::SqlServer | ConnKind::MySql | ConnKind::Oracle => {
                 let engine = match self.kind {
                     ConnKind::Postgres => Engine::Postgres,
+                    ConnKind::MySql => Engine::MySql,
                     ConnKind::Oracle => Engine::Oracle,
                     _ => Engine::SqlServer,
                 };
@@ -951,7 +962,11 @@ impl ConnEditor {
                 }
             }
             (
-                ConnKind::Postgres | ConnKind::Oracle | ConnKind::D1 | ConnKind::Snowflake,
+                ConnKind::Postgres
+                | ConnKind::MySql
+                | ConnKind::Oracle
+                | ConnKind::D1
+                | ConnKind::Snowflake,
                 Ok(Profile::Db(d)),
             ) => {
                 let request = next_id();
@@ -1185,7 +1200,7 @@ impl ConnEditor {
     fn fields(&self, p: &Palette, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut v = Vec::new();
         match self.kind {
-            ConnKind::Postgres => {
+            ConnKind::Postgres | ConnKind::MySql => {
                 v.push(self.field("name", "Name", 6, false, None, p, cx));
                 v.push(self.field("host", "Host", 4, true, None, p, cx));
                 v.push(self.field("port", "Port", 2, true, None, p, cx));
