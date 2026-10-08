@@ -14,7 +14,7 @@ use gpui_kit::{
     AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
     Focusable, FontWeight, Hsla, InteractiveElement as _, IntoElement, MouseButton, MouseMoveEvent,
     ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Task, Window, deferred, div, px, relative,
+    Subscription, Task, Window, deferred, div, px, relative, uniform_list,
 };
 use switchyard_core::db::diagnostics::parse_diagnostics;
 use switchyard_core::db::{
@@ -23,19 +23,22 @@ use switchyard_core::db::{
 };
 use switchyard_core::store::{BufferState, DbConnection, EnvironmentLabel};
 use switchyard_core::{
-    Command, FetchLimit, QueryEvent, QueryId, RequestId, RuntimeHandle, SessionId, StatementRequest,
+    Command, FetchLimit, QueryEvent, QueryId, RequestId, RuntimeHandle, SessionContext, SessionId,
+    StatementRequest,
 };
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use switchyard_core::db::complete::CatalogIndex;
+use switchyard_core::db::complete::{CatalogIndex, PeekTarget, peek_target};
 use switchyard_core::db::edit::{EditTable, RowEdit, editable_table, update_statements};
+use switchyard_core::db::{BatchList, CatalogChunk, CellRef, IntrospectScope, ObjectKind};
 
 use crate::app_state::{SessionState, next_id};
 use crate::completion::{CompletionState, SqlCompletion};
 use crate::grid::GridDelegate;
 use crate::plan_view::{ExplainRequest, PlanView, PlanViewEvent};
+use crate::result_diff::{ResultDiff, RowChange, diff as diff_results, same_cell};
 use crate::theme::{MONO, Palette, SANS, palette};
 use crate::ui::{self, Kind, thousands};
 
@@ -136,8 +139,52 @@ pub struct ResultSet {
     completion: Option<Completion>,
     /// The columns are wider than the grid: show the horizontal scrollbar strip.
     h_overflow: bool,
+    /// Kept when the next run replaces the results.
+    pinned: bool,
+    /// When the statement ran (local `HH:MM:SS`), shown on pinned tabs.
+    ran_at: SharedString,
     _sub: Subscription,
     _observe: Subscription,
+}
+
+/// Which switcher menu is open in the toolbar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ContextMenu {
+    Database,
+    Schema,
+}
+
+/// The peek-table popover: a table's columns and types.
+struct Peek {
+    target: PeekTarget,
+    /// `None` while the detail loads.
+    columns: Option<Vec<(String, String)>>,
+}
+
+/// One line of the diff view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DiffSide {
+    /// A row only in B.
+    Added,
+    /// A row only in A.
+    Removed,
+    /// The A side of a changed row.
+    Before,
+    /// The B side of a changed row.
+    After,
+}
+
+/// Two result sets compared by row hash.
+struct CompareView {
+    a_label: String,
+    b_label: String,
+    a: BatchList,
+    b: BatchList,
+    /// `None` while the diff runs in the background.
+    diff: Option<Rc<ResultDiff>>,
+    /// Display lines: (side, row in its result, the paired row for changed rows).
+    lines: Rc<Vec<(DiffSide, u32, Option<u32>)>>,
+    _task: Task<()>,
 }
 
 /// Value viewer format.
@@ -210,6 +257,19 @@ pub struct SqlTab {
     position: i64,
     filter: Entity<InputState>,
     completion: Rc<RefCell<CompletionState>>,
+    /// Database and schema the session switched to (DBX-4a); defaults until then.
+    context: SessionContext,
+    context_request: Option<RequestId>,
+    context_menu: Option<ContextMenu>,
+    databases: Option<Vec<String>>,
+    schemas: Option<Vec<String>>,
+    peek: Option<Peek>,
+    /// Index of the first result of the current run; earlier ones are pinned.
+    run_base: usize,
+    compare_menu: bool,
+    compare: Option<CompareView>,
+    /// The Diff result tab is showing.
+    show_compare: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -243,6 +303,7 @@ impl SqlTab {
         let sub = cx.subscribe_in(&editor, window, |this, _, ev: &InputEvent, window, cx| {
             if let InputEvent::Change = ev {
                 this.dirty = true;
+                this.peek = None;
                 this.schedule_autosave(cx);
                 this.schedule_lint(window, cx);
                 cx.emit(SqlTabEvent::Changed);
@@ -307,6 +368,16 @@ impl SqlTab {
             position,
             filter,
             completion,
+            context: SessionContext::default(),
+            context_request: None,
+            context_menu: None,
+            databases: None,
+            schemas: None,
+            peek: None,
+            run_base: 0,
+            compare_menu: false,
+            compare: None,
+            show_compare: false,
             _subs: vec![sub, filter_sub, plan_sub],
         };
         if let Some(c) = connection {
@@ -363,6 +434,12 @@ impl SqlTab {
         self.plan.update(cx, |v, _| v.set_connection(profile));
         self.txn_open = false;
         self.txn_statements = 0;
+        self.context = SessionContext::default();
+        self.context_request = None;
+        self.context_menu = None;
+        self.databases = None;
+        self.schemas = None;
+        self.peek = None;
         match &self.connection {
             Some(c) => {
                 let session = next_id();
@@ -418,16 +495,33 @@ impl SqlTab {
     }
 
     /// A catalog chunk for this tab's session.
-    pub fn on_catalog(&mut self, chunk: switchyard_core::db::CatalogChunk, cx: &mut Context<Self>) {
-        if let switchyard_core::db::CatalogChunk::Detail(d) = &chunk {
-            self.on_table_detail(d, cx);
-            return;
-        }
-        if let switchyard_core::db::CatalogChunk::AllColumns(cols) = chunk {
-            tracing::debug!(columns = cols.len(), "completion catalog loaded");
-            let mut st = self.completion.borrow_mut();
-            st.index = CatalogIndex::from_columns(&cols);
-            st.engine = self.connection.as_ref().map(|c| c.engine);
+    pub fn on_catalog(&mut self, chunk: CatalogChunk, cx: &mut Context<Self>) {
+        match chunk {
+            CatalogChunk::Detail(d) => {
+                self.on_peek_detail(&d, cx);
+                self.on_table_detail(&d, cx);
+            }
+            CatalogChunk::AllColumns(cols) => {
+                tracing::debug!(columns = cols.len(), "completion catalog loaded");
+                let preferred = self.context.schema.clone();
+                let mut st = self.completion.borrow_mut();
+                st.index = CatalogIndex::from_columns(&cols);
+                st.index.preferred_schema = preferred;
+                st.engine = self.connection.as_ref().map(|c| c.engine);
+            }
+            CatalogChunk::Databases(names) => {
+                self.databases = Some(names);
+                cx.notify();
+            }
+            CatalogChunk::Schemas(list) => {
+                let mut names: Vec<(bool, String)> =
+                    list.into_iter().map(|s| (s.is_system, s.name)).collect();
+                // User schemas first.
+                names.sort();
+                self.schemas = Some(names.into_iter().map(|(_, n)| n).collect());
+                cx.notify();
+            }
+            _ => {}
         }
     }
 
@@ -825,8 +919,14 @@ impl SqlTab {
         };
         let query = next_id();
         self.show_plan = false;
-        self.results.clear();
-        self.active_result = 0;
+        self.show_compare = false;
+        self.compare_menu = false;
+        // Staged marks belong to the result they were made on.
+        self.discard_edits(cx);
+        // Pinned results stay; the new run's results follow them.
+        self.results.retain(|r| r.pinned);
+        self.run_base = self.results.len();
+        self.active_result = self.run_base;
         self.messages.clear();
         self.error = None;
         self.selected = None;
@@ -845,7 +945,6 @@ impl SqlTab {
                 }
             }
         }
-        self.edit = None;
         self.run = RunState::Running {
             query,
             started: Instant::now(),
@@ -1019,7 +1118,7 @@ impl SqlTab {
                 location,
             } => self.on_failed(index, error, location, cx),
             QueryEvent::Finished { elapsed, cancelled } => {
-                let affected = if self.results.is_empty() {
+                let affected = if self.results.len() == self.run_base {
                     self.last_affected
                 } else {
                     None
@@ -1094,8 +1193,8 @@ impl SqlTab {
         let observe = cx.observe_in(&table, window, |this, _, window, cx| {
             this.watch_grid_overflow(window, cx)
         });
-        if self.results.is_empty() {
-            self.active_result = 0;
+        if self.results.len() == self.run_base {
+            self.active_result = self.run_base;
         }
         let sql = self
             .current_statements
@@ -1109,6 +1208,8 @@ impl SqlTab {
             rows: 0,
             completion: None,
             h_overflow: false,
+            pinned: false,
+            ran_at: chrono::Local::now().format("%H:%M:%S").to_string().into(),
             _sub: sub,
             _observe: observe,
         });
@@ -1229,9 +1330,13 @@ impl SqlTab {
         cx.notify();
     }
 
-    /// Rows loaded in the active result set.
+    /// Rows loaded by the current run (pinned results excluded).
     pub fn loaded_rows(&self) -> usize {
-        self.results.iter().map(|r| r.rows).sum()
+        self.results
+            .iter()
+            .skip(self.run_base)
+            .map(|r| r.rows)
+            .sum()
     }
 
     /// Status line text: (label, color, meta).
@@ -1268,7 +1373,7 @@ impl SqlTab {
                 false,
             ),
             RunState::Done { elapsed, affected } => {
-                let meta = match (affected, self.results.is_empty()) {
+                let meta = match (affected, self.results.len() == self.run_base) {
                     (Some(a), true) => {
                         format!("{} affected · {}", thousands(*a), ui::duration(*elapsed))
                     }
@@ -1483,6 +1588,7 @@ impl SqlTab {
         } else {
             p.bd2
         };
+        let context_pills = self.render_context_pills(p, cx);
         div()
             .h(px(38.))
             .flex_none()
@@ -1571,6 +1677,7 @@ impl SqlTab {
                     .on_click(cx.listener(|this, _, w, cx| this.format(w, cx))),
             )
             .child(div().flex_1())
+            .children(context_pills)
             .child(
                 div()
                     .id("conn-pill")
@@ -1708,11 +1815,18 @@ impl SqlTab {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let messages_ix = self.results.len();
-        let mut tabs: Vec<(usize, String, String)> = self
+        let mut tabs: Vec<(usize, String, String, Option<bool>)> = self
             .results
             .iter()
             .enumerate()
-            .map(|(i, r)| (i, format!("Result {}", i + 1), thousands(r.rows as u64)))
+            .map(|(i, r)| {
+                (
+                    i,
+                    self.result_label(i),
+                    thousands(r.rows as u64),
+                    Some(r.pinned),
+                )
+            })
             .collect();
         tabs.push((
             messages_ix,
@@ -1724,6 +1838,7 @@ impl SqlTab {
             } else {
                 String::new()
             },
+            None,
         ));
         let paused = matches!(self.run, RunState::Paused { .. });
         let (plan_tab, plan_busy) = {
@@ -1739,8 +1854,8 @@ impl SqlTab {
             .border_b_1()
             .border_color(p.bd)
             .bg(p.panel)
-            .children(tabs.into_iter().map(|(i, label, count)| {
-                let active = !self.show_plan && i == self.active_result;
+            .children(tabs.into_iter().map(|(i, label, count, pinned)| {
+                let active = !self.show_plan && !self.show_compare && i == self.active_result;
                 div()
                     .id(("rtab", i))
                     .flex()
@@ -1755,6 +1870,7 @@ impl SqlTab {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.active_result = i;
                         this.show_plan = false;
+                        this.show_compare = false;
                         this.selected = None;
                         cx.notify();
                     }))
@@ -1766,6 +1882,24 @@ impl SqlTab {
                             .text_color(p.fg3)
                             .child(count),
                     )
+                    .when_some(pinned, |d, pinned| {
+                        // Pinned results survive the next run.
+                        d.child(
+                            div()
+                                .id(("rtab-pin", i))
+                                .px(px(4.))
+                                .rounded(px(3.))
+                                .text_size(px(10.5))
+                                .text_color(if pinned { p.acc } else { p.fg3 })
+                                .when(pinned, |d| d.font_weight(FontWeight::SEMIBOLD))
+                                .hover(|s| s.bg(p.hover))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.toggle_pin(i, cx);
+                                }))
+                                .child(if pinned { "pinned" } else { "pin" }),
+                        )
+                    })
             }))
             .when(plan_tab, |d| {
                 d.child(
@@ -1782,6 +1916,7 @@ impl SqlTab {
                         .when(self.show_plan, |d| d.border_b_2().border_color(p.fg))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.show_plan = true;
+                            this.show_compare = false;
                             this.export_open = false;
                             cx.notify();
                         }))
@@ -1791,6 +1926,43 @@ impl SqlTab {
                         }),
                 )
             })
+            .when(self.compare.is_some(), |d| {
+                d.child(
+                    div()
+                        .id("rtab-diff")
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(px(6.))
+                        .px(px(10.))
+                        .text_size(px(12.))
+                        .whitespace_nowrap()
+                        .text_color(if self.show_compare { p.fg } else { p.fg2 })
+                        .when(self.show_compare, |d| d.border_b_2().border_color(p.fg))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.show_compare = true;
+                            this.show_plan = false;
+                            this.export_open = false;
+                            cx.notify();
+                        }))
+                        .child("Diff")
+                        .child(
+                            div()
+                                .id("rtab-diff-close")
+                                .px(px(3.))
+                                .rounded(px(3.))
+                                .text_color(p.fg3)
+                                .hover(|s| s.bg(p.hover))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.compare = None;
+                                    this.show_compare = false;
+                                    cx.notify();
+                                }))
+                                .child("×"),
+                        ),
+                )
+            })
             .child(div().flex_1())
             .child(
                 div()
@@ -1798,26 +1970,47 @@ impl SqlTab {
                     .flex()
                     .items_center()
                     .gap(px(6.))
-                    .when(!self.results.is_empty() && !self.show_plan, |d| {
+                    .when(self.results.len() >= 2 && !self.show_plan, |d| {
                         d.child(
-                            div()
-                                .w(px(150.))
+                            ui::button("compare", "Compare ▾", Kind::Ghost, p)
                                 .h(px(22.))
-                                .flex()
-                                .items_center()
-                                .px(px(6.))
-                                .border_1()
-                                .border_color(p.bd)
-                                .rounded(px(5.))
-                                .bg(p.bg)
-                                .child(
-                                    Input::new(&self.filter)
-                                        .appearance(false)
-                                        .text_size(px(11.5)),
-                                ),
+                                .text_size(px(11.5))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if this.active_result >= this.results.len() {
+                                        this.active_result = 0;
+                                    }
+                                    this.compare_menu = !this.compare_menu;
+                                    this.export_open = false;
+                                    cx.notify();
+                                })),
                         )
                     })
-                    .when(!self.show_plan, |d| {
+                    .when(self.compare_menu && !self.show_plan, |d| {
+                        d.child(self.render_compare_menu(p, cx))
+                    })
+                    .when(
+                        !self.results.is_empty() && !self.show_plan && !self.show_compare,
+                        |d| {
+                            d.child(
+                                div()
+                                    .w(px(150.))
+                                    .h(px(22.))
+                                    .flex()
+                                    .items_center()
+                                    .px(px(6.))
+                                    .border_1()
+                                    .border_color(p.bd)
+                                    .rounded(px(5.))
+                                    .bg(p.bg)
+                                    .child(
+                                        Input::new(&self.filter)
+                                            .appearance(false)
+                                            .text_size(px(11.5)),
+                                    ),
+                            )
+                        },
+                    )
+                    .when(!self.show_plan && !self.show_compare, |d| {
                         d.child(
                             ui::button("fetch-all", "Fetch all", Kind::Ghost, p)
                                 .h(px(22.))
@@ -1851,6 +2044,8 @@ impl SqlTab {
                 .min_h_0()
                 .child(self.plan.clone())
                 .into_any_element()
+        } else if self.show_compare && self.compare.is_some() {
+            self.render_compare(p, cx)
         } else if self.connection.is_none() {
             empty_state(
                 "No connection",
@@ -1892,10 +2087,12 @@ impl SqlTab {
                 })
                 .into_any_element()
         } else if let Some(r) = self.results.get(self.active_result) {
-            let cancelled = matches!(self.run, RunState::Cancelled { .. });
+            let cancelled = matches!(self.run, RunState::Cancelled { .. })
+                && self.active_result >= self.run_base;
             let edit_bar = self.render_edit_bar(p, cx);
             let staged_panel = self.render_staged_panel(p, cx);
-            let streaming = matches!(self.run, RunState::Running { .. });
+            let streaming = matches!(self.run, RunState::Running { .. })
+                && self.active_result + 1 == self.results.len();
             let (_, _, meta, _) = self.status(p);
             self.watch_grid_overflow(window, cx);
             let h_scrollbar = r.h_overflow.then(|| {
@@ -2167,6 +2364,805 @@ impl SqlTab {
     }
 }
 
+/// Display lines for a diff: a changed row shows its A side, then its B side.
+fn diff_lines(d: &ResultDiff) -> Vec<(DiffSide, u32, Option<u32>)> {
+    let mut out = Vec::with_capacity(d.rows.len() + d.changed);
+    for c in &d.rows {
+        match *c {
+            RowChange::Added(b) => out.push((DiffSide::Added, b, None)),
+            RowChange::Removed(a) => out.push((DiffSide::Removed, a, None)),
+            RowChange::Changed(a, b) => {
+                out.push((DiffSide::Before, a, Some(b)));
+                out.push((DiffSide::After, b, Some(a)));
+            }
+        }
+    }
+    out
+}
+
+/// Width of one cell in the diff view.
+const DIFF_CELL_W: f32 = 150.;
+/// Height of one diff line.
+const DIFF_LINE_H: f32 = 24.;
+
+/// Database / schema switcher (DBX-4a).
+impl SqlTab {
+    /// Whether the toolbar shows the database / schema switcher.
+    fn shows_switcher(&self) -> bool {
+        self.connection.is_some() && self.dialect().switches_context()
+    }
+
+    /// Whether the engine can switch schemas per session.
+    fn switches_schema(&self) -> bool {
+        self.dialect().use_schema("x").is_some()
+    }
+
+    /// The database the tab's session uses.
+    fn current_database(&self) -> Option<String> {
+        self.context.database.clone().or_else(|| {
+            self.connection
+                .as_ref()
+                .map(|c| c.database.clone())
+                .filter(|d| !d.is_empty())
+        })
+    }
+
+    /// The schema unqualified names resolve to.
+    fn current_schema(&self) -> Option<String> {
+        self.context
+            .schema
+            .clone()
+            .or_else(|| Some(self.dialect().default_schema().to_owned()).filter(|s| !s.is_empty()))
+    }
+
+    fn open_session_id(&self) -> Option<SessionId> {
+        self.session
+            .filter(|_| matches!(self.session_state, SessionState::Open { .. }))
+    }
+
+    fn open_context_menu(&mut self, menu: ContextMenu, cx: &mut Context<Self>) {
+        let Some(session) = self.open_session_id() else {
+            cx.emit(SqlTabEvent::Toast("Connect this tab first".into()));
+            return;
+        };
+        self.context_menu = Some(menu);
+        let scope = match menu {
+            ContextMenu::Database => self
+                .databases
+                .is_none()
+                .then_some(IntrospectScope::Databases),
+            ContextMenu::Schema => self.schemas.is_none().then_some(IntrospectScope::Schemas),
+        };
+        if let Some(scope) = scope {
+            self.core.send(Command::Introspect {
+                session,
+                scope,
+                refresh: false,
+            });
+        }
+        cx.notify();
+    }
+
+    /// Make a database and/or schema current for this tab's session.
+    fn switch_context(
+        &mut self,
+        database: Option<String>,
+        schema: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.context_menu = None;
+        cx.notify();
+        if matches!(self.run, RunState::Running { .. } | RunState::Paused { .. }) {
+            cx.emit(SqlTabEvent::Toast("Stop the running query first".into()));
+            return;
+        }
+        if self.txn_open {
+            cx.emit(SqlTabEvent::Toast(
+                "Commit or roll back the open transaction first".into(),
+            ));
+            return;
+        }
+        let Some(session) = self.open_session_id() else {
+            return;
+        };
+        let request = next_id();
+        self.context_request = Some(request);
+        self.core.send(Command::SetSessionContext {
+            session,
+            request,
+            database,
+            schema,
+        });
+    }
+
+    /// The runtime switched (or could not switch) the session's database or schema.
+    pub fn on_context(
+        &mut self,
+        request: RequestId,
+        result: Result<SessionContext, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.context_request != Some(request) {
+            return;
+        }
+        self.context_request = None;
+        match result {
+            Ok(ctx) => {
+                if ctx.database != self.context.database {
+                    self.schemas = None;
+                    self.completion.borrow_mut().index = CatalogIndex::default();
+                }
+                self.context = ctx;
+                let schema = self.current_schema();
+                self.completion.borrow_mut().index.preferred_schema = schema.clone();
+                // Completion follows the new database (cached per database in core).
+                if let Some(session) = self.session {
+                    self.core.send(Command::Introspect {
+                        session,
+                        scope: IntrospectScope::AllColumns,
+                        refresh: false,
+                    });
+                }
+                let label = match (self.current_database(), schema) {
+                    (Some(d), Some(s)) if self.switches_schema() => format!("{d}.{s}"),
+                    (Some(d), _) => d,
+                    (None, Some(s)) => s,
+                    (None, None) => "the default database".into(),
+                };
+                cx.emit(SqlTabEvent::Toast(format!("Using {label}")));
+            }
+            Err(e) => cx.emit(SqlTabEvent::Toast(format!("Could not switch: {e}"))),
+        }
+        cx.emit(SqlTabEvent::Changed);
+        cx.notify();
+    }
+
+    fn render_context_pills(&self, p: &Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.shows_switcher() {
+            return None;
+        }
+        let busy = self.context_request.is_some();
+        let pill = |id: &'static str, icon: &'static str, label: String, menu: ContextMenu| {
+            div()
+                .id(id)
+                .h(px(24.))
+                .max_w(px(180.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .px(px(8.))
+                .border_1()
+                .border_color(p.bd)
+                .rounded(px(5.))
+                .text_size(px(11.5))
+                .overflow_hidden()
+                .hover(|s| s.bg(p.hover))
+                .on_click(cx.listener(move |this, _, _, cx| this.open_context_menu(menu, cx)))
+                .child(
+                    div()
+                        .font_family(MONO)
+                        .text_size(px(9.5))
+                        .text_color(p.fg3)
+                        .child(icon),
+                )
+                .child(div().min_w_0().overflow_hidden().child(label))
+                .child(div().text_color(p.fg3).text_size(px(9.)).child("▾"))
+        };
+        let db = self.current_database().unwrap_or_else(|| "database".into());
+        let db_pill = pill("ctx-db", "DB", db, ContextMenu::Database);
+        let schema_pill = self.switches_schema().then(|| {
+            let schema = self.current_schema().unwrap_or_else(|| "default".into());
+            pill("ctx-schema", "SCHEMA", schema, ContextMenu::Schema)
+        });
+        Some(
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .gap(px(4.))
+                .child(db_pill)
+                .children(schema_pill)
+                .when(busy, |d| d.child(ui::pulse_dot("ctx-pulse", p.acc, 6.)))
+                .into_any_element(),
+        )
+    }
+
+    fn render_context_menu(&self, p: &Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let menu = self.context_menu?;
+        let (title, items, current) = match menu {
+            ContextMenu::Database => ("Databases", self.databases.clone(), self.current_database()),
+            ContextMenu::Schema => ("Schemas", self.schemas.clone(), self.current_schema()),
+        };
+        let body: AnyElement = match items {
+            None => div()
+                .px(px(8.))
+                .py(px(6.))
+                .text_size(px(12.))
+                .text_color(p.fg3)
+                .child("Loading…")
+                .into_any_element(),
+            Some(items) if items.is_empty() => div()
+                .px(px(8.))
+                .py(px(6.))
+                .text_size(px(12.))
+                .text_color(p.fg3)
+                .child("Nothing to switch to")
+                .into_any_element(),
+            Some(items) => {
+                let n = items.len();
+                let items = Rc::new(items);
+                let pp = *p;
+                uniform_list(
+                    "ctx-items",
+                    n,
+                    cx.processor(move |_this, range: std::ops::Range<usize>, _w, cx| {
+                        range
+                            .map(|i| {
+                                let name = items[i].clone();
+                                let active = current.as_deref() == Some(name.as_str());
+                                let pick = name.clone();
+                                div()
+                                    .id(("ctx-item", i))
+                                    .h(px(26.))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .px(px(8.))
+                                    .rounded(px(4.))
+                                    .text_size(px(12.5))
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
+                                    .hover(|s| s.bg(pp.sel))
+                                    .when(active, |d| d.font_weight(FontWeight::SEMIBOLD))
+                                    .on_click(cx.listener(move |this, _, _, cx| match menu {
+                                        ContextMenu::Database => {
+                                            this.switch_context(Some(pick.clone()), None, cx)
+                                        }
+                                        ContextMenu::Schema => {
+                                            this.switch_context(None, Some(pick.clone()), cx)
+                                        }
+                                    }))
+                                    .child(div().w(px(10.)).text_color(pp.acc).child(if active {
+                                        "✓"
+                                    } else {
+                                        ""
+                                    }))
+                                    .child(name)
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .h(px((n as f32 * 26.).min(300.)))
+                .into_any_element()
+            }
+        };
+        Some(
+            deferred(
+                div()
+                    .id("ctx-menu")
+                    .absolute()
+                    .top(px(36.))
+                    .right(px(10.))
+                    .w(px(260.))
+                    .p(px(4.))
+                    .bg(p.elev)
+                    .rounded(px(7.))
+                    .shadow(ui::shadow(p))
+                    .occlude()
+                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                        this.context_menu = None;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .px(px(8.))
+                            .py(px(4.))
+                            .text_size(px(11.))
+                            .text_color(p.fg3)
+                            .child(title),
+                    )
+                    .child(body),
+            )
+            .with_priority(1)
+            .into_any_element(),
+        )
+    }
+}
+
+/// Peek table (DBX-4c).
+impl SqlTab {
+    /// F12: show the columns of the table under the cursor.
+    pub fn peek_at_cursor(&mut self, cx: &mut Context<Self>) {
+        let (text, cursor) = {
+            let e = self.editor.read(cx);
+            (e.value().to_string(), e.cursor())
+        };
+        let Some(target) = peek_target(self.dialect(), &text, cursor) else {
+            cx.emit(SqlTabEvent::Toast("No table name under the cursor".into()));
+            return;
+        };
+        let cols = self
+            .completion
+            .borrow()
+            .index
+            .columns_of(target.schema.as_deref(), &target.table);
+        if !cols.is_empty() {
+            self.peek = Some(Peek {
+                target,
+                columns: Some(cols),
+            });
+            cx.notify();
+            return;
+        }
+        // Not in the completion index (new table, cold cache): ask the server.
+        let Some(session) = self.open_session_id() else {
+            cx.emit(SqlTabEvent::Toast(
+                "Connect this tab to peek at tables".into(),
+            ));
+            return;
+        };
+        let schema = target
+            .schema
+            .clone()
+            .or_else(|| self.current_schema())
+            .unwrap_or_default();
+        self.core.send(Command::Introspect {
+            session,
+            scope: IntrospectScope::Detail {
+                schema,
+                name: target.table.clone(),
+                kind: ObjectKind::Table,
+            },
+            refresh: false,
+        });
+        self.peek = Some(Peek {
+            target,
+            columns: None,
+        });
+        cx.notify();
+    }
+
+    fn close_peek(&mut self, cx: &mut Context<Self>) {
+        if self.peek.take().is_some() {
+            cx.notify();
+        } else {
+            cx.propagate();
+        }
+    }
+
+    fn on_peek_detail(&mut self, d: &switchyard_core::db::ObjectDetail, cx: &mut Context<Self>) {
+        let Some(peek) = self.peek.as_mut() else {
+            return;
+        };
+        if peek.columns.is_some() || !d.object.name.eq_ignore_ascii_case(&peek.target.table) {
+            return;
+        }
+        peek.columns = Some(
+            d.columns
+                .iter()
+                .map(|c| (c.name.clone(), c.data_type.clone()))
+                .collect(),
+        );
+        if peek.target.schema.is_none() {
+            peek.target.schema = Some(d.object.schema.clone());
+        }
+        cx.notify();
+    }
+
+    fn render_peek(&self, p: &Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let peek = self.peek.as_ref()?;
+        let name = match &peek.target.schema {
+            Some(s) => format!("{s}.{}", peek.target.table),
+            None => peek.target.table.clone(),
+        };
+        let body: AnyElement = match &peek.columns {
+            None => div()
+                .px(px(10.))
+                .py(px(8.))
+                .text_color(p.fg3)
+                .child("Loading columns…")
+                .into_any_element(),
+            Some(cols) if cols.is_empty() => div()
+                .px(px(10.))
+                .py(px(8.))
+                .text_color(p.fg3)
+                .child("No columns found")
+                .into_any_element(),
+            Some(cols) => div()
+                .id("peek-cols")
+                .max_h(px(240.))
+                .overflow_y_scroll()
+                .py(px(4.))
+                .children(cols.iter().map(|(n, t)| {
+                    div()
+                        .flex()
+                        .gap(px(10.))
+                        .px(px(10.))
+                        .h(px(20.))
+                        .items_center()
+                        .whitespace_nowrap()
+                        .child(div().flex_1().min_w_0().overflow_hidden().child(n.clone()))
+                        .child(div().flex_none().text_color(p.fg3).child(t.clone()))
+                }))
+                .into_any_element(),
+        };
+        let count = peek.columns.as_ref().map(Vec::len);
+        Some(
+            div()
+                .id("peek")
+                .absolute()
+                .top(px(8.))
+                .right(px(16.))
+                .w(px(320.))
+                .bg(p.elev)
+                .border_1()
+                .border_color(p.bd)
+                .rounded(px(7.))
+                .shadow(ui::shadow(p))
+                .occlude()
+                .font_family(MONO)
+                .text_size(px(11.5))
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.peek = None;
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .px(px(10.))
+                        .py(px(6.))
+                        .border_b_1()
+                        .border_color(p.bd)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(name),
+                        )
+                        .when_some(count, |d, n| {
+                            d.child(div().text_color(p.fg3).child(format!("{n} cols")))
+                        })
+                        .child(div().text_color(p.fg3).child("Esc")),
+                )
+                .child(body)
+                .into_any_element(),
+        )
+    }
+}
+
+/// Pinned results and result compare (DBX-4d).
+impl SqlTab {
+    fn toggle_pin(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if let Some(r) = self.results.get_mut(ix) {
+            r.pinned = !r.pinned;
+        }
+        cx.notify();
+    }
+
+    /// Tab label: pinned and earlier-run results carry the time they ran.
+    fn result_label(&self, ix: usize) -> String {
+        match self.results.get(ix) {
+            Some(r) if r.pinned || ix < self.run_base => {
+                format!("Result {} · {}", ix + 1, r.ran_at)
+            }
+            _ => format!("Result {}", ix + 1),
+        }
+    }
+
+    /// Diff two results' loaded rows in the background and show the Diff tab.
+    fn start_compare(&mut self, x: usize, y: usize, cx: &mut Context<Self>) {
+        let (ia, ib) = (x.min(y), x.max(y));
+        if ia == ib {
+            return;
+        }
+        let (Some(ra), Some(rb)) = (self.results.get(ia), self.results.get(ib)) else {
+            return;
+        };
+        let a = ra.table.read(cx).delegate().data().clone();
+        let b = rb.table.read(cx).delegate().data().clone();
+        let job = (ra.columns.clone(), a.clone(), rb.columns.clone(), b.clone());
+        let task = cx.spawn(async move |this, cx| {
+            let d = cx
+                .background_executor()
+                .spawn(async move {
+                    let (ac, ad, bc, bd) = job;
+                    diff_results(&ac, &ad, &bc, &bd)
+                })
+                .await;
+            let _ = this.update(cx, |tab, cx| {
+                if let Some(c) = tab.compare.as_mut() {
+                    c.lines = Rc::new(diff_lines(&d));
+                    c.diff = Some(Rc::new(d));
+                }
+                cx.notify();
+            });
+        });
+        let label = |tab: &Self, ix: usize, rows: usize| {
+            format!("{} ({} rows)", tab.result_label(ix), thousands(rows as u64))
+        };
+        self.compare = Some(CompareView {
+            a_label: label(self, ia, a.len()),
+            b_label: label(self, ib, b.len()),
+            a,
+            b,
+            diff: None,
+            lines: Rc::default(),
+            _task: task,
+        });
+        self.compare_menu = false;
+        self.export_open = false;
+        self.show_plan = false;
+        self.show_compare = true;
+        cx.notify();
+    }
+
+    fn render_compare_menu(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let active = self.active_result;
+        let others: Vec<(usize, String)> = (0..self.results.len())
+            .filter(|&i| i != active)
+            .map(|i| (i, self.result_label(i)))
+            .collect();
+        deferred(
+            div()
+                .id("compare-menu")
+                .absolute()
+                .top(px(28.))
+                .right(px(0.))
+                .w(px(260.))
+                .p(px(4.))
+                .bg(p.elev)
+                .rounded(px(7.))
+                .shadow(ui::shadow(p))
+                .occlude()
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    this.compare_menu = false;
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .px(px(8.))
+                        .py(px(4.))
+                        .text_size(px(11.))
+                        .text_color(p.fg3)
+                        .child(format!("Compare {} with", self.result_label(active))),
+                )
+                .children(others.into_iter().map(|(i, label)| {
+                    div()
+                        .id(("cmp-item", i))
+                        .h(px(26.))
+                        .flex()
+                        .items_center()
+                        .px(px(8.))
+                        .rounded(px(4.))
+                        .text_size(px(12.5))
+                        .hover(|s| s.bg(p.sel))
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.start_compare(active, i, cx)),
+                        )
+                        .child(label)
+                })),
+        )
+        .with_priority(1)
+        .into_any_element()
+    }
+
+    fn render_compare(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let Some(c) = &self.compare else {
+            return div().into_any_element();
+        };
+        let Some(d) = c.diff.clone() else {
+            return div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(10.))
+                .text_color(p.fg3)
+                .text_size(px(12.))
+                .child(ui::shimmer(120., p))
+                .child("comparing…")
+                .into_any_element();
+        };
+        let stat = |label: String, color: Hsla| {
+            div()
+                .font_family(MONO)
+                .text_color(color)
+                .whitespace_nowrap()
+                .child(label)
+        };
+        let mut notes = Vec::new();
+        if !d.only_a.is_empty() {
+            notes.push(format!("only in A: {}", d.only_a.join(", ")));
+        }
+        if !d.only_b.is_empty() {
+            notes.push(format!("only in B: {}", d.only_b.join(", ")));
+        }
+        if let Some((_, _, key)) = d.columns.first() {
+            notes.push(format!("rows paired by {key}"));
+        }
+        let summary = div()
+            .flex_none()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(14.))
+            .px(px(12.))
+            .py(px(6.))
+            .border_b_1()
+            .border_color(p.bd)
+            .text_size(px(12.))
+            .child(
+                div()
+                    .min_w_0()
+                    .text_color(p.fg2)
+                    .child(format!("A: {}  ·  B: {}", c.a_label, c.b_label)),
+            )
+            .child(stat(format!("+{} added", thousands(d.added as u64)), p.dev))
+            .child(stat(
+                format!("−{} removed", thousands(d.removed as u64)),
+                p.prod,
+            ))
+            .child(stat(
+                format!("~{} changed", thousands(d.changed as u64)),
+                p.stg,
+            ))
+            .child(stat(
+                format!("{} unchanged", thousands(d.unchanged as u64)),
+                p.fg3,
+            ))
+            .when(!notes.is_empty(), |el| {
+                el.child(div().text_color(p.fg3).child(notes.join(" · ")))
+            });
+        if c.lines.is_empty() {
+            return div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .child(summary)
+                .child(empty_state(
+                    "No differences",
+                    "Both results hold the same loaded rows.",
+                    p,
+                ))
+                .into_any_element();
+        }
+        let ncols = d.columns.len();
+        let width = px(36. + ncols as f32 * DIFF_CELL_W);
+        let header = div()
+            .flex_none()
+            .h(px(DIFF_LINE_H))
+            .flex()
+            .items_center()
+            .border_b_1()
+            .border_color(p.bd)
+            .bg(p.panel)
+            .text_size(px(11.5))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(p.fg2)
+            .child(div().w(px(36.)).flex_none())
+            .children(d.columns.iter().map(|(_, _, name)| {
+                div()
+                    .w(px(DIFF_CELL_W))
+                    .flex_none()
+                    .px(px(6.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(name.clone())
+            }));
+        let lines = c.lines.clone();
+        let (a, b) = (c.a.clone(), c.b.clone());
+        let pp = *p;
+        let list = uniform_list(
+            "diff-lines",
+            lines.len(),
+            cx.processor(move |_this, range: std::ops::Range<usize>, _w, _cx| {
+                range
+                    .map(|i| render_diff_line(&d, &a, &b, lines[i], &pp))
+                    .collect::<Vec<_>>()
+            }),
+        )
+        .w(width)
+        .flex_1();
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(summary)
+            .child(
+                div()
+                    .id("diff-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_x_scroll()
+                    .child(
+                        div()
+                            .w(width)
+                            .h_full()
+                            .flex()
+                            .flex_col()
+                            .child(header)
+                            .child(list),
+                    ),
+            )
+            .into_any_element()
+    }
+}
+
+/// One diff line: a marker, then the row's cells; on a changed row the cells that differ
+/// from the other side are highlighted.
+fn render_diff_line(
+    d: &ResultDiff,
+    a: &BatchList,
+    b: &BatchList,
+    (side, row, other): (DiffSide, u32, Option<u32>),
+    p: &Palette,
+) -> AnyElement {
+    let (marker, color, bg) = match side {
+        DiffSide::Added => ("+", p.dev, p.dev_bg),
+        DiffSide::Removed => ("−", p.prod, p.prod_bg),
+        DiffSide::Before => ("~A", p.stg, p.surface),
+        DiffSide::After => ("~B", p.stg, p.surface),
+    };
+    let from_a = matches!(side, DiffSide::Removed | DiffSide::Before);
+    let (data, other_data) = if from_a { (a, b) } else { (b, a) };
+    let mut buf = String::new();
+    div()
+        .h(px(DIFF_LINE_H))
+        .flex()
+        .items_center()
+        .bg(bg)
+        .border_b_1()
+        .border_color(p.bd)
+        .font_family(MONO)
+        .text_size(px(12.))
+        .child(
+            div()
+                .w(px(36.))
+                .flex_none()
+                .px(px(6.))
+                .text_color(color)
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(marker),
+        )
+        .children(d.columns.iter().map(|&(ca, cb, _)| {
+            let (col, other_col) = if from_a { (ca, cb) } else { (cb, ca) };
+            let cell = data.cell(row as usize, col).unwrap_or(CellRef::Null);
+            let differs = other.is_some_and(|o| {
+                let theirs = other_data
+                    .cell(o as usize, other_col)
+                    .unwrap_or(CellRef::Null);
+                !same_cell(cell, theirs)
+            });
+            buf.clear();
+            let null = cell.is_null();
+            if null {
+                buf.push_str("NULL");
+            } else {
+                cell.write_display(&mut buf, 80);
+            }
+            div()
+                .w(px(DIFF_CELL_W))
+                .h_full()
+                .flex_none()
+                .flex()
+                .items_center()
+                .px(px(6.))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .when(differs, |d| d.bg(p.staged).text_color(p.fg))
+                .when(null, |d| d.italic().text_color(p.fg3))
+                .child(SharedString::from(buf.clone()))
+        }))
+        .into_any_element()
+}
+
 fn empty_state(title: &str, sub: &str, p: &Palette) -> AnyElement {
     div()
         .flex_1()
@@ -2201,10 +3197,23 @@ impl Render for SqlTab {
         };
         let toolbar = self.render_toolbar(&p, cx);
         let results = self.render_results(&p, window, cx);
+        let context_menu = self.render_context_menu(&p, cx);
+        let peek = self.render_peek(&p, cx);
         div()
             .id("sql-tab")
-            .key_context("SqlTab")
+            .key_context(if self.peek.is_some() {
+                "SqlTab Peek"
+            } else {
+                "SqlTab"
+            })
             .track_focus(&self.focus)
+            .relative()
+            .on_action(
+                cx.listener(|this, _: &crate::actions::PeekTable, _, cx| this.peek_at_cursor(cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::actions::ClosePeek, _, cx| this.close_peek(cx)),
+            )
             .on_action(
                 cx.listener(|this, _: &crate::actions::CopyCells, _, cx| this.copy_cells(cx)),
             )
@@ -2261,7 +3270,8 @@ impl Render for SqlTab {
                                 .font_family(MONO)
                                 .text_size(px(12.5)),
                         ),
-                    ),
+                    )
+                    .children(peek),
             )
             .child(
                 div()
@@ -2293,6 +3303,7 @@ impl Render for SqlTab {
                     .flex_col()
                     .child(results),
             )
+            .children(context_menu)
     }
 }
 

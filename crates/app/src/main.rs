@@ -22,6 +22,7 @@ mod overlays;
 mod palette;
 mod plan_view;
 mod remote_files;
+mod result_diff;
 mod sidebar;
 mod split;
 mod sql_tab;

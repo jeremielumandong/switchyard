@@ -127,6 +127,23 @@ pub trait Dialect: Send + Sync {
         }
         spans.iter().find(|s| s.start >= offset).copied().or(prev)
     }
+
+    /// Whether a SQL tab offers a database / schema switcher for this engine.
+    fn switches_context(&self) -> bool {
+        true
+    }
+
+    /// The statement that makes `database` current in an open session, or `None` when
+    /// the session must reconnect to it (PostgreSQL binds a connection to one database).
+    fn use_database(&self, _database: &str) -> Option<String> {
+        None
+    }
+
+    /// The statement that makes `schema` the default for unqualified names, or `None`
+    /// when the engine cannot switch schemas per session (SQL Server, D1).
+    fn use_schema(&self, _schema: &str) -> Option<String> {
+        None
+    }
 }
 
 /// The dialect for `engine`.
@@ -355,3 +372,6 @@ mod tests {
         assert_eq!(line_of_byte("a\nb\nc", 4), 3);
     }
 }
+
+#[cfg(test)]
+mod context_tests;

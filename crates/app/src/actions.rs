@@ -45,6 +45,8 @@ actions!(
         SplitRight,
         SplitDown,
         Unsplit,
+        PeekTable,
+        ClosePeek,
     ]
 );
 
@@ -89,6 +91,11 @@ pub fn init(cx: &mut App) {
         // Linux reports Shift+\ as `|`.
         KeyBinding::new("secondary-|", SplitDown, None),
         KeyBinding::new("escape", Dismiss, Some("Overlay")),
+        // Peek table: the columns of the table under the cursor; Escape closes it (the
+        // binding only exists while the popover is open, so the editor keeps Escape).
+        KeyBinding::new("f12", PeekTable, Some("SqlTab > Input")),
+        KeyBinding::new("escape", ClosePeek, Some("Peek > Input")),
+        KeyBinding::new("escape", ClosePeek, Some("Peek")),
     ]);
     // Inside a terminal, Ctrl+letter belongs to the shell (readline, vim, …). App
     // shortcuts there use Cmd on macOS and Ctrl+Shift elsewhere.

@@ -359,6 +359,13 @@ impl Dialect for OracleDialect {
             ObjectKind::Synonym,
         ]
     }
+
+    fn use_schema(&self, schema: &str) -> Option<String> {
+        Some(format!(
+            "ALTER SESSION SET CURRENT_SCHEMA = {}",
+            self.quote_ident(schema)
+        ))
+    }
 }
 
 #[cfg(test)]
