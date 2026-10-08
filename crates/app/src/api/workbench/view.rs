@@ -566,6 +566,7 @@ impl Render for WorkbenchPanel {
             }
         }
         self.load_pending_request(window, cx);
+        self.run_pending_start(has_workspace, window, cx);
         let colors = cx.theme().colors;
         if !has_workspace {
             return div()
@@ -576,7 +577,7 @@ impl Render for WorkbenchPanel {
                 .flex_col()
                 .size_full()
                 .bg(colors.background)
-                .child(self.render_empty_workbench(cx));
+                .child(self.render_first_run(cx));
         }
         let body = match self.tab {
             Tab::Compose => self.render_compose(window, cx),
@@ -604,17 +605,19 @@ impl Render for WorkbenchPanel {
                     cx.listener(|this, _: &NewRequest, window, cx| this.new_request(window, cx)),
                 )
                 .on_action(cx.listener(|this, _: &CloseRequest, window, cx| {
-                    let id = this.request_tabs[this.active_request_tab].id;
-                    this.close_request_tab(id, window, cx);
+                    if let Some(id) = this.active_request_tab_id() {
+                        this.close_request_tab(id, window, cx);
+                    }
                 }))
                 .on_action(cx.listener(|this, _: &NextRequest, window, cx| {
-                    let index = (this.active_request_tab + 1) % this.request_tabs.len();
-                    this.activate_request_tab(this.request_tabs[index].id, window, cx);
+                    if let Some(id) = this.neighbour_request_tab_id(true) {
+                        this.activate_request_tab(id, window, cx);
+                    }
                 }))
                 .on_action(cx.listener(|this, _: &PreviousRequest, window, cx| {
-                    let index = (this.active_request_tab + this.request_tabs.len() - 1)
-                        % this.request_tabs.len();
-                    this.activate_request_tab(this.request_tabs[index].id, window, cx);
+                    if let Some(id) = this.neighbour_request_tab_id(false) {
+                        this.activate_request_tab(id, window, cx);
+                    }
                 }))
             })
             .flex()
@@ -790,71 +793,6 @@ impl WorkbenchPanel {
         }
     }
 
-    /// What the panel shows before any workspace exists: a blank page with
-    /// one "Add workspace" button (or a loading line while the list loads).
-    fn render_empty_workbench(&self, cx: &mut Context<Self>) -> Div {
-        let colors = cx.theme().colors;
-        let loading = self.workspaces.is_none();
-        let adding = self.adding_workspace();
-        div()
-            .flex_1()
-            .min_h(px(0.))
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .gap(space::SP_3)
-            .p(space::SP_4)
-            .child(
-                div()
-                    .text_size(text::S13)
-                    .font_weight(text::weight::SEMIBOLD)
-                    .text_color(colors.foreground)
-                    .child(if loading {
-                        "Loading workspaces…"
-                    } else {
-                        "No workspaces yet"
-                    }),
-            )
-            .when(!loading, |el| {
-                el.child(
-                    div()
-                        .max_w(px(360.))
-                        .text_center()
-                        .text_size(text::S11)
-                        .text_color(palette::text_secondary(cx))
-                        .child(
-                            "A workspace holds your collections, environments and history. \
-                             Add one to start sending requests.",
-                        ),
-                )
-                .child(
-                    Button::new("workbench-add-workspace")
-                        .debug_selector(|| "workbench-add-workspace".into())
-                        .primary()
-                        .icon(IconName::Plus)
-                        .label(if adding {
-                            "Adding workspace…"
-                        } else {
-                            "Add workspace"
-                        })
-                        .disabled(adding)
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.add_workspace(window, cx)),
-                        ),
-                )
-            })
-            .when_some(self.storage_error.clone(), |el, error| {
-                el.child(
-                    div()
-                        .id("workbench-storage-error")
-                        .text_size(text::S10)
-                        .text_color(colors.danger)
-                        .child(format!("Workbench storage: {error}")),
-                )
-            })
-    }
-
     /// The header's workspace picker: every workspace, then "Rename workspace…"
     /// and "Add workspace".
     fn workspace_menu(
@@ -1025,6 +963,9 @@ impl WorkbenchPanel {
 
 impl WorkbenchPanel {
     fn render_compose(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        if !self.has_request_tab() {
+            return self.render_compose_without_tab(window, cx);
+        }
         let rail = self.render_collection_rail(window, cx);
         let editor = self.render_composer_content(window, cx);
         let response = self.render_response(window, cx);
@@ -1126,7 +1067,11 @@ impl WorkbenchPanel {
 
     /// The 248px rail: filter + `+` menu, then one group per collection with
     /// the selected collection's folder/request tree beneath it.
-    fn render_collection_rail(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_collection_rail(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = cx.theme().colors;
         let handle = cx.entity().downgrade();
         let filter = self.rail_filter.read(cx).value().trim().to_lowercase();
@@ -1769,8 +1714,9 @@ impl WorkbenchPanel {
                                     &handle,
                                     move |this, window, cx| {
                                         this.open_saved_request(&duplicate, window, cx);
-                                        if this.current_request_id.as_ref() == Some(&duplicate) {
-                                            let tab = this.request_tabs[this.active_request_tab].id;
+                                        if this.current_request_id.as_ref() == Some(&duplicate)
+                                            && let Some(tab) = this.active_request_tab_id()
+                                        {
                                             this.run_request_tab_action(
                                                 tab_menu::Action::Duplicate,
                                                 tab,
