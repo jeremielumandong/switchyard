@@ -331,12 +331,8 @@ pub mod notify {
         cx.update_default_global::<Toasts, _>(|toasts, _| toasts.0.push(message.to_string()));
     }
 
-    /// A success toast.
-    pub fn success(cx: &mut App, message: impl Into<SharedString>) {
-        push(cx, message);
-    }
-
-    /// A warning toast.
+    /// A warning toast. Only the non-test build persists layout, its sole caller.
+    #[cfg_attr(test, allow(dead_code))]
     pub fn warning(cx: &mut App, message: impl Into<SharedString>) {
         push(cx, message);
     }

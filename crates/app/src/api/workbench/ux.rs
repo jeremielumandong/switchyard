@@ -3,13 +3,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use gpui_kit::component::input::TextareaState;
 use gpui_kit::component::{
-    Disableable, Sizable,
+    Sizable,
     button::{Button, ButtonVariants},
     dialog::DialogButtonProps,
     input::Input,
     resizable::ResizableState,
 };
-use gpui_kit::{Div, Subscription, div};
+use gpui_kit::{Div, Subscription, div, px};
 
 use super::*;
 use crate::api::compat::dialogs::{self, Dismiss};
@@ -27,6 +27,7 @@ pub(super) struct WorkbenchUx {
     pub filter: Entity<InputState>,
     pub console_cleared: usize,
     pub console_cleared_error: Option<String>,
+    pub copy_feedback: response_copy::CopyFeedback,
     _filter_subscription: Subscription,
 }
 
@@ -52,6 +53,7 @@ impl WorkbenchUx {
             filter,
             console_cleared: 0,
             console_cleared_error: None,
+            copy_feedback: Default::default(),
             _filter_subscription: subscription,
         }
     }
@@ -114,34 +116,15 @@ impl WorkbenchPanel {
 
     pub(super) fn render_console(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let filter = self.ux.filter.read(cx).value().to_lowercase();
-        let mut lines: Vec<String> = self
-            .response
-            .as_ref()
-            .into_iter()
-            .flat_map(|response| response.console.iter())
-            .skip(self.ux.console_cleared)
-            .filter(|entry| {
-                format!("{} {} {}", entry.phase, entry.level, entry.message)
-                    .to_lowercase()
-                    .contains(&filter)
-            })
-            .map(|entry| format!("[{}] {}: {}", entry.phase, entry.level, entry.message))
-            .collect();
-        if let Some(error) = self.error.as_ref().filter(|error| !error.is_empty()) {
-            let already_logged = self.response.as_ref().is_some_and(|response| {
-                response
-                    .console
-                    .iter()
-                    .any(|entry| entry.message.contains(error))
-            });
-            let line = format!("[execution] error: {error}");
-            if !already_logged
-                && self.ux.console_cleared_error.as_ref() != Some(error)
-                && line.to_lowercase().contains(&filter)
-            {
-                lines.push(line);
-            }
-        }
+        let lines = response_copy::console_lines(
+            self.response
+                .as_ref()
+                .map_or(&[][..], |response| &response.console[..]),
+            self.ux.console_cleared,
+            &filter,
+            self.error.as_deref(),
+            self.ux.console_cleared_error.as_deref(),
+        );
         let copy = lines.join("\n");
         div()
             .flex()
@@ -152,19 +135,13 @@ impl WorkbenchPanel {
                     .flex()
                     .gap_2()
                     .child(Input::new(&self.ux.filter).flex_1())
-                    .child(
-                        Button::new("workbench-console-copy")
-                            .debug_selector(|| "workbench-console-copy".into())
-                            .small()
-                            .outline()
-                            .label("Copy logs")
-                            .disabled(copy.is_empty())
-                            .on_click(move |_, _, cx| {
-                                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
-                                    copy.clone(),
-                                ));
-                            }),
-                    )
+                    .child(self.copy_chip(
+                        "workbench-console-copy",
+                        "Copy all",
+                        !copy.is_empty(),
+                        move |_, _| copy.clone(),
+                        cx,
+                    ))
                     .child(
                         Button::new("workbench-console-clear")
                             .debug_selector(|| "workbench-console-clear".into())
@@ -182,11 +159,15 @@ impl WorkbenchPanel {
             .when(lines.is_empty(), |el| {
                 el.child("No matching console messages. Use console.log in a script, then send.")
             })
-            .children(lines.into_iter().map(|line| {
+            .children(lines.into_iter().enumerate().map(|(index, line)| {
                 div()
+                    .flex()
+                    .items_start()
+                    .gap_2()
                     .font_family(crate::api::compat::fonts::mono(cx))
                     .text_sm()
-                    .child(line)
+                    .child(div().flex_1().min_w(px(0.)).child(line.clone()))
+                    .child(self.copy_row_icon(format!("workbench-console-copy-{index}"), line, cx))
             }))
             .into_any_element()
     }
