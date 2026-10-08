@@ -286,3 +286,55 @@ async fn lists_schemas_and_tables() {
     assert!(schemas.iter().any(|x| x.name == "APP" && !x.is_system));
     assert!(schemas.iter().any(|x| x.name == "SYS" && x.is_system));
 }
+
+/// `schema.name Kind` of every hit of a global object search.
+async fn search(s: &mut dyn DbSession, pattern: &str) -> Vec<String> {
+    let chunk = s
+        .introspect(IntrospectScope::Search {
+            pattern: pattern.into(),
+            limit: 200,
+            include_system: false,
+        })
+        .await
+        .expect("search");
+    let CatalogChunk::Objects(hits) = chunk else {
+        panic!("search returns objects");
+    };
+    hits.iter()
+        .map(|o| format!("{}.{} {:?}", o.schema, o.name, o.kind))
+        .collect()
+}
+
+#[tokio::test]
+#[ignore]
+async fn global_object_search() {
+    let mut s = connect().await;
+    for t in ["swy_search_t", "swyxsearch_t"] {
+        run(
+            s.as_mut(),
+            &format!(
+                "begin execute immediate 'drop table {t} purge'; \
+                 exception when others then null; end;"
+            ),
+            &[],
+        )
+        .await
+        .expect("drop old");
+        run(s.as_mut(), &format!("create table {t} (id number)"), &[])
+            .await
+            .expect("create");
+    }
+    // Case-insensitive, and `_` is literal: SWYXSEARCH_T does not match.
+    assert_eq!(
+        search(s.as_mut(), "swy_search").await,
+        ["APP.SWY_SEARCH_T Table"]
+    );
+    assert_eq!(search(s.as_mut(), "Search_T").await.len(), 2);
+    // Oracle-maintained users are left out by default.
+    assert!(search(s.as_mut(), "DBA_TABLES").await.is_empty());
+    for t in ["swy_search_t", "swyxsearch_t"] {
+        run(s.as_mut(), &format!("drop table {t} purge"), &[])
+            .await
+            .expect("drop");
+    }
+}

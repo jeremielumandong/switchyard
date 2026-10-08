@@ -1,0 +1,5 @@
+---
+source: crates/db/src/mssql/catalog.rs
+expression: search_sql()
+---
+SELECT TOP (@P2) s.name, o.name, CASE o.type WHEN 'U' THEN 'table' WHEN 'V' THEN 'view' WHEN 'P' THEN 'procedure' WHEN 'PC' THEN 'procedure' WHEN 'SO' THEN 'sequence' WHEN 'SN' THEN 'synonym' ELSE 'function' END FROM sys.objects o JOIN sys.schemas s ON s.schema_id = o.schema_id WHERE o.type IN ('U','V','P','PC','FN','IF','TF','FS','FT','SO','SN') AND LOWER(o.name) LIKE @P1 ESCAPE '!' AND (@P3 = 1 OR (o.is_ms_shipped = 0 AND s.name NOT IN ('sys','INFORMATION_SCHEMA','guest','db_owner','db_accessadmin','db_securityadmin','db_ddladmin','db_backupoperator','db_datareader','db_datawriter','db_denydatareader','db_denydatawriter'))) ORDER BY LEN(o.name), o.name, s.name

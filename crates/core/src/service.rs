@@ -1616,7 +1616,9 @@ impl Service {
         };
         let conn_id = slot.connection.id.clone();
         let key = serde_json::to_string(&scope).unwrap_or_default();
-        if !refresh {
+        // Search results are per keystroke: never read from or written to the schema cache.
+        let cacheable = scope.is_cacheable();
+        if !refresh && cacheable {
             let (c, k) = (conn_id.clone(), key.clone());
             if let Ok(Some((chunk, at))) = self.with_store(move |s| s.cached_schema(&c, &k)).await {
                 return self.emit(Event::Catalog {
@@ -1631,7 +1633,9 @@ impl Service {
             let mut inner = slot.inner.lock().await;
             inner.session.introspect(scope.clone()).await
         };
-        if let Ok(chunk) = &result {
+        if let Ok(chunk) = &result
+            && cacheable
+        {
             let chunk = chunk.clone();
             let _ = self
                 .with_store(move |s| s.cache_schema(&conn_id, &key, &chunk))
