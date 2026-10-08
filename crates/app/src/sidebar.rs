@@ -7,20 +7,24 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, AppContext as _, ClipboardItem, Context, FocusHandle, FontWeight,
     InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Pixels,
-    Point, ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _,
-    UniformListScrollHandle, Window, div, px, uniform_list,
+    Point, ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
+    px, uniform_list,
 };
 use switchyard_core::db::{
     CatalogChunk, Engine, IntrospectScope, ObjectDetail, ObjectInfo, ObjectKind, SchemaInfo, Value,
     dialect_for,
 };
-use switchyard_core::store::{DbConnection, Profile, ProfileId, now_ms};
-use switchyard_core::{Command, RuntimeHandle, SessionId};
+use switchyard_core::store::{DbConnection, Favorite, Profile, ProfileId, now_ms};
+use switchyard_core::{Command, SessionId};
 
-use crate::actions::{TreeCollapse, TreeCopy, TreeDown, TreeExpand, TreeOpen, TreeRefresh, TreeUp};
+use crate::actions::{
+    TreeCollapse, TreeCopy, TreeDown, TreeExpand, TreeOpen, TreePin, TreeRefresh, TreeUp,
+};
 use crate::app_state::{SessionState, badge_of, next_id};
 use crate::conn_editor::ConnKind;
 use crate::ddl_tab::DdlTab;
+pub(crate) use crate::explorer::CoreSink;
+use crate::explorer::{ObjRef, RowId};
 use crate::sql_tab::ViewerFormat;
 use crate::theme::{MONO, Palette};
 use crate::ui;
@@ -49,7 +53,8 @@ pub enum Loadable<T> {
     Failed(String),
 }
 
-/// Schema explorer state for the active connection.
+/// Schema explorer state of one connection node (DBX-5e: one per connection, kept in
+/// [`crate::explorer::Explorer`]).
 #[derive(Default)]
 pub struct SchemaState {
     pub connection: Option<DbConnection>,
@@ -62,10 +67,8 @@ pub struct SchemaState {
     pub hints: HashMap<(String, ObjectKind), String>,
     pub expanded: HashSet<String>,
     pub cached_at: Option<i64>,
-    pub selected: Option<(String, String, ObjectKind)>,
+    /// The tree filter while it is scoped to this connection (empty otherwise).
     pub filter: String,
-    /// Key of the tree row under the keyboard cursor.
-    pub cursor: Option<String>,
     /// Object actions waiting for their `Detail` or routine definition.
     pending_detail: Vec<PendingDetail>,
     /// Detail of relations expanded in the tree (columns, keys, indexes, FKs, triggers),
@@ -73,10 +76,8 @@ pub struct SchemaState {
     pub details: HashMap<(String, String, ObjectKind), Loadable<Box<ObjectDetail>>>,
     /// Reload everything from the server once the catalog session opens.
     refresh_on_open: bool,
-    /// Scroll position of the tree (keeps the cursor row in view).
-    scroll: UniformListScrollHandle,
-    /// Focus of the tree, for its key bindings (`SchemaTree` context).
-    focus: Option<FocusHandle>,
+    /// Catalog requests made while the session was still opening; sent once it opens.
+    queued: Vec<(IntrospectScope, bool)>,
     /// Server-side object search for the filter (DBX-1d).
     pub search: crate::object_search::ObjectSearch,
 }
@@ -97,63 +98,60 @@ struct PendingDetail {
 pub struct SessionState2(pub Option<SessionState>);
 
 impl SchemaState {
-    /// Bind to a connection (opens a dedicated catalog session).
-    pub fn bind(&mut self, conn: Option<DbConnection>, core: &RuntimeHandle) {
-        let same = match (&self.connection, &conn) {
-            (Some(a), Some(b)) => a.id == b.id,
-            (None, None) => true,
-            _ => false,
-        };
-        if same {
-            return;
-        }
-        if let Some(s) = self.session.take() {
-            core.send(Command::CloseSession { session: s });
-        }
-        self.reset();
-        if let Some(c) = conn {
-            let session = next_id();
-            core.send(Command::OpenSession {
-                session,
-                connection: c.id.clone(),
-            });
-            self.session = Some(session);
-            self.state = SessionState2(Some(SessionState::Connecting));
-            self.expanded.insert("db".into());
-            self.connection = Some(c);
+    /// A collapsed, not connected node for `conn`; its catalog session opens on the first
+    /// expand ([`Self::connect`]).
+    pub fn new(conn: DbConnection) -> Self {
+        Self {
+            connection: Some(conn),
+            ..Self::default()
         }
     }
 
-    /// Close and reopen the catalog session (after a failure or a changed profile).
-    pub fn reconnect(&mut self, core: &RuntimeHandle) {
+    /// Whether the catalog session is open.
+    pub fn is_open(&self) -> bool {
+        matches!(self.state.0, Some(SessionState::Open { .. }))
+    }
+
+    /// Open the catalog session (closing a previous one) and expand the node. What is
+    /// already loaded stays on screen until it is reloaded.
+    pub fn connect(&mut self, core: &dyn CoreSink) {
+        let Some(conn) = &self.connection else { return };
+        if let Some(s) = self.session.take() {
+            core.send(Command::CloseSession { session: s });
+        }
+        let session = next_id();
+        core.send(Command::OpenSession {
+            session,
+            connection: conn.id.clone(),
+        });
+        self.session = Some(session);
+        self.state = SessionState2(Some(SessionState::Connecting));
+        self.expanded.insert("db".into());
+    }
+
+    /// Close and reopen the catalog session with an empty tree (a changed profile may
+    /// point elsewhere).
+    pub fn reconnect(&mut self, core: &dyn CoreSink) {
+        if let Some(s) = self.session.take() {
+            core.send(Command::CloseSession { session: s });
+        }
         let conn = self.connection.take();
-        if let Some(s) = self.session.take() {
-            core.send(Command::CloseSession { session: s });
-        }
-        self.reset();
-        self.bind(conn, core);
-    }
-
-    /// Back to the default state, keeping the tree's focus and scroll handles.
-    fn reset(&mut self) {
-        let focus = self.focus.take();
-        let scroll = std::mem::take(&mut self.scroll);
         *self = SchemaState::default();
-        self.focus = focus;
-        self.scroll = scroll;
+        self.connection = conn;
+        self.connect(core);
     }
 
     /// Ask for the detail of an object (`routine`: its routine definition); `action`
     /// runs when it arrives (a cached copy is fine). Returns `false` without a catalog
     /// session.
-    fn request_detail(
+    pub(crate) fn request_detail(
         &mut self,
         action: &str,
         schema: &str,
         name: &str,
         kind: ObjectKind,
         routine: bool,
-        core: &RuntimeHandle,
+        core: &dyn CoreSink,
     ) -> bool {
         if self.session.is_none() {
             return false;
@@ -203,7 +201,7 @@ impl SchemaState {
     }
 
     /// The actions waiting for the detail (or routine definition) of `schema.name`.
-    fn take_pending(
+    pub(crate) fn take_pending(
         &mut self,
         schema: &str,
         name: &str,
@@ -243,7 +241,12 @@ impl SchemaState {
     }
 
     /// The cached detail of a relation, if loaded.
-    fn cached_detail(&self, schema: &str, name: &str, kind: ObjectKind) -> Option<&ObjectDetail> {
+    pub(crate) fn cached_detail(
+        &self,
+        schema: &str,
+        name: &str,
+        kind: ObjectKind,
+    ) -> Option<&ObjectDetail> {
         match self
             .details
             .get(&(schema.to_owned(), name.to_owned(), kind))
@@ -254,7 +257,7 @@ impl SchemaState {
     }
 
     /// Reload the detail of a relation from the server (F5 on it or its children).
-    fn refresh_detail(&mut self, schema: &str, name: &str, kind: ObjectKind, core: &RuntimeHandle) {
+    fn refresh_detail(&mut self, schema: &str, name: &str, kind: ObjectKind, core: &dyn CoreSink) {
         self.request(
             IntrospectScope::Detail {
                 schema: schema.to_owned(),
@@ -268,7 +271,7 @@ impl SchemaState {
 
     /// The folder (schema, kind) a `f:<schema>:<Kind>` key names; a database-level
     /// folder (`f::<Kind>`, DBX-5c) has an empty schema.
-    fn folder_of(&self, key: &str) -> Option<(String, ObjectKind)> {
+    pub(crate) fn folder_of(&self, key: &str) -> Option<(String, ObjectKind)> {
         let (schema, kind) = key.strip_prefix("f:")?.rsplit_once(':')?;
         let kinds = if schema.is_empty() {
             self.server_folders()
@@ -282,11 +285,11 @@ impl SchemaState {
     /// Reload one tree node from the server (F5): a relation's child rows (`owner` is the
     /// relation), a folder, every loaded folder of a schema, an object's folder (tree or
     /// search row) and its loaded detail, or everything for the database row.
-    fn refresh_node(
+    pub(crate) fn refresh_node(
         &mut self,
         key: &str,
         owner: Option<&(String, String, ObjectKind)>,
-        core: &RuntimeHandle,
+        core: &dyn CoreSink,
     ) {
         if let Some((schema, name, kind)) = owner {
             if self
@@ -322,37 +325,52 @@ impl SchemaState {
         }
     }
 
-    /// The catalog session opened.
-    pub fn on_open(&mut self, version: String, core: &RuntimeHandle) {
+    /// The catalog session opened: load the schemas and send what waited for it.
+    pub fn on_open(&mut self, version: String, core: &dyn CoreSink) {
         self.state = SessionState2(Some(SessionState::Open { version }));
         let refresh = std::mem::take(&mut self.refresh_on_open);
         self.request(IntrospectScope::Schemas, refresh, core);
-    }
-
-    /// Reload everything now, or as soon as a connecting catalog session opens.
-    pub fn refresh_when_open(&mut self, core: &RuntimeHandle) {
-        match self.state.0 {
-            Some(SessionState::Connecting) => self.refresh_on_open = true,
-            _ => self.refresh(core),
+        for (scope, refresh) in std::mem::take(&mut self.queued) {
+            self.request(scope, refresh, core);
         }
     }
 
-    /// Close the catalog session (Disconnect); Refresh reopens it.
-    pub fn disconnect(&mut self, core: &RuntimeHandle) {
+    /// Reload everything now, or as soon as the catalog session opens (connecting a
+    /// node that is not connected).
+    pub fn refresh_when_open(&mut self, core: &dyn CoreSink) {
+        match self.state.0 {
+            Some(SessionState::Connecting) => self.refresh_on_open = true,
+            Some(SessionState::Open { .. }) => self.refresh(core),
+            _ => {
+                self.connect(core);
+                self.refresh_on_open = true;
+            }
+        }
+    }
+
+    /// Close the catalog session (Disconnect): the node collapses and reads "not
+    /// connected"; its cache stays and the next expand reconnects.
+    pub fn disconnect(&mut self, core: &dyn CoreSink) {
         if let Some(s) = self.session.take() {
             core.send(Command::CloseSession { session: s });
         }
         self.pending_detail.clear();
-        self.state = SessionState2(Some(SessionState::Failed("Disconnected".into())));
+        self.queued.clear();
+        self.state = SessionState2(None);
+        self.expanded.remove("db");
     }
 
     /// The catalog session failed.
     pub fn on_failed(&mut self, message: String) {
+        self.queued.clear();
         self.state = SessionState2(Some(SessionState::Failed(message)));
     }
 
-    fn request(&mut self, scope: IntrospectScope, refresh: bool, core: &RuntimeHandle) {
+    /// Ask the catalog session for `scope`. While the session is still opening, the
+    /// request waits for it (core answers "not open" otherwise).
+    fn request(&mut self, scope: IntrospectScope, refresh: bool, core: &dyn CoreSink) {
         let Some(session) = self.session else { return };
+        let open = self.is_open();
         match &scope {
             IntrospectScope::Schemas => self.schemas = Loadable::Loading,
             IntrospectScope::Objects { schema, kind } => {
@@ -368,11 +386,34 @@ impl SchemaState {
             }
             _ => {}
         }
+        if !open {
+            if !self.queued.iter().any(|(s, _)| *s == scope) {
+                self.queued.push((scope, refresh));
+            }
+            return;
+        }
         core.send(Command::Introspect {
             session,
             scope,
             refresh,
         });
+    }
+
+    /// Load the folder `(schema, kind)` unless it is loaded or loading (pins, reveal).
+    pub fn ensure_folder(&mut self, schema: &str, kind: ObjectKind, core: &dyn CoreSink) {
+        if !matches!(
+            self.objects.get(&(schema.to_owned(), kind)),
+            Some(Loadable::Loaded(_) | Loadable::Loading)
+        ) {
+            self.request(
+                IntrospectScope::Objects {
+                    schema: schema.to_owned(),
+                    kind,
+                },
+                false,
+                core,
+            );
+        }
     }
 
     /// Object folders for the connection's dialect.
@@ -396,7 +437,7 @@ impl SchemaState {
 
     /// The filter text changed: returns a ticket for [`Self::search_due`] when a debounced
     /// server search should follow.
-    pub fn filter_changed(&mut self, filter: String, core: &RuntimeHandle) -> Option<u64> {
+    pub fn filter_changed(&mut self, filter: String, core: &dyn CoreSink) -> Option<u64> {
         self.filter = filter;
         if !self.filter.is_empty() {
             self.load_all_folders(core);
@@ -405,8 +446,10 @@ impl SchemaState {
     }
 
     /// The search debounce elapsed: send the search unless the filter changed meanwhile.
-    pub fn search_due(&mut self, ticket: u64, core: &RuntimeHandle) {
-        let Some(session) = self.session else { return };
+    pub fn search_due(&mut self, ticket: u64, core: &dyn CoreSink) {
+        let Some(session) = self.session.filter(|_| self.is_open()) else {
+            return;
+        };
         if let Some(scope) = self.search.due(ticket) {
             core.send(Command::Introspect {
                 session,
@@ -417,7 +460,7 @@ impl SchemaState {
     }
 
     /// Load every object folder of every user schema (for search).
-    pub fn load_all_folders(&mut self, core: &RuntimeHandle) {
+    pub fn load_all_folders(&mut self, core: &dyn CoreSink) {
         let schemas: Vec<String> = match &self.schemas {
             Loadable::Loaded(s) => s
                 .iter()
@@ -442,10 +485,15 @@ impl SchemaState {
     }
 
     /// Reload everything from the server.
-    pub fn refresh(&mut self, core: &RuntimeHandle) {
-        // A session that failed to open (wrong password, server down) is reopened.
-        if matches!(self.state.0, Some(SessionState::Failed(_))) {
-            return self.reconnect(core);
+    pub fn refresh(&mut self, core: &dyn CoreSink) {
+        // A session that failed to open (wrong password, server down) is reopened; a
+        // node that is not connected connects first.
+        match self.state.0 {
+            Some(SessionState::Failed(_)) => return self.reconnect(core),
+            None | Some(SessionState::None | SessionState::Connecting) => {
+                return self.refresh_when_open(core);
+            }
+            Some(SessionState::Open { .. }) => {}
         }
         let open: Vec<(String, ObjectKind)> = self
             .objects
@@ -507,14 +555,21 @@ impl SchemaState {
 
     /// Expand or collapse a node. `object` is the relation an object row shows: its
     /// detail (the child rows) loads on the first expand.
-    fn toggle(
+    pub(crate) fn toggle(
         &mut self,
         key: &str,
         object: Option<&(String, String, ObjectKind)>,
-        core: &RuntimeHandle,
+        core: &dyn CoreSink,
     ) {
         if !self.expanded.remove(key) {
             self.expanded.insert(key.to_owned());
+            // The connection node connects on its first expand (and retries a failure).
+            if key == "db" {
+                if self.session.is_none() || matches!(self.state.0, Some(SessionState::Failed(_))) {
+                    self.connect(core);
+                }
+                return;
+            }
             if let Some((schema, name, kind)) = object.filter(|o| o.2.is_relation()) {
                 let key = (schema.clone(), name.clone(), *kind);
                 if !matches!(
@@ -596,27 +651,79 @@ fn columns_and_key(d: &ObjectDetail) -> (Vec<String>, Vec<String>) {
 /// A schema object being dragged (into the SQL editor).
 #[derive(Clone, Debug)]
 pub struct DraggedObject {
-    /// Text to insert: an object's quoted, qualified name, or a child row's (column,
-    /// index, …) quoted name.
+    /// Text to insert into a tab on the same connection: an object's quoted, qualified
+    /// name, or a child row's (column, index, …) quoted name.
     pub qualified: String,
+    /// Text to insert into a tab on another connection: always the qualified name (a
+    /// child row's name qualified by its relation).
+    pub full: String,
+    /// The connection the object belongs to (DBX-5e).
+    pub conn: Option<ProfileId>,
+}
+
+impl DraggedObject {
+    /// What a drop into a tab on `tab_conn` inserts: the qualified name only, unless the
+    /// tab is on the object's own connection.
+    pub fn text_for(&self, tab_conn: Option<&ProfileId>) -> &str {
+        match (&self.conn, tab_conn) {
+            (Some(own), Some(tab)) if own != tab => &self.full,
+            (Some(_), None) => &self.full,
+            _ => &self.qualified,
+        }
+    }
 }
 
 /// One flattened tree row.
-#[derive(Clone)]
-struct TreeRow {
-    depth: usize,
-    caret: &'static str,
-    icon: SharedString,
-    label: SharedString,
-    sub: SharedString,
-    loading: bool,
-    key: String,
-    object: Option<(String, String, ObjectKind)>,
-    dim: bool,
+#[derive(Clone, Debug)]
+pub(crate) struct TreeRow {
+    pub(crate) depth: usize,
+    pub(crate) caret: &'static str,
+    pub(crate) icon: SharedString,
+    pub(crate) label: SharedString,
+    pub(crate) sub: SharedString,
+    pub(crate) loading: bool,
+    /// Key of the row within its connection (`db`, `s:<schema>`, `f:…`, `o:…`, …) or
+    /// in the Favorites section (`favorites`, `fav:<conn>`, `fav:<id>`).
+    pub(crate) key: String,
+    pub(crate) object: Option<(String, String, ObjectKind)>,
+    pub(crate) dim: bool,
     /// The relation a child row (column, key, index, FK, trigger) belongs to.
-    owner: Option<(String, String, ObjectKind)>,
+    pub(crate) owner: Option<(String, String, ObjectKind)>,
     /// Quoted name a child row copies (Ctrl+C) and drags into the editor.
-    leaf: Option<String>,
+    pub(crate) leaf: Option<String>,
+    /// The connection the row belongs to; `None` for the Favorites header.
+    pub(crate) conn: Option<ProfileId>,
+    /// Environment of a connection row (its node, or its group in Favorites).
+    pub(crate) env: Option<switchyard_core::store::EnvironmentLabel>,
+    /// The pin a Favorites row shows.
+    pub(crate) fav: Option<i64>,
+}
+
+impl TreeRow {
+    /// A plain dimmed row at `depth`.
+    pub(crate) fn new(depth: usize, key: String) -> Self {
+        Self {
+            depth,
+            caret: "",
+            icon: "".into(),
+            label: "".into(),
+            sub: "".into(),
+            loading: false,
+            key,
+            object: None,
+            dim: true,
+            owner: None,
+            leaf: None,
+            conn: None,
+            env: None,
+            fav: None,
+        }
+    }
+
+    /// Whether this is a connection node.
+    pub(crate) fn is_node(&self) -> bool {
+        self.key == "db" && self.conn.is_some()
+    }
 }
 
 /// One child group under an expanded relation.
@@ -736,17 +843,8 @@ fn relation_rows(
     rows: &mut Vec<TreeRow>,
 ) {
     let row = |depth: usize, key: String| TreeRow {
-        depth,
-        caret: "",
-        icon: "".into(),
-        label: "".into(),
-        sub: "".into(),
-        loading: false,
-        key,
-        object: None,
-        dim: true,
         owner: Some(owner.clone()),
-        leaf: None,
+        ..TreeRow::new(depth, key)
     };
     let d = match s.details.get(owner) {
         Some(Loadable::Loaded(d)) => d,
@@ -823,19 +921,7 @@ fn folder_rows(
         return;
     }
     let show = fopen || (!filter.is_empty() && !matching.is_empty());
-    let row = |depth: usize, key: String| TreeRow {
-        depth,
-        caret: "",
-        icon: "".into(),
-        label: "".into(),
-        sub: "".into(),
-        loading: false,
-        key,
-        object: None,
-        dim: true,
-        owner: None,
-        leaf: None,
-    };
+    let row = TreeRow::new;
     rows.push(TreeRow {
         caret: if show { "▾" } else { "▸" },
         label: kind.folder_label().into(),
@@ -910,39 +996,21 @@ fn search_rows(s: &SchemaState, filter: &str, rows: &mut Vec<TreeRow>) {
     };
     if let Some((icon, label, loading)) = status {
         rows.push(TreeRow {
-            depth: 1,
-            caret: "",
             icon: icon.into(),
             label: label.into(),
-            sub: "".into(),
             loading,
-            key: "search-status".into(),
-            object: None,
-            dim: true,
-            owner: None,
-            leaf: None,
+            ..TreeRow::new(1, "search-status".into())
         });
     }
     let hits = merge(filter, local, s.search.hits());
     if hits.is_empty() && matches!(s.search.state, SearchState::Done(_)) {
         rows.push(TreeRow {
-            depth: 1,
-            caret: "",
-            icon: "".into(),
             label: "No matching objects".into(),
-            sub: "".into(),
-            loading: false,
-            key: "search-empty".into(),
-            object: None,
-            dim: true,
-            owner: None,
-            leaf: None,
+            ..TreeRow::new(1, "search-empty".into())
         });
     }
     for o in hits {
         rows.push(TreeRow {
-            depth: 1,
-            caret: "",
             icon: o.kind.icon().into(),
             label: if o.schema.is_empty() {
                 o.name.clone().into()
@@ -956,13 +1024,122 @@ fn search_rows(s: &SchemaState, filter: &str, rows: &mut Vec<TreeRow>) {
                 .into()
             },
             sub: kind_label(o.kind).into(),
-            loading: false,
-            key: format!("q:{}:{:?}:{}", o.schema, o.kind, o.name),
             object: Some((o.schema.clone(), o.name.clone(), o.kind)),
             dim: false,
-            owner: None,
-            leaf: None,
+            ..TreeRow::new(1, format!("q:{}:{:?}:{}", o.schema, o.kind, o.name))
         });
+    }
+}
+
+/// The short status a connection node shows on the right.
+fn node_status(s: &SchemaState) -> String {
+    match &s.state.0 {
+        Some(SessionState::Open { version }) => version
+            .replace("PostgreSQL ", "pg ")
+            .split('.')
+            .next()
+            .unwrap_or("")
+            .to_owned(),
+        Some(SessionState::Connecting) => "connecting".into(),
+        Some(SessionState::Failed(_)) => "failed".into(),
+        None | Some(SessionState::None) => "not connected".into(),
+    }
+}
+
+/// The rows of one connection: its node (depth 0) and, when open, its schemas, folders
+/// and objects, or its search results while the filter is scoped to it. With
+/// `filtered_out` (the filter is scoped to another connection) only the node shows.
+/// Every row is tagged with the connection.
+pub(crate) fn connection_rows(s: &SchemaState, filtered_out: bool, rows: &mut Vec<TreeRow>) {
+    let Some(conn) = &s.connection else { return };
+    let start = rows.len();
+    let dialect = dialect_for(conn.engine);
+    let quote = |name: &str| dialect.quote_ident(name);
+    let filter = s.filter.to_lowercase();
+    // A scoped filter shows its matches even under a collapsed (but connected) node.
+    let db_open =
+        !filtered_out && (s.expanded.contains("db") || (!filter.is_empty() && s.state.0.is_some()));
+    rows.push(TreeRow {
+        caret: if db_open { "▾" } else { "▸" },
+        icon: conn.engine.badge().into(),
+        label: conn.name.clone().into(),
+        sub: node_status(s).into(),
+        loading: matches!(s.state.0, Some(SessionState::Connecting)),
+        dim: false,
+        env: Some(conn.environment),
+        ..TreeRow::new(0, "db".into())
+    });
+    if db_open {
+        if crate::object_search::ObjectSearch::applies(&filter) {
+            search_rows(s, &filter, rows);
+        } else {
+            schema_tree_rows(s, &filter, &quote, rows);
+        }
+    }
+    for r in &mut rows[start..] {
+        r.conn = Some(conn.id.clone());
+    }
+}
+
+/// Schemas, their folders and the database-level folders of an open connection node.
+fn schema_tree_rows(
+    s: &SchemaState,
+    filter: &str,
+    quote: &dyn Fn(&str) -> String,
+    rows: &mut Vec<TreeRow>,
+) {
+    // The session failed (wrong password, server down): say why above whatever was
+    // loaded before; F5 or Refresh reconnects.
+    if let Some(SessionState::Failed(e)) = &s.state.0 {
+        rows.push(TreeRow {
+            icon: "!".into(),
+            label: e.clone().into(),
+            ..TreeRow::new(1, "session-failed".into())
+        });
+        if !matches!(s.schemas, Loadable::Loaded(_)) {
+            return;
+        }
+    }
+    match &s.schemas {
+        Loadable::Loaded(schemas) => {
+            for sc in schemas {
+                let key = format!("s:{}", sc.name);
+                let open = s.expanded.contains(&key) || !filter.is_empty();
+                rows.push(TreeRow {
+                    caret: if open { "▾" } else { "▸" },
+                    icon: "S".into(),
+                    label: sc.name.clone().into(),
+                    dim: sc.is_system,
+                    ..TreeRow::new(1, key)
+                });
+                if !open {
+                    continue;
+                }
+                for kind in s.folders() {
+                    folder_rows(s, &sc.name, *kind, 2, filter, quote, rows);
+                }
+            }
+            // Database-level folders (users and roles, jobs, extensions; DBX-5c).
+            for kind in s.server_folders() {
+                folder_rows(s, "", *kind, 1, filter, quote, rows);
+            }
+        }
+        // Not connected yet: the node's first expand connects.
+        Loadable::NotLoaded if s.session.is_none() => rows.push(TreeRow {
+            label: "Not connected".into(),
+            ..TreeRow::new(1, "not-connected".into())
+        }),
+        Loadable::Loading | Loadable::NotLoaded => rows.push(TreeRow {
+            caret: "▾",
+            label: "Schemas".into(),
+            loading: true,
+            ..TreeRow::new(1, "loading".into())
+        }),
+        Loadable::Failed(e) => rows.push(TreeRow {
+            icon: "!".into(),
+            label: e.clone().into(),
+            ..TreeRow::new(1, "failed".into())
+        }),
     }
 }
 
@@ -1025,14 +1202,14 @@ enum ConnAction {
 /// Context-menu target.
 #[derive(Clone, Debug)]
 pub enum CtxTarget {
-    /// A schema object.
-    Object(String, String, ObjectKind),
+    /// A schema object on its connection.
+    Object(ObjRef),
     /// A saved profile.
     Profile(ProfileId),
     /// A tab in the tab strip (by index).
     Tab(usize),
-    /// A schema (its row or one of its folders).
-    Schema(String),
+    /// A schema (its row or one of its folders) on a connection.
+    Schema(ProfileId, String),
 }
 
 /// The schema of a tree row key: a schema row (`s:<schema>`) or a folder
@@ -1123,14 +1300,64 @@ impl CtxMenu {
 }
 
 impl Workspace {
-    /// Point the schema explorer at the active SQL tab's connection.
+    /// Follow the active SQL tab: its connection's node is highlighted and scrolled into
+    /// view (added, expanded and connected when it is not in the explorer yet). Other
+    /// nodes keep their state.
     pub(crate) fn sync_schema(&mut self, cx: &mut Context<Self>) {
         let conn = self
             .active_sql()
             .and_then(|t| t.read(cx).connection.clone());
-        if conn.is_some() || self.schema.connection.is_none() {
-            self.schema.bind(conn, &self.core);
+        let id = conn.as_ref().map(|c| c.id.clone());
+        let known = id.as_ref().is_some_and(|i| self.explorer.contains(i));
+        if id == self.explorer.active && (known || id.is_none()) {
+            return;
         }
+        self.explorer.active = id.clone();
+        let (Some(conn), Some(id)) = (conn, id) else {
+            return;
+        };
+        // While the saved nodes load at startup, nothing connects by itself.
+        if self.explorer.ensure(conn) && !self.explorer.restoring {
+            let core = self.core.clone();
+            if let Some(s) = self.explorer.state_mut(&id) {
+                s.connect(&core);
+            }
+        }
+        self.explorer.scroll_to(&RowId::node(&id));
+    }
+
+    /// Connection menu "Show in explorer": add the connection's node, expand and connect
+    /// it, and select it.
+    pub(crate) fn show_in_explorer(&mut self, id: &ProfileId, cx: &mut Context<Self>) {
+        let Some(conn) = self.profiles.db(id).cloned() else {
+            return;
+        };
+        let core = self.core.clone();
+        self.explorer.ensure_connected(conn, &core);
+        self.side_tab = SideTab::Schema;
+        let node = RowId::node(id);
+        self.explorer.scroll_to(&node);
+        self.explorer.cursor = Some(node);
+        cx.notify();
+    }
+
+    /// Connection menu "Remove from explorer": drop the node and close its session.
+    pub(crate) fn remove_from_explorer(&mut self, id: &ProfileId, cx: &mut Context<Self>) {
+        let core = self.core.clone();
+        self.explorer.remove(id, &core);
+        cx.notify();
+    }
+
+    /// The tree's Refresh link, F5 without a cursor and the palette's Refresh Schema:
+    /// reload the connection in scope ([`Explorer::scope_conn`]).
+    pub(crate) fn refresh_explorer(&mut self, cx: &mut Context<Self>) {
+        let core = self.core.clone();
+        if let Some(id) = self.explorer.scope_conn()
+            && let Some(s) = self.explorer.state_mut(&id)
+        {
+            s.refresh(&core);
+        }
+        cx.notify();
     }
 
     /// Connection menu "New query here": a new SQL tab on that connection.
@@ -1149,24 +1376,19 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Connection menu "Refresh schema": show that connection's schema and reload it
-    /// from the server (once its catalog session has opened).
+    /// Connection menu "Refresh schema": show that connection's node (connecting it)
+    /// and reload it from the server once its catalog session has opened.
     pub(crate) fn refresh_connection_schema(
         &mut self,
         id: &ProfileId,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.profiles.db(id).is_none() {
-            return;
-        }
-        // The explorer follows the active SQL tab: bring one on this connection forward.
-        if !self.schema.connection.as_ref().is_some_and(|c| &c.id == id) {
-            self.open_connection(id, window, cx);
-        }
-        self.side_tab = SideTab::Schema;
+        self.show_in_explorer(id, cx);
         let core = self.core.clone();
-        self.schema.refresh_when_open(&core);
+        if let Some(s) = self.explorer.state_mut(id) {
+            s.refresh_when_open(&core);
+        }
         cx.notify();
     }
 
@@ -1224,12 +1446,12 @@ impl Workspace {
                 t.update(cx, |t, cx| t.disconnect(cx));
             }
         }
-        if self.schema.connection.as_ref().is_some_and(|c| &c.id == id)
-            && self.schema.session.is_some()
+        let core = self.core.clone();
+        if let Some(s) = self.explorer.state_mut(id)
+            && s.session.is_some()
         {
             closed += 1;
-            let core = self.core.clone();
-            self.schema.disconnect(&core);
+            s.disconnect(&core);
         }
         if closed == 0 {
             self.toast(format!("{name} is not connected"), cx);
@@ -1396,161 +1618,48 @@ impl Workspace {
         rows
     }
 
-    fn schema_rows(&self) -> Vec<TreeRow> {
-        let s = &self.schema;
-        let mut rows = Vec::new();
-        let Some(conn) = &s.connection else {
-            return rows;
-        };
-        let dialect = dialect_for(conn.engine);
-        let quote = |name: &str| dialect.quote_ident(name);
-        let version = match &s.state.0 {
-            Some(SessionState::Open { version }) => version
-                .replace("PostgreSQL ", "pg ")
-                .split('.')
-                .next()
-                .unwrap_or("")
-                .to_owned(),
-            Some(SessionState::Connecting) => "connecting".into(),
-            Some(SessionState::Failed(_)) => "failed".into(),
-            _ => String::new(),
-        };
-        let db_open = s.expanded.contains("db");
-        rows.push(TreeRow {
-            depth: 0,
-            caret: if db_open { "▾" } else { "▸" },
-            icon: "DB".into(),
-            label: if conn.database.is_empty() {
-                conn.name.clone().into()
-            } else {
-                conn.database.clone().into()
-            },
-            sub: version.into(),
-            loading: matches!(s.state.0, Some(SessionState::Connecting)),
-            key: "db".into(),
-            object: None,
-            dim: false,
-            owner: None,
-            leaf: None,
-        });
-        if !db_open {
-            return rows;
-        }
-        let filter = s.filter.to_lowercase();
-        if crate::object_search::ObjectSearch::applies(&filter) {
-            search_rows(s, &filter, &mut rows);
-            return rows;
-        }
-        match &s.schemas {
-            Loadable::Loaded(schemas) => {
-                for sc in schemas {
-                    let key = format!("s:{}", sc.name);
-                    let open = s.expanded.contains(&key) || !filter.is_empty();
-                    rows.push(TreeRow {
-                        depth: 1,
-                        caret: if open { "▾" } else { "▸" },
-                        icon: "S".into(),
-                        label: sc.name.clone().into(),
-                        sub: "".into(),
-                        loading: false,
-                        key: key.clone(),
-                        object: None,
-                        dim: sc.is_system,
-                        owner: None,
-                        leaf: None,
-                    });
-                    if !open {
-                        continue;
-                    }
-                    for kind in s.folders() {
-                        folder_rows(s, &sc.name, *kind, 2, &filter, &quote, &mut rows);
-                    }
-                }
-                // Database-level folders (users and roles, jobs, extensions; DBX-5c).
-                for kind in s.server_folders() {
-                    folder_rows(s, "", *kind, 1, &filter, &quote, &mut rows);
-                }
-            }
-            Loadable::Loading | Loadable::NotLoaded => rows.push(TreeRow {
-                depth: 1,
-                caret: "▾",
-                icon: "".into(),
-                label: "Schemas".into(),
-                sub: "".into(),
-                loading: true,
-                key: "loading".into(),
-                object: None,
-                dim: true,
-                owner: None,
-                leaf: None,
-            }),
-            Loadable::Failed(e) => rows.push(TreeRow {
-                depth: 1,
-                caret: "",
-                icon: "!".into(),
-                label: e.clone().into(),
-                sub: "".into(),
-                loading: false,
-                key: "failed".into(),
-                object: None,
-                dim: true,
-                owner: None,
-                leaf: None,
-            }),
-        }
-        rows
-    }
-
-    /// Run a context-menu action on a schema object. Templates and DDL first fetch the
-    /// object's `Detail` through the runtime; they finish in [`Self::on_schema_detail`].
+    /// Run a context-menu action on a schema object, on the object's own connection
+    /// (not the active tab's). Templates and DDL first fetch the object's `Detail`
+    /// through that connection's catalog session; they finish in
+    /// [`Self::on_schema_detail`].
     pub(crate) fn object_action(
         &mut self,
         action: &str,
-        schema: String,
-        name: String,
-        kind: ObjectKind,
+        o: ObjRef,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !action_allowed(action, kind) {
+        if !action_allowed(action, o.kind) {
             return;
         }
         if action == "properties" {
-            return self.open_tree_object_properties(schema, name, kind, None, window, cx);
+            return self.open_tree_object_properties(&o, None, window, cx);
         }
         if action == "deps" {
             let page = Some(crate::object_tab::Page::Dependencies);
-            return self.open_tree_object_properties(schema, name, kind, page, window, cx);
+            return self.open_tree_object_properties(&o, page, window, cx);
         }
         if NEEDS_DETAIL.contains(&action) {
-            let routine = needs_routine(action, kind);
+            let routine = needs_routine(action, o.kind);
             // An expanded relation's detail is already here.
-            if !routine && let Some(d) = self.schema.cached_detail(&schema, &name, kind) {
+            if !routine && let Some(d) = self.explorer.cached_detail(&o) {
                 let d = d.clone();
-                return self.finish_object_action(
-                    action,
-                    &schema,
-                    &name,
-                    kind,
-                    Some(&d),
-                    window,
-                    cx,
-                );
+                return self.finish_object_action(action, &o, Some(&d), window, cx);
             }
-            if self
-                .schema
-                .request_detail(action, &schema, &name, kind, routine, &self.core)
-            {
+            let core = self.core.clone();
+            if self.explorer.request_detail(action, &o, routine, &core) {
+                cx.notify();
                 return;
             }
         }
-        self.finish_object_action(action, &schema, &name, kind, None, window, cx);
+        self.finish_object_action(action, &o, None, window, cx);
     }
 
-    /// The detail of an object arrived on the schema session: run the actions waiting
-    /// for it.
+    /// The detail of an object arrived on the catalog session of node `conn`: keep it
+    /// for the tree and run the actions waiting for it.
     pub(crate) fn on_schema_detail(
         &mut self,
+        conn: ProfileId,
         scope: IntrospectScope,
         result: Result<CatalogChunk, String>,
         window: &mut Window,
@@ -1563,11 +1672,14 @@ impl Workspace {
             } => (schema, name, kind, true),
             _ => return,
         };
+        let Some(state) = self.explorer.state_mut(&conn) else {
+            return;
+        };
         if !routine {
-            self.schema.store_detail(&schema, &name, kind, &result);
+            state.store_detail(&schema, &name, kind, &result);
             cx.notify();
         }
-        let actions = self.schema.take_pending(&schema, &name, kind, routine);
+        let actions = state.take_pending(&schema, &name, kind, routine);
         if actions.is_empty() {
             return;
         }
@@ -1583,28 +1695,32 @@ impl Workspace {
                 None
             }
         };
+        let o = ObjRef {
+            conn,
+            schema,
+            name,
+            kind,
+        };
         for action in actions {
             if detail.is_none() && NEEDS_DATA.contains(&action.as_str()) {
                 continue;
             }
-            self.finish_object_action(&action, &schema, &name, kind, detail.as_deref(), window, cx);
+            self.finish_object_action(&action, &o, detail.as_deref(), window, cx);
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn finish_object_action(
         &mut self,
         action: &str,
-        schema: &str,
-        name: &str,
-        kind: ObjectKind,
+        o: &ObjRef,
         detail: Option<&ObjectDetail>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(conn) = self.schema.connection.clone() else {
+        let Some(conn) = self.profiles.db(&o.conn).cloned() else {
             return;
         };
+        let (schema, name, kind) = (o.schema.as_str(), o.name.as_str(), o.kind);
         if !action_allowed(action, kind) {
             return;
         }
@@ -1664,11 +1780,10 @@ impl Workspace {
         // current query is never replaced.
         let template =
             matches!(action, "insert" | "update" | "delete") || action.starts_with("script_");
-        let database = Some(conn.database.clone()).filter(|d| !d.is_empty());
         let same_db = self.active_sql().is_some_and(|t| {
             let t = t.read(cx);
-            t.connection.as_ref().is_some_and(|c| c.id == conn.id)
-                && t.current_database() == database
+            let active = t.connection.as_ref().map(|c| (&c.id, t.current_database()));
+            crate::explorer::template_into_active(&conn, active)
         });
         let tab = if template && same_db {
             self.active_sql()
@@ -1982,33 +2097,29 @@ impl Workspace {
     }
 
     fn render_schema(&mut self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let rows = self.schema_rows();
+        let rows = self.explorer.rows();
         let count = rows.len();
         let p = *p;
-        let has_conn = self.schema.connection.is_some();
-        let cached = self.schema.cached_at.map(|at| {
-            let mins = (now_ms() - at).max(0) / 60_000;
-            if mins == 0 {
-                "Cached just now".to_owned()
-            } else {
-                format!("Cached {mins} min ago")
-            }
+        let scope = self.explorer.scope_conn();
+        let status = scope.as_ref().and_then(|id| {
+            let s = self.explorer.state(id)?;
+            let name = s.connection.as_ref().map(|c| c.name.clone())?;
+            let cached = match s.cached_at {
+                None => "not cached yet".to_owned(),
+                Some(at) => match (now_ms() - at).max(0) / 60_000 {
+                    0 => "cached just now".to_owned(),
+                    mins => format!("cached {mins} min ago"),
+                },
+            };
+            Some(format!("{name} · {cached}"))
         });
         let focus = self
-            .schema
+            .explorer
             .focus
             .get_or_insert_with(|| cx.focus_handle())
             .clone();
-        let scroll = self.schema.scroll.clone();
-        if !has_conn {
-            return div()
-                .flex_1()
-                .p(px(16.))
-                .text_size(px(12.5))
-                .text_color(p.fg3)
-                .child("Open a SQL tab with a connection to browse its schema.")
-                .into_any_element();
-        }
+        let scroll = self.explorer.scroll.clone();
+        let empty = rows.is_empty();
         div()
             .flex_1()
             .min_h_0()
@@ -2052,104 +2163,139 @@ impl Workspace {
                         div()
                             .flex()
                             .justify_between()
+                            .gap(px(8.))
                             .px(px(2.))
                             .pt(px(6.))
                             .text_size(px(11.))
                             .text_color(p.fg3)
-                            .child(cached.unwrap_or_else(|| "Not cached yet".into()))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(status.unwrap_or_default()),
+                            )
                             .child(
                                 div()
                                     .id("schema-refresh")
+                                    .flex_none()
                                     .text_color(p.acc)
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        this.schema.refresh(&this.core);
-                                        this.schema.filter.clear();
-                                        cx.notify();
+                                        this.refresh_explorer(cx);
                                     }))
                                     .child("Refresh"),
                             ),
                     ),
             )
-            .child(
-                div()
-                    .key_context("SchemaTree")
-                    .track_focus(&focus)
-                    .on_action(cx.listener(|this, _: &TreeUp, _, cx| this.tree_move(-1, cx)))
-                    .on_action(cx.listener(|this, _: &TreeDown, _, cx| this.tree_move(1, cx)))
-                    .on_action(cx.listener(|this, _: &TreeExpand, _, cx| this.tree_expand(cx)))
-                    .on_action(cx.listener(|this, _: &TreeCollapse, _, cx| this.tree_collapse(cx)))
-                    .on_action(cx.listener(|this, _: &TreeOpen, w, cx| this.tree_open(w, cx)))
-                    .on_action(cx.listener(|this, _: &TreeCopy, w, cx| this.tree_copy(w, cx)))
-                    .on_action(cx.listener(|this, _: &TreeRefresh, _, cx| this.tree_refresh(cx)))
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        uniform_list(
-                            "schema-rows",
-                            count,
-                            cx.processor(
-                                move |this, range: std::ops::Range<usize>, _window, cx| {
-                                    range
-                                        .map(|i| this.render_schema_row(&rows[i], i, &p, cx))
-                                        .collect::<Vec<_>>()
-                                },
-                            ),
-                        )
-                        .track_scroll(&scroll)
+            .when(empty, |d| {
+                d.child(
+                    div()
                         .flex_1()
-                        .pb(px(8.)),
-                    ),
-            )
+                        .p(px(16.))
+                        .text_size(px(12.5))
+                        .text_color(p.fg3)
+                        .child(
+                            "Open a SQL tab, or choose Show in explorer on a database \
+                             connection, to browse its schema.",
+                        ),
+                )
+            })
+            .when(!empty, |d| {
+                d.child(
+                    div()
+                        .key_context("SchemaTree")
+                        .track_focus(&focus)
+                        .on_action(cx.listener(|this, _: &TreeUp, _, cx| this.tree_move(-1, cx)))
+                        .on_action(cx.listener(|this, _: &TreeDown, _, cx| this.tree_move(1, cx)))
+                        .on_action(cx.listener(|this, _: &TreeExpand, _, cx| this.tree_expand(cx)))
+                        .on_action(
+                            cx.listener(|this, _: &TreeCollapse, _, cx| this.tree_collapse(cx)),
+                        )
+                        .on_action(cx.listener(|this, _: &TreeOpen, w, cx| this.tree_open(w, cx)))
+                        .on_action(cx.listener(|this, _: &TreeCopy, w, cx| this.tree_copy(w, cx)))
+                        .on_action(
+                            cx.listener(|this, _: &TreeRefresh, _, cx| this.tree_refresh(cx)),
+                        )
+                        .on_action(cx.listener(|this, _: &TreePin, _, cx| this.tree_pin(cx)))
+                        .flex_1()
+                        .min_h_0()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            uniform_list(
+                                "schema-rows",
+                                count,
+                                cx.processor(
+                                    move |this, range: std::ops::Range<usize>, _window, cx| {
+                                        range
+                                            .map(|i| this.render_schema_row(&rows[i], i, &p, cx))
+                                            .collect::<Vec<_>>()
+                                    },
+                                ),
+                            )
+                            .track_scroll(&scroll)
+                            .flex_1()
+                            .pb(px(8.)),
+                        ),
+                )
+            })
             .into_any_element()
     }
 
     /// Index of the keyboard cursor in `rows`.
     fn tree_cursor(&self, rows: &[TreeRow]) -> Option<usize> {
-        let key = self.schema.cursor.as_deref()?;
-        rows.iter().position(|r| r.key == key)
+        let c = self.explorer.cursor.as_ref()?;
+        rows.iter().position(|r| c.is(r))
     }
 
     /// Put the keyboard cursor on row `ix` and scroll it into view.
     fn tree_set_cursor(&mut self, rows: &[TreeRow], ix: usize, cx: &mut Context<Self>) {
         let Some(r) = rows.get(ix) else { return };
-        self.schema.cursor = Some(r.key.clone());
-        if r.object.is_some() {
-            self.schema.selected = r.object.clone();
+        self.explorer.cursor = Some(RowId::of(r));
+        if let Some(o) = obj_ref(r) {
+            self.explorer.selected = Some(o);
         }
-        self.schema
+        self.explorer
             .scroll
             .scroll_to_item(ix, ScrollStrategy::Nearest);
         cx.notify();
     }
 
-    /// Up / Down.
-    fn tree_move(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let rows = self.schema_rows();
-        if rows.is_empty() {
-            return;
+    /// Expand or collapse row `r` (a connection's node or tree row, or the Favorites
+    /// header). `object` loads a relation's child rows on its first expand.
+    fn tree_toggle(&mut self, r: &TreeRow, with_object: bool, cx: &mut Context<Self>) {
+        let core = self.core.clone();
+        match &r.conn {
+            None if r.key == "favorites" => {
+                self.explorer.favorites_open = !self.explorer.favorites_open;
+            }
+            Some(id) if r.fav.is_none() && !r.key.starts_with("fav:") => {
+                if let Some(s) = self.explorer.state_mut(id) {
+                    let object = if with_object { r.object.as_ref() } else { None };
+                    s.toggle(&r.key, object, &core);
+                }
+            }
+            _ => {}
         }
-        let ix = match self.tree_cursor(&rows) {
-            Some(i) => i.saturating_add_signed(delta).min(rows.len() - 1),
-            None => 0,
-        };
-        self.tree_set_cursor(&rows, ix, cx);
+        cx.notify();
+    }
+
+    /// Up / Down, across connections.
+    fn tree_move(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let rows = self.explorer.rows();
+        if let Some(ix) = crate::explorer::step(&rows, self.explorer.cursor.as_ref(), delta) {
+            self.tree_set_cursor(&rows, ix, cx);
+        }
     }
 
     /// Right: expand a collapsed node, or step into an expanded one.
     fn tree_expand(&mut self, cx: &mut Context<Self>) {
-        let rows = self.schema_rows();
+        let rows = self.explorer.rows();
         let Some(ix) = self.tree_cursor(&rows) else {
             return self.tree_move(0, cx);
         };
         match rows[ix].caret {
-            "▸" => {
-                let core = self.core.clone();
-                self.schema
-                    .toggle(&rows[ix].key, rows[ix].object.as_ref(), &core);
-                cx.notify();
-            }
+            "▸" => self.tree_toggle(&rows[ix], true, cx),
             "▾" if rows.get(ix + 1).is_some_and(|n| n.depth > rows[ix].depth) => {
                 self.tree_set_cursor(&rows, ix + 1, cx);
             }
@@ -2159,39 +2305,44 @@ impl Workspace {
 
     /// Left: collapse an expanded node, else go to the parent.
     fn tree_collapse(&mut self, cx: &mut Context<Self>) {
-        let rows = self.schema_rows();
+        let rows = self.explorer.rows();
         let Some(ix) = self.tree_cursor(&rows) else {
             return self.tree_move(0, cx);
         };
         let r = &rows[ix];
-        if r.caret == "▾" && self.schema.expanded.contains(&r.key) {
-            let core = self.core.clone();
-            self.schema.toggle(&r.key, r.object.as_ref(), &core);
-            cx.notify();
-            return;
+        let expanded = match &r.conn {
+            None => self.explorer.favorites_open,
+            Some(id) => self
+                .explorer
+                .state(id)
+                .is_some_and(|s| s.expanded.contains(&r.key)),
+        };
+        if r.caret == "▾" && expanded {
+            return self.tree_toggle(r, true, cx);
         }
-        if let Some(parent) = rows[..ix].iter().rposition(|p| p.depth < r.depth) {
+        if let Some(parent) = crate::explorer::parent(&rows, ix) {
             self.tree_set_cursor(&rows, parent, cx);
         }
     }
 
-    /// Enter: what a double-click does (open a relation's data), or toggle a node.
+    /// Enter: reveal a pin, run what a double-click does (open a relation's data), or
+    /// toggle a node.
     fn tree_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let rows = self.schema_rows();
+        let rows = self.explorer.rows();
         let Some(ix) = self.tree_cursor(&rows) else {
             return;
         };
-        match rows[ix].object.clone() {
-            Some((s, n, k)) => {
-                if let Some(action) = default_action(k) {
-                    self.object_action(action, s, n, k, window, cx);
+        let r = rows[ix].clone();
+        if let Some(fav) = r.fav {
+            return self.reveal_favorite(fav, window, cx);
+        }
+        match obj_ref(&r) {
+            Some(o) => {
+                if let Some(action) = default_action(o.kind) {
+                    self.object_action(action, o, window, cx);
                 }
             }
-            None if !rows[ix].caret.is_empty() => {
-                let core = self.core.clone();
-                self.schema.toggle(&rows[ix].key, None, &core);
-                cx.notify();
-            }
+            None if !r.caret.is_empty() => self.tree_toggle(&r, false, cx),
             None => {}
         }
     }
@@ -2199,28 +2350,113 @@ impl Workspace {
     /// Ctrl+C / Cmd+C: copy the selected object's qualified name, or a child row's name
     /// (column, key, index, …).
     fn tree_copy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let rows = self.schema_rows();
+        let rows = self.explorer.rows();
         let Some(ix) = self.tree_cursor(&rows) else {
             return;
         };
         if let Some(leaf) = rows[ix].leaf.clone() {
             cx.write_to_clipboard(ClipboardItem::new_string(leaf.clone()));
             self.toast(format!("Copied {leaf}"), cx);
-        } else if let Some((s, n, k)) = rows[ix].object.clone() {
-            self.object_action("copy", s, n, k, window, cx);
+        } else if let Some(o) = obj_ref(&rows[ix]) {
+            self.object_action("copy", o, window, cx);
         }
     }
 
-    /// F5: reload the selected node from the server.
+    /// F5: reload the selected node from the server, on its own connection (a pin
+    /// reloads its folder; no cursor reloads the connection in scope).
     fn tree_refresh(&mut self, cx: &mut Context<Self>) {
-        let key = self.schema.cursor.clone().unwrap_or_else(|| "db".into());
-        let rows = self.schema_rows();
-        let owner = rows
-            .iter()
-            .find(|r| r.key == key)
-            .and_then(|r| r.owner.clone().or_else(|| r.object.clone()));
+        let rows = self.explorer.rows();
+        let Some(r) = self.tree_cursor(&rows).map(|ix| rows[ix].clone()) else {
+            return self.refresh_explorer(cx);
+        };
+        let Some(id) = r.conn.clone() else { return };
+        let key = match (&r.fav, &r.object) {
+            (Some(_), Some((s, n, k))) => format!("o:{s}:{k:?}:{n}"),
+            (Some(_), None) => format!("s:{}", r.label),
+            (None, _) if r.key.starts_with("fav:") => return,
+            (None, _) => r.key.clone(),
+        };
+        let owner = r.owner.clone().or_else(|| r.object.clone());
         let core = self.core.clone();
-        self.schema.refresh_node(&key, owner.as_ref(), &core);
+        if let Some(s) = self.explorer.state_mut(&id) {
+            s.refresh_node(&key, owner.as_ref(), &core);
+        }
+        cx.notify();
+    }
+
+    /// Ctrl+D / Cmd+D: pin or unpin the selected object or schema (unpin on a pin row).
+    fn tree_pin(&mut self, cx: &mut Context<Self>) {
+        let rows = self.explorer.rows();
+        let Some(r) = self.tree_cursor(&rows).map(|ix| rows[ix].clone()) else {
+            return;
+        };
+        if let Some(id) = r.fav {
+            self.core.send(Command::RemoveFavorite { id });
+            self.toast(format!("Unpinned {}", r.label), cx);
+            return;
+        }
+        let Some(conn) = r.conn.clone() else { return };
+        if let Some(o) = obj_ref(&r) {
+            return self.toggle_pin(&CtxTarget::Object(o), cx);
+        }
+        if let Some(schema) = r.key.strip_prefix("s:") {
+            self.toggle_pin(&CtxTarget::Schema(conn, schema.to_owned()), cx);
+        }
+    }
+
+    /// The pin a context-menu target would add, and whether it is pinned already.
+    pub(crate) fn pin_of(&self, target: &CtxTarget) -> Option<(Favorite, Option<i64>)> {
+        let fav = match target {
+            CtxTarget::Object(o) => self.explorer.pin_for_object(o),
+            CtxTarget::Schema(conn, schema) => self.explorer.pin_for_schema(conn, schema),
+            _ => return None,
+        };
+        let id = self.explorer.find_pin(&fav);
+        Some((fav, id))
+    }
+
+    /// Pin, or unpin when pinned, an object or schema (context menu, Ctrl/Cmd+D).
+    pub(crate) fn toggle_pin(&mut self, target: &CtxTarget, cx: &mut Context<Self>) {
+        let Some((fav, id)) = self.pin_of(target) else {
+            return;
+        };
+        let label = match fav.kind {
+            Some(_) if !fav.schema.is_empty() => format!("{}.{}", fav.schema, fav.name),
+            Some(_) => fav.name.clone(),
+            None => fav.schema.clone(),
+        };
+        match id {
+            Some(id) => {
+                self.core.send(Command::RemoveFavorite { id });
+                self.toast(format!("Unpinned {label}"), cx);
+            }
+            None => {
+                self.core.send(Command::AddFavorite(fav));
+                self.toast(format!("Pinned {label}"), cx);
+            }
+        }
+    }
+
+    /// A pin was clicked: reveal it in its connection's tree, connecting and expanding
+    /// as needed; it is selected once its folder has loaded.
+    pub(crate) fn reveal_favorite(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(f) = self.explorer.favorites.iter().find(|f| f.id == id).cloned() else {
+            return;
+        };
+        let Some(conn) = self.profiles.db(&f.connection_id).cloned() else {
+            self.toast("The connection of this pin no longer exists", cx);
+            return;
+        };
+        if !self.explorer.filter.is_empty() {
+            self.schema_search
+                .update(cx, |i, cx| i.set_value("", window, cx));
+            let core = self.core.clone();
+            self.explorer.filter_changed(String::new(), &core);
+        }
+        let core = self.core.clone();
+        self.explorer.ensure(conn);
+        self.explorer.reveal = self.explorer.expand_to(&f, &core);
+        self.explorer.try_reveal();
         cx.notify();
     }
 
@@ -2231,30 +2467,46 @@ impl Workspace {
         p: &Palette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let key = r.key.clone();
-        let object = r.object.clone();
-        let object2 = r.object.clone();
-        let row_key = r.key.clone();
-        let selected = match &self.schema.cursor {
-            Some(c) => *c == r.key,
-            None => r.object.is_some() && self.schema.selected == r.object,
+        let row = r.clone();
+        let row2 = r.clone();
+        let selected = match &self.explorer.cursor {
+            Some(c) => c.is(r),
+            None => obj_ref(r).is_some() && self.explorer.selected == obj_ref(r),
         };
-        let focus = self.schema.focus.clone();
+        let active_node = r.is_node() && r.conn.is_some() && self.explorer.active == r.conn;
+        let focus = self.explorer.focus.clone();
+        let engine = r
+            .conn
+            .as_ref()
+            .and_then(|c| self.explorer.connection(c))
+            .map(|c| c.engine);
         // Child rows (columns, …) drag their own name; object rows their qualified name.
-        let drag = match &r.leaf {
-            Some(leaf) => Some(DraggedObject {
-                qualified: leaf.clone(),
-            }),
-            None => r.object.as_ref().zip(self.schema.connection.as_ref()).map(
-                |((schema, name, kind), conn)| DraggedObject {
-                    qualified: object_name_text(dialect_for(conn.engine), schema, name, *kind),
-                },
-            ),
-        };
+        // Into a tab on another connection, a child row drops qualified by its relation.
+        let drag = engine.and_then(|engine| {
+            let d = dialect_for(engine);
+            let qualified_of = |(schema, name, kind): &(String, String, ObjectKind)| {
+                object_name_text(d, schema, name, *kind)
+            };
+            match (&r.leaf, &r.owner, &r.object) {
+                (Some(leaf), owner, _) => Some(DraggedObject {
+                    qualified: leaf.clone(),
+                    full: owner
+                        .as_ref()
+                        .map_or_else(|| leaf.clone(), |o| format!("{}.{leaf}", qualified_of(o))),
+                    conn: r.conn.clone(),
+                }),
+                (None, _, Some(o)) => Some(DraggedObject {
+                    qualified: qualified_of(o),
+                    full: qualified_of(o),
+                    conn: r.conn.clone(),
+                }),
+                _ => None,
+            }
+        });
         let has_caret = !r.caret.is_empty();
-        let caret_key = r.key.clone();
-        let caret_object = r.object.clone();
-        let caret_focus = self.schema.focus.clone();
+        let caret_row = r.clone();
+        let caret_focus = self.explorer.focus.clone();
+        let caret_object = r.object.is_some() && r.fav.is_none();
         div()
             .id(("schema-row", i))
             .when_some(drag, |d, drag| {
@@ -2272,39 +2524,53 @@ impl Workspace {
             .pr(px(10.))
             .text_size(px(12.5))
             .text_color(if r.dim { p.fg2 } else { p.fg })
+            .when(r.depth == 0, |d| d.font_weight(FontWeight::SEMIBOLD))
+            .when(active_node, |d| d.border_l_2().border_color(p.acc))
             .when(selected, |d| d.bg(p.sel))
             .hover(|s| s.bg(p.hover))
             .on_click(cx.listener(move |this, ev: &gpui_kit::ClickEvent, w, cx| {
-                this.schema.cursor = Some(key.clone());
+                this.explorer.cursor = Some(RowId::of(&row));
                 if let Some(f) = &focus {
                     w.focus(f, cx);
                 }
-                if let Some((s, n, k)) = &object {
-                    this.schema.selected = Some((s.clone(), n.clone(), *k));
+                if let Some(fav) = row.fav {
+                    this.reveal_favorite(fav, w, cx);
+                } else if let Some(o) = obj_ref(&row) {
+                    this.explorer.selected = Some(o.clone());
                     if ev.click_count() >= 2
-                        && let Some(action) = default_action(*k)
+                        && let Some(action) = default_action(o.kind)
                     {
-                        this.object_action(action, s.clone(), n.clone(), *k, w, cx);
+                        this.object_action(action, o, w, cx);
                     }
                 } else if has_caret {
-                    let core = this.core.clone();
-                    this.schema.toggle(&key, None, &core);
+                    this.tree_toggle(&row, false, cx);
                 }
                 cx.notify();
             }))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
-                    if let Some((s, n, k)) = &object2 {
-                        this.schema.selected = Some((s.clone(), n.clone(), *k));
-                        this.schema.cursor = Some(row_key.clone());
-                        this.ctx = Some(CtxMenu::new(
-                            ev.position,
-                            CtxTarget::Object(s.clone(), n.clone(), *k),
-                        ));
-                        cx.notify();
-                    } else if let Some(schema) = schema_of_row_key(&row_key) {
-                        this.ctx = Some(CtxMenu::new(ev.position, CtxTarget::Schema(schema)));
+                    let r = &row2;
+                    let target = if let Some(o) = obj_ref(r) {
+                        this.explorer.selected = Some(o.clone());
+                        this.explorer.cursor = Some(RowId::of(r));
+                        Some(CtxTarget::Object(o))
+                    } else if r.is_node() || (r.key.starts_with("fav:") && r.fav.is_none()) {
+                        // A connection's node (or its Favorites group): its connection menu.
+                        r.conn.clone().map(CtxTarget::Profile)
+                    } else if let (Some(conn), Some(schema)) = (
+                        r.conn.clone(),
+                        schema_of_row_key(&r.key).or_else(|| {
+                            // A pinned schema.
+                            r.fav.map(|_| r.label.to_string())
+                        }),
+                    ) {
+                        Some(CtxTarget::Schema(conn, schema))
+                    } else {
+                        None
+                    };
+                    if let Some(t) = target {
+                        this.ctx = Some(CtxMenu::new(ev.position, t));
                         cx.notify();
                     }
                 }),
@@ -2317,18 +2583,16 @@ impl Workspace {
                     .text_size(px(9.))
                     // An object row's caret expands its children; the rest of the row
                     // selects it (double-click opens the data).
-                    .when(has_caret && caret_object.is_some(), |d| {
+                    .when(has_caret && caret_object, |d| {
                         d.on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _: &MouseDownEvent, w, cx| {
                                 cx.stop_propagation();
-                                this.schema.cursor = Some(caret_key.clone());
+                                this.explorer.cursor = Some(RowId::of(&caret_row));
                                 if let Some(f) = &caret_focus {
                                     w.focus(f, cx);
                                 }
-                                let core = this.core.clone();
-                                this.schema.toggle(&caret_key, caret_object.as_ref(), &core);
-                                cx.notify();
+                                this.tree_toggle(&caret_row, true, cx);
                             }),
                         )
                     })
@@ -2344,12 +2608,14 @@ impl Workspace {
                     .text_color(p.fg3)
                     .child(r.icon.clone()),
             )
+            .when_some(r.env, |d, e| d.child(ui::dot(p.env(e), 6.)))
             .child(div().flex_1().min_w_0().truncate().child(r.label.clone()))
             .when(r.loading, |d| d.child(ui::shimmer(64., p)))
             .when(!r.loading, |d| {
                 d.child(
                     div()
                         .font_family(MONO)
+                        .font_weight(FontWeight::NORMAL)
                         .text_size(px(11.))
                         .text_color(p.fg3)
                         // Long descriptions (job status, role attributes) give way to the name.
@@ -2362,6 +2628,17 @@ impl Workspace {
             })
             .into_any_element()
     }
+}
+
+/// The object a row shows, on the row's connection.
+pub(crate) fn obj_ref(r: &TreeRow) -> Option<ObjRef> {
+    let (schema, name, kind) = r.object.clone()?;
+    Some(ObjRef {
+        conn: r.conn.clone()?,
+        schema,
+        name,
+        kind,
+    })
 }
 
 /// Default and smallest width of the left sidebar.

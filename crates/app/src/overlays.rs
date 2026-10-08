@@ -196,7 +196,7 @@ fn object_items(kind: ObjectKind) -> Vec<MenuItem> {
 /// The submenu a context-menu item opens, if it has one.
 fn submenu(target: &CtxTarget, action: &str) -> Option<Vec<MenuItem>> {
     match (target, action) {
-        (CtxTarget::Object(_, _, kind), "script") => Some(script_items(*kind)),
+        (CtxTarget::Object(o), "script") => Some(script_items(o.kind)),
         _ => None,
     }
 }
@@ -528,8 +528,8 @@ impl Workspace {
 
     fn render_ctx_menu(&self, ctx: &CtxMenu, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let mut items: Vec<(&'static str, &'static str, bool, SharedString)> = match &ctx.target {
-            CtxTarget::Schema(_) => vec![("er", "ER diagram…", false, "".into())],
-            CtxTarget::Object(_, _, kind) if kind.is_relation() => vec![
+            CtxTarget::Schema(..) => vec![("er", "ER diagram…", false, "".into())],
+            CtxTarget::Object(o) if o.kind.is_relation() => vec![
                 ("open", "Open data", false, "↵".into()),
                 ("select", "Generate SELECT", false, "".into()),
                 ("insert", "Generate INSERT", false, "".into()),
@@ -548,7 +548,7 @@ impl Workspace {
                 ("truncate", "Truncate…", true, "".into()),
                 ("drop", "Drop…", true, "".into()),
             ],
-            CtxTarget::Object(_, _, kind) => object_items(*kind),
+            CtxTarget::Object(o) => object_items(o.kind),
             CtxTarget::Tab(_) => vec![
                 ("close", "Close", false, ui::keys("⌘W", "Ctrl+W")),
                 ("close_others", "Close others", false, "".into()),
@@ -562,6 +562,7 @@ impl Workspace {
                 ("new_query", "New query here", false, "".into()),
                 ("edit", "Edit…", false, "".into()),
                 ("-", "", false, "".into()),
+                ("explore", "Show in explorer", false, "".into()),
                 ("refresh_schema", "Refresh schema", false, "".into()),
                 ("activity", "Activity monitor", false, "".into()),
                 ("disconnect", "Disconnect", false, "".into()),
@@ -575,15 +576,43 @@ impl Workspace {
                 ("delete", "Delete", true, "".into()),
             ],
         };
-        if matches!(ctx.target, CtxTarget::Object(_, _, ObjectKind::Table)) {
+        if matches!(&ctx.target, CtxTarget::Object(o) if o.kind == ObjectKind::Table) {
             items.insert(7, ("er", "Show in ER diagram", false, "".into()));
         }
+        // A node in the explorer can leave it (DBX-5e).
+        if let CtxTarget::Profile(id) = &ctx.target
+            && self.explorer.contains(id)
+            && let Some(at) = items.iter().position(|i| i.0 == "disconnect")
+        {
+            items.insert(
+                at + 1,
+                ("explorer_remove", "Remove from explorer", false, "".into()),
+            );
+        }
+        // Pin / Unpin (DBX-5e): after Copy for objects, last for schemas.
+        if let Some((_, pinned)) = self.pin_of(&ctx.target) {
+            let item = if pinned.is_some() {
+                (
+                    "unpin",
+                    "Unpin from favorites",
+                    false,
+                    ui::keys("⌘D", "Ctrl+D"),
+                )
+            } else {
+                ("pin", "Pin to favorites", false, ui::keys("⌘D", "Ctrl+D"))
+            };
+            let at = items
+                .iter()
+                .position(|i| i.0 == "copy")
+                .map_or(items.len(), |i| i + 1);
+            items.insert(at, item);
+        }
         // Show dependencies (DBX-5a), after Properties / View DDL, where the engine has them.
-        if let CtxTarget::Object(_, _, kind) = &ctx.target {
-            let engine_has = self.schema.connection.as_ref().is_some_and(|c| {
+        if let CtxTarget::Object(o) = &ctx.target {
+            let engine_has = self.explorer.connection(&o.conn).is_some_and(|c| {
                 switchyard_core::db::dialect_for(c.engine).supports_dependencies()
             });
-            if engine_has && kind.has_dependencies() {
+            if engine_has && o.kind.has_dependencies() {
                 let at = items
                     .iter()
                     .position(|i| i.0 == "properties")
@@ -837,13 +866,14 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         match target {
-            CtxTarget::Schema(s) => self.open_er_diagram(s.clone(), None, window, cx),
-            CtxTarget::Object(s, n, _) if action == "er" => {
-                self.open_er_diagram(s.clone(), Some(n.clone()), window, cx)
+            CtxTarget::Schema(..) | CtxTarget::Object(_) if matches!(action, "pin" | "unpin") => {
+                self.toggle_pin(target, cx)
             }
-            CtxTarget::Object(s, n, k) => {
-                self.object_action(action, s.clone(), n.clone(), *k, window, cx)
+            CtxTarget::Schema(c, s) => self.open_er_diagram(c, s.clone(), None, window, cx),
+            CtxTarget::Object(o) if action == "er" => {
+                self.open_er_diagram(&o.conn, o.schema.clone(), Some(o.name.clone()), window, cx)
             }
+            CtxTarget::Object(o) => self.object_action(action, o.clone(), window, cx),
             CtxTarget::Tab(ix) => self.close_tabs(action, *ix, cx),
             CtxTarget::Profile(id) => match action {
                 "open" => self.open_profile(id, window, cx),
@@ -856,6 +886,8 @@ impl Workspace {
                     .core
                     .send(switchyard_core::Command::DeleteProfile { id: id.clone() }),
                 "new_query" => self.new_query_here(id, window, cx),
+                "explore" => self.show_in_explorer(id, cx),
+                "explorer_remove" => self.remove_from_explorer(id, cx),
                 "refresh_schema" => self.refresh_connection_schema(id, window, cx),
                 "activity" => self.open_activity_for(id, window, cx),
                 "disconnect" => self.disconnect_connection(id, false, window, cx),
@@ -2405,7 +2437,12 @@ mod tests {
         assert_eq!(actions(ObjectKind::Package), ["script_create"]);
         assert!(actions(ObjectKind::Job).is_empty());
         assert!(actions(ObjectKind::Stage).is_empty());
-        let target = CtxTarget::Object("s".into(), "t".into(), ObjectKind::View);
+        let target = CtxTarget::Object(crate::explorer::ObjRef {
+            conn: switchyard_core::store::ProfileId("c".into()),
+            schema: "s".into(),
+            name: "t".into(),
+            kind: ObjectKind::View,
+        });
         assert!(submenu(&target, "script").is_some());
         assert!(submenu(&target, "copy").is_none());
         assert!(submenu(&CtxTarget::Tab(0), "script").is_none());

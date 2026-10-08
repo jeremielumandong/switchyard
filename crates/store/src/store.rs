@@ -1,5 +1,5 @@
 //! SQLite profile store: profiles, workspace buffers, query history, schema cache, settings,
-//! snippets.
+//! snippets, favorites.
 
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use crate::error::{Result, StoreError};
+use crate::favorites::{Favorite, kind_from_key, kind_key};
 use crate::model::{BufferState, Profile, ProfileId, Workspace};
 use crate::snippets::{Snippet, engine_from_key, engine_key};
 
@@ -73,6 +74,18 @@ const MIGRATIONS: &[&str] = &[
         updated_at INTEGER NOT NULL
     );
     CREATE INDEX snippets_prefix_idx ON snippets (prefix);",
+    // 4: pinned schema-tree objects (DBX-5e); `kind` is `schema` or an `ObjectKind` name
+    "CREATE TABLE favorites (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        connection_id TEXT NOT NULL,
+        database_name TEXT NOT NULL,
+        schema_name TEXT NOT NULL,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        UNIQUE (connection_id, database_name, schema_name, name, kind)
+    );",
 ];
 
 /// Milliseconds since the Unix epoch.
@@ -616,6 +629,96 @@ impl Store {
             > 0)
     }
 
+    // ---- favorites ----
+
+    /// Pinned objects in their saved order. Pins of a kind this build does not know
+    /// (written by a newer one) are skipped.
+    pub fn favorites(&self) -> Result<Vec<Favorite>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, connection_id, database_name, schema_name, name, kind, position
+             FROM favorites ORDER BY position, id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let kind: String = r.get(5)?;
+            let fav = Favorite {
+                id: r.get(0)?,
+                connection_id: ProfileId(r.get(1)?),
+                database: r.get(2)?,
+                schema: r.get(3)?,
+                name: r.get(4)?,
+                kind: None,
+                position: r.get(6)?,
+            };
+            Ok(kind_from_key(&kind).map(|kind| Favorite { kind, ..fav }))
+        })?;
+        let all = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(all.into_iter().flatten().collect())
+    }
+
+    /// Pin an object at the end of the list after validation; pinning it again keeps the
+    /// existing pin. Returns the pin as stored.
+    pub fn add_favorite(&mut self, fav: &Favorite) -> Result<Favorite> {
+        fav.validate()?;
+        let mut f = fav.clone();
+        if f.kind.is_none() {
+            f.name.clear();
+        }
+        let kind = kind_key(f.kind);
+        self.conn.execute(
+            "INSERT INTO favorites
+                 (connection_id, database_name, schema_name, name, kind, position, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5,
+                 (SELECT COALESCE(MAX(position), 0) + 1 FROM favorites), ?6)
+             ON CONFLICT (connection_id, database_name, schema_name, name, kind) DO NOTHING",
+            params![
+                f.connection_id.0,
+                f.database,
+                f.schema,
+                f.name,
+                kind,
+                now_ms()
+            ],
+        )?;
+        let (id, position) = self.conn.query_row(
+            "SELECT id, position FROM favorites WHERE connection_id = ?1
+                 AND database_name = ?2 AND schema_name = ?3 AND name = ?4 AND kind = ?5",
+            params![f.connection_id.0, f.database, f.schema, f.name, kind],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        f.id = id;
+        f.position = position;
+        Ok(f)
+    }
+
+    /// Unpin. Returns whether the pin existed.
+    pub fn remove_favorite(&mut self, id: i64) -> Result<bool> {
+        Ok(self
+            .conn
+            .execute("DELETE FROM favorites WHERE id = ?1", [id])?
+            > 0)
+    }
+
+    /// Put the pins in `ids` order; pins not listed keep their place after them.
+    pub fn reorder_favorites(&mut self, ids: &[i64]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        let rest: Vec<i64> = {
+            let mut stmt = tx.prepare("SELECT id FROM favorites ORDER BY position, id")?;
+            stmt.query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<i64>>>()?
+                .into_iter()
+                .filter(|id| !ids.contains(id))
+                .collect()
+        };
+        for (pos, id) in ids.iter().chain(rest.iter()).enumerate() {
+            tx.execute(
+                "UPDATE favorites SET position = ?1 WHERE id = ?2",
+                params![pos as i64 + 1, id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     // ---- schema cache ----
 
     /// Store a catalog chunk for a connection and scope key.
@@ -665,7 +768,7 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use switchyard_db::Engine;
+    use switchyard_db::{Engine, ObjectKind};
 
     use super::*;
     use crate::model::{DbConnection, EnvironmentLabel, Host, SecretRef, SshAuth};
@@ -942,7 +1045,8 @@ mod tests {
             .unwrap();
         }
         let mut s = Store::open(&path).unwrap();
-        assert_eq!(s.schema_version().unwrap(), 3);
+        // Every later migration runs too (4: favorites).
+        assert_eq!(s.schema_version().unwrap(), 4);
         assert_eq!(
             s.setting::<String>("theme").unwrap().as_deref(),
             Some("light")
@@ -953,5 +1057,117 @@ mod tests {
         drop(s);
         let s = Store::open(&path).unwrap();
         assert_eq!(s.snippets().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn favorite_crud_and_order() {
+        let mut s = Store::open_in_memory().unwrap();
+        assert!(s.favorites().unwrap().is_empty());
+        let c = ProfileId("c1".into());
+        let t = s
+            .add_favorite(&Favorite::object(
+                c.clone(),
+                "shop",
+                "public",
+                "orders",
+                ObjectKind::Table,
+            ))
+            .unwrap();
+        assert!(t.id > 0);
+        assert_eq!(t.position, 1);
+        let sc = s
+            .add_favorite(&Favorite::schema(c.clone(), "shop", "sales"))
+            .unwrap();
+        let role = s
+            .add_favorite(&Favorite::object(
+                ProfileId("c2".into()),
+                "",
+                "",
+                "app",
+                ObjectKind::Role,
+            ))
+            .unwrap();
+        assert_eq!((sc.position, role.position), (2, 3));
+        // Pinning the same object again keeps the first pin.
+        let again = s
+            .add_favorite(&Favorite::object(
+                c.clone(),
+                "shop",
+                "public",
+                "orders",
+                ObjectKind::Table,
+            ))
+            .unwrap();
+        assert_eq!((again.id, again.position), (t.id, 1));
+        // The same name in another database or of another kind is another pin.
+        s.add_favorite(&Favorite::object(
+            c.clone(),
+            "shop",
+            "public",
+            "orders",
+            ObjectKind::View,
+        ))
+        .unwrap();
+        let all = s.favorites().unwrap();
+        assert_eq!(all.len(), 4);
+        assert_eq!(all[0], t);
+        assert_eq!(all[1].kind, None);
+        assert_eq!(all[2].kind, Some(ObjectKind::Role));
+        assert!(matches!(
+            s.add_favorite(&Favorite::object(
+                c,
+                "shop",
+                "public",
+                "",
+                ObjectKind::Table
+            )),
+            Err(StoreError::Validation(..))
+        ));
+
+        s.reorder_favorites(&[role.id, t.id]).unwrap();
+        let ids: Vec<i64> = s.favorites().unwrap().iter().map(|f| f.id).collect();
+        assert_eq!(&ids[..3], &[role.id, t.id, sc.id]);
+
+        assert!(s.remove_favorite(sc.id).unwrap());
+        assert!(!s.remove_favorite(sc.id).unwrap());
+        assert_eq!(s.favorites().unwrap().len(), 3);
+        // A pin of a kind this build does not know is skipped, not an error.
+        s.conn
+            .execute(
+                "INSERT INTO favorites (connection_id, database_name, schema_name, name, kind,
+                     position, created_at) VALUES ('c', '', 's', 'x', 'Hologram', 9, 0)",
+                [],
+            )
+            .unwrap();
+        assert_eq!(s.favorites().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn migrates_v3_store_to_favorites() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("profiles.db");
+        {
+            // A store as DBX-4b left it: schema version 3, one snippet.
+            let conn = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..3] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.pragma_update(None, "user_version", 3).unwrap();
+            conn.execute(
+                "INSERT INTO snippets (id, name, prefix, body, engine, created_at, updated_at)
+                 VALUES ('s1', 'n', 'p', 'SELECT 1;', NULL, 1, 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let mut s = Store::open(&path).unwrap();
+        assert_eq!(s.schema_version().unwrap(), 4);
+        assert_eq!(s.snippets().unwrap().len(), 1);
+        assert!(s.favorites().unwrap().is_empty());
+        s.add_favorite(&Favorite::schema(ProfileId("c".into()), "", "public"))
+            .unwrap();
+        drop(s);
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.favorites().unwrap().len(), 1);
     }
 }

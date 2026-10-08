@@ -641,7 +641,13 @@ are shared hotspots: one owner at a time.
   ends, stubs for outside tables, "+k more"; pan/zoom/Fit; double-click opens Properties;
   Copy/Save as SVG. Deferred: incoming refs from unloaded tables in large schemas, draggable
   boxes, saved layouts, views.
-- [ ] DBX-5e Favorites and a multi-connection tree (large `sidebar.rs` refactor; alone).
+- [x] DBX-5e Favorites and a multi-connection tree (large `sidebar.rs` refactor; alone).
+  Note: store schema 4 (`favorites`), core `Command::{Load,Add,Remove,Reorder}Favorite(s)`; the
+  Schema tab is an Object Explorer (`explorer.rs`: per-connection `SchemaState`, lazy connect on
+  expand, queued catalog requests, one flattened `uniform_list`, search scoped to the selected or
+  active connection, `ObjRef` routing for menus/drag/F5/ER/properties); Favorites grouped by
+  connection, Ctrl/⌘+D, dimmed "missing"; nodes saved as `explorer.connections` and restored
+  "not connected". Deferred: pin reordering UI, cross-connection search, restoring expansion.
 
 ## M6 — Packaging and beta
 
@@ -682,6 +688,9 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   running app's unlocked secrets over the loopback handoff, scoped by the session token.
 
 (Add items here instead of doing them mid-task.)
+- `db --test pg` integration tests share one database: run in parallel, `introspection_snapshots`
+  can see another test's scratch objects. CI runs them with `--test-threads 1`; isolate them in
+  per-test schemas if they need to run in parallel.
 - UX pass: Headers/Console/Trace/Tests response tabs copy via buttons only (no drag-select);
   `pm.sendRequest` inside runs skips the Production check; env dropdown doesn't show labels;
   no window-level UI tests for the new Workbench interactions; "Unsaved changes" on tab

@@ -25,7 +25,7 @@ use gpui_kit::{
     div, point, px,
 };
 use switchyard_core::db::{CatalogChunk, IntrospectScope, ObjectDetail, ObjectKind};
-use switchyard_core::store::DbConnection;
+use switchyard_core::store::{DbConnection, ProfileId};
 use switchyard_core::{Command, RuntimeHandle, SessionId};
 
 use crate::app_state::{SessionState, next_id};
@@ -1006,12 +1006,13 @@ impl Workspace {
     /// optionally limited to the tables related to `focus`.
     pub(crate) fn open_er_diagram(
         &mut self,
+        conn: &ProfileId,
         schema: String,
         focus: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(connection) = self.schema.connection.clone() else {
+        let Some(connection) = self.profiles.db(conn).cloned() else {
             self.toast("Connect to a database first", cx);
             return;
         };
@@ -1060,25 +1061,31 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         match self.current_schema() {
-            Some(schema) => self.open_er_diagram(schema, None, window, cx),
+            Some((conn, schema)) => self.open_er_diagram(&conn, schema, None, window, cx),
             None => self.toast("Open a database connection and pick a schema first", cx),
         }
     }
 
-    fn current_schema(&self) -> Option<String> {
-        self.schema.connection.as_ref()?;
-        let from_key = self
-            .schema
-            .cursor
-            .as_deref()
-            .and_then(crate::sidebar::schema_of_row_key);
-        if from_key.is_some() {
-            return from_key;
+    /// The schema the tree points at, on its connection: under the cursor, of the
+    /// selected object, else the only (or first expanded) user schema of the connection
+    /// in scope.
+    fn current_schema(&self) -> Option<(ProfileId, String)> {
+        let ex = &self.explorer;
+        if let Some(c) = &ex.cursor
+            && let Some(conn) = &c.conn
+            && ex.contains(conn)
+            && let Some(s) = crate::sidebar::schema_of_row_key(&c.key)
+        {
+            return Some((conn.clone(), s));
         }
-        if let Some((s, _, _)) = &self.schema.selected {
-            return Some(s.clone());
+        if let Some(o) = &ex.selected
+            && !o.schema.is_empty()
+        {
+            return Some((o.conn.clone(), o.schema.clone()));
         }
-        let crate::sidebar::Loadable::Loaded(list) = &self.schema.schemas else {
+        let conn = ex.scope_conn()?;
+        let state = ex.state(&conn)?;
+        let crate::sidebar::Loadable::Loaded(list) = &state.schemas else {
             return None;
         };
         let user: Vec<&str> = list
@@ -1088,12 +1095,13 @@ impl Workspace {
             .collect();
         let expanded: Vec<&&str> = user
             .iter()
-            .filter(|s| self.schema.expanded.contains(&format!("s:{s}")))
+            .filter(|s| state.expanded.contains(&format!("s:{s}")))
             .collect();
         expanded
             .first()
             .map(|s| s.to_string())
             .or_else(|| user.first().map(|s| s.to_string()))
+            .map(|s| (conn, s))
     }
 
     /// The ER tab that owns `session`, if any.

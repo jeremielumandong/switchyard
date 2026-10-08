@@ -27,11 +27,12 @@ use crate::actions::{self, CommandId};
 use crate::app_state::{Profiles, SessionState, badge_of, describe, next_id};
 use crate::conn_editor::{ConnEditor, ConnEditorEvent};
 use crate::editor_tab::EditorTab;
+use crate::explorer::Explorer;
 use crate::files_tab::{FilesTab, FilesTabEvent};
 use crate::overlays::{Overlay, SettingsPage};
 use crate::palette::{PaletteEvent, PaletteMode, PaletteView};
 use crate::remote_files::{RemoteFiles, RemoteFilesEvent};
-use crate::sidebar::{SchemaState, SideTab};
+use crate::sidebar::SideTab;
 use crate::sql_tab::{SqlTab, SqlTabEvent};
 use crate::terminal_tab::TerminalTab;
 use crate::theme::{self, MONO, Palette, SANS, ThemeId, palette};
@@ -90,7 +91,8 @@ pub struct Workspace {
     pub(crate) sidebar_open: bool,
     pub(crate) side_tab: SideTab,
     pub(crate) collapsed: HashSet<String>,
-    pub(crate) schema: SchemaState,
+    /// The multi-connection schema explorer (DBX-5e).
+    pub(crate) explorer: Explorer,
     pub(crate) inspector_open: bool,
     /// Width of the right panel (drag its left edge; saved as `inspector.width`).
     pub(crate) inspector_width: f32,
@@ -187,6 +189,11 @@ impl Workspace {
             key: switchyard_core::agent_run::ASSISTANT_SETTINGS_KEY.into(),
         });
         core.send(Command::DetectComponents);
+        // Pins and the explorer's connection nodes (DBX-5e).
+        core.send(Command::LoadFavorites);
+        core.send(Command::LoadSetting {
+            key: crate::explorer::SAVED_NODES_KEY.into(),
+        });
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let schema_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search objects"));
@@ -205,14 +212,16 @@ impl Workspace {
             |this, input, ev: &gpui_kit::component::input::InputEvent, cx| {
                 if let gpui_kit::component::input::InputEvent::Change = ev {
                     let filter = input.read(cx).value().trim().to_owned();
-                    if let Some(ticket) = this.schema.filter_changed(filter, &this.core) {
+                    let core = this.core.clone();
+                    if let Some((conn, ticket)) = this.explorer.filter_changed(filter, &core) {
                         // Debounced server search; a newer keystroke makes the ticket stale.
                         cx.spawn(async move |this, cx| {
                             cx.background_executor()
                                 .timer(crate::object_search::DEBOUNCE)
                                 .await;
                             let _ = this.update(cx, |this, cx| {
-                                this.schema.search_due(ticket, &this.core);
+                                let core = this.core.clone();
+                                this.explorer.search_due(&conn, ticket, &core);
                                 cx.notify();
                             });
                         })
@@ -240,7 +249,7 @@ impl Workspace {
             sidebar_open: true,
             side_tab: SideTab::Connections,
             collapsed: HashSet::new(),
-            schema: SchemaState::default(),
+            explorer: Explorer::default(),
             inspector_open: window.bounds().size.width > px(1280.),
             inspector_width: crate::sidebar::INSPECTOR_WIDTH,
             inspector_drag: None,
@@ -408,6 +417,9 @@ impl Workspace {
             Event::Profiles(list) => {
                 self.profiles = Profiles { all: list };
                 self.profiles_loaded = true;
+                let dbs: Vec<_> = self.profiles.dbs().cloned().collect();
+                let core = self.core.clone();
+                self.explorer.set_profiles(dbs, &core);
                 let hosts = self.host_list();
                 for t in &self.tabs {
                     if let Tab::Files(f) = t {
@@ -465,6 +477,15 @@ impl Workspace {
                     self.inspector_width = (w as f32).max(crate::sidebar::INSPECTOR_MIN);
                 }
             }
+            Event::Setting { key, value } if key == crate::explorer::SAVED_NODES_KEY => {
+                let ids: Vec<ProfileId> = value
+                    .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(ProfileId)
+                    .collect();
+                self.explorer.restore(ids);
+            }
             Event::Setting { key, value } if key == "sidebar.width" => {
                 if let Some(w) = value.as_ref().and_then(|v| v.as_f64()) {
                     self.sidebar_width = (w as f32).max(crate::sidebar::SIDEBAR_MIN);
@@ -505,8 +526,13 @@ impl Workspace {
                 session,
                 server_version,
             } => {
-                if self.schema.session == Some(session) {
-                    self.schema.on_open(server_version.clone(), &self.core);
+                let core = self.core.clone();
+                if self
+                    .explorer
+                    .on_open(session, server_version.clone(), &core)
+                    .is_some()
+                {
+                    self.explorer.try_reveal();
                 }
                 if let Some(o) = self.object_tab_for_session(session, cx) {
                     let version = server_version.clone();
@@ -526,8 +552,11 @@ impl Workspace {
                 });
             }
             Event::SessionFailed { session, message } => {
-                if self.schema.session == Some(session) {
-                    self.schema.on_failed(message.clone());
+                if let Some(id) = self.explorer.conn_of_session(session)
+                    && let Some(s) = self.explorer.state_mut(&id)
+                {
+                    s.on_failed(message.clone());
+                    self.explorer.try_reveal();
                 }
                 if let Some(o) = self.object_tab_for_session(session, cx) {
                     let failed = SessionState::Failed(message.clone());
@@ -577,7 +606,7 @@ impl Workspace {
                 result,
                 cached_at,
             } => {
-                if self.schema.session == Some(session) {
+                if let Some(conn) = self.explorer.conn_of_session(session) {
                     if matches!(
                         scope,
                         switchyard_core::db::IntrospectScope::Detail { .. }
@@ -585,9 +614,10 @@ impl Workspace {
                     ) {
                         // Object detail asked for by a schema-tree action (template, DDL,
                         // Script as) or an expanded relation.
-                        self.on_schema_detail(scope, result, window, cx);
-                    } else {
-                        self.schema.on_catalog(scope, result, cached_at);
+                        self.on_schema_detail(conn, scope, result, window, cx);
+                    } else if let Some(s) = self.explorer.state_mut(&conn) {
+                        s.on_catalog(scope, result, cached_at);
+                        self.explorer.try_reveal();
                     }
                 } else if let Some(o) = self.object_tab_for_session(session, cx) {
                     o.update(cx, |o, cx| o.on_catalog(scope, result, window, cx));
@@ -608,6 +638,10 @@ impl Workspace {
                 }
             }
             Event::Snippets(list) => crate::snippets::on_snippets(list, cx),
+            Event::Favorites(list) => {
+                let core = self.core.clone();
+                self.explorer.set_favorites(list, &core);
+            }
             Event::History { request, entries } => {
                 match self.plan_tab(cx, |v| v.owns_history(request)) {
                     Some(tab) => tab.update(cx, |t, cx| {
@@ -1290,11 +1324,12 @@ impl Workspace {
         let Some(conn) = self.profiles.db(id).cloned() else {
             return;
         };
-        if self.schema.connection.as_ref().is_some_and(|c| &c.id == id)
-            && matches!(self.schema.state.0, Some(SessionState::Failed(_)))
+        let core = self.core.clone();
+        if let Some(s) = self.explorer.state_mut(id)
+            && matches!(s.state.0, Some(SessionState::Failed(_)))
         {
-            self.schema.connection = Some(conn.clone());
-            self.schema.reconnect(&self.core);
+            s.connection = Some(conn.clone());
+            s.reconnect(&core);
         }
         for t in &self.tabs {
             if let Tab::Sql(tab) = t {
@@ -1903,7 +1938,7 @@ impl Workspace {
             }
             CommandId::RefreshSchema => {
                 self.side_tab = SideTab::Schema;
-                self.schema.refresh(&self.core);
+                self.refresh_explorer(cx);
             }
             CommandId::ImportSshConfig => self.import_ssh_config(cx),
             CommandId::ExportProfiles => {
@@ -2903,6 +2938,14 @@ impl Render for Workspace {
                 tab.update(cx, |t, cx| t.set_connection(conn, cx));
             }
             self.sync_schema(cx);
+        }
+        // Remember the explorer's connection nodes (restored "not connected" on launch).
+        if let Some(ids) = self.explorer.take_save() {
+            let ids: Vec<String> = ids.into_iter().map(|i| i.0).collect();
+            self.core.send(Command::SetSetting {
+                key: crate::explorer::SAVED_NODES_KEY.into(),
+                value: ids.into(),
+            });
         }
         let mut assistant = self.assistant_open.then(|| {
             div()

@@ -861,7 +861,10 @@ impl Workspace {
         let conn = self
             .active_sql()
             .and_then(|t| t.read(cx).connection.clone())
-            .or_else(|| self.schema.connection.clone());
+            .or_else(|| {
+                let id = self.explorer.scope_conn()?;
+                self.profiles.db(&id).cloned()
+            });
         match conn {
             Some(c) => self.open_activity(c, window, cx),
             None => self.toast("Open a connection first", cx),

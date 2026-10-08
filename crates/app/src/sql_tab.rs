@@ -3431,11 +3431,14 @@ impl Render for SqlTab {
                             .flex_1()
                             .h_full()
                             .pl(px(2.))
-                            // A schema-tree object dropped here inserts its qualified name
+                            // A schema-tree object dropped here inserts its (qualified) name
                             // at the cursor (the editor has no public point-to-offset map).
                             .on_drop(cx.listener(
                                 |this, d: &crate::sidebar::DraggedObject, window, cx| {
-                                    this.insert_text(&d.qualified, window, cx);
+                                    // From another connection only the qualified name.
+                                    let own = this.connection.as_ref().map(|c| c.id.clone());
+                                    let text = d.text_for(own.as_ref()).to_owned();
+                                    this.insert_text(&text, window, cx);
                                     this.editor.update(cx, |e, cx| e.focus(window, cx));
                                 },
                             ))

@@ -52,6 +52,7 @@ actions!(
         TreeOpen,
         TreeCopy,
         TreeRefresh,
+        TreePin,
         PeekTable,
         ClosePeek,
         MenuUp,
@@ -111,6 +112,8 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("enter", TreeOpen, Some("SchemaTree")),
         KeyBinding::new("secondary-c", TreeCopy, Some("SchemaTree")),
         KeyBinding::new("f5", TreeRefresh, Some("SchemaTree")),
+        // Pin / unpin the selected object or schema in Favorites (DBX-5e).
+        KeyBinding::new("secondary-d", TreePin, Some("SchemaTree")),
         // Context menu (focused while open): arrows move and open submenus.
         KeyBinding::new("up", MenuUp, Some("CtxMenu")),
         KeyBinding::new("down", MenuDown, Some("CtxMenu")),

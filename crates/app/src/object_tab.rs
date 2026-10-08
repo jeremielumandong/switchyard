@@ -1649,18 +1649,17 @@ impl Workspace {
     }
 
     /// The schema tree's "Properties…" (or "Show dependencies", on that `page`) item:
-    /// the object on the tree's connection.
+    /// the object on its own connection.
     pub(crate) fn open_tree_object_properties(
         &mut self,
-        schema: String,
-        name: String,
-        kind: ObjectKind,
+        o: &crate::explorer::ObjRef,
         page: Option<Page>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(conn) = self.schema.connection.clone() {
-            self.open_object_page(conn, schema, name, kind, page, window, cx);
+        if let Some(conn) = self.profiles.db(&o.conn).cloned() {
+            let (schema, name) = (o.schema.clone(), o.name.clone());
+            self.open_object_page(conn, schema, name, o.kind, page, window, cx);
         }
     }
 
