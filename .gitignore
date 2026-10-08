@@ -6,3 +6,5 @@ docker/ssh/id_ed25519
 docker/ftp/*.pem
 /dist
 __pycache__/
+target*
+.claude*
