@@ -307,6 +307,10 @@ impl Dialect for TSqlDialect {
     fn default_schema(&self) -> &'static str {
         "dbo"
     }
+
+    fn use_database(&self, database: &str) -> Option<String> {
+        Some(format!("USE [{}]", database.replace(']', "]]")))
+    }
 }
 
 #[cfg(test)]

@@ -289,6 +289,14 @@ impl Dialect for SnowflakeDialect {
     fn object_folders(&self) -> &'static [ObjectKind] {
         &[ObjectKind::Table, ObjectKind::View]
     }
+
+    fn use_database(&self, database: &str) -> Option<String> {
+        Some(format!("USE DATABASE {}", self.quote_ident(database)))
+    }
+
+    fn use_schema(&self, schema: &str) -> Option<String> {
+        Some(format!("USE SCHEMA {}", self.quote_ident(schema)))
+    }
 }
 
 #[cfg(test)]

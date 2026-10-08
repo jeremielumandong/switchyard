@@ -1,0 +1,7 @@
+---
+source: crates/db/src/dialect/context_tests.rs
+expression: "render(Engine::Snowflake, \"ANALYTICS\", \"Mixed Case\")"
+---
+switches_context: true
+use_database("ANALYTICS"): USE DATABASE ANALYTICS
+use_schema("Mixed Case"): USE SCHEMA "Mixed Case"

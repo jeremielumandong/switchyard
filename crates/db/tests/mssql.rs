@@ -534,3 +534,15 @@ async fn windows_account_runs_ntlm_and_the_server_refuses_an_unknown_domain() {
         "{err}"
     );
 }
+
+#[tokio::test]
+#[ignore = "needs sql server"]
+async fn use_database_switches_the_session() {
+    let mut s = session("master").await;
+    let sql = TSqlDialect.use_database("tempdb").expect("USE statement");
+    drain(s.as_mut(), &sql, &[]).await.expect("use");
+    let c = drain(s.as_mut(), "SELECT DB_NAME()", &[]).await.unwrap();
+    assert_eq!(c.sets[0].1.cell(0, 0).unwrap().to_display(), "tempdb");
+    // SQL Server has no per-session default schema to switch.
+    assert_eq!(TSqlDialect.use_schema("sales"), None);
+}

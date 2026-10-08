@@ -1,0 +1,7 @@
+---
+source: crates/db/src/dialect/context_tests.rs
+expression: "render(Engine::D1, \"main\", \"main\")"
+---
+switches_context: false
+use_database("main"): <reconnect / unsupported>
+use_schema("main"): <reconnect / unsupported>

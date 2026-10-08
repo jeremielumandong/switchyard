@@ -141,6 +141,16 @@ pub enum TermTarget {
     Host(ProfileId),
 }
 
+/// A session's current database and schema after [`Command::SetSessionContext`].
+/// `None` means the connection's default (the profile's database, the login's schema).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SessionContext {
+    /// Current database, when switched.
+    pub database: Option<String>,
+    /// Current schema, when switched.
+    pub schema: Option<String>,
+}
+
 /// One statement to execute.
 #[derive(Clone, Debug)]
 pub struct StatementRequest {
@@ -237,6 +247,19 @@ pub enum Command {
     CloseSession {
         /// Session.
         session: SessionId,
+    },
+    /// Switch the session's current database and/or schema ([`Event::SessionContext`]).
+    /// Runs the dialect's `USE` statement, or reconnects the same session id to the other
+    /// database (through the same tunnel) where the engine needs a new connection.
+    SetSessionContext {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// Database to make current.
+        database: Option<String>,
+        /// Schema to make current (applied after the database).
+        schema: Option<String>,
     },
     /// Execute statements in order, streaming results.
     Execute {
@@ -745,6 +768,15 @@ pub enum Event {
         session: SessionId,
         /// Message.
         message: String,
+    },
+    /// Result of [`Command::SetSessionContext`].
+    SessionContext {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// The session's database and schema now, or why the switch failed.
+        result: Result<SessionContext, String>,
     },
     /// A query event.
     Query {

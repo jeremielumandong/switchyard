@@ -302,6 +302,11 @@ impl Dialect for SqliteDialect {
     fn object_folders(&self) -> &'static [ObjectKind] {
         &[ObjectKind::Table, ObjectKind::View]
     }
+
+    fn switches_context(&self) -> bool {
+        // A D1 database is the whole connection; there is nothing to switch to.
+        false
+    }
 }
 
 #[cfg(test)]
