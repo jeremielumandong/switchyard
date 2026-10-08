@@ -1,0 +1,36 @@
+---
+source: crates/store/src/snippets.rs
+expression: rendered
+---
+-- Select rows (sel) [builtin:oracle:sel]
+SELECT ${2:*}
+FROM ${1:table_name}
+FETCH FIRST ${3:100} ROWS ONLY;
+
+-- Insert row (ins) [builtin:oracle:ins]
+INSERT INTO ${1:table_name} (${2:column1}, ${3:column2})
+VALUES (${4:value1}, ${5:value2});
+
+-- Update with WHERE (upd) [builtin:oracle:upd]
+UPDATE ${1:table_name}
+SET ${2:column1} = ${3:value1}
+WHERE ${4:condition};
+
+-- Common table expression (cte) [builtin:oracle:cte]
+WITH ${1:cte_name} AS (
+    SELECT ${2:*}
+    FROM ${3:table_name}
+)
+SELECT *
+FROM ${1:cte_name};
+
+-- Create index (idx) [builtin:oracle:idx]
+CREATE INDEX ${1:index_name}
+    ON ${2:table_name} (${3:column1});
+
+-- Transaction (tran) [builtin:oracle:tran]
+SET TRANSACTION READ WRITE;
+
+${1:-- statements}
+
+COMMIT;

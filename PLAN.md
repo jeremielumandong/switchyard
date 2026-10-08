@@ -583,7 +583,11 @@ are shared hotspots: one owner at a time.
   Note: `Dialect::{switches_context,use_database,use_schema}`; core `SetSessionContext` runs
   `USE` or reconnects PG on the same tunnel; schema cache keyed per database. Deferred:
   re-applying `USE` after the SQL Server driver's cancel-reconnect.
-- [ ] DBX-4b Snippets (store table + completion items). Not started: needs a store migration.
+- [x] DBX-4b Snippets (store table + completion items).
+  Note: store schema 3 (`snippets`); built-ins in code per engine (insta), a user snippet with
+  the same prefix overrides; gpui-component has no snippet insertion, so placeholders expand to
+  their defaults and the first is selected; "Manage Snippets…" opens its own window.
+  Deferred: Tab-to-next-stop, a Settings page.
 - [x] DBX-4c Peek table: hover / F12 on an identifier shows its columns.
   Note: `complete::peek_target` (schema.table, aliases, quoted); falls back to `Detail`;
   popover sits top-right of the editor.

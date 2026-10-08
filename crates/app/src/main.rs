@@ -26,6 +26,7 @@ mod plan_view;
 mod remote_files;
 mod result_diff;
 mod sidebar;
+mod snippets;
 mod split;
 mod sql_tab;
 mod ssh_prompts;

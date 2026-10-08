@@ -302,6 +302,7 @@ impl SqlTab {
         });
         let sub = cx.subscribe_in(&editor, window, |this, _, ev: &InputEvent, window, cx| {
             if let InputEvent::Change = ev {
+                crate::completion::place_snippet_cursor(&this.completion, &this.editor, cx);
                 this.dirty = true;
                 this.peek = None;
                 this.schedule_autosave(cx);
@@ -310,6 +311,7 @@ impl SqlTab {
             }
         });
         let completion: Rc<RefCell<CompletionState>> = Rc::default();
+        crate::snippets::ensure_loaded(&core, cx);
         let provider = Rc::new(SqlCompletion {
             state: completion.clone(),
         });
@@ -430,6 +432,7 @@ impl SqlTab {
             self.core.send(Command::CloseSession { session: s });
         }
         self.connection = connection;
+        self.completion.borrow_mut().engine = self.connection.as_ref().map(|c| c.engine);
         let profile = self.connection.as_ref().map(|c| c.id.clone());
         self.plan.update(cx, |v, _| v.set_connection(profile));
         self.txn_open = false;

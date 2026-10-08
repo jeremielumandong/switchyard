@@ -170,6 +170,8 @@ pub enum CommandId {
     ExportProfiles,
     ShowHistory,
     ShowWorkload,
+    /// Open the snippet manager (DBX-4b).
+    ManageSnippets,
     SplitRight,
     SplitDown,
     Unsplit,
@@ -271,6 +273,7 @@ pub fn palette_commands() -> Vec<PaletteCommand> {
             "Editor",
             "".into(),
         ),
+        c(ManageSnippets, "Manage Snippets…", "Editor", "".into()),
         c(RefreshSchema, "Refresh Schema", "Schema", "".into()),
         c(SplitRight, "Split Right", "View", k("⌘\\", "Ctrl+\\")),
         c(SplitDown, "Split Down", "View", k("⇧⌘\\", "Ctrl+Shift+\\")),

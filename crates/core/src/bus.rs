@@ -13,7 +13,7 @@ use switchyard_drivers::{Component, InstallProgress};
 use switchyard_remote::FileEntry;
 use switchyard_remote::ssh::{HostKeyDecision, HostKeyRequest, InteractiveRequest, TunnelInfo};
 use switchyard_store::{
-    BufferState, DbConnection, HistoryEntry, Host, Profile, ProfileId, Workspace,
+    BufferState, DbConnection, HistoryEntry, Host, Profile, ProfileId, Snippet, Workspace,
 };
 use switchyard_term::{TermSize, Terminal};
 
@@ -384,6 +384,15 @@ pub enum Command {
         request: RequestId,
         /// History entry.
         history_id: i64,
+    },
+    /// Load the user's SQL snippets ([`Event::Snippets`]).
+    LoadSnippets,
+    /// Save a user snippet (new when its id is empty or built-in), then reload.
+    SaveSnippet(Snippet),
+    /// Delete a user snippet, then reload.
+    DeleteSnippet {
+        /// Snippet id.
+        id: String,
     },
     /// Search query history.
     SearchHistory {
@@ -848,6 +857,8 @@ pub enum Event {
         /// An actual plan of a writing statement on Production needs confirmation first.
         needs_confirmation: bool,
     },
+    /// The user's SQL snippets (built-ins excluded), answering the snippet commands.
+    Snippets(Vec<Snippet>),
     /// History search results.
     History {
         /// Request id.

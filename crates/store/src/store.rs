@@ -1,4 +1,5 @@
-//! SQLite profile store: profiles, workspace buffers, query history, schema cache, settings.
+//! SQLite profile store: profiles, workspace buffers, query history, schema cache, settings,
+//! snippets.
 
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -9,6 +10,7 @@ use tracing::debug;
 
 use crate::error::{Result, StoreError};
 use crate::model::{BufferState, Profile, ProfileId, Workspace};
+use crate::snippets::{Snippet, engine_from_key, engine_key};
 
 /// Ordered schema migrations. Never edit an applied migration; append a new one.
 const MIGRATIONS: &[&str] = &[
@@ -60,6 +62,17 @@ const MIGRATIONS: &[&str] = &[
         history_id INTEGER PRIMARY KEY REFERENCES history(id) ON DELETE CASCADE,
         plan TEXT NOT NULL
     );",
+    // 3: user SQL snippets (DBX-4b); built-ins live in code (`snippets::builtin_snippets`)
+    "CREATE TABLE snippets (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        prefix TEXT NOT NULL,
+        body TEXT NOT NULL,
+        engine TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX snippets_prefix_idx ON snippets (prefix);",
 ];
 
 /// Milliseconds since the Unix epoch.
@@ -538,6 +551,71 @@ impl Store {
         Ok(())
     }
 
+    // ---- snippets ----
+
+    /// The user's snippets (built-ins are not stored), ordered by prefix.
+    pub fn snippets(&self) -> Result<Vec<Snippet>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, prefix, body, engine, created_at, updated_at FROM snippets
+             ORDER BY prefix COLLATE NOCASE, name COLLATE NOCASE",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let engine: Option<String> = r.get(4)?;
+            Ok(Snippet {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                prefix: r.get(2)?,
+                body: r.get(3)?,
+                engine: engine.as_deref().and_then(engine_from_key),
+                created_at: r.get(5)?,
+                updated_at: r.get(6)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Insert or update a user snippet after validation; returns it as stored. An empty
+    /// or built-in id saves a new snippet (overriding a built-in by its prefix).
+    pub fn save_snippet(&mut self, snippet: &Snippet) -> Result<Snippet> {
+        snippet.validate()?;
+        let mut s = snippet.clone();
+        s.name = s.name.trim().to_owned();
+        s.prefix = s.prefix.trim().to_owned();
+        let now = now_ms();
+        if s.id.is_empty() || s.is_builtin() {
+            s.id = crate::random::random_hex(12);
+            s.created_at = now;
+        }
+        s.updated_at = now;
+        let created: i64 = self.conn.query_row(
+            "INSERT INTO snippets (id, name, prefix, body, engine, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(id) DO UPDATE SET name = ?2, prefix = ?3, body = ?4, engine = ?5,
+                 updated_at = ?7
+             RETURNING created_at",
+            params![
+                s.id,
+                s.name,
+                s.prefix,
+                s.body,
+                s.engine.map(engine_key),
+                if s.created_at == 0 { now } else { s.created_at },
+                s.updated_at
+            ],
+            |r| r.get(0),
+        )?;
+        s.created_at = created;
+        Ok(s)
+    }
+
+    /// Delete a user snippet. Returns whether it existed.
+    pub fn delete_snippet(&mut self, id: &str) -> Result<bool> {
+        Ok(self
+            .conn
+            .execute("DELETE FROM snippets WHERE id = ?1", [id])?
+            > 0)
+    }
+
     // ---- schema cache ----
 
     /// Store a catalog chunk for a connection and scope key.
@@ -789,5 +867,91 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn snippet_crud() {
+        let mut s = Store::open_in_memory().unwrap();
+        assert!(s.snippets().unwrap().is_empty());
+        let bad = Snippet::new("n", "two words", "SELECT 1;", None);
+        assert!(matches!(
+            s.save_snippet(&bad),
+            Err(StoreError::Validation(..))
+        ));
+        let a = s
+            .save_snippet(&Snippet::new(
+                " Count ",
+                "cnt",
+                "SELECT COUNT(*) FROM ${1:t};",
+                None,
+            ))
+            .unwrap();
+        assert!(!a.id.is_empty() && a.created_at > 0);
+        assert_eq!(a.name, "Count");
+        let b = s
+            .save_snippet(&Snippet::new(
+                "Who",
+                "who",
+                "EXEC sp_who2;",
+                Some(Engine::SqlServer),
+            ))
+            .unwrap();
+        let all = s.snippets().unwrap();
+        assert_eq!(all, vec![a.clone(), b.clone()]);
+        assert_eq!(all[1].engine, Some(Engine::SqlServer));
+
+        // Update keeps id and creation time.
+        let mut a2 = a.clone();
+        a2.body = "SELECT COUNT(1) FROM ${1:t};".into();
+        a2.engine = Some(Engine::Postgres);
+        let saved = s.save_snippet(&a2).unwrap();
+        assert_eq!(
+            (saved.id.as_str(), saved.created_at),
+            (a.id.as_str(), a.created_at)
+        );
+        let got = s.snippets().unwrap();
+        assert_eq!(got[0].body, a2.body);
+        assert_eq!(got[0].engine, Some(Engine::Postgres));
+
+        // Saving a built-in stores a user copy (an override) under a new id.
+        let builtin = crate::snippets::builtin_snippets(Engine::Postgres).remove(0);
+        let copy = s.save_snippet(&builtin).unwrap();
+        assert!(!copy.is_builtin());
+        assert_eq!(s.snippets().unwrap().len(), 3);
+
+        assert!(s.delete_snippet(&b.id).unwrap());
+        assert!(!s.delete_snippet(&b.id).unwrap());
+        assert_eq!(s.snippets().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn migrates_v2_store_to_snippets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("profiles.db");
+        {
+            // A store as an older build left it: schema version 2, one history row.
+            let conn = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..2] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.pragma_update(None, "user_version", 2).unwrap();
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('theme', '\"light\"')",
+                [],
+            )
+            .unwrap();
+        }
+        let mut s = Store::open(&path).unwrap();
+        assert_eq!(s.schema_version().unwrap(), 3);
+        assert_eq!(
+            s.setting::<String>("theme").unwrap().as_deref(),
+            Some("light")
+        );
+        assert!(s.snippets().unwrap().is_empty());
+        s.save_snippet(&Snippet::new("n", "p", "SELECT 1;", None))
+            .unwrap();
+        drop(s);
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.snippets().unwrap().len(), 1);
     }
 }
