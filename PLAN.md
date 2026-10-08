@@ -530,6 +530,8 @@ server or bundled Unix tools on Windows (Tier 3).
   the env chip, URL bar and request edge; confirm before Send or a run with unsafe methods.
 - [x] UX-7 Workbench first-run page (Create project / Import collection / Paste cURL / sample
   request), empty Compose state with quick actions; request tabs open only on demand.
+- [x] UX-8 Workbench restores each project's open request tabs (saved requests only; order and
+  active tab) from `workbench_tab_sessions` (store schema 7); no session opens with no tabs.
 
 ## DBX — Database explorer and editors at DBeaver / SSMS level (user request)
 

@@ -897,6 +897,9 @@ From a user-requested UX review (see the "Extra — UX pass" section in PLAN.md)
   method other than uppercase GET, HEAD or OPTIONS (lowercase methods ask too).
 - The Workbench no longer seeds a blank request tab: zero open tabs is a valid state with an
   empty Compose page (New request, Import, Paste cURL). Send, Save and tab actions are
-  no-ops without a tab. Opening a project with saved requests still opens the first one.
+  no-ops without a tab. Opening a project restores its last open tabs (user choice): saved
+  request ids only, per workspace in `workbench_tab_sessions` (schema 7); drafts are never
+  persisted, missing requests are skipped, writes happen on change with a per-workspace
+  sequence guard so the latest write wins.
 - Rail rename is inline for collections, folders and requests (kebab, double-click, F2);
   Enter and clicking away commit, Escape cancels. The request-rename dialog was removed.
