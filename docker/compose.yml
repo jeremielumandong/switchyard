@@ -89,3 +89,13 @@ services:
       - "21000-21010:21000-21010"
     volumes:
       - ./ftp:/etc/ftp-tls:ro
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "switchyard", "--save", "", "--appendonly", "no"]
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "switchyard", "--no-auth-warning", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

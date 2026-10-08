@@ -1486,6 +1486,10 @@ impl Workspace {
                         .then(|| s.connection.as_ref().map(|c| c.id.clone()))
                         .flatten()
                 }
+                Tab::Redis(r) => {
+                    let r = r.read(cx);
+                    r.is_open().then(|| r.connection.id.clone())
+                }
                 _ => None,
             })
             .collect();

@@ -38,6 +38,8 @@ pub enum ConnKind {
     Snowflake,
     /// Oracle Database.
     Oracle,
+    /// Redis.
+    Redis,
     /// SSH Host.
     Ssh,
     /// SFTP over a Host.
@@ -47,12 +49,13 @@ pub enum ConnKind {
 }
 
 impl ConnKind {
-    const ALL: [ConnKind; 8] = [
+    const ALL: [ConnKind; 9] = [
         ConnKind::Postgres,
         ConnKind::SqlServer,
         ConnKind::Oracle,
         ConnKind::Snowflake,
         ConnKind::D1,
+        ConnKind::Redis,
         ConnKind::Ssh,
         ConnKind::Sftp,
         ConnKind::Ftp,
@@ -65,6 +68,7 @@ impl ConnKind {
             ConnKind::D1 => "D1",
             ConnKind::Snowflake => "SF",
             ConnKind::Oracle => "OR",
+            ConnKind::Redis => "RD",
             ConnKind::Ssh => "SSH",
             ConnKind::Sftp => "SFTP",
             ConnKind::Ftp => "FTP",
@@ -78,6 +82,7 @@ impl ConnKind {
             ConnKind::D1 => "Cloudflare D1",
             ConnKind::Snowflake => "Snowflake",
             ConnKind::Oracle => "Oracle",
+            ConnKind::Redis => "Redis",
             ConnKind::Ssh => "SSH Host",
             ConnKind::Sftp => "SFTP",
             ConnKind::Ftp => "FTP / FTPS",
@@ -92,7 +97,13 @@ impl ConnKind {
                 | ConnKind::Oracle
                 | ConnKind::D1
                 | ConnKind::Snowflake
+                | ConnKind::Redis
         )
+    }
+
+    /// A SQL database (query history and coding agents apply).
+    fn is_sql(self) -> bool {
+        self.is_db() && self != ConnKind::Redis
     }
 
     fn sub(self) -> &'static str {
@@ -100,6 +111,7 @@ impl ConnKind {
             ConnKind::Postgres | ConnKind::SqlServer | ConnKind::Oracle => "Database",
             ConnKind::D1 => "SQLite over HTTPS",
             ConnKind::Snowflake => "Cloud warehouse",
+            ConnKind::Redis => "Key-value store",
             ConnKind::Ssh => "Terminal + tunnels",
             ConnKind::Sftp => "Files over a Host",
             ConnKind::Ftp => "Files, own login",
@@ -194,6 +206,7 @@ impl ConnEditor {
             Some(Profile::Db(d)) if d.engine == Engine::D1 => ConnKind::D1,
             Some(Profile::Db(d)) if d.engine == Engine::Snowflake => ConnKind::Snowflake,
             Some(Profile::Db(d)) if d.engine == Engine::Oracle => ConnKind::Oracle,
+            Some(Profile::Db(d)) if d.engine == Engine::Redis => ConnKind::Redis,
             Some(Profile::Db(_)) => ConnKind::Postgres,
             Some(Profile::Host(_)) => ConnKind::Ssh,
             Some(Profile::File(f)) => match f.protocol {
@@ -272,10 +285,11 @@ impl ConnEditor {
             Select { options, chosen }
         };
         match self.kind {
-            ConnKind::Postgres | ConnKind::SqlServer | ConnKind::Oracle => {
+            ConnKind::Postgres | ConnKind::SqlServer | ConnKind::Oracle | ConnKind::Redis => {
                 let engine = match self.kind {
                     ConnKind::Postgres => Engine::Postgres,
                     ConnKind::Oracle => Engine::Oracle,
+                    ConnKind::Redis => Engine::Redis,
                     _ => Engine::SqlServer,
                 };
                 let d = match existing {
@@ -285,8 +299,13 @@ impl ConnEditor {
                         d.database = match engine {
                             Engine::Postgres => "postgres".into(),
                             Engine::Oracle => String::new(),
+                            Engine::Redis => "0".into(),
                             _ => "master".into(),
                         };
+                        if engine == Engine::Redis {
+                            // Redis has no STARTTLS; a server either speaks TLS or not.
+                            d.ssl_mode = SslMode::Disable;
+                        }
                         d
                     }
                 };
@@ -297,6 +316,7 @@ impl ConnEditor {
                     match engine {
                         Engine::Postgres => "shop_prod",
                         Engine::Oracle => "erp",
+                        Engine::Redis => "cache",
                         _ => "Reporting",
                     },
                     false,
@@ -314,7 +334,17 @@ impl ConnEditor {
                     },
                     false,
                 );
-                add(self, "user", &d.user, "app_ro", false);
+                add(
+                    self,
+                    "user",
+                    &d.user,
+                    if engine == Engine::Redis {
+                        "default"
+                    } else {
+                        "app_ro"
+                    },
+                    false,
+                );
                 add(
                     self,
                     "password",
@@ -645,7 +675,7 @@ impl ConnEditor {
                 );
             }
         }
-        if self.kind.is_db() {
+        if self.kind.is_sql() {
             let chosen = match existing {
                 Some(Profile::Db(d)) => d.assistant_agent.clone().unwrap_or_default(),
                 _ => String::new(),
@@ -743,10 +773,11 @@ impl ConnEditor {
             .as_ref()
             .and_then(|i| self.profiles.all.iter().find(|p| p.id() == i));
         Ok(match self.kind {
-            ConnKind::Postgres | ConnKind::SqlServer | ConnKind::Oracle => {
+            ConnKind::Postgres | ConnKind::SqlServer | ConnKind::Oracle | ConnKind::Redis => {
                 let engine = match self.kind {
                     ConnKind::Postgres => Engine::Postgres,
                     ConnKind::Oracle => Engine::Oracle,
+                    ConnKind::Redis => Engine::Redis,
                     _ => Engine::SqlServer,
                 };
                 let mut d = match existing {
@@ -777,7 +808,7 @@ impl ConnEditor {
                 d.environment = self.env;
                 d.read_only = self.read_only;
                 d.history_enabled = self.history;
-                d.agent_access = self.agents;
+                d.agent_access = self.agents && engine.is_sql();
                 d.assistant_agent = Some(self.chosen("assistant")).filter(|a| !a.is_empty());
                 Profile::Db(d)
             }
@@ -951,7 +982,11 @@ impl ConnEditor {
                 }
             }
             (
-                ConnKind::Postgres | ConnKind::Oracle | ConnKind::D1 | ConnKind::Snowflake,
+                ConnKind::Postgres
+                | ConnKind::Oracle
+                | ConnKind::D1
+                | ConnKind::Snowflake
+                | ConnKind::Redis,
                 Ok(Profile::Db(d)),
             ) => {
                 let request = next_id();
@@ -1185,6 +1220,56 @@ impl ConnEditor {
     fn fields(&self, p: &Palette, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut v = Vec::new();
         match self.kind {
+            ConnKind::Redis => {
+                v.push(self.field("name", "Name", 6, false, None, p, cx));
+                v.push(self.field("host", "Host", 4, true, None, p, cx));
+                v.push(self.field("port", "Port", 2, true, None, p, cx));
+                v.push(self.field(
+                    "database",
+                    "Database",
+                    2,
+                    false,
+                    Some("Number, 0 by default"),
+                    p,
+                    cx,
+                ));
+                v.push(self.field(
+                    "user",
+                    "ACL user",
+                    2,
+                    false,
+                    Some("Empty for the default user"),
+                    p,
+                    cx,
+                ));
+                v.push(self.field(
+                    "password",
+                    "Password",
+                    2,
+                    false,
+                    Some("Stored in the OS keychain"),
+                    p,
+                    cx,
+                ));
+                v.push(self.field(
+                    "ssl",
+                    "TLS",
+                    3,
+                    false,
+                    Some("Require for TLS ports (cloud Redis); Prefer means plain TCP"),
+                    p,
+                    cx,
+                ));
+                v.push(self.field(
+                    "via",
+                    "Connect via Host",
+                    3,
+                    false,
+                    Some("Opens an ephemeral local port automatically"),
+                    p,
+                    cx,
+                ));
+            }
             ConnKind::Postgres => {
                 v.push(self.field("name", "Name", 6, false, None, p, cx));
                 v.push(self.field("host", "Host", 4, true, None, p, cx));
@@ -1542,7 +1627,7 @@ impl Render for ConnEditor {
             "New connection".into()
         };
         let fields = self.fields(&p, cx);
-        let assistant_field = (self.kind.is_db() && self.agents).then(|| {
+        let assistant_field = (self.kind.is_sql() && self.agents).then(|| {
             div().w(px(300.)).child(self.field(
                 "assistant",
                 "Assistant CLI",
@@ -1821,7 +1906,11 @@ impl Render for ConnEditor {
                                     ui::checkbox(
                                         "history",
                                         self.history,
-                                        "Record executed statements in query history",
+                                        if self.kind == ConnKind::Redis {
+                                            "Record console commands in query history (passwords are masked)"
+                                        } else {
+                                            "Record executed statements in query history"
+                                        },
                                         &p,
                                     )
                                     .on_click(cx.listener(
@@ -1832,7 +1921,7 @@ impl Render for ConnEditor {
                                     )),
                                 )
                             })
-                            .when(is_db, |d| {
+                            .when(self.kind.is_sql(), |d| {
                                 let label = if self.env.is_production() {
                                     "Allow coding agents (Production: read-only queries and \
                                      estimated plans; every call is recorded in history)"

@@ -18,6 +18,8 @@ pub enum Engine {
     Snowflake,
     /// Oracle Database through Oracle Instant Client, loaded at runtime.
     Oracle,
+    /// Redis (key-value; browsed with [`crate::redis`], not SQL).
+    Redis,
 }
 
 impl Engine {
@@ -29,6 +31,7 @@ impl Engine {
             Engine::D1 => "Cloudflare D1",
             Engine::Snowflake => "Snowflake",
             Engine::Oracle => "Oracle",
+            Engine::Redis => "Redis",
         }
     }
 
@@ -40,6 +43,7 @@ impl Engine {
             Engine::D1 => "D1",
             Engine::Snowflake => "SF",
             Engine::Oracle => "OR",
+            Engine::Redis => "RD",
         }
     }
 
@@ -50,19 +54,26 @@ impl Engine {
             Engine::SqlServer => 1433,
             Engine::D1 | Engine::Snowflake => 443,
             Engine::Oracle => 1521,
+            Engine::Redis => 6379,
         }
     }
 
     /// Whether the engine supports interactive transactions (BEGIN ... COMMIT across
     /// requests). D1's and Snowflake's HTTP APIs run every request on its own.
     pub fn supports_transactions(self) -> bool {
-        !matches!(self, Engine::D1 | Engine::Snowflake)
+        !matches!(self, Engine::D1 | Engine::Snowflake | Engine::Redis)
     }
 
     /// Whether the engine is reached through a cloud HTTP API (account and database ids
     /// plus an API token) rather than host, port and user.
     pub fn is_cloud_api(self) -> bool {
         matches!(self, Engine::D1)
+    }
+
+    /// Whether the engine speaks SQL. Key-value stores (Redis) open a key browser instead
+    /// of a SQL editor and have no catalog, plans or activity views.
+    pub fn is_sql(self) -> bool {
+        !matches!(self, Engine::Redis)
     }
 }
 

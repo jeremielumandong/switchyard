@@ -713,6 +713,32 @@ impl Profile {
                     ));
                 }
             }
+            Profile::Db(d) if d.engine == Engine::Redis => {
+                if d.server.trim().is_empty() {
+                    return Err(ValidationError::new("server", "Host is required"));
+                }
+                if d.port == 0 {
+                    return Err(ValidationError::new("port", "Port must be 1–65535"));
+                }
+                if switchyard_db::redis::client::database_index(&d.database).is_err() {
+                    return Err(ValidationError::new(
+                        "database",
+                        "Database must be a number (0, 1, 2…)",
+                    ));
+                }
+                if d.auth != DbAuthMethod::Password {
+                    return Err(ValidationError::new(
+                        "auth",
+                        "Redis signs in with a password (and an optional ACL user)",
+                    ));
+                }
+                if d.agent_access {
+                    return Err(ValidationError::new(
+                        "agent_access",
+                        "Coding agents work with SQL connections only",
+                    ));
+                }
+            }
             Profile::Db(d) if d.engine.is_cloud_api() => {
                 if d.server.trim().is_empty() {
                     return Err(ValidationError::new("server", "Account ID is required"));
@@ -859,6 +885,27 @@ impl ValidationError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redis_validation() {
+        let mut r = DbConnection::new("cache", Engine::Redis);
+        assert_eq!(r.port, 6379);
+        assert!(Profile::Db(r.clone()).validate().is_ok(), "no user needed");
+        r.database = "cache".into();
+        assert_eq!(
+            Profile::Db(r.clone()).validate().unwrap_err().field,
+            "database"
+        );
+        r.database = "2".into();
+        r.agent_access = true;
+        assert_eq!(
+            Profile::Db(r.clone()).validate().unwrap_err().field,
+            "agent_access"
+        );
+        r.agent_access = false;
+        let back: DbConnection = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+        assert_eq!(back.engine, Engine::Redis);
+    }
 
     #[test]
     fn port_forwards() {
