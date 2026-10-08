@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 const DATABASE_FILE: &str = "workbench.db";
-const SCHEMA_VERSION: i32 = 4;
+const SCHEMA_VERSION: i32 = 5;
 const MMAP_SIZE_BYTES: i64 = 128 * 1024 * 1024;
 pub const DEFAULT_HISTORY_BODY_BYTES: usize = 256 * 1024;
 pub const DEFAULT_HISTORY_ENTRIES: usize = 1_000;
@@ -78,6 +78,14 @@ pub struct WorkspaceSnapshot {
     pub history: Vec<Exchange>,
     pub runs: Vec<CollectionRun>,
     pub cookies: CookieJar,
+}
+
+/// A named Workbench workspace: the scope collections, environments,
+/// history and runs belong to.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorkspaceEntry {
+    pub id: WorkspaceId,
+    pub name: String,
 }
 
 #[derive(Debug)]
@@ -195,6 +203,64 @@ impl WorkbenchStore {
         Ok(self
             .conn()
             .query_row("PRAGMA user_version", [], |row| row.get(0))?)
+    }
+
+    /// Every named workspace, oldest first.
+    pub fn list_workspaces(&self) -> StoreResult<Vec<WorkspaceEntry>> {
+        let connection = self.conn();
+        let mut statement = connection
+            .prepare("SELECT id, name FROM workbench_workspaces ORDER BY created_at, rowid")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut workspaces = Vec::new();
+        for row in rows {
+            let (id, name) = row?;
+            let id = WorkspaceId::new(id).map_err(StoreError::InvalidInput)?;
+            workspaces.push(WorkspaceEntry { id, name });
+        }
+        Ok(workspaces)
+    }
+
+    /// The workspace opened most recently, if any.
+    pub fn last_opened_workspace(&self) -> StoreResult<Option<WorkspaceId>> {
+        let id: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT id FROM workbench_workspaces
+                 ORDER BY opened_order DESC, rowid DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        id.map(|id| WorkspaceId::new(id).map_err(StoreError::InvalidInput))
+            .transpose()
+    }
+
+    /// Create an empty workspace named `name` with a fresh id.
+    pub fn create_workspace(&self, name: &str) -> StoreResult<WorkspaceEntry> {
+        validate_name("workspace", name)?;
+        let id = WorkspaceId::new(format!("workspace-{}", uuid::Uuid::new_v4()))
+            .map_err(StoreError::InvalidInput)?;
+        let name = name.trim().to_owned();
+        self.conn().execute(
+            "INSERT INTO workbench_workspaces(id, name, created_at, opened_order)
+             SELECT ?1, ?2, unixepoch() * 1000, coalesce(max(opened_order), 0) + 1
+             FROM workbench_workspaces",
+            params![id.as_str(), name],
+        )?;
+        Ok(WorkspaceEntry { id, name })
+    }
+
+    /// Record that `workspace` was opened, so the next launch reopens it.
+    pub fn mark_workspace_opened(&self, workspace: &WorkspaceId) -> StoreResult<()> {
+        self.conn().execute(
+            "UPDATE workbench_workspaces
+             SET opened_order=(SELECT coalesce(max(opened_order), 0) + 1 FROM workbench_workspaces)
+             WHERE id=?1",
+            [workspace.as_str()],
+        )?;
+        Ok(())
     }
 
     pub fn upsert_collection(&self, collection: &Collection) -> StoreResult<()> {
@@ -2064,7 +2130,58 @@ fn migrate(connection: &mut Connection) -> StoreResult<()> {
         transaction.pragma_update(None, "user_version", 4)?;
         transaction.commit()?;
     }
+    if current < 5 {
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(
+            "CREATE TABLE workbench_workspaces (
+                 id TEXT PRIMARY KEY,
+                 name TEXT NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 -- Rises on every open; the highest is reopened at launch.
+                 opened_order INTEGER NOT NULL
+             );",
+        )?;
+        // Data saved before workspaces had names lives under an implicit
+        // scope (the project path); list each one so it stays reachable.
+        let existing = {
+            let mut statement = transaction.prepare(
+                "SELECT workspace_id FROM workbench_collections
+                 UNION SELECT workspace_id FROM workbench_environments
+                 UNION SELECT workspace_id FROM workbench_history
+                 UNION SELECT workspace_id FROM workbench_runs
+                 UNION SELECT workspace_id FROM workbench_globals
+                 ORDER BY 1",
+            )?;
+            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        for id in existing {
+            transaction.execute(
+                "INSERT INTO workbench_workspaces(id, name, created_at, opened_order)
+                 VALUES (?1, ?2, unixepoch() * 1000, 0)",
+                params![id, implicit_workspace_name(&id)],
+            )?;
+        }
+        transaction.execute(
+            "INSERT INTO workbench_schema_migrations(version, applied_at)
+             VALUES (5, unixepoch() * 1000)",
+            [],
+        )?;
+        transaction.pragma_update(None, "user_version", 5)?;
+        transaction.commit()?;
+    }
     Ok(())
+}
+
+/// A readable name for a pre-workspace scope: the last segment of its
+/// project path (`/home/me/shop` → `shop`), else the scope itself.
+fn implicit_workspace_name(id: &str) -> String {
+    id.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .filter(|segment| !segment.is_empty())
+        .unwrap_or(id)
+        .to_owned()
 }
 
 #[cfg(test)]
@@ -3192,6 +3309,43 @@ mod tests {
     }
 
     #[test]
+    fn workspaces_are_created_listed_and_reopened() {
+        let scratch = Scratch::new("workspaces");
+        let store = WorkbenchStore::open_database(scratch.0.join(DATABASE_FILE)).unwrap();
+        assert!(store.list_workspaces().unwrap().is_empty());
+        assert_eq!(store.last_opened_workspace().unwrap(), None);
+        assert!(matches!(
+            store.create_workspace("  "),
+            Err(StoreError::InvalidInput(_))
+        ));
+
+        let first = store.create_workspace("Workspace 1").unwrap();
+        let second = store.create_workspace(" Payments ").unwrap();
+        assert_eq!(second.name, "Payments");
+        assert_ne!(first.id, second.id);
+        assert_eq!(
+            store.list_workspaces().unwrap(),
+            vec![first.clone(), second.clone()]
+        );
+        assert_eq!(store.last_opened_workspace().unwrap(), Some(second.id));
+
+        store.mark_workspace_opened(&first.id).unwrap();
+        assert_eq!(
+            store.last_opened_workspace().unwrap(),
+            Some(first.id.clone())
+        );
+        assert!(store.list_collections(&first.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn implicit_workspace_names_use_the_last_path_segment() {
+        assert_eq!(implicit_workspace_name("/home/me/shop"), "shop");
+        assert_eq!(implicit_workspace_name("/home/me/shop/"), "shop");
+        assert_eq!(implicit_workspace_name("default"), "default");
+        assert_eq!(implicit_workspace_name("/"), "/");
+    }
+
+    #[test]
     fn newer_schema_fails_closed() {
         let scratch = Scratch::new("schema");
         let path = scratch.0.join(DATABASE_FILE);
@@ -3221,14 +3375,22 @@ mod tests {
                 "DROP TABLE workbench_examples;
                  DROP TABLE workbench_cookie_jars;
                  DROP TABLE workbench_globals;
-                 DELETE FROM workbench_schema_migrations WHERE version IN (2, 3, 4);
+                 DROP TABLE workbench_workspaces;
+                 DELETE FROM workbench_schema_migrations WHERE version IN (2, 3, 4, 5);
                  PRAGMA user_version=1;",
             )
             .unwrap();
         drop(connection);
 
         let migrated = WorkbenchStore::open_database(&path).unwrap();
-        assert_eq!(migrated.schema_version().unwrap(), 4);
+        assert_eq!(migrated.schema_version().unwrap(), 5);
+        assert_eq!(
+            migrated.list_workspaces().unwrap(),
+            vec![WorkspaceEntry {
+                id: workspace.clone(),
+                name: "migration-project".into(),
+            }]
+        );
         let table: String = migrated
             .conn()
             .query_row(

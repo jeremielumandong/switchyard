@@ -865,3 +865,19 @@ auth) and the real `swy mcp`:
   one-line fix over a loader workaround (would miss encrypted keys) or a test-only fix
   (would leave those users unable to log in). See `vendor/ssh-key/VENDORED.md`; drop the
   copy once a release carries the fix.
+
+## 2026-10-07 — Named API Workbench workspaces
+
+The user asked for the API workbench to open on an empty page with a button to add a
+workspace. Until then the Workbench had one implicit scope (the process's current directory),
+so every launch showed the editor straight away and there was nothing to add.
+
+- "Workspace" here is the Workbench's own scope (collections, environments, history, runs,
+  globals, cookies all hang off `WorkspaceId`), not the title bar's Default ↔ API switch.
+- Workspaces get a table, `workbench_workspaces (id, name, created_at, opened_order)`, in the
+  Workbench store (schema 5). New ids are `workspace-<uuid>`; names start as `Workspace N`.
+  The migration lists every scope that already has data, named after its path's last segment,
+  so nothing saved before becomes unreachable.
+- The chosen workspace is `compat::current_project`, which `current_workspace_id` already read,
+  so the panel's existing scope-change guards apply unchanged. `opened_order` (a counter, not a
+  clock, so two opens in one millisecond still order) picks the workspace to reopen on launch.
