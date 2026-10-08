@@ -90,8 +90,8 @@ gpui_kit::actions!(api_compat, [Save]);
 pub fn bind_keys(cx: &mut App) {
     use super::workbench::{
         CancelRequest, CloseRequest, FocusUrl, KEY_CONTEXT, NewRequest, NextRequest,
-        PreviousRequest, SendRequest, ShowCompose, ShowDiff, ShowEnvs, ShowHistory, ShowImport,
-        ShowRunner,
+        PreviousRequest, RAIL_KEY_CONTEXT, RenameRailItem, SendRequest, ShowCompose, ShowDiff,
+        ShowEnvs, ShowHistory, ShowImport, ShowRunner,
     };
     use gpui_kit::KeyBinding;
     let ctx = Some(KEY_CONTEXT);
@@ -110,6 +110,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-4", ShowEnvs, ctx),
         KeyBinding::new("secondary-5", ShowHistory, ctx),
         KeyBinding::new("secondary-6", ShowDiff, ctx),
+        KeyBinding::new("f2", RenameRailItem, Some(RAIL_KEY_CONTEXT)),
     ]);
 }
 
