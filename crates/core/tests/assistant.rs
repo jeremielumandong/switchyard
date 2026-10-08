@@ -285,11 +285,18 @@ async fn open_in_terminal_holds_its_token_until_the_terminal_ends() {
     .unwrap();
     assert_eq!(description, "Claude Code · Switchyard tools");
     let tokens = data.path().join("agent-tokens");
+    // The script's `>` creates the file before printf fills it, and `pwd >>` comes last:
+    // wait for that final working-directory line, not just for the file.
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !out.exists() && std::time::Instant::now() < deadline {
+    let args = loop {
+        let args = std::fs::read_to_string(&out).unwrap_or_default();
+        if args.lines().last().is_some_and(|l| l.starts_with('/'))
+            || std::time::Instant::now() >= deadline
+        {
+            break args;
+        }
         tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    let args = std::fs::read_to_string(&out).unwrap();
+    };
     assert!(
         args.contains("--mcp-config") && args.contains("--strict-mcp-config"),
         "{args}"
