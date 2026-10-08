@@ -301,7 +301,7 @@ impl ScopeEditor {
         };
         let prepared = self.panel.update(cx, |panel, cx| {
             if panel.bound_workspace != self.workspace || current_workspace_id() != self.workspace {
-                return Err("The workspace changed. Reopen these settings.".to_string());
+                return Err("The project changed. Reopen these settings.".to_string());
             }
             if panel.storage_loading || panel.send_state != SendState::Idle {
                 return Err("Wait for the current save or request to finish.".to_string());
@@ -353,7 +353,7 @@ impl ScopeEditor {
                     if panel.bound_workspace != completion_workspace
                         || panel.storage_generation != generation
                     {
-                        return Err("The workspace changed. Reopen these settings.".to_string());
+                        return Err("The project changed. Reopen these settings.".to_string());
                     }
                     panel.storage_loading = false;
                     match result {
