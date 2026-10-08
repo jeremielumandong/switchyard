@@ -1917,7 +1917,35 @@ impl Workspace {
                     AppMode::Api,
                     "API",
                     "Collections, requests, environments and runs",
-                )),
+                ))
+                .child(div().my(px(4.)).h(px(1.)).bg(p.bd))
+                .child(
+                    div()
+                        .id("menu-assistant")
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .px(px(10.))
+                        .py(px(6.))
+                        .rounded(px(5.))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(p.hover))
+                        .on_click(cx.listener(|this, _, w, cx| {
+                            this.mode_menu = false;
+                            this.run_command(CommandId::ToggleAssistant, w, cx);
+                        }))
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_size(px(12.5))
+                                .font_weight(FontWeight::MEDIUM)
+                                .child("Assistant"),
+                        )
+                        .when(self.assistant_open, |d| {
+                            d.child(div().text_color(p.acc).child("✓"))
+                        })
+                        .child(ui::kbd(ui::keys("⌘J", "Ctrl+J"), p)),
+                ),
         )
         .with_priority(2)
         .into_any_element()
@@ -2702,14 +2730,30 @@ impl Render for Workspace {
             }
             self.sync_schema(cx);
         }
+        let mut assistant = self.assistant_open.then(|| {
+            div()
+                .w(px(400.))
+                .flex_none()
+                .border_l_1()
+                .border_color(p.bd)
+                .child(self.assistant_panel.clone())
+        });
+        // The API workspace shows the assistant beside the Workbench.
         let api_body = match (self.mode, &self.api) {
             (AppMode::Api, Some(api)) => Some(
                 div()
                     .flex_1()
                     .min_h_0()
                     .flex()
-                    .flex_col()
-                    .child(api.clone())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(api.clone()),
+                    )
+                    .children(assistant.take())
                     .into_any_element(),
             ),
             _ => None,
@@ -2722,14 +2766,6 @@ impl Render for Workspace {
             .sidebar_open
             .then(|| self.render_sidebar(&p, window, cx));
         let inspector = show_inspector.then(|| self.render_inspector(&p, cx));
-        let assistant = self.assistant_open.then(|| {
-            div()
-                .w(px(400.))
-                .flex_none()
-                .border_l_1()
-                .border_color(p.bd)
-                .child(self.assistant_panel.clone())
-        });
         let title = self.render_title_bar(&p, cx);
         let strip = self.render_tab_strip(&p, cx);
         let status = self.render_status_bar(&p, cx);

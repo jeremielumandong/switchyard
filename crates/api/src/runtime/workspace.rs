@@ -65,6 +65,17 @@ pub fn create_workspace(app_data: &Path) -> Result<WorkspaceEntry, String> {
         .map_err(|error| error.to_string())
 }
 
+/// Rename `workspace` in `app_data`'s store.
+pub fn rename_workspace(
+    app_data: &Path,
+    workspace: &WorkspaceId,
+    name: &str,
+) -> Result<WorkspaceEntry, String> {
+    WorkbenchStore::open(app_data)
+        .and_then(|store| store.rename_workspace(workspace, name))
+        .map_err(|error| error.to_string())
+}
+
 /// Remember `workspace` as the one to reopen on the next launch.
 pub fn mark_workspace_opened(app_data: &Path, workspace: &WorkspaceId) -> Result<(), String> {
     WorkbenchStore::open(app_data)

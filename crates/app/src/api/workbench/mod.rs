@@ -17,6 +17,7 @@ mod move_request;
 mod persistence;
 mod pretty;
 mod rename_request;
+mod rename_workspace;
 mod request_creation;
 mod response_controls;
 mod response_editor;
