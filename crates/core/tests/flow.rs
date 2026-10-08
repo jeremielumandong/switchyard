@@ -482,3 +482,31 @@ async fn transfer_queue_runs_four_at_a_time() {
     assert_eq!(queued, 2, "four run, two wait");
     assert_eq!(std::fs::read_dir(&out).unwrap().count(), 6);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn object_search_round_trips_through_core() {
+    use switchyard_core::db::{CatalogChunk, IntrospectScope};
+    let (core, mut rx) = setup(EnvironmentLabel::Development, false).await;
+    let h = core.handle();
+    let scope = IntrospectScope::Search {
+        pattern: "S_2".into(),
+        limit: 200,
+        include_system: false,
+    };
+    h.send(Command::Introspect {
+        session: 7,
+        scope: scope.clone(),
+        refresh: false,
+    });
+    let names = next_matching(&mut rx, |e| match e {
+        Event::Catalog {
+            session: 7,
+            scope: s,
+            result: Ok(CatalogChunk::Objects(o)),
+            ..
+        } if s == scope => Some(o.into_iter().map(|o| o.name).collect::<Vec<_>>()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(names, ["tables_2"]);
+}

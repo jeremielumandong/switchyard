@@ -534,3 +534,34 @@ async fn windows_account_runs_ntlm_and_the_server_refuses_an_unknown_domain() {
         "{err}"
     );
 }
+
+/// `schema.name Kind` of every hit of a global object search.
+async fn search(s: &mut dyn DbSession, pattern: &str) -> Vec<String> {
+    let chunk = s
+        .introspect(IntrospectScope::Search {
+            pattern: pattern.into(),
+            limit: 200,
+            include_system: false,
+        })
+        .await
+        .expect("search");
+    let CatalogChunk::Objects(hits) = chunk else {
+        panic!("search returns objects");
+    };
+    hits.iter()
+        .map(|o| format!("{}.{} {:?}", o.schema, o.name, o.kind))
+        .collect()
+}
+
+#[tokio::test]
+#[ignore = "needs sql server"]
+async fn global_object_search() {
+    let mut s = shop().await;
+    let hits = search(s.as_mut(), "CUSTOM").await;
+    assert_eq!(hits[0], "dbo.customers Table");
+    // `[` and `_` are literal, not LIKE wildcards.
+    assert!(search(s.as_mut(), "[c]ustomers").await.is_empty());
+    assert!(search(s.as_mut(), "cust_mers").await.is_empty());
+    // sys objects are left out by default.
+    assert!(search(s.as_mut(), "sysobjects").await.is_empty());
+}
