@@ -1,0 +1,18 @@
+---
+source: crates/db/src/dialect/mod.rs
+expression: "format!(\"{}\\n\\n{}\", d.script_drop_create(ObjectKind::Table, &t, table),\nd.script_drop_create(ObjectKind::Procedure, &p, proc))"
+---
+DROP TABLE sales.orders;
+GO
+
+CREATE TABLE sales.orders (id int);
+GO
+
+DROP PROCEDURE sales.archive;
+GO
+
+CREATE PROCEDURE sales.archive AS
+BEGIN
+  NULL;
+END;
+GO

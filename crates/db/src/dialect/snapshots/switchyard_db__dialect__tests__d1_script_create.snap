@@ -1,0 +1,15 @@
+---
+source: crates/db/src/dialect/mod.rs
+expression: "[d.script_create(ObjectKind::Table, table),\nd.script_create(ObjectKind::Procedure, proc),\nd.script_create(ObjectKind::View, commented),\nd.script_create(ObjectKind::Table,\n\"CREATE TABLE t (id int);\\n\"),].join(\"\\n\\n\")"
+---
+CREATE TABLE sales.orders (id int);
+
+CREATE PROCEDURE sales.archive AS
+BEGIN
+  NULL;
+END;
+
+CREATE VIEW sales.v AS SELECT 1 AS x -- one
+;
+
+CREATE TABLE t (id int);

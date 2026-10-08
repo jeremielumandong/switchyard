@@ -130,6 +130,25 @@ FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespa
 WHERE n.nspname = $1 AND p.proname = $2
 ORDER BY p.oid LIMIT 1";
 
+/// Script as CREATE / EXEC: the definition and input parameters of one routine
+/// (`$3` = its identity arguments, or NULL for the first overload). One row per input
+/// parameter; a routine without any gives one row with NULL parameter columns.
+pub const ROUTINE_DEFINITION_SQL: &str = "\
+WITH r AS (
+  SELECT p.oid, p.proallargtypes, p.proargtypes, p.proargnames, p.proargmodes
+  FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+  WHERE n.nspname = $1 AND p.proname = $2
+    AND ($3::text IS NULL OR pg_catalog.pg_get_function_identity_arguments(p.oid) = $3)
+  ORDER BY p.oid LIMIT 1
+)
+SELECT pg_catalog.pg_get_functiondef(r.oid), a.name::text,
+       pg_catalog.format_type(a.type, NULL)
+FROM r
+LEFT JOIN LATERAL unnest(COALESCE(r.proallargtypes, r.proargtypes::oid[]), r.proargnames,
+                         r.proargmodes::text[]) WITH ORDINALITY AS a(type, name, mode, n)
+       ON COALESCE(a.mode, 'i') IN ('i', 'b', 'v')
+ORDER BY a.n";
+
 /// Global object search: relations, sequences and routines whose name contains `$1`
 /// (an escaped LIKE pattern), shortest names first. `$3` includes system schemas.
 pub const SEARCH_SQL: &str = "\
@@ -410,6 +429,12 @@ pub async fn introspect(client: &Client, scope: IntrospectScope) -> Result<Catal
             }
             Ok(CatalogChunk::Detail(Box::new(detail)))
         }
+        IntrospectScope::RoutineDefinition {
+            schema,
+            name,
+            kind,
+            signature,
+        } => routine_definition(client, &schema, &name, kind, signature.as_deref()).await,
         IntrospectScope::AllColumns => Ok(CatalogChunk::AllColumns(
             load_columns(client, None, None).await?,
         )),
@@ -430,6 +455,46 @@ pub async fn introspect(client: &Client, scope: IntrospectScope) -> Result<Catal
             ))
         }
     }
+}
+
+/// The identity arguments inside a tree signature `(…)`.
+fn identity_args(signature: Option<&str>) -> Option<&str> {
+    signature?.trim().strip_prefix('(')?.strip_suffix(')')
+}
+
+/// [`IntrospectScope::RoutineDefinition`]: `pg_get_functiondef` and the input parameters.
+async fn routine_definition(
+    client: &Client,
+    schema: &str,
+    name: &str,
+    kind: ObjectKind,
+    signature: Option<&str>,
+) -> Result<CatalogChunk> {
+    let args = identity_args(signature);
+    let rows = client
+        .query(ROUTINE_DEFINITION_SQL, &[&schema, &name, &args])
+        .await
+        .map_err(|e| map_error(e, false))?;
+    let Some(first) = rows.first() else {
+        return Err(crate::error::DbError::Unsupported(format!(
+            "{schema}.{name} no longer exists"
+        )));
+    };
+    let ddl: Option<String> = first.get(0);
+    let params = rows
+        .iter()
+        .filter_map(|r| {
+            let ty: Option<String> = r.get(2);
+            ty.map(|ty| (r.get::<_, Option<String>>(1).unwrap_or_default(), ty))
+        })
+        .collect();
+    Ok(CatalogChunk::Detail(Box::new(ObjectDetail::routine(
+        schema,
+        name,
+        kind,
+        ddl.unwrap_or_default(),
+        params,
+    ))))
 }
 
 async fn load_columns(
@@ -463,5 +528,18 @@ mod tests {
     #[test]
     fn search_sql_snapshot() {
         insta::assert_snapshot!("pg_search_sql", SEARCH_SQL);
+    }
+
+    #[test]
+    fn routine_definition_sql_snapshot() {
+        insta::assert_snapshot!("pg_routine_definition_sql", ROUTINE_DEFINITION_SQL);
+    }
+
+    #[test]
+    fn identity_args_from_the_tree_signature() {
+        assert_eq!(identity_args(Some("(cid bigint)")), Some("cid bigint"));
+        assert_eq!(identity_args(Some("()")), Some(""));
+        assert_eq!(identity_args(None), None);
+        assert_eq!(identity_args(Some("SQL_SCALAR_FUNCTION")), None);
     }
 }

@@ -467,6 +467,48 @@ async fn catalog_of_the_sample_schema() {
     );
 }
 
+#[tokio::test]
+#[ignore = "needs sql server"]
+async fn routine_definitions() {
+    let mut s = shop().await;
+    // Created inside a transaction that is rolled back.
+    s.begin().await.unwrap();
+    for sql in [
+        "CREATE PROCEDURE dbo.swy_orders @customer int, @since date AS SELECT @customer, @since",
+        "CREATE FUNCTION dbo.swy_double(@x int) RETURNS int AS BEGIN RETURN @x * 2 END",
+    ] {
+        drain(s.as_mut(), sql, &[]).await.unwrap();
+    }
+    let mut routine = async |name: &str, kind| {
+        let chunk = s
+            .introspect(IntrospectScope::RoutineDefinition {
+                schema: "dbo".into(),
+                name: name.into(),
+                kind,
+                signature: None,
+            })
+            .await;
+        chunk.map(|c| match c {
+            CatalogChunk::Detail(d) => (
+                d.ddl,
+                d.columns
+                    .iter()
+                    .map(|c| format!("{} {}", c.name, c.data_type))
+                    .collect::<Vec<_>>(),
+            ),
+            other => panic!("{other:?}"),
+        })
+    };
+    let (ddl, params) = routine("swy_orders", ObjectKind::Procedure).await.unwrap();
+    assert!(ddl.starts_with("CREATE PROCEDURE dbo.swy_orders"), "{ddl}");
+    assert_eq!(params, ["@customer int", "@since date"]);
+    let (ddl, params) = routine("swy_double", ObjectKind::Function).await.unwrap();
+    assert!(ddl.contains("RETURN @x * 2"), "{ddl}");
+    assert_eq!(params, ["@x int"]);
+    assert!(routine("swy_none", ObjectKind::Procedure).await.is_err());
+    s.rollback().await.unwrap();
+}
+
 /// Records what the driver asked for and hands back a token the server can't accept.
 struct FakeKerberos(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
 

@@ -1,0 +1,6 @@
+---
+source: crates/db/src/mssql/catalog.rs
+expression: "format!(\"{def}\\n{params}\")"
+---
+SELECT OBJECT_ID(N'[dbo].[usp_orders]'), OBJECT_DEFINITION(OBJECT_ID(N'[dbo].[usp_orders]'))
+SELECT p.name, TYPE_NAME(p.user_type_id) FROM sys.parameters p WHERE p.object_id = OBJECT_ID(N'[dbo].[usp_orders]') AND p.parameter_id > 0 ORDER BY p.parameter_id
