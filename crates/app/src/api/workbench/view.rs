@@ -550,7 +550,11 @@ impl SaveState {
 impl Render for WorkbenchPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let workspace = current_workspace_id();
-        if self.bound_workspace != workspace {
+        let has_workspace = self
+            .workspaces
+            .as_ref()
+            .is_some_and(|list| !list.is_empty());
+        if has_workspace && self.bound_workspace != workspace {
             if self.dirty {
                 self.pending_workspace = Some(workspace);
                 self.storage_error = Some(
@@ -563,6 +567,17 @@ impl Render for WorkbenchPanel {
         }
         self.load_pending_request(window, cx);
         let colors = cx.theme().colors;
+        if !has_workspace {
+            return div()
+                .id("api-workbench")
+                .track_focus(&self.focus_handle)
+                .key_context(KEY_CONTEXT)
+                .flex()
+                .flex_col()
+                .size_full()
+                .bg(colors.background)
+                .child(self.render_empty_workbench(cx));
+        }
         let body = match self.tab {
             Tab::Compose => self.render_compose(window, cx),
             Tab::Import => self.render_import(window, cx),
@@ -775,8 +790,107 @@ impl WorkbenchPanel {
         }
     }
 
-    /// `gap 16 · padding 8px 16px · border-b`: spark, title, the six panel
-    /// chips (the only shrinking child) and the env + Sync chips.
+    /// What the panel shows before any workspace exists: a blank page with
+    /// one "Add workspace" button (or a loading line while the list loads).
+    fn render_empty_workbench(&self, cx: &mut Context<Self>) -> Div {
+        let colors = cx.theme().colors;
+        let loading = self.workspaces.is_none();
+        let adding = self.adding_workspace();
+        div()
+            .flex_1()
+            .min_h(px(0.))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(space::SP_3)
+            .p(space::SP_4)
+            .child(
+                div()
+                    .text_size(text::S13)
+                    .font_weight(text::weight::SEMIBOLD)
+                    .text_color(colors.foreground)
+                    .child(if loading {
+                        "Loading workspaces…"
+                    } else {
+                        "No workspaces yet"
+                    }),
+            )
+            .when(!loading, |el| {
+                el.child(
+                    div()
+                        .max_w(px(360.))
+                        .text_center()
+                        .text_size(text::S11)
+                        .text_color(palette::text_secondary(cx))
+                        .child(
+                            "A workspace holds your collections, environments and history. \
+                             Add one to start sending requests.",
+                        ),
+                )
+                .child(
+                    Button::new("workbench-add-workspace")
+                        .debug_selector(|| "workbench-add-workspace".into())
+                        .primary()
+                        .icon(IconName::Plus)
+                        .label(if adding {
+                            "Adding workspace…"
+                        } else {
+                            "Add workspace"
+                        })
+                        .disabled(adding)
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.add_workspace(window, cx)),
+                        ),
+                )
+            })
+            .when_some(self.storage_error.clone(), |el, error| {
+                el.child(
+                    div()
+                        .id("workbench-storage-error")
+                        .text_size(text::S10)
+                        .text_color(colors.danger)
+                        .child(format!("Workbench storage: {error}")),
+                )
+            })
+    }
+
+    /// The header's workspace picker: every workspace, then "Add workspace".
+    fn workspace_menu(
+        &self,
+        cx: &Context<Self>,
+    ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static + use<>
+    {
+        let handle = cx.entity().downgrade();
+        let bound = self.bound_workspace.clone();
+        let workspaces = self.workspace_entries().to_vec();
+        move |menu: PopupMenu, _window, _cx| {
+            let mut menu = menu.min_w(px(200.));
+            for workspace in &workspaces {
+                let id = workspace.id.clone();
+                let selected = id == bound;
+                menu = menu.item(
+                    menu_item(
+                        format!("workbench-workspace-pick-{}", id.as_str()),
+                        workspace.name.clone(),
+                        &handle,
+                        move |this, window, cx| this.select_workspace(id.clone(), window, cx),
+                    )
+                    .checked(selected),
+                );
+            }
+            menu.separator().item(menu_item(
+                "workbench-workspace-add".into(),
+                "Add workspace",
+                &handle,
+                |this, window, cx| this.add_workspace(window, cx),
+            ))
+        }
+    }
+
+    /// `gap 16 · padding 8px 16px · border-b`: spark, title, the workspace
+    /// picker, the six panel chips (the only shrinking child) and the env +
+    /// Sync chips.
     fn render_header(&self, cx: &mut Context<Self>) -> Div {
         let colors = cx.theme().colors;
         let environment_name = self.environment_display_name();
@@ -797,6 +911,32 @@ impl WorkbenchPanel {
                     .text_color(colors.foreground)
                     .whitespace_nowrap()
                     .child("API Workbench"),
+            )
+            .child(
+                menu_trigger(
+                    "workbench-workspace-chip",
+                    cx.theme().transparent,
+                    colors.input,
+                    palette::text_secondary(cx),
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(icon("folder", 12., colors.muted_foreground))
+                        .child(
+                            div()
+                                .max_w(px(180.))
+                                .truncate()
+                                .text_size(text::S11)
+                                .child(self.workspace_display_name()),
+                        )
+                        .child(icon("chevron-down", 12., colors.muted_foreground)),
+                    cx,
+                )
+                .flex_none()
+                .h(px(24.))
+                .px(px(10.))
+                .dropdown_menu(self.workspace_menu(cx)),
             )
             .child(
                 div()
