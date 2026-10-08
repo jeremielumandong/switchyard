@@ -175,6 +175,23 @@ impl Dialect for SqliteDialect {
         format!("SELECT * FROM {qualified} LIMIT {limit}")
     }
 
+    fn select_template(&self, qualified: &str, cols: &[String], limit: u64) -> String {
+        format!(
+            "SELECT{}\nFROM {qualified}\nLIMIT {limit};",
+            super::select_list(self, cols)
+        )
+    }
+
+    /// SQLite drops only tables, views, indexes and triggers.
+    fn script_drop(&self, kind: ObjectKind, qualified: &str) -> String {
+        match kind {
+            ObjectKind::Table | ObjectKind::View => {
+                format!("DROP {} {qualified};", super::drop_keyword(kind))
+            }
+            other => format!("-- SQLite has no DROP {}", super::drop_keyword(other)),
+        }
+    }
+
     fn find_params(&self, sql: &str) -> Vec<ParamRef> {
         let mut out = Vec::new();
         let b = sql.as_bytes();

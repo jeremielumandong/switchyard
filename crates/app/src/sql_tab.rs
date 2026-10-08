@@ -2253,14 +2253,26 @@ impl Render for SqlTab {
                         d.child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(c))
                     })
                     .child(
-                        div().flex_1().h_full().pl(px(2.)).child(
-                            Editor::new(&self.editor)
-                                .bordered(false)
-                                .appearance(false)
-                                .h(relative(1.))
-                                .font_family(MONO)
-                                .text_size(px(12.5)),
-                        ),
+                        div()
+                            .flex_1()
+                            .h_full()
+                            .pl(px(2.))
+                            // A schema-tree object dropped here inserts its qualified name
+                            // at the cursor (the editor has no public point-to-offset map).
+                            .on_drop(cx.listener(
+                                |this, d: &crate::sidebar::DraggedObject, window, cx| {
+                                    this.insert_text(&d.qualified, window, cx);
+                                    this.editor.update(cx, |e, cx| e.focus(window, cx));
+                                },
+                            ))
+                            .child(
+                                Editor::new(&self.editor)
+                                    .bordered(false)
+                                    .appearance(false)
+                                    .h(relative(1.))
+                                    .font_family(MONO)
+                                    .text_size(px(12.5)),
+                            ),
                     ),
             )
             .child(

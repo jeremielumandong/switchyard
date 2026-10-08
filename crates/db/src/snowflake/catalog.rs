@@ -33,14 +33,19 @@ impl Rows {
     }
 }
 
-fn table_types(kind: ObjectKind) -> Option<&'static str> {
-    match kind {
-        ObjectKind::Table => {
-            Some("TABLE_TYPE IN ('BASE TABLE', 'TEMPORARY TABLE', 'EXTERNAL TABLE')")
-        }
-        ObjectKind::View => Some("TABLE_TYPE IN ('VIEW', 'MATERIALIZED VIEW')"),
-        _ => None,
-    }
+/// The query listing the objects of `kind` in a schema (bound to `?`), or `None` for a
+/// kind Snowflake's explorer does not show.
+pub(crate) fn objects_sql(kind: ObjectKind) -> Option<String> {
+    let filter = match kind {
+        ObjectKind::Table => "TABLE_TYPE IN ('BASE TABLE', 'TEMPORARY TABLE', 'EXTERNAL TABLE')",
+        ObjectKind::View => "TABLE_TYPE = 'VIEW'",
+        ObjectKind::MaterializedView => "TABLE_TYPE = 'MATERIALIZED VIEW'",
+        _ => return None,
+    };
+    Some(format!(
+        "SELECT TABLE_NAME, ROW_COUNT, COMMENT FROM INFORMATION_SCHEMA.TABLES \
+         WHERE TABLE_SCHEMA = ? AND {filter} ORDER BY TABLE_NAME"
+    ))
 }
 
 fn column_info(r: &Rows, row: &[Option<String>]) -> ColumnInfo {
@@ -128,13 +133,9 @@ pub(super) async fn introspect(
             ))
         }
         IntrospectScope::Objects { schema, kind } => {
-            let Some(filter) = table_types(kind) else {
+            let Some(sql) = objects_sql(kind) else {
                 return Ok(CatalogChunk::Objects(Vec::new()));
             };
-            let sql = format!(
-                "SELECT TABLE_NAME, ROW_COUNT, COMMENT FROM INFORMATION_SCHEMA.TABLES \
-                 WHERE TABLE_SCHEMA = ? AND {filter} ORDER BY TABLE_NAME"
-            );
             let r = Rows::of(s, &sql, &[Value::Text(schema.clone())]).await?;
             Ok(CatalogChunk::Objects(
                 r.rows
@@ -198,10 +199,10 @@ pub(super) async fn introspect(
                 return Err(DbError::Unsupported(format!("{name} no longer exists")));
             }
             let columns = r.rows.iter().map(|row| column_info(&r, row)).collect();
-            let object_type = if kind == ObjectKind::View {
-                "VIEW"
-            } else {
-                "TABLE"
+            // `GET_DDL('VIEW', ...)` also covers materialized views.
+            let object_type = match kind {
+                ObjectKind::View | ObjectKind::MaterializedView => "VIEW",
+                _ => "TABLE",
             };
             let ddl = Rows::of(
                 s,
@@ -237,6 +238,20 @@ pub(super) async fn introspect(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn objects_sql_per_kind() {
+        let all: Vec<String> = [
+            ObjectKind::Table,
+            ObjectKind::View,
+            ObjectKind::MaterializedView,
+            ObjectKind::Function,
+        ]
+        .into_iter()
+        .map(|k| format!("{k:?}: {}", objects_sql(k).unwrap_or_else(|| "-".into())))
+        .collect();
+        insta::assert_snapshot!("snowflake_objects_sql", all.join("\n"));
+    }
 
     #[test]
     fn search_sql_snapshot() {

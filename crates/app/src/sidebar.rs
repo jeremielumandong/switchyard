@@ -5,18 +5,22 @@ use std::collections::{HashMap, HashSet};
 use gpui_kit::component::input::Input;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, AppContext as _, ClipboardItem, Context, FontWeight, InteractiveElement as _,
-    IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Pixels, Point, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div, px, uniform_list,
+    AnyElement, AppContext as _, ClipboardItem, Context, FocusHandle, FontWeight,
+    InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Pixels,
+    Point, ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _,
+    UniformListScrollHandle, Window, div, px, uniform_list,
 };
 use switchyard_core::db::{
-    CatalogChunk, Engine, IntrospectScope, ObjectInfo, ObjectKind, SchemaInfo, Value, dialect_for,
+    CatalogChunk, Engine, IntrospectScope, ObjectDetail, ObjectInfo, ObjectKind, SchemaInfo, Value,
+    dialect_for,
 };
 use switchyard_core::store::{DbConnection, Profile, ProfileId, now_ms};
 use switchyard_core::{Command, RuntimeHandle, SessionId};
 
+use crate::actions::{TreeCollapse, TreeCopy, TreeDown, TreeExpand, TreeOpen, TreeRefresh, TreeUp};
 use crate::app_state::{SessionState, badge_of, next_id};
 use crate::conn_editor::ConnKind;
+use crate::ddl_tab::DdlTab;
 use crate::sql_tab::ViewerFormat;
 use crate::theme::{MONO, Palette};
 use crate::ui;
@@ -57,6 +61,14 @@ pub struct SchemaState {
     pub cached_at: Option<i64>,
     pub selected: Option<(String, String, ObjectKind)>,
     pub filter: String,
+    /// Key of the tree row under the keyboard cursor.
+    pub cursor: Option<String>,
+    /// Object actions waiting for their `Detail`: (action, schema, name, kind).
+    pending_detail: Vec<(String, String, String, ObjectKind)>,
+    /// Scroll position of the tree (keeps the cursor row in view).
+    scroll: UniformListScrollHandle,
+    /// Focus of the tree, for its key bindings (`SchemaTree` context).
+    focus: Option<FocusHandle>,
     /// Server-side object search for the filter (DBX-1d).
     pub search: crate::object_search::ObjectSearch,
 }
@@ -79,7 +91,7 @@ impl SchemaState {
         if let Some(s) = self.session.take() {
             core.send(Command::CloseSession { session: s });
         }
-        *self = SchemaState::default();
+        self.reset();
         if let Some(c) = conn {
             let session = next_id();
             core.send(Command::OpenSession {
@@ -99,8 +111,97 @@ impl SchemaState {
         if let Some(s) = self.session.take() {
             core.send(Command::CloseSession { session: s });
         }
-        *self = SchemaState::default();
+        self.reset();
         self.bind(conn, core);
+    }
+
+    /// Back to the default state, keeping the tree's focus and scroll handles.
+    fn reset(&mut self) {
+        let focus = self.focus.take();
+        let scroll = std::mem::take(&mut self.scroll);
+        *self = SchemaState::default();
+        self.focus = focus;
+        self.scroll = scroll;
+    }
+
+    /// Ask for the detail of an object; `action` runs when it arrives (a cached copy is
+    /// fine). Returns `false` without a catalog session.
+    fn request_detail(
+        &mut self,
+        action: &str,
+        schema: &str,
+        name: &str,
+        kind: ObjectKind,
+        core: &RuntimeHandle,
+    ) -> bool {
+        if self.session.is_none() {
+            return false;
+        }
+        let entry = (action.to_owned(), schema.to_owned(), name.to_owned(), kind);
+        let asked = self
+            .pending_detail
+            .iter()
+            .any(|(_, s, n, k)| s == schema && n == name && *k == kind);
+        if !self.pending_detail.contains(&entry) {
+            self.pending_detail.push(entry);
+        }
+        if !asked {
+            self.request(
+                IntrospectScope::Detail {
+                    schema: schema.to_owned(),
+                    name: name.to_owned(),
+                    kind,
+                },
+                false,
+                core,
+            );
+        }
+        true
+    }
+
+    /// The actions waiting for the detail of `schema.name`.
+    fn take_pending(&mut self, schema: &str, name: &str, kind: ObjectKind) -> Vec<String> {
+        let mut out = Vec::new();
+        self.pending_detail.retain(|(a, s, n, k)| {
+            let hit = s == schema && n == name && *k == kind;
+            if hit {
+                out.push(a.clone());
+            }
+            !hit
+        });
+        out
+    }
+
+    /// The folder (schema, kind) a `f:<schema>:<Kind>` key names.
+    fn folder_of(&self, key: &str) -> Option<(String, ObjectKind)> {
+        let (schema, kind) = key.strip_prefix("f:")?.rsplit_once(':')?;
+        let kind = self.folders().iter().find(|k| format!("{k:?}") == kind)?;
+        Some((schema.to_owned(), *kind))
+    }
+
+    /// Reload one tree node from the server (F5): a folder, every loaded folder of a
+    /// schema, an object's folder (tree or search row), or everything for the database row.
+    fn refresh_node(&mut self, key: &str, core: &RuntimeHandle) {
+        let folders: Vec<(String, ObjectKind)> = if let Some(f) = self.folder_of(key) {
+            vec![f]
+        } else if let Some(schema) = key.strip_prefix("s:") {
+            self.objects
+                .keys()
+                .filter(|(s, _)| s == schema)
+                .cloned()
+                .collect()
+        } else if let Some(rest) = key.strip_prefix("o:").or_else(|| key.strip_prefix("q:")) {
+            self.objects
+                .keys()
+                .filter(|(s, k)| rest.starts_with(&format!("{s}:{k:?}:")))
+                .cloned()
+                .collect()
+        } else {
+            return self.refresh(core);
+        };
+        for (schema, kind) in folders {
+            self.request(IntrospectScope::Objects { schema, kind }, true, core);
+        }
     }
 
     /// The catalog session opened.
@@ -249,25 +350,43 @@ impl SchemaState {
     fn toggle(&mut self, key: &str, core: &RuntimeHandle) {
         if !self.expanded.remove(key) {
             self.expanded.insert(key.to_owned());
-            if let Some(rest) = key.strip_prefix("f:")
-                && let Some((schema, kind)) = rest.split_once(':')
-                && let Some(kind) = self.folders().iter().find(|k| format!("{k:?}") == kind)
+            if let Some((schema, kind)) = self.folder_of(key)
                 && !matches!(
-                    self.objects.get(&(schema.to_owned(), *kind)),
+                    self.objects.get(&(schema.clone(), kind)),
                     Some(Loadable::Loaded(_) | Loadable::Loading)
                 )
             {
-                self.request(
-                    IntrospectScope::Objects {
-                        schema: schema.to_owned(),
-                        kind: *kind,
-                    },
-                    false,
-                    core,
-                );
+                self.request(IntrospectScope::Objects { schema, kind }, false, core);
             }
         }
     }
+}
+
+/// Object actions that need the object's columns, key or DDL.
+const NEEDS_DETAIL: &[&str] = &["select", "insert", "update", "delete", "ddl"];
+
+/// Column names in table order, and the primary key columns.
+fn columns_and_key(d: &ObjectDetail) -> (Vec<String>, Vec<String>) {
+    let mut cols: Vec<_> = d.columns.iter().collect();
+    cols.sort_by_key(|c| c.ordinal);
+    let mut pk: Vec<String> = cols
+        .iter()
+        .filter(|c| c.is_primary_key)
+        .map(|c| c.name.clone())
+        .collect();
+    if pk.is_empty()
+        && let Some(ix) = d.indexes.iter().find(|i| i.is_primary)
+    {
+        pk = ix.columns.clone();
+    }
+    (cols.into_iter().map(|c| c.name.clone()).collect(), pk)
+}
+
+/// A schema object being dragged (into the SQL editor).
+#[derive(Clone, Debug)]
+pub struct DraggedObject {
+    /// Quoted, qualified name to insert.
+    pub qualified: String,
 }
 
 /// One flattened tree row.
@@ -745,7 +864,8 @@ impl Workspace {
         rows
     }
 
-    /// Run a context-menu action on a schema object.
+    /// Run a context-menu action on a schema object. Templates and DDL first fetch the
+    /// object's `Detail` through the runtime; they finish in [`Self::on_schema_detail`].
     pub(crate) fn object_action(
         &mut self,
         action: &str,
@@ -755,54 +875,93 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if NEEDS_DETAIL.contains(&action)
+            && self
+                .schema
+                .request_detail(action, &schema, &name, kind, &self.core)
+        {
+            return;
+        }
+        self.finish_object_action(action, &schema, &name, kind, None, window, cx);
+    }
+
+    /// The detail of an object arrived on the schema session: run the actions waiting
+    /// for it.
+    pub(crate) fn on_schema_detail(
+        &mut self,
+        scope: IntrospectScope,
+        result: Result<CatalogChunk, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let IntrospectScope::Detail { schema, name, kind } = scope else {
+            return;
+        };
+        let actions = self.schema.take_pending(&schema, &name, kind);
+        if actions.is_empty() {
+            return;
+        }
+        let detail = match result {
+            Ok(CatalogChunk::Detail(d)) => Some(d),
+            Ok(_) => None,
+            Err(e) => {
+                self.toast(format!("Could not read {name}: {e}"), cx);
+                None
+            }
+        };
+        for action in actions {
+            if action == "ddl" && detail.is_none() {
+                continue;
+            }
+            self.finish_object_action(&action, &schema, &name, kind, detail.as_deref(), window, cx);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_object_action(
+        &mut self,
+        action: &str,
+        schema: &str,
+        name: &str,
+        kind: ObjectKind,
+        detail: Option<&ObjectDetail>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(conn) = self.schema.connection.clone() else {
             return;
         };
         let d = dialect_for(conn.engine);
-        let q = d.qualified(&schema, &name);
-        let columns: Vec<String> = Vec::new();
-        let cols = if columns.is_empty() {
-            "*".to_owned()
-        } else {
-            columns.join(", ")
-        };
+        let q = d.qualified(schema, name);
+        let (cols, pk) = detail.map(columns_and_key).unwrap_or_default();
         let text = match action {
-            "open" => d.select_rows(&q, 100),
-            "select" => format!("SELECT {cols}\nFROM {q}\nLIMIT 100;"),
-            "insert" => format!(
-                "INSERT INTO {q} (column1, column2)\nVALUES ({}, {});",
-                d.literal(&Value::Null),
-                d.literal(&Value::Null)
-            ),
-            "update" => format!(
-                "UPDATE {q}\nSET column1 = {}\nWHERE id = {};",
-                d.literal(&Value::Null),
-                d.literal(&Value::Int(0))
-            ),
+            "open" => d.select_template(&q, &[], 100),
+            "select" => d.select_template(&q, &cols, 100),
+            "insert" => d.insert_template(&q, &cols),
+            "update" => d.update_template(&q, &cols, &pk),
+            "delete" => d.delete_template(&q, &pk),
             "copy" => {
                 cx.write_to_clipboard(ClipboardItem::new_string(q.clone()));
                 self.toast(format!("Copied {q}"), cx);
                 return;
             }
-            "ddl" => format!("-- DDL for {q} is loading…"),
-            "truncate" => format!("TRUNCATE {q};"),
-            "drop" => format!(
-                "DROP {} {q};",
-                match kind {
-                    ObjectKind::View => "VIEW",
-                    ObjectKind::MaterializedView => "MATERIALIZED VIEW",
-                    ObjectKind::Function => "FUNCTION",
-                    ObjectKind::Procedure => "PROCEDURE",
-                    ObjectKind::Sequence => "SEQUENCE",
-                    ObjectKind::Type => "TYPE",
-                    _ => "TABLE",
+            "ddl" => {
+                let ddl = detail.map(|d| d.ddl.clone()).unwrap_or_default();
+                if ddl.trim().is_empty() {
+                    self.toast(format!("No DDL available for {q}"), cx);
+                } else {
+                    self.open_ddl_tab(&conn, name, &q, ddl, window, cx);
                 }
-            ),
+                return;
+            }
+            "truncate" => format!("TRUNCATE TABLE {q};"),
+            "drop" => d.script_drop(kind, &q),
             _ => return,
         };
-        // Templates (INSERT/UPDATE) go into the current tab when it is on this database;
-        // everything else opens its own tab, so the current query is never replaced.
-        let template = matches!(action, "insert" | "update");
+        // Templates (INSERT/UPDATE/DELETE) go into the current tab when it is on this
+        // database; everything else opens its own tab, so the current query is never
+        // replaced.
+        let template = matches!(action, "insert" | "update" | "delete");
         let same_db = self.active_sql().is_some_and(|t| {
             t.read(cx)
                 .connection
@@ -812,7 +971,7 @@ impl Workspace {
         let tab = if template && same_db {
             self.active_sql()
         } else {
-            Some(self.open_query_tab(&conn, &name, window, cx))
+            Some(self.open_query_tab(&conn, name, window, cx))
         };
         if let Some(tab) = tab {
             tab.update(cx, |t, cx| match action {
@@ -821,12 +980,34 @@ impl Workspace {
                 _ => t.insert_text(&text, window, cx),
             });
         }
-        if action == "ddl" {
-            self.toast(
-                "View DDL: generated from the catalog in the object detail",
-                cx,
-            );
+        cx.notify();
+    }
+
+    /// Show `ddl` in a read-only tab (replacing the tab already showing this object).
+    fn open_ddl_tab(
+        &mut self,
+        conn: &DbConnection,
+        name: &str,
+        qualified: &str,
+        ddl: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let key = format!("{}/{qualified}", conn.id);
+        if let Some(ix) = self
+            .tabs
+            .iter()
+            .position(|t| matches!(t, Tab::Ddl(d) if d.read(cx).key == key))
+        {
+            self.tabs.remove(ix);
+            if self.active > ix {
+                self.active -= 1;
+            }
         }
+        let badge = conn.engine.badge();
+        let tab = cx.new(|cx| DdlTab::new(key, name, qualified, badge, ddl, window, cx));
+        self.tabs.push(Tab::Ddl(tab));
+        self.active = self.tabs.len() - 1;
         cx.notify();
     }
 
@@ -1114,6 +1295,12 @@ impl Workspace {
                 format!("Cached {mins} min ago")
             }
         });
+        let focus = self
+            .schema
+            .focus
+            .get_or_insert_with(|| cx.focus_handle())
+            .clone();
+        let scroll = self.schema.scroll.clone();
         if !has_conn {
             return div()
                 .flex_1()
@@ -1185,19 +1372,143 @@ impl Workspace {
                     ),
             )
             .child(
-                uniform_list(
-                    "schema-rows",
-                    count,
-                    cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
-                        range
-                            .map(|i| this.render_schema_row(&rows[i], i, &p, cx))
-                            .collect::<Vec<_>>()
-                    }),
-                )
-                .flex_1()
-                .pb(px(8.)),
+                div()
+                    .key_context("SchemaTree")
+                    .track_focus(&focus)
+                    .on_action(cx.listener(|this, _: &TreeUp, _, cx| this.tree_move(-1, cx)))
+                    .on_action(cx.listener(|this, _: &TreeDown, _, cx| this.tree_move(1, cx)))
+                    .on_action(cx.listener(|this, _: &TreeExpand, _, cx| this.tree_expand(cx)))
+                    .on_action(cx.listener(|this, _: &TreeCollapse, _, cx| this.tree_collapse(cx)))
+                    .on_action(cx.listener(|this, _: &TreeOpen, w, cx| this.tree_open(w, cx)))
+                    .on_action(cx.listener(|this, _: &TreeCopy, w, cx| this.tree_copy(w, cx)))
+                    .on_action(cx.listener(|this, _: &TreeRefresh, _, cx| this.tree_refresh(cx)))
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        uniform_list(
+                            "schema-rows",
+                            count,
+                            cx.processor(
+                                move |this, range: std::ops::Range<usize>, _window, cx| {
+                                    range
+                                        .map(|i| this.render_schema_row(&rows[i], i, &p, cx))
+                                        .collect::<Vec<_>>()
+                                },
+                            ),
+                        )
+                        .track_scroll(&scroll)
+                        .flex_1()
+                        .pb(px(8.)),
+                    ),
             )
             .into_any_element()
+    }
+
+    /// Index of the keyboard cursor in `rows`.
+    fn tree_cursor(&self, rows: &[TreeRow]) -> Option<usize> {
+        let key = self.schema.cursor.as_deref()?;
+        rows.iter().position(|r| r.key == key)
+    }
+
+    /// Put the keyboard cursor on row `ix` and scroll it into view.
+    fn tree_set_cursor(&mut self, rows: &[TreeRow], ix: usize, cx: &mut Context<Self>) {
+        let Some(r) = rows.get(ix) else { return };
+        self.schema.cursor = Some(r.key.clone());
+        if r.object.is_some() {
+            self.schema.selected = r.object.clone();
+        }
+        self.schema
+            .scroll
+            .scroll_to_item(ix, ScrollStrategy::Nearest);
+        cx.notify();
+    }
+
+    /// Up / Down.
+    fn tree_move(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let rows = self.schema_rows();
+        if rows.is_empty() {
+            return;
+        }
+        let ix = match self.tree_cursor(&rows) {
+            Some(i) => i.saturating_add_signed(delta).min(rows.len() - 1),
+            None => 0,
+        };
+        self.tree_set_cursor(&rows, ix, cx);
+    }
+
+    /// Right: expand a collapsed node, or step into an expanded one.
+    fn tree_expand(&mut self, cx: &mut Context<Self>) {
+        let rows = self.schema_rows();
+        let Some(ix) = self.tree_cursor(&rows) else {
+            return self.tree_move(0, cx);
+        };
+        match rows[ix].caret {
+            "▸" => {
+                let core = self.core.clone();
+                self.schema.toggle(&rows[ix].key, &core);
+                cx.notify();
+            }
+            "▾" if rows.get(ix + 1).is_some_and(|n| n.depth > rows[ix].depth) => {
+                self.tree_set_cursor(&rows, ix + 1, cx);
+            }
+            _ => {}
+        }
+    }
+
+    /// Left: collapse an expanded node, else go to the parent.
+    fn tree_collapse(&mut self, cx: &mut Context<Self>) {
+        let rows = self.schema_rows();
+        let Some(ix) = self.tree_cursor(&rows) else {
+            return self.tree_move(0, cx);
+        };
+        let r = &rows[ix];
+        if r.caret == "▾" && self.schema.expanded.contains(&r.key) {
+            let core = self.core.clone();
+            self.schema.toggle(&r.key, &core);
+            cx.notify();
+            return;
+        }
+        if let Some(parent) = rows[..ix].iter().rposition(|p| p.depth < r.depth) {
+            self.tree_set_cursor(&rows, parent, cx);
+        }
+    }
+
+    /// Enter: what a double-click does (open a relation's data), or toggle a node.
+    fn tree_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = self.schema_rows();
+        let Some(ix) = self.tree_cursor(&rows) else {
+            return;
+        };
+        match rows[ix].object.clone() {
+            Some((s, n, k)) if k.is_relation() => self.object_action("open", s, n, k, window, cx),
+            Some(_) => {}
+            None if !rows[ix].caret.is_empty() => {
+                let core = self.core.clone();
+                self.schema.toggle(&rows[ix].key, &core);
+                cx.notify();
+            }
+            None => {}
+        }
+    }
+
+    /// Ctrl+C / Cmd+C: copy the selected object's qualified name.
+    fn tree_copy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = self.schema_rows();
+        if let Some(ix) = self.tree_cursor(&rows)
+            && let Some((s, n, k)) = rows[ix].object.clone()
+        {
+            self.object_action("copy", s, n, k, window, cx);
+        }
+    }
+
+    /// F5: reload the selected node from the server.
+    fn tree_refresh(&mut self, cx: &mut Context<Self>) {
+        let key = self.schema.cursor.clone().unwrap_or_else(|| "db".into());
+        let core = self.core.clone();
+        self.schema.refresh_node(&key, &core);
+        cx.notify();
     }
 
     fn render_schema_row(
@@ -1210,9 +1521,25 @@ impl Workspace {
         let key = r.key.clone();
         let object = r.object.clone();
         let object2 = r.object.clone();
-        let selected = r.object.is_some() && self.schema.selected == r.object;
+        let row_key = r.key.clone();
+        let selected = match &self.schema.cursor {
+            Some(c) => *c == r.key,
+            None => r.object.is_some() && self.schema.selected == r.object,
+        };
+        let focus = self.schema.focus.clone();
+        let drag = r.object.as_ref().zip(self.schema.connection.as_ref()).map(
+            |((schema, name, _), conn)| DraggedObject {
+                qualified: dialect_for(conn.engine).qualified(schema, name),
+            },
+        );
         div()
             .id(("schema-row", i))
+            .when_some(drag, |d, drag| {
+                d.on_drag(drag, |d: &DraggedObject, _, _, cx| {
+                    let label = d.qualified.clone();
+                    cx.new(|_| crate::files_tab::DragPreview(label))
+                })
+            })
             .w_full()
             .h(px(26.))
             .flex()
@@ -1225,6 +1552,10 @@ impl Workspace {
             .when(selected, |d| d.bg(p.sel))
             .hover(|s| s.bg(p.hover))
             .on_click(cx.listener(move |this, ev: &gpui_kit::ClickEvent, w, cx| {
+                this.schema.cursor = Some(key.clone());
+                if let Some(f) = &focus {
+                    w.focus(f, cx);
+                }
                 if let Some((s, n, k)) = &object {
                     this.schema.selected = Some((s.clone(), n.clone(), *k));
                     if ev.click_count() >= 2 && k.is_relation() {
@@ -1241,6 +1572,7 @@ impl Workspace {
                 cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
                     if let Some((s, n, k)) = &object2 {
                         this.schema.selected = Some((s.clone(), n.clone(), *k));
+                        this.schema.cursor = Some(row_key.clone());
                         this.ctx = Some(CtxMenu {
                             at: ev.position,
                             target: CtxTarget::Object(s.clone(), n.clone(), *k),
@@ -1765,6 +2097,80 @@ fn compact(n: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use switchyard_core::db::{ColumnInfo, IndexInfo};
+
+    fn column(name: &str, ordinal: i32, pk: bool) -> ColumnInfo {
+        ColumnInfo {
+            schema: "s".into(),
+            table: "t".into(),
+            name: name.into(),
+            data_type: "int".into(),
+            nullable: !pk,
+            default: None,
+            ordinal,
+            is_primary_key: pk,
+        }
+    }
+
+    fn detail(columns: Vec<ColumnInfo>, indexes: Vec<IndexInfo>) -> ObjectDetail {
+        ObjectDetail {
+            object: ObjectInfo {
+                schema: "s".into(),
+                name: "t".into(),
+                kind: ObjectKind::Table,
+                estimated_rows: None,
+                detail: None,
+            },
+            columns,
+            indexes,
+            constraints: Vec::new(),
+            foreign_keys: Vec::new(),
+            triggers: Vec::new(),
+            ddl: String::new(),
+        }
+    }
+
+    #[test]
+    fn templates_use_table_order_and_the_primary_key() {
+        let d = detail(
+            vec![
+                column("b", 2, false),
+                column("id", 1, true),
+                column("c", 3, false),
+            ],
+            Vec::new(),
+        );
+        let (cols, pk) = columns_and_key(&d);
+        assert_eq!(cols, ["id", "b", "c"]);
+        assert_eq!(pk, ["id"]);
+        // Engines that do not flag key columns fall back to the primary index.
+        let d = detail(
+            vec![column("a", 1, false)],
+            vec![IndexInfo {
+                name: "pk".into(),
+                columns: vec!["a".into()],
+                is_unique: true,
+                is_primary: true,
+                definition: String::new(),
+            }],
+        );
+        assert_eq!(columns_and_key(&d).1, ["a"]);
+    }
+
+    #[test]
+    fn pending_detail_actions_are_kept_until_their_object_arrives() {
+        let mut s = SchemaState::default();
+        let t = ObjectKind::Table;
+        s.pending_detail
+            .push(("select".into(), "s".into(), "t".into(), t));
+        s.pending_detail
+            .push(("ddl".into(), "s".into(), "u".into(), t));
+        s.pending_detail
+            .push(("insert".into(), "s".into(), "t".into(), t));
+        assert_eq!(s.take_pending("s", "t", t), ["select", "insert"]);
+        assert!(s.take_pending("s", "t", t).is_empty());
+        assert_eq!(s.take_pending("s", "u", t), ["ddl"]);
+    }
 
     #[test]
     fn dragging_moves_after_going_down_and_before_going_up() {

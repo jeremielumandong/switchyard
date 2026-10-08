@@ -45,6 +45,13 @@ actions!(
         SplitRight,
         SplitDown,
         Unsplit,
+        TreeUp,
+        TreeDown,
+        TreeExpand,
+        TreeCollapse,
+        TreeOpen,
+        TreeCopy,
+        TreeRefresh,
     ]
 );
 
@@ -89,6 +96,14 @@ pub fn init(cx: &mut App) {
         // Linux reports Shift+\ as `|`.
         KeyBinding::new("secondary-|", SplitDown, None),
         KeyBinding::new("escape", Dismiss, Some("Overlay")),
+        // Schema explorer tree (focused after a click on a row).
+        KeyBinding::new("up", TreeUp, Some("SchemaTree")),
+        KeyBinding::new("down", TreeDown, Some("SchemaTree")),
+        KeyBinding::new("right", TreeExpand, Some("SchemaTree")),
+        KeyBinding::new("left", TreeCollapse, Some("SchemaTree")),
+        KeyBinding::new("enter", TreeOpen, Some("SchemaTree")),
+        KeyBinding::new("secondary-c", TreeCopy, Some("SchemaTree")),
+        KeyBinding::new("f5", TreeRefresh, Some("SchemaTree")),
     ]);
     // Inside a terminal, Ctrl+letter belongs to the shell (readline, vim, …). App
     // shortcuts there use Cmd on macOS and Ctrl+Shift elsewhere.

@@ -41,6 +41,22 @@ fn config() -> DbConfig {
     cfg
 }
 
+/// `ddl` with server-generated constraint names (`SYS_C0012345`) replaced, so the snapshot
+/// does not change between databases.
+fn redact_sys_names(ddl: &str) -> String {
+    let mut out = String::new();
+    let mut rest = ddl;
+    while let Some(i) = rest.find("SYS_C") {
+        out.push_str(&rest[..i]);
+        out.push_str("SYS_C<generated>");
+        let tail = &rest[i + "SYS_C".len()..];
+        let digits = tail.len() - tail.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        rest = &tail[digits..];
+    }
+    out.push_str(rest);
+    out
+}
+
 async fn connect() -> Box<dyn DbSession> {
     OracleDriver
         .connect(&config(), None)
@@ -224,6 +240,7 @@ async fn dml_transactions_and_plsql_output() {
     assert_eq!(d.columns.len(), 2);
     assert!(d.columns[0].is_primary_key);
     assert!(d.ddl.contains("CREATE TABLE"), "{}", d.ddl);
+    insta::assert_snapshot!("oracle_swy_t_ddl", redact_sys_names(&d.ddl));
     run(s.as_mut(), "drop table swy_t purge", &[])
         .await
         .expect("drop");
