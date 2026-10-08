@@ -1,0 +1,25 @@
+---
+source: crates/store/src/snippets.rs
+expression: rendered
+---
+-- Select rows (sel) [builtin:snowflake:sel]
+SELECT ${2:*}
+FROM ${1:table_name}
+LIMIT ${3:100};
+
+-- Insert row (ins) [builtin:snowflake:ins]
+INSERT INTO ${1:table_name} (${2:column1}, ${3:column2})
+VALUES (${4:value1}, ${5:value2});
+
+-- Update with WHERE (upd) [builtin:snowflake:upd]
+UPDATE ${1:table_name}
+SET ${2:column1} = ${3:value1}
+WHERE ${4:condition};
+
+-- Common table expression (cte) [builtin:snowflake:cte]
+WITH ${1:cte_name} AS (
+    SELECT ${2:*}
+    FROM ${3:table_name}
+)
+SELECT *
+FROM ${1:cte_name};

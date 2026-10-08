@@ -398,6 +398,14 @@ impl Service {
             .map_err(CoreError::from)
     }
 
+    /// Emit the user's snippets ([`Event::Snippets`]).
+    async fn emit_snippets(&self) {
+        match self.with_store(|s| s.snippets()).await {
+            Ok(list) => self.emit(Event::Snippets(list)),
+            Err(e) => self.error("Snippets", e),
+        }
+    }
+
     async fn with_secrets<T: Send + 'static>(
         &self,
         f: impl FnOnce(&dyn SecretStore) -> Result<T, StoreError> + Send + 'static,
@@ -706,6 +714,19 @@ impl Service {
                 self.what_if(session, query, sql, indexes)
                     .instrument(span)
                     .await
+            }
+            Command::LoadSnippets => self.emit_snippets().await,
+            Command::SaveSnippet(snippet) => {
+                match self.with_store(move |s| s.save_snippet(&snippet)).await {
+                    Ok(_) => self.emit_snippets().await,
+                    Err(e) => self.error("Snippets", e),
+                }
+            }
+            Command::DeleteSnippet { id } => {
+                match self.with_store(move |s| s.delete_snippet(&id)).await {
+                    Ok(_) => self.emit_snippets().await,
+                    Err(e) => self.error("Snippets", e),
+                }
             }
             Command::SearchHistory {
                 request,

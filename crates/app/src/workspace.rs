@@ -567,6 +567,7 @@ impl Workspace {
                     }
                 }
             }
+            Event::Snippets(list) => crate::snippets::on_snippets(list, cx),
             Event::History { request, entries } => {
                 match self.plan_tab(cx, |v| v.owns_history(request)) {
                     Some(tab) => tab.update(cx, |t, cx| {
@@ -1798,6 +1799,7 @@ impl Workspace {
             CommandId::OpenFiles => self.open_files(window, cx),
             CommandId::Settings => self.open_settings(SettingsPage::General, window, cx),
             CommandId::SettingsDrivers => self.open_settings(SettingsPage::Drivers, window, cx),
+            CommandId::ManageSnippets => crate::snippets::open_manager(self.core.clone(), cx),
             CommandId::ToggleTheme => {
                 let next = if palette(cx).dark {
                     ThemeId::SwitchyardLight
