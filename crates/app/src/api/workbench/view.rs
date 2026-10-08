@@ -558,8 +558,7 @@ impl Render for WorkbenchPanel {
             if self.dirty {
                 self.pending_workspace = Some(workspace);
                 self.storage_error = Some(
-                    "Workspace changed with unsaved edits. Save or discard them to continue."
-                        .into(),
+                    "Project changed with unsaved edits. Save or discard them to continue.".into(),
                 );
             } else {
                 self.rehydrate_workspace(workspace, window, cx);
@@ -590,6 +589,7 @@ impl Render for WorkbenchPanel {
             .id("api-workbench")
             .track_focus(&self.focus_handle)
             .key_context(KEY_CONTEXT)
+            .map(|root| self.on_panel_key_actions(root, cx))
             .on_action(cx.listener(|this, _: &CancelRequest, _, cx| this.cancel(cx)))
             .when(self.tab == Tab::Compose, |el| {
                 el.on_action(
@@ -791,7 +791,7 @@ impl WorkbenchPanel {
     }
 
     /// What the panel shows before any workspace exists: a blank page with
-    /// one "Add workspace" button (or a loading line while the list loads).
+    /// one "Add project" button (or a loading line while the list loads).
     fn render_empty_workbench(&self, cx: &mut Context<Self>) -> Div {
         let colors = cx.theme().colors;
         let loading = self.workspaces.is_none();
@@ -811,9 +811,9 @@ impl WorkbenchPanel {
                     .font_weight(text::weight::SEMIBOLD)
                     .text_color(colors.foreground)
                     .child(if loading {
-                        "Loading workspaces…"
+                        "Loading projects…"
                     } else {
-                        "No workspaces yet"
+                        "No projects yet"
                     }),
             )
             .when(!loading, |el| {
@@ -824,7 +824,7 @@ impl WorkbenchPanel {
                         .text_size(text::S11)
                         .text_color(palette::text_secondary(cx))
                         .child(
-                            "A workspace holds your collections, environments and history. \
+                            "A project holds your collections, environments and history. \
                              Add one to start sending requests.",
                         ),
                 )
@@ -834,9 +834,9 @@ impl WorkbenchPanel {
                         .primary()
                         .icon(IconName::Plus)
                         .label(if adding {
-                            "Adding workspace…"
+                            "Adding project…"
                         } else {
-                            "Add workspace"
+                            "Add project"
                         })
                         .disabled(adding)
                         .on_click(
@@ -855,8 +855,8 @@ impl WorkbenchPanel {
             })
     }
 
-    /// The header's workspace picker: every workspace, then "Rename workspace…"
-    /// and "Add workspace".
+    /// The header's project (workspace) picker: every workspace, then
+    /// "Rename project…" and "Add project".
     fn workspace_menu(
         &self,
         cx: &Context<Self>,
@@ -883,20 +883,20 @@ impl WorkbenchPanel {
             menu.separator()
                 .item(menu_item(
                     "workbench-workspace-rename".into(),
-                    "Rename workspace…",
+                    "Rename project…",
                     &handle,
                     |this, window, cx| this.open_rename_workspace(window, cx),
                 ))
                 .item(menu_item(
                     "workbench-workspace-add".into(),
-                    "Add workspace",
+                    "Add project",
                     &handle,
                     |this, window, cx| this.add_workspace(window, cx),
                 ))
         }
     }
 
-    /// `gap 16 · padding 8px 16px · border-b`: spark, title, the workspace
+    /// `gap 16 · padding 8px 16px · border-b`: the project (workspace)
     /// picker, the six panel chips (the only shrinking child) and the env +
     /// Sync chips.
     fn render_header(&self, cx: &mut Context<Self>) -> Div {
@@ -910,16 +910,6 @@ impl WorkbenchPanel {
             .py(space::SP_2)
             .border_b_1()
             .border_color(colors.border)
-            .child(icon("spark", 18., colors.muted_foreground))
-            .child(
-                div()
-                    .flex_none()
-                    .text_size(text::S13)
-                    .font_weight(text::weight::SEMIBOLD)
-                    .text_color(colors.foreground)
-                    .whitespace_nowrap()
-                    .child("API Workbench"),
-            )
             .child(
                 menu_trigger(
                     "workbench-workspace-chip",
@@ -960,6 +950,11 @@ impl WorkbenchPanel {
                                 tab.label(),
                                 self.tab == tab,
                                 cx,
+                            )
+                            .tooltip_with_action(
+                                format!("Show {}", tab.label()),
+                                tab.action().as_ref(),
+                                Some(KEY_CONTEXT),
                             )
                             .on_click(cx.listener(
                                 move |this, _, _, cx| {
@@ -2307,6 +2302,19 @@ impl WorkbenchPanel {
                                 colors.primary_foreground
                             },
                         ))
+                        .tooltip(move |window, cx| {
+                            let tooltip = gpui_kit::component::tooltip::Tooltip::new(if sending {
+                                "Stop request"
+                            } else {
+                                "Send request"
+                            });
+                            if sending {
+                                tooltip.action(&CancelRequest, Some(KEY_CONTEXT))
+                            } else {
+                                tooltip.action(&SendRequest, Some(KEY_CONTEXT))
+                            }
+                            .build(window, cx)
+                        })
                         .on_click(cx.listener(|this, _, window, cx| {
                             if matches!(
                                 this.send_state,
@@ -3725,7 +3733,7 @@ impl WorkbenchPanel {
                         div()
                             .text_size(text::S11)
                             .text_color(colors.muted_foreground)
-                            .child("Parse a source to review what it contains before anything is written to the workspace."),
+                            .child("Parse a source to review what it contains before anything is written to the project."),
                     ),
                 Some(imported) => el
                     .child(
@@ -5538,7 +5546,7 @@ impl WorkbenchPanel {
                                     .border_color(colors.border)
                                     .text_size(text::S11)
                                     .text_color(colors.muted_foreground)
-                                    .child("No requests have completed in this workspace."),
+                                    .child("No requests have completed in this project."),
                             );
                         }
                         el.child(
@@ -5812,7 +5820,7 @@ impl WorkbenchPanel {
         if entries.len() != 2 {
             return placeholder(
                 "Select two responses in History",
-                "Diff compares the durable, redacted response records saved with this workspace.",
+                "Diff compares the durable, redacted response records saved with this project.",
                 cx,
             );
         }

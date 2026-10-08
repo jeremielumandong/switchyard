@@ -11,6 +11,7 @@ mod coordinator;
 mod draft;
 mod entries;
 mod globals;
+mod keys;
 mod layout;
 mod login;
 mod move_request;
@@ -68,6 +69,8 @@ use crate::api::compat::field;
 use crate::api::compat::theme::tokens::{radius, space};
 use crate::api::compat::theme::{palette, text};
 use crate::api::compat::{AnyInput, TextValue};
+
+pub use keys::{FocusUrl, ShowCompose, ShowDiff, ShowEnvs, ShowHistory, ShowImport, ShowRunner};
 
 /// Key scope for request-draft commands such as Save.
 pub const KEY_CONTEXT: &str = "Workbench";
@@ -428,7 +431,7 @@ pub struct WorkbenchPanel {
     pending_workspace: Option<WorkspaceId>,
     workspace_data: Option<persistence::WorkspaceData>,
     /// The named workspaces; `None` until listed. Empty shows only the
-    /// "Add workspace" page.
+    /// "Add project" page.
     workspaces: Option<Vec<switchyard_api::WorkspaceEntry>>,
     _workspace_work: Option<gpui_kit::Task<()>>,
     request_tabs: Vec<RequestTabState>,
@@ -2597,7 +2600,7 @@ impl WorkbenchPanel {
         self.ux.console_cleared_error = None;
         if self.bound_workspace != current_workspace_id() {
             self.error =
-                Some("Save or discard changes before finishing the workspace switch.".into());
+                Some("Save or discard changes before finishing the project switch.".into());
             cx.notify();
             return;
         }
@@ -3680,7 +3683,7 @@ impl WorkbenchPanel {
     fn sync_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.dirty {
             self.navigation_notice =
-                Some("Save or discard the open request before syncing the workspace.".into());
+                Some("Save or discard the open request before syncing the project.".into());
             cx.notify();
             return;
         }
@@ -3783,7 +3786,7 @@ impl WorkbenchPanel {
         self._export_work = None;
         if self.bound_workspace != current_workspace_id() {
             self.export_output =
-                Some("Save or discard changes before exporting after the workspace switch.".into());
+                Some("Save or discard changes before exporting after the project switch.".into());
             cx.notify();
             return;
         }
@@ -3800,7 +3803,7 @@ impl WorkbenchPanel {
         };
         if data.workspace != self.bound_workspace {
             self.export_output =
-                Some("Workbench storage has not finished loading for this workspace.".into());
+                Some("Workbench storage has not finished loading for this project.".into());
             cx.notify();
             return;
         }
@@ -4423,8 +4426,7 @@ impl WorkbenchPanel {
         if !self.owns_export(&workspace, generation, &current_workspace_id()) {
             self.prepared_export = None;
             self.export_output = Some(
-                "This export belongs to a previous workspace. Prepare it again before saving."
-                    .into(),
+                "This export belongs to a previous project. Prepare it again before saving.".into(),
             );
             cx.notify();
             return;
