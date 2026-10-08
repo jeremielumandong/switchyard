@@ -449,6 +449,15 @@ faster, and no agent call ever performed a write.
   saved earlier under the project-path scope is listed under that folder's name. Renaming
   and deleting workspaces not done (Follow-ups).
 
+- [x] API-6 MySQL engine (user request, 2026-10-08): `mysql_async` (pure Rust, rustls with
+  the OS trust store), text protocol for plain runs and prepared statements for parameters,
+  multi-result scripts, warnings as notices, `KILL QUERY` cancel over a second connection;
+  information_schema catalog + `SHOW CREATE` DDL, FK and view dependencies; MySQL dialect and
+  lexer flavour (backticks, `#` comments, backslash escapes, `DELIMITER` scripts); activity
+  monitor on the process list; connection editor kind; docker `mysql` service. MariaDB works
+  through the same driver (integration tests pass on MySQL 8.4 and MariaDB 11.4).
+  Note: plans (`EXPLAIN FORMAT=JSON`) and workload stats not done (Follow-ups).
+
 ## M7 — MobaXterm parity, Tier 1 (user request)
 
 Taken before the rest of M5 at the user's request (M5-12 spike notes are kept; see
@@ -701,6 +710,9 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   for the panel and Assistant settings.
 - Oracle: EXPLAIN PLAN / DBMS_XPLAN → `PlanNode`; V$SQL workload view; arm64 Linux archive;
   CI job with the `oracle` compose profile + Instant Client; TCPS / wallet sign-in.
+- MySQL: `EXPLAIN FORMAT=JSON` / `EXPLAIN ANALYZE` → `PlanNode`; performance_schema digest
+  workload view; zero dates (`0000-00-00`) show as NULL in date columns; CI job with the
+  `mysql` compose service.
 - Snowflake: `EXPLAIN USING JSON` → `PlanNode`; QUERY_HISTORY / ACCESS_HISTORY workload view;
   exercise the driver against a real account; OAuth (external browser) sign-in.
 - API workspace: port AgentOps's Workbench UI tests; persist workbench preferences (they live

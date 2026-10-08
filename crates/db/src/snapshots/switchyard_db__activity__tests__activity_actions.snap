@@ -10,3 +10,5 @@ Oracle CancelQuery: ALTER SYSTEM CANCEL SQL '12,345'
 Oracle Terminate: ALTER SYSTEM KILL SESSION '12,345' IMMEDIATE
 Snowflake CancelQuery: SELECT SYSTEM$CANCEL_QUERY('01a2b3c4-0000-1234-0000-00000000abcd') AS done
 Snowflake Terminate: <Terminate session is not available here>
+MySql CancelQuery: KILL QUERY 4242
+MySql Terminate: KILL 4242

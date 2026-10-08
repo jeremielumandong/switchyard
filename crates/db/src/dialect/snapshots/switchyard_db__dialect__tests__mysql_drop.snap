@@ -1,0 +1,12 @@
+---
+source: crates/db/src/dialect/mod.rs
+expression: "drops.join(\"\\n\")"
+---
+DROP TABLE sales.`order`;
+DROP VIEW sales.`order`;
+-- MySQL has no DROP MATERIALIZED VIEW
+DROP FUNCTION sales.`order`;
+DROP PROCEDURE sales.`order`;
+DROP SEQUENCE sales.`order`;
+-- MySQL has no DROP TYPE
+-- MySQL has no DROP SYNONYM

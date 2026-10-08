@@ -200,6 +200,9 @@ pub async fn workload(session: &mut dyn DbSession, engine: Engine) -> Result<Wor
         Engine::Oracle => Err(PlanError::Unsupported(
             "workload statistics are not available for Oracle yet".into(),
         )),
+        Engine::MySql => Err(PlanError::Unsupported(
+            "workload statistics are not available for MySQL yet".into(),
+        )),
     }
 }
 

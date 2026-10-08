@@ -1,0 +1,9 @@
+---
+source: crates/db/src/dialect/mod.rs
+expression: "format!(\"{}\\n\\n{}\", d.insert_template(&q, &cols), d.insert_template(&q, &[]))"
+---
+INSERT INTO sales.`order` (id, line, `Order Date`, total)
+VALUES (NULL, NULL, NULL, NULL);
+
+INSERT INTO sales.`order` (column1)
+VALUES (NULL);
