@@ -713,6 +713,32 @@ impl Profile {
                     ));
                 }
             }
+            Profile::Db(d) if d.engine == Engine::MongoDb => {
+                if d.server.trim().is_empty() {
+                    return Err(ValidationError::new("server", "Host is required"));
+                }
+                if d.port == 0 {
+                    return Err(ValidationError::new("port", "Port must be 1–65535"));
+                }
+                if d.auth != DbAuthMethod::Password {
+                    return Err(ValidationError::new(
+                        "auth",
+                        "MongoDB connections sign in with a user and password (or none)",
+                    ));
+                }
+                if d.option("srv").is_some() && d.via_host.is_some() {
+                    return Err(ValidationError::new(
+                        "via_host",
+                        "An SRV connection finds its members through DNS, not through a Host",
+                    ));
+                }
+                if d.fetch_limit == Some(0) {
+                    return Err(ValidationError::new(
+                        "fetch_limit",
+                        "Fetch limit must be positive",
+                    ));
+                }
+            }
             Profile::Db(d) if d.engine.is_cloud_api() => {
                 if d.server.trim().is_empty() {
                     return Err(ValidationError::new("server", "Account ID is required"));
@@ -964,6 +990,13 @@ mod tests {
         );
         cf.database = "9f1c-uuid".into();
         assert!(Profile::Db(cf).validate().is_ok(), "D1 needs no user");
+        let mut mg = DbConnection::new("docs", Engine::MongoDb);
+        assert!(
+            Profile::Db(mg.clone()).validate().is_ok(),
+            "MongoDB may run without authentication"
+        );
+        mg.server.clear();
+        assert!(Profile::Db(mg).validate().is_err());
 
         let mut sf = DbConnection::new("wh", Engine::Snowflake);
         sf.server = "myorg-acct".into();

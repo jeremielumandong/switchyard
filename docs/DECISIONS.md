@@ -914,3 +914,26 @@ are MIT/Apache-2.0 (memchr Unlicense OR MIT, unicode-ident adds Unicode-3.0), no
 Rejected `layout-rs` (renders through its own backend, no per-node positions) and
 `rust-sugiyama` (pulls in petgraph). Used from `switchyard-app` only; layout runs on the
 background executor (a dense 150-table graph takes ~1.4 s in release).
+
+## 2026-10-08 — MongoDB engine (`mongodb` crate)
+
+Jeremie asked for MongoDB support in the project chat. Added `mongodb` 3.9 (the official
+driver, Apache-2.0) with its default features: `rustls-tls` (ring, like the rest of the
+tree), `dns-resolver` (hickory, for `mongodb+srv://` seed lists) and `bson` 2. No native
+libraries, nothing loaded at runtime. Choices:
+
+- Statements are a mongosh subset parsed in `db::mongo::shell` (`db.c.find(...).sort(...)`,
+  `aggregate`, `countDocuments`, `distinct`, `insertOne`/`Many`, `updateOne`/`Many`,
+  `replaceOne`, `deleteOne`/`Many`, index helpers, `runCommand`, `show dbs`, `use`), with
+  relaxed-JSON arguments and the shell constructors (`ObjectId`, `ISODate`, `NumberLong`…).
+  Each statement becomes one server command; nothing runs as JavaScript, so read-only checks
+  and Production confirmations come from the parser (`Dialect::classify`), not `sqlparser`.
+- Rows: nested documents flatten into dotted columns (three levels), arrays stay whole as
+  JSON, types come from the first batch; a trailing `(document)` JSON column keeps each whole
+  document, which the row inspector's JSON view shows as is.
+- Explorer: databases are the schemas, collections the tables ("Collections" folder), views
+  the views. Fields come from a `$sample` of 200 documents. No primary key is reported, so
+  grid edits (SQL statements) stay off for now.
+- Not yet: transactions (need a replica set), visual plans (`.explain()` returns the raw
+  plan as a document), agent `run_query`, the activity monitor, editing documents in the grid.
+  `prefer` TLS means off (MongoDB cannot negotiate TLS), or on for SRV.

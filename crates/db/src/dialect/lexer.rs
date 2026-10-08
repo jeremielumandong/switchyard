@@ -85,7 +85,10 @@ pub fn segments(sql: &str, flavor: Flavor) -> Vec<Segment> {
                     && (depth == 0
                         || !matches!(
                             flavor,
-                            Flavor::Sqlite | Flavor::Snowflake | Flavor::Oracle | Flavor::JavaScript
+                            Flavor::Sqlite
+                                | Flavor::Snowflake
+                                | Flavor::Oracle
+                                | Flavor::JavaScript
                         ))
                 {
                     depth += 1;

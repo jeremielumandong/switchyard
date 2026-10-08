@@ -245,7 +245,10 @@ fn message(e: &mongodb::error::Error) -> String {
         ErrorKind::Command(c) => c.message.clone(),
         ErrorKind::Authentication { message, .. } => format!("authentication failed: {message}"),
         ErrorKind::ServerSelection { message, .. } => {
-            format!("no server answered: {}", message.lines().next().unwrap_or(message))
+            format!(
+                "no server answered: {}",
+                message.lines().next().unwrap_or(message)
+            )
         }
         _ => e.to_string(),
     }
@@ -317,8 +320,8 @@ fn table(docs: &[Document], keep_document: bool, out: &mut Vec<ResultEvent>) {
     columns.pop();
     let mut b = crate::batch::RowBatchBuilder::for_columns(&columns, batch.len());
     for r in 0..batch.len() {
-        for c in 0..columns.len() {
-            b.push_value(&batch.cell(r, c).to_value(columns[c].data_type));
+        for (c, meta) in columns.iter().enumerate() {
+            b.push_value(&batch.cell(r, c).to_value(meta.data_type));
         }
     }
     out.push(ResultEvent::Columns(Arc::from(columns)));
@@ -354,12 +357,14 @@ fn qualify(command: &mut Document, current: &str) {
 }
 
 /// Up to `max` documents from `cursor`; fewer means it is exhausted.
-async fn chunk(cursor: &mut Cursor<Document>, cancel: &Cancel, max: usize) -> Result<Vec<Document>> {
+async fn chunk(
+    cursor: &mut Cursor<Document>,
+    cancel: &Cancel,
+    max: usize,
+) -> Result<Vec<Document>> {
     let mut docs = Vec::new();
     while docs.len() < max {
-        let next = cancel
-            .run(async { Ok(cursor.next().await) })
-            .await?;
+        let next = cancel.run(async { Ok(cursor.next().await) }).await?;
         match next {
             Some(Ok(d)) => docs.push(d),
             Some(Err(e)) => return Err(server_error(&e)),
@@ -646,7 +651,10 @@ mod tests {
         let sql = "db.users.find({ a: })";
         let e = shell::parse(sql).expect_err("bad");
         let e = parse_error(e, sql);
-        assert_eq!(e.as_server().and_then(|s| s.position), Some(ErrorPosition::Offset(20)));
+        assert_eq!(
+            e.as_server().and_then(|s| s.position),
+            Some(ErrorPosition::Offset(20))
+        );
     }
 
     #[test]

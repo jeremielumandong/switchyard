@@ -321,7 +321,9 @@ impl Parser<'_> {
                 self.ws();
                 let what = self.word().unwrap_or_default();
                 match what.as_str() {
-                    "dbs" | "databases" => Ok(command(None, doc! { "listDatabases": 1 }, Shape::Databases)),
+                    "dbs" | "databases" => {
+                        Ok(command(None, doc! { "listDatabases": 1 }, Shape::Databases))
+                    }
                     "collections" | "tables" => Ok(command(
                         None,
                         doc! { "listCollections": 1, "nameOnly": true, "authorizedCollections": true },
@@ -475,7 +477,10 @@ impl Parser<'_> {
                         'f' => out.push('\u{c}'),
                         '0' => out.push('\0'),
                         'u' => {
-                            let hex: String = (0..4).filter_map(|_| chars.next()).map(|(_, h)| h).collect();
+                            let hex: String = (0..4)
+                                .filter_map(|_| chars.next())
+                                .map(|(_, h)| h)
+                                .collect();
                             let ch = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32);
                             match ch {
                                 Some(ch) => out.push(ch),
@@ -531,10 +536,12 @@ impl Parser<'_> {
                 return Ok(Bson::Int64(n));
             }
         }
-        text.parse::<f64>().map(Bson::Double).map_err(|_| ParseError {
-            message: format!("Invalid number `{text}`"),
-            offset: start,
-        })
+        text.parse::<f64>()
+            .map(Bson::Double)
+            .map_err(|_| ParseError {
+                message: format!("Invalid number `{text}`"),
+                offset: start,
+            })
     }
 
     fn regex(&mut self) -> PResult<Bson> {
@@ -584,7 +591,8 @@ impl Parser<'_> {
                 let name = self.ident().ok_or_else(|| self.err("Expected a value"))?;
                 let name = if name == "new" {
                     self.ws();
-                    self.ident().ok_or_else(|| self.err("Expected a constructor after `new`"))?
+                    self.ident()
+                        .ok_or_else(|| self.err("Expected a constructor after `new`"))?
                 } else {
                     name
                 };
@@ -709,7 +717,10 @@ fn constructor(name: &str, args: Vec<Bson>) -> Result<Bson, String> {
             let hex: String = text.chars().filter(|c| *c != '-').collect();
             let bytes = (0..hex.len())
                 .step_by(2)
-                .map(|i| hex.get(i..i + 2).and_then(|h| u8::from_str_radix(h, 16).ok()))
+                .map(|i| {
+                    hex.get(i..i + 2)
+                        .and_then(|h| u8::from_str_radix(h, 16).ok())
+                })
                 .collect::<Option<Vec<u8>>>()
                 .filter(|b| b.len() == 16)
                 .ok_or_else(|| format!("Invalid UUID `{text}`"))?;
@@ -729,7 +740,9 @@ fn constructor(name: &str, args: Vec<Bson>) -> Result<Bson, String> {
         "MinKey" => Bson::MinKey,
         "MaxKey" => Bson::MaxKey,
         "RegExp" => Bson::RegularExpression(Regex {
-            pattern: arg_str(&args, 0).ok_or("RegExp takes a pattern")?.to_owned(),
+            pattern: arg_str(&args, 0)
+                .ok_or("RegExp takes a pattern")?
+                .to_owned(),
             options: arg_str(&args, 1).unwrap_or_default().to_owned(),
         }),
         other => return Err(format!("`{other}(…)` is not supported")),
@@ -958,7 +971,9 @@ fn interpret(links: Vec<Link>, end: usize) -> PResult<Op> {
                         explain = Some(arg_str(&a, 0).unwrap_or("queryPlanner").to_owned());
                     }
                     "pretty" | "toArray" | "batchSize" | "maxTimeMS" | "hint" | "comment" => {}
-                    other => return Err(bad(format!("Cursor method {other}() is not supported"), at)),
+                    other => {
+                        return Err(bad(format!("Cursor method {other}() is not supported"), at));
+                    }
                 }
             }
             if count {
@@ -983,12 +998,19 @@ fn interpret(links: Vec<Link>, end: usize) -> PResult<Op> {
         "aggregate" => {
             let pipeline = match args.first() {
                 Some(Bson::Array(a)) => a.clone(),
-                Some(Bson::Document(_)) => args.iter().take_while(|a| a.as_document().is_some()).cloned().collect(),
+                Some(Bson::Document(_)) => args
+                    .iter()
+                    .take_while(|a| a.as_document().is_some())
+                    .cloned()
+                    .collect(),
                 None => Vec::new(),
                 _ => return Err(bad("aggregate takes a pipeline array".into(), at)),
             };
             let mut cmd = doc! { "aggregate": c, "pipeline": pipeline, "cursor": {} };
-            if let Some(Bson::Document(o)) = args.get(1).filter(|_| args.first().is_some_and(|a| a.as_array().is_some())) {
+            if let Some(Bson::Document(o)) = args
+                .get(1)
+                .filter(|_| args.first().is_some_and(|a| a.as_array().is_some()))
+            {
                 for (k, v) in o {
                     if k != "cursor" {
                         cmd.insert(k.clone(), v.clone());
@@ -1025,7 +1047,8 @@ fn interpret(links: Vec<Link>, end: usize) -> PResult<Op> {
         }
         "estimatedDocumentCount" => command(db, doc! { "count": c }, Shape::Count),
         "distinct" => {
-            let key = arg_str(&args, 0).ok_or_else(|| bad("distinct takes a field name".into(), at))?;
+            let key =
+                arg_str(&args, 0).ok_or_else(|| bad("distinct takes a field name".into(), at))?;
             command(
                 db,
                 doc! { "distinct": c, "key": key, "query": doc_arg(&args, 1, "The filter", at)? },
@@ -1071,9 +1094,13 @@ fn interpret(links: Vec<Link>, end: usize) -> PResult<Op> {
                 _ => return Err(bad(format!("{method} takes a filter and an update"), at)),
             };
             if method == "replaceOne"
-                && u.as_document().is_some_and(|d| d.keys().any(|k| k.starts_with('$')))
+                && u.as_document()
+                    .is_some_and(|d| d.keys().any(|k| k.starts_with('$')))
             {
-                return Err(bad("A replacement cannot contain update operators".into(), at));
+                return Err(bad(
+                    "A replacement cannot contain update operators".into(),
+                    at,
+                ));
             }
             if method != "replaceOne"
                 && u.as_document()
@@ -1100,7 +1127,11 @@ fn interpret(links: Vec<Link>, end: usize) -> PResult<Op> {
         "deleteOne" | "deleteMany" | "remove" => {
             let q = doc_arg(&args, 0, "The filter", at)?;
             let limit = i32::from(method == "deleteOne");
-            command(db, doc! { "delete": c, "deletes": [{ "q": q, "limit": limit }] }, Shape::Write)
+            command(
+                db,
+                doc! { "delete": c, "deletes": [{ "q": q, "limit": limit }] },
+                Shape::Write,
+            )
         }
         "createIndex" | "ensureIndex" => {
             let keys = doc_arg(&args, 0, "The index keys", at)?;
@@ -1113,7 +1144,11 @@ fn interpret(links: Vec<Link>, end: usize) -> PResult<Op> {
                 index.insert("name", index_name(&keys));
             }
             index.extend(o);
-            command(db, doc! { "createIndexes": c, "indexes": [index] }, Shape::Reply)
+            command(
+                db,
+                doc! { "createIndexes": c, "indexes": [index] },
+                Shape::Reply,
+            )
         }
         "dropIndex" => {
             let index = args
@@ -1124,7 +1159,8 @@ fn interpret(links: Vec<Link>, end: usize) -> PResult<Op> {
         }
         "drop" => command(db, doc! { "drop": c }, Shape::Reply),
         "renameCollection" => {
-            let to = arg_str(&args, 0).ok_or_else(|| bad("renameCollection takes a new name".into(), at))?;
+            let to = arg_str(&args, 0)
+                .ok_or_else(|| bad("renameCollection takes a new name".into(), at))?;
             let from_db = db.clone().unwrap_or_default();
             // The command runs in admin with full names; the session fills in the
             // current database for `{db}`.
@@ -1326,8 +1362,14 @@ mod tests {
         assert_eq!(db.as_deref(), Some("shop"));
         assert_eq!(shape, Shape::Cursor);
         assert_eq!(c.get_array("pipeline").map(Vec::len), Ok(2));
-        assert_eq!(parse("db.o.aggregate([{ $out: 'x' }])").map(|o| o.effect()), Ok(Effect::Write { destructive: None }));
-        assert_eq!(parse("db.o.aggregate([])").map(|o| o.effect()), Ok(Effect::Read));
+        assert_eq!(
+            parse("db.o.aggregate([{ $out: 'x' }])").map(|o| o.effect()),
+            Ok(Effect::Write { destructive: None })
+        );
+        assert_eq!(
+            parse("db.o.aggregate([])").map(|o| o.effect()),
+            Ok(Effect::Read)
+        );
     }
 
     #[test]
@@ -1352,7 +1394,13 @@ mod tests {
         };
         assert_eq!(inserted.len(), 1);
         let docs = command.get_array("documents").expect("documents");
-        assert_eq!(docs[0].as_document().and_then(|d| d.keys().next().cloned()).as_deref(), Some("_id"));
+        assert_eq!(
+            docs[0]
+                .as_document()
+                .and_then(|d| d.keys().next().cloned())
+                .as_deref(),
+            Some("_id")
+        );
         assert_eq!(op.effect(), Effect::Write { destructive: None });
 
         let all = |s: &str| parse(s).expect("parses").effect();
@@ -1362,7 +1410,10 @@ mod tests {
                 destructive: Some((Destructive::DeleteAll, "users".into()))
             }
         );
-        assert_eq!(all("db.users.deleteMany({ a: 1 })"), Effect::Write { destructive: None });
+        assert_eq!(
+            all("db.users.deleteMany({ a: 1 })"),
+            Effect::Write { destructive: None }
+        );
         assert_eq!(
             all("db.users.updateMany({}, { $set: { a: 1 } })"),
             Effect::Write {
