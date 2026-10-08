@@ -39,7 +39,7 @@ use crate::transfers::Transfers;
 
 /// Tab colors, one per open database (hues; red is left to Production).
 const DB_HUES: [f32; 8] = [212.0, 145.0, 38.0, 275.0, 178.0, 322.0, 85.0, 24.0];
-use crate::ui::{self, Kind};
+use crate::ui;
 
 /// A tab in the work area.
 pub enum Tab {
@@ -1832,6 +1832,8 @@ impl Workspace {
             CommandId::SplitRight => self.split_view(crate::split::SplitDir::Right, window, cx),
             CommandId::SplitDown => self.split_view(crate::split::SplitDir::Down, window, cx),
             CommandId::Unsplit => self.split = None,
+            CommandId::SwitchToDefault => self.set_mode(AppMode::Default, window, cx),
+            CommandId::SwitchToApi => self.set_mode(AppMode::Api, window, cx),
         }
         cx.notify();
     }
@@ -1952,10 +1954,167 @@ impl Workspace {
     }
 
     fn render_title_bar(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        use gpui_kit::component::IconName;
+        use gpui_kit::component::tooltip::Tooltip;
         let dark = p.dark;
         // The title bar's row is the window's drag area (`HTCAPTION` on Windows). GPUI
         // reports it under every hitbox inside it, so each control must occlude it or
         // Windows takes the click as a window drag and the control never sees it.
+        //
+        // The left and right clusters share the free space equally (`flex_1` from a zero
+        // basis), so the search field stays centred whatever the mode shows on the left.
+        let left = div()
+            .flex()
+            .flex_1()
+            .flex_basis(px(0.))
+            .items_center()
+            .gap(px(6.))
+            .child(
+                div()
+                    .id("tb-workspace")
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(px(7.))
+                    .h(px(26.))
+                    .px(px(8.))
+                    .rounded(px(6.))
+                    .occlude()
+                    .cursor_pointer()
+                    .when(self.mode_menu, |d| d.bg(p.hover))
+                    .hover(|s| s.bg(p.hover))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.mode_menu = !this.mode_menu;
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .size(px(14.))
+                            .rounded(px(3.))
+                            .bg(p.fg)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(div().size(px(6.)).rounded(px(1.)).bg(p.panel)),
+                    )
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_size(px(12.5))
+                            .text_color(p.fg)
+                            .whitespace_nowrap()
+                            .child(match self.mode {
+                                AppMode::Default => self.workspace_name.clone(),
+                                AppMode::Api => "API".into(),
+                            }),
+                    )
+                    .child(div().text_color(p.fg3).text_size(px(10.)).child("▾")),
+            )
+            // The API workspace has no sidebar; the button is Default-only.
+            .when(self.mode == AppMode::Default, |d| {
+                d.child(
+                    ui::icon_button("tb-sidebar", IconName::PanelLeft, self.sidebar_open, p)
+                        .occlude()
+                        .tooltip(|w, cx| {
+                            Tooltip::new("Toggle Sidebar")
+                                .action(&actions::ToggleSidebar, None)
+                                .build(w, cx)
+                        })
+                        .on_click(cx.listener(|this, _, w, cx| {
+                            this.run_command(CommandId::ToggleSidebar, w, cx)
+                        })),
+                )
+            });
+        let search = div()
+            .id("tb-search")
+            .flex_shrink(1.)
+            .min_w_0()
+            .w(px(460.))
+            .h(px(26.))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .pl(px(10.))
+            .pr(px(6.))
+            .border_1()
+            .border_color(p.bd)
+            .rounded(px(6.))
+            .bg(p.bg)
+            .text_color(p.fg3)
+            .text_size(px(12.5))
+            .cursor_text()
+            .occlude()
+            .hover(|s| s.border_color(p.bd2))
+            .on_click(cx.listener(|this, _, w, cx| this.open_palette(PaletteMode::Commands, w, cx)))
+            .child(
+                div()
+                    .flex_1()
+                    .truncate()
+                    .child("Search connections, tables, commands…"),
+            )
+            .child(ui::kbd(ui::keys("⇧⌘P", "Ctrl+Shift+P"), p));
+        let theme_tip = if dark {
+            "Switch to Light Theme"
+        } else {
+            "Switch to Dark Theme"
+        };
+        let right = div()
+            .flex()
+            .flex_1()
+            .flex_basis(px(0.))
+            .justify_end()
+            .items_center()
+            .gap(px(2.))
+            .child(
+                ui::icon_button("tb-assistant", IconName::Bot, self.assistant_open, p)
+                    .occlude()
+                    .tooltip(|w, cx| {
+                        Tooltip::new("Assistant")
+                            .action(&actions::ToggleAssistant, None)
+                            .build(w, cx)
+                    })
+                    .on_click(cx.listener(|this, _, w, cx| {
+                        this.run_command(CommandId::ToggleAssistant, w, cx)
+                    })),
+            )
+            .child(
+                ui::icon_button(
+                    "tb-theme",
+                    if dark { IconName::Sun } else { IconName::Moon },
+                    false,
+                    p,
+                )
+                .occlude()
+                .tooltip(move |w, cx| Tooltip::new(theme_tip).build(w, cx))
+                .on_click(
+                    cx.listener(|this, _, w, cx| this.run_command(CommandId::ToggleTheme, w, cx)),
+                ),
+            )
+            // A developer gallery; release builds reach it from the command palette.
+            .when(cfg!(debug_assertions), |d| {
+                d.child(
+                    ui::icon_button("tb-components", IconName::LayoutDashboard, false, p)
+                        .occlude()
+                        .tooltip(|w, cx| {
+                            Tooltip::new("Component Sheet (debug builds)").build(w, cx)
+                        })
+                        .on_click(cx.listener(|this, _, w, cx| {
+                            this.run_command(CommandId::OpenComponents, w, cx)
+                        })),
+                )
+            })
+            .child(
+                ui::icon_button("tb-settings", IconName::Settings, false, p)
+                    .occlude()
+                    .tooltip(|w, cx| {
+                        Tooltip::new("Settings")
+                            .action(&actions::OpenSettings, None)
+                            .build(w, cx)
+                    })
+                    .on_click(
+                        cx.listener(|this, _, w, cx| this.run_command(CommandId::Settings, w, cx)),
+                    ),
+            );
         TitleBar::new()
             .h(px(38.))
             .bg(p.panel)
@@ -1968,120 +2127,9 @@ impl Workspace {
                     .gap(px(12.))
                     .pr(px(10.))
                     .font_family(SANS)
-                    .child(
-                        div()
-                            .id("tb-workspace")
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .gap(px(7.))
-                            .h(px(26.))
-                            .px(px(8.))
-                            .rounded(px(6.))
-                            .occlude()
-                            .cursor_pointer()
-                            .when(self.mode_menu, |d| d.bg(p.hover))
-                            .hover(|s| s.bg(p.hover))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.mode_menu = !this.mode_menu;
-                                cx.notify();
-                            }))
-                            .child(
-                                div()
-                                    .size(px(14.))
-                                    .rounded(px(3.))
-                                    .bg(p.fg)
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .child(div().size(px(6.)).rounded(px(1.)).bg(p.panel)),
-                            )
-                            .child(
-                                div()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_size(px(12.5))
-                                    .text_color(p.fg)
-                                    .whitespace_nowrap()
-                                    .child(match self.mode {
-                                        AppMode::Default => self.workspace_name.clone(),
-                                        AppMode::Api => "API".into(),
-                                    }),
-                            )
-                            .child(div().text_color(p.fg3).text_size(px(10.)).child("▾")),
-                    )
-                    .when(self.mode == AppMode::Default, |d| {
-                        d.child(
-                            ui::button("tb-sidebar", "Sidebar", Kind::Ghost, p)
-                                .occlude()
-                                .on_click(cx.listener(|this, _, w, cx| {
-                                    this.run_command(CommandId::ToggleSidebar, w, cx)
-                                })),
-                        )
-                    })
-                    .child(
-                        div().flex_1().flex().justify_center().min_w_0().child(
-                            div()
-                                .id("tb-search")
-                                .w_full()
-                                .max_w(px(460.))
-                                .h(px(26.))
-                                .flex()
-                                .items_center()
-                                .gap(px(8.))
-                                .pl(px(10.))
-                                .pr(px(6.))
-                                .border_1()
-                                .border_color(p.bd)
-                                .rounded(px(6.))
-                                .bg(p.bg)
-                                .text_color(p.fg3)
-                                .text_size(px(12.5))
-                                .cursor_text()
-                                .occlude()
-                                .hover(|s| s.border_color(p.bd2))
-                                .on_click(cx.listener(|this, _, w, cx| {
-                                    this.open_palette(PaletteMode::Commands, w, cx)
-                                }))
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .truncate()
-                                        .child("Search connections, tables, commands…"),
-                                )
-                                .child(ui::kbd(ui::keys("⇧⌘P", "Ctrl+Shift+P"), p)),
-                        ),
-                    )
-                    .child(
-                        ui::button(
-                            "tb-theme",
-                            if dark { "Light" } else { "Dark" },
-                            Kind::Ghost,
-                            p,
-                        )
-                        .occlude()
-                        .on_click(cx.listener(move |this, _, w, cx| {
-                            let next = if dark {
-                                ThemeId::SwitchyardLight
-                            } else {
-                                ThemeId::SwitchyardDark
-                            };
-                            this.set_theme(next, w, cx)
-                        })),
-                    )
-                    .child(
-                        ui::button("tb-components", "Components", Kind::Ghost, p)
-                            .occlude()
-                            .on_click(cx.listener(|this, _, w, cx| {
-                                this.run_command(CommandId::OpenComponents, w, cx)
-                            })),
-                    )
-                    .child(
-                        ui::button("tb-settings", "Settings", Kind::Ghost, p)
-                            .occlude()
-                            .on_click(cx.listener(|this, _, w, cx| {
-                                this.open_settings(SettingsPage::General, w, cx)
-                            })),
-                    ),
+                    .child(left)
+                    .child(search)
+                    .child(right),
             )
             .into_any_element()
     }

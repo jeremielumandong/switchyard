@@ -151,6 +151,10 @@ pub enum CommandId {
     SplitRight,
     SplitDown,
     Unsplit,
+    /// Show the Default workspace (databases, terminals, files).
+    SwitchToDefault,
+    /// Show the API workspace.
+    SwitchToApi,
 }
 
 /// A palette entry.
@@ -290,6 +294,18 @@ pub fn palette_commands() -> Vec<PaletteCommand> {
             "".into(),
         ),
         c(ToggleSidebar, "Toggle Sidebar", "View", k("⌘B", "Ctrl+B")),
+        c(
+            SwitchToDefault,
+            "Switch to Default Workspace",
+            "Workspace",
+            "".into(),
+        ),
+        c(
+            SwitchToApi,
+            "Switch to API Workspace",
+            "Workspace",
+            "".into(),
+        ),
         c(ShowWelcome, "Show Welcome", "View", "".into()),
         c(OpenComponents, "Open Component Sheet", "View", "".into()),
     ]
@@ -339,5 +355,66 @@ mod tests {
     #[test]
     fn every_command_has_a_label() {
         assert!(palette_commands().iter().all(|c| !c.label.is_empty()));
+    }
+
+    #[test]
+    fn commands_are_listed_once() {
+        let cmds = palette_commands();
+        for (i, a) in cmds.iter().enumerate() {
+            assert!(
+                cmds[i + 1..]
+                    .iter()
+                    .all(|b| b.id != a.id && b.label != a.label),
+                "{:?} is listed twice",
+                a.id
+            );
+        }
+    }
+
+    #[test]
+    fn workspace_switch_commands_are_listed() {
+        let cmds = palette_commands();
+        for id in [CommandId::SwitchToDefault, CommandId::SwitchToApi] {
+            assert!(cmds.iter().any(|c| c.id == id), "{id:?} missing");
+        }
+    }
+
+    /// Every command bound in `init` shows its shortcut in the palette. Keep this list in
+    /// step with the bindings.
+    #[test]
+    fn bound_commands_show_their_shortcut() {
+        use CommandId::*;
+        let bound = [
+            NewConnection,
+            NewTerminal,
+            NewQueryTab,
+            RunStatement,
+            RunScript,
+            StopQuery,
+            Explain,
+            ExplainAnalyze,
+            FormatSql,
+            ShowHistory,
+            Settings,
+            ToggleAssistant,
+            ToggleSidebar,
+            SplitRight,
+            SplitDown,
+        ];
+        let cmds = palette_commands();
+        for id in bound {
+            let cmd = cmds.iter().find(|c| c.id == id);
+            assert!(
+                cmd.is_some_and(|c| !c.key.is_empty()),
+                "{id:?} has a binding but no shortcut hint"
+            );
+        }
+        for c in cmds.iter().filter(|c| !c.key.is_empty()) {
+            assert!(
+                bound.contains(&c.id),
+                "{:?} shows a shortcut it lacks",
+                c.id
+            );
+        }
     }
 }
