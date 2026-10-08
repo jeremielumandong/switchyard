@@ -18,6 +18,8 @@ pub enum Engine {
     Snowflake,
     /// Oracle Database through Oracle Instant Client, loaded at runtime.
     Oracle,
+    /// A local SQLite database file.
+    Sqlite,
 }
 
 impl Engine {
@@ -29,6 +31,7 @@ impl Engine {
             Engine::D1 => "Cloudflare D1",
             Engine::Snowflake => "Snowflake",
             Engine::Oracle => "Oracle",
+            Engine::Sqlite => "SQLite",
         }
     }
 
@@ -40,6 +43,7 @@ impl Engine {
             Engine::D1 => "D1",
             Engine::Snowflake => "SF",
             Engine::Oracle => "OR",
+            Engine::Sqlite => "SL",
         }
     }
 
@@ -50,6 +54,8 @@ impl Engine {
             Engine::SqlServer => 1433,
             Engine::D1 | Engine::Snowflake => 443,
             Engine::Oracle => 1521,
+            // A file, not a server.
+            Engine::Sqlite => 0,
         }
     }
 
@@ -63,6 +69,12 @@ impl Engine {
     /// plus an API token) rather than host, port and user.
     pub fn is_cloud_api(self) -> bool {
         matches!(self, Engine::D1)
+    }
+
+    /// Whether the engine opens a local file (`DbConnection::database` is its path) rather
+    /// than reaching a server.
+    pub fn is_local_file(self) -> bool {
+        matches!(self, Engine::Sqlite)
     }
 }
 

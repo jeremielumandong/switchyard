@@ -713,6 +713,23 @@ impl Profile {
                     ));
                 }
             }
+            Profile::Db(d) if d.engine.is_local_file() => {
+                if d.database.trim().is_empty() {
+                    return Err(ValidationError::new("database", "Choose a database file"));
+                }
+                if d.via_host.is_some() {
+                    return Err(ValidationError::new(
+                        "via_host",
+                        "A SQLite file is opened on this computer, not through a Host",
+                    ));
+                }
+                if d.fetch_limit == Some(0) {
+                    return Err(ValidationError::new(
+                        "fetch_limit",
+                        "Fetch limit must be positive",
+                    ));
+                }
+            }
             Profile::Db(d) if d.engine.is_cloud_api() => {
                 if d.server.trim().is_empty() {
                     return Err(ValidationError::new("server", "Account ID is required"));
@@ -964,6 +981,20 @@ mod tests {
         );
         cf.database = "9f1c-uuid".into();
         assert!(Profile::Db(cf).validate().is_ok(), "D1 needs no user");
+
+        let mut lite = DbConnection::new("local", Engine::Sqlite);
+        assert_eq!(
+            Profile::Db(lite.clone()).validate().unwrap_err().field,
+            "database"
+        );
+        lite.database = "~/data/app.db".into();
+        lite.server.clear();
+        assert!(
+            Profile::Db(lite.clone()).validate().is_ok(),
+            "SQLite needs no server, port or user"
+        );
+        lite.via_host = Some(ProfileId("h1".into()));
+        assert_eq!(Profile::Db(lite).validate().unwrap_err().field, "via_host");
 
         let mut sf = DbConnection::new("wh", Engine::Snowflake);
         sf.server = "myorg-acct".into();

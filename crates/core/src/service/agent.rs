@@ -201,7 +201,8 @@ async fn read_only(
                 .await
                 .map_err(|e| e.to_string())?;
         }
-        Engine::SqlServer => s.begin().await.map_err(|e| e.to_string())?,
+        // Rolled back below whatever the statement did.
+        Engine::SqlServer | Engine::Sqlite => s.begin().await.map_err(|e| e.to_string())?,
         // No transactions across requests: the SELECT-only check is the guard.
         Engine::D1 | Engine::Snowflake => {}
     }

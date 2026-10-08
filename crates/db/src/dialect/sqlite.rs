@@ -1,4 +1,4 @@
-//! SQLite dialect, used by Cloudflare D1.
+//! SQLite dialect, used by local SQLite files and Cloudflare D1.
 
 use super::lexer::{self, Flavor, SegKind};
 use super::{
@@ -8,9 +8,21 @@ use super::{
 use crate::catalog::ObjectKind;
 use crate::value::{self, Engine, Value};
 
-/// SQLite dialect.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct SqliteDialect;
+/// SQLite dialect. One value per engine that speaks it, so [`Dialect::engine`] answers
+/// for the right one (D1 has no interactive transactions; a local file does).
+#[derive(Clone, Copy, Debug)]
+pub struct SqliteDialect {
+    engine: Engine,
+}
+
+impl SqliteDialect {
+    /// Cloudflare D1.
+    pub const D1: Self = Self { engine: Engine::D1 };
+    /// A local SQLite file.
+    pub const LOCAL: Self = Self {
+        engine: Engine::Sqlite,
+    };
+}
 
 const SQLITE_KEYWORDS: &[&str] = &[
     "ABORT",
@@ -143,7 +155,7 @@ fn merge_trigger_bodies(sql: &str, spans: Vec<StatementSpan>) -> Vec<StatementSp
 
 impl Dialect for SqliteDialect {
     fn engine(&self) -> Engine {
-        Engine::D1
+        self.engine
     }
 
     fn flavor(&self) -> Flavor {
@@ -159,7 +171,7 @@ impl Dialect for SqliteDialect {
     }
 
     fn qualified(&self, schema: &str, name: &str) -> String {
-        // D1 has a single database; `main.` is noise in generated SQL.
+        // `main` is the connected database; `main.` is noise in generated SQL.
         if schema.is_empty() || schema == "main" {
             self.quote_ident(name)
         } else {
@@ -320,13 +332,13 @@ impl Dialect for SqliteDialect {
         &[ObjectKind::Table, ObjectKind::View]
     }
 
-    /// D1 keeps no dependency catalog.
+    /// SQLite keeps no dependency catalog.
     fn supports_dependencies(&self) -> bool {
         false
     }
 
     fn switches_context(&self) -> bool {
-        // A D1 database is the whole connection; there is nothing to switch to.
+        // The database is the whole connection; attached ones are reached by `schema.`.
         false
     }
 
@@ -355,7 +367,7 @@ mod tests {
     use super::*;
 
     fn split(sql: &str) -> Vec<&str> {
-        SqliteDialect
+        SqliteDialect::D1
             .split_script(sql)
             .iter()
             .map(|s| s.text(sql))
@@ -394,7 +406,7 @@ mod tests {
 
     #[test]
     fn params_are_rewritten_to_positional() {
-        let d = SqliteDialect;
+        let d = SqliteDialect::D1;
         let names: Vec<_> = d
             .find_params("select ?, ?, ':x' where a = :a and b = ?5")
             .into_iter()
@@ -408,7 +420,7 @@ mod tests {
 
     #[test]
     fn quoting_and_literals() {
-        let d = SqliteDialect;
+        let d = SqliteDialect::D1;
         assert_eq!(d.quote_ident("Orders"), "Orders");
         assert_eq!(d.quote_ident("order"), "\"order\"");
         assert_eq!(d.quote_ident("a b"), "\"a b\"");
