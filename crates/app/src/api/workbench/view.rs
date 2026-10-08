@@ -566,6 +566,7 @@ impl Render for WorkbenchPanel {
         }
         self.load_pending_request(window, cx);
         self.run_pending_start(has_workspace, window, cx);
+        self.sync_tab_session(cx);
         let colors = cx.theme().colors;
         if !has_workspace {
             return div()

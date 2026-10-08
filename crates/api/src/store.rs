@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
 const DATABASE_FILE: &str = "workbench.db";
-const SCHEMA_VERSION: i32 = 6;
+const SCHEMA_VERSION: i32 = 7;
 const MMAP_SIZE_BYTES: i64 = 128 * 1024 * 1024;
 pub const DEFAULT_HISTORY_BODY_BYTES: usize = 256 * 1024;
 pub const DEFAULT_HISTORY_ENTRIES: usize = 1_000;
@@ -86,6 +86,19 @@ pub struct WorkspaceSnapshot {
 pub struct WorkspaceEntry {
     pub id: WorkspaceId,
     pub name: String,
+}
+
+/// The request tabs a workspace had open, for restoring them when it is
+/// opened again: saved request ids in tab order and the active one. Unsaved
+/// drafts are not part of it, so it never holds request contents.
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TabSession {
+    /// Saved requests open as tabs, left to right.
+    #[serde(default)]
+    pub requests: Vec<RequestId>,
+    /// The active tab's request, when the active tab was a saved request.
+    #[serde(default)]
+    pub active: Option<RequestId>,
 }
 
 #[derive(Debug)]
@@ -165,6 +178,33 @@ impl WorkbenchStore {
         let mut variables = variables.to_vec();
         super::persistence_safety::sanitize_variables(&mut variables);
         self.conn().execute("INSERT INTO workbench_globals(workspace_id, metadata_json) VALUES (?1, ?2) ON CONFLICT(workspace_id) DO UPDATE SET metadata_json = excluded.metadata_json", params![workspace.as_str(), serde_json::to_string(&variables)?])?;
+        Ok(())
+    }
+
+    /// The tab session remembered for `workspace`; empty when none was saved.
+    pub fn tab_session(&self, workspace: &WorkspaceId) -> StoreResult<TabSession> {
+        Ok(query_one_json(
+            &self.conn(),
+            "SELECT session_json FROM workbench_tab_sessions WHERE workspace_id = ?1",
+            params![workspace.as_str()],
+        )?
+        .unwrap_or_default())
+    }
+
+    /// Remember `session` as the open tabs of `workspace`, replacing the last one.
+    pub fn save_tab_session(
+        &self,
+        workspace: &WorkspaceId,
+        session: &TabSession,
+    ) -> StoreResult<()> {
+        self.conn().execute(
+            "INSERT INTO workbench_tab_sessions(workspace_id, session_json, updated_at)
+             VALUES (?1, ?2, unixepoch() * 1000)
+             ON CONFLICT(workspace_id) DO UPDATE SET
+               session_json=excluded.session_json,
+               updated_at=excluded.updated_at",
+            params![workspace.as_str(), serde_json::to_string(session)?],
+        )?;
         Ok(())
     }
 
@@ -2217,6 +2257,24 @@ fn migrate(connection: &mut Connection) -> StoreResult<()> {
         transaction.pragma_update(None, "user_version", 6)?;
         transaction.commit()?;
     }
+    if current < 7 {
+        let transaction = connection.transaction()?;
+        // Saved request ids only (never draft contents), keyed by workspace.
+        transaction.execute_batch(
+            "CREATE TABLE workbench_tab_sessions (
+                 workspace_id TEXT PRIMARY KEY,
+                 session_json TEXT NOT NULL,
+                 updated_at INTEGER NOT NULL
+             );",
+        )?;
+        transaction.execute(
+            "INSERT INTO workbench_schema_migrations(version, applied_at)
+             VALUES (7, unixepoch() * 1000)",
+            [],
+        )?;
+        transaction.pragma_update(None, "user_version", 7)?;
+        transaction.commit()?;
+    }
     Ok(())
 }
 
@@ -3440,15 +3498,16 @@ mod tests {
                  DROP TABLE workbench_cookie_jars;
                  DROP TABLE workbench_globals;
                  DROP TABLE workbench_workspaces;
+                 DROP TABLE workbench_tab_sessions;
                  ALTER TABLE workbench_environments DROP COLUMN label;
-                 DELETE FROM workbench_schema_migrations WHERE version IN (2, 3, 4, 5, 6);
+                 DELETE FROM workbench_schema_migrations WHERE version IN (2, 3, 4, 5, 6, 7);
                  PRAGMA user_version=1;",
             )
             .unwrap();
         drop(connection);
 
         let migrated = WorkbenchStore::open_database(&path).unwrap();
-        assert_eq!(migrated.schema_version().unwrap(), 6);
+        assert_eq!(migrated.schema_version().unwrap(), 7);
         assert_eq!(
             migrated.list_workspaces().unwrap(),
             vec![WorkspaceEntry {
@@ -3556,14 +3615,15 @@ mod tests {
         connection
             .execute_batch(
                 "ALTER TABLE workbench_environments DROP COLUMN label;
-                 DELETE FROM workbench_schema_migrations WHERE version=6;
+                 DROP TABLE workbench_tab_sessions;
+                 DELETE FROM workbench_schema_migrations WHERE version IN (6, 7);
                  PRAGMA user_version=5;",
             )
             .unwrap();
         drop(connection);
 
         let migrated = WorkbenchStore::open_database(&path).unwrap();
-        assert_eq!(migrated.schema_version().unwrap(), 6);
+        assert_eq!(migrated.schema_version().unwrap(), 7);
         assert_eq!(
             stored_labels(&migrated),
             vec![
@@ -3574,6 +3634,73 @@ mod tests {
         let mut listed = migrated.list_environments(&workspace).unwrap();
         listed.sort_by(|a, b| a.name.cmp(&b.name));
         assert_eq!(listed, vec![production, plain]);
+    }
+
+    #[test]
+    fn tab_sessions_round_trip_per_workspace() {
+        let scratch = Scratch::new("tab-session");
+        let path = scratch.0.join(DATABASE_FILE);
+        let first = WorkspaceId::new("first").unwrap();
+        let second = WorkspaceId::new("second").unwrap();
+        let store = WorkbenchStore::open_database(&path).unwrap();
+        assert_eq!(store.tab_session(&first).unwrap(), TabSession::default());
+
+        let (a, b) = (RequestId::new(), RequestId::new());
+        let session = TabSession {
+            requests: vec![b.clone(), a.clone()],
+            active: Some(a.clone()),
+        };
+        store.save_tab_session(&first, &session).unwrap();
+        assert_eq!(store.tab_session(&first).unwrap(), session);
+        assert_eq!(store.tab_session(&second).unwrap(), TabSession::default());
+
+        let replaced = TabSession {
+            requests: vec![a],
+            active: None,
+        };
+        store.save_tab_session(&first, &replaced).unwrap();
+        drop(store);
+        let reopened = WorkbenchStore::open_database(&path).unwrap();
+        assert_eq!(reopened.tab_session(&first).unwrap(), replaced);
+    }
+
+    #[test]
+    fn version_six_database_migrates_to_tab_sessions() {
+        let scratch = Scratch::new("v6-migration");
+        let path = scratch.0.join(DATABASE_FILE);
+        let workspace = WorkspaceId::new("project").unwrap();
+        let collection = collection(&workspace, "API");
+        let request = request(&collection, "List");
+        let store = WorkbenchStore::open_database(&path).unwrap();
+        store.upsert_collection(&collection).unwrap();
+        store.upsert_request(&request).unwrap();
+        drop(store);
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "DROP TABLE workbench_tab_sessions;
+                 DELETE FROM workbench_schema_migrations WHERE version=7;
+                 PRAGMA user_version=6;",
+            )
+            .unwrap();
+        drop(connection);
+
+        let migrated = WorkbenchStore::open_database(&path).unwrap();
+        assert_eq!(migrated.schema_version().unwrap(), 7);
+        assert_eq!(
+            migrated.tab_session(&workspace).unwrap(),
+            TabSession::default()
+        );
+        let session = TabSession {
+            requests: vec![request.id.clone()],
+            active: Some(request.id.clone()),
+        };
+        migrated.save_tab_session(&workspace, &session).unwrap();
+        assert_eq!(migrated.tab_session(&workspace).unwrap(), session);
+        assert_eq!(
+            migrated.list_requests(&request.collection_id).unwrap(),
+            vec![request]
+        );
     }
 
     #[test]
