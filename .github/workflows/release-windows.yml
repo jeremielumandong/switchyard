@@ -79,14 +79,30 @@ jobs:
           $context = New-TrustedSigningContext
           "SWITCHYARD_SIGN_DLIB=$($context.Dlib)" >> $env:GITHUB_ENV
           "SWITCHYARD_SIGN_SIGNTOOL=$($context.SignTool)" >> $env:GITHUB_ENV
+      # Chocolatey can exit 0 having installed nothing (a 504 from its feed: "installed 0/0
+      # packages"), so check for makensis after each attempt, retry, fall back to winget,
+      # and fail here rather than after the 30-minute build.
       - name: NSIS
         run: |
-          $makensis = @("${env:ProgramFiles(x86)}\NSIS\makensis.exe", "$env:ProgramFiles\NSIS\makensis.exe") |
-            Where-Object { Test-Path $_ } | Select-Object -First 1
-          if (-not $makensis) {
-            choco install nsis -y --no-progress
-            if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed.' }
+          function Find-Makensis {
+            @("${env:ProgramFiles(x86)}\NSIS\makensis.exe", "$env:ProgramFiles\NSIS\makensis.exe") |
+              Where-Object { Test-Path $_ } | Select-Object -First 1
           }
+          $makensis = Find-Makensis
+          for ($attempt = 1; -not $makensis -and $attempt -le 3; $attempt++) {
+            Write-Host "Installing NSIS with Chocolatey (attempt $attempt of 3)"
+            choco install nsis -y --no-progress
+            $makensis = Find-Makensis
+            if (-not $makensis -and $attempt -lt 3) { Start-Sleep -Seconds (20 * $attempt) }
+          }
+          if (-not $makensis) {
+            Write-Host 'Chocolatey did not install NSIS; trying winget'
+            winget install --id NSIS.NSIS --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
+            $makensis = Find-Makensis
+          }
+          if (-not $makensis) { throw 'NSIS installation failed: makensis.exe not found.' }
+          Write-Host "makensis: $makensis"
+          & $makensis /VERSION
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
         with:
           toolchain: '1.98.1'
