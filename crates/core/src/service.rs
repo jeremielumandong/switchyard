@@ -37,7 +37,8 @@ use tokio::sync::mpsc;
 use tracing::{Instrument, info, info_span, warn};
 
 use crate::bus::{
-    Command, Event, FetchLimit, QueryEvent, QueryId, RequestId, SessionId, StatementRequest,
+    Command, Event, FetchLimit, QueryEvent, QueryId, RequestId, SessionContext, SessionId,
+    StatementRequest,
 };
 use crate::error::{CoreError, Result};
 use crate::runtime::EventSender;
@@ -170,6 +171,9 @@ struct SessionSlot {
     inner: tokio::sync::Mutex<SessionInner>,
     /// Keeps the SSH tunnel open while the session uses it.
     tunnel: Option<Arc<Tunnel>>,
+    /// Database and schema switched to with [`Command::SetSessionContext`]; written
+    /// while `inner` is locked, readable without waiting for a running query.
+    context: Mutex<SessionContext>,
 }
 
 /// The core service.
@@ -200,6 +204,15 @@ pub struct Service {
     components: Arc<Registry>,
     package_runner: Arc<dyn CommandRunner>,
     files: Arc<crate::files::Files>,
+}
+
+/// Run one statement and drain its results (session settings such as `USE`).
+async fn run_silently(session: &mut dyn DbSession, sql: &str) -> Result<()> {
+    let mut stream = session.execute(sql, &[]).await?;
+    while let Some(ev) = stream.next().await {
+        ev?;
+    }
+    Ok(())
 }
 
 fn endpoint_of(t: &Tunnel) -> TunnelEndpoint {
@@ -576,6 +589,22 @@ impl Service {
             }
             Command::CloseSession { session } => {
                 lock(&self.sessions).remove(&session);
+            }
+            Command::SetSessionContext {
+                session,
+                request,
+                database,
+                schema,
+            } => {
+                let result = self
+                    .set_session_context(session, database, schema)
+                    .await
+                    .map_err(|e| e.to_string());
+                self.emit(Event::SessionContext {
+                    session,
+                    request,
+                    result,
+                });
             }
             Command::Execute {
                 session,
@@ -1568,10 +1597,62 @@ impl Service {
                     session: s,
                     txn_statements: 0,
                 }),
+                context: Mutex::new(SessionContext::default()),
                 tunnel,
             }),
         );
         Ok(version)
+    }
+
+    /// Make `database` and/or `schema` current in an open session: the dialect's `USE`
+    /// statement, or a new connection to the other database on the same tunnel.
+    async fn set_session_context(
+        &self,
+        session: SessionId,
+        database: Option<String>,
+        schema: Option<String>,
+    ) -> Result<SessionContext> {
+        let slot = self
+            .slot(session)
+            .ok_or_else(|| CoreError::NotFound("session".into()))?;
+        let driver = self.driver(slot.connection.engine)?;
+        let dialect = driver.dialect();
+        let mut inner = slot.inner.lock().await;
+        if inner.session.in_transaction() {
+            return Err(CoreError::Unsupported(
+                "Commit or roll back the open transaction before switching".into(),
+            ));
+        }
+        if let Some(db) = database {
+            match dialect.use_database(&db) {
+                Some(sql) => run_silently(inner.session.as_mut(), &sql).await?,
+                None => {
+                    let mut cfg = self.db_config(&slot.connection, None).await?;
+                    cfg.database = db.clone();
+                    let s = driver
+                        .connect(&cfg, slot.tunnel.as_deref().map(endpoint_of))
+                        .await?;
+                    inner.session = s;
+                    inner.txn_statements = 0;
+                }
+            }
+            info!(session, "switched database");
+            *lock(&slot.context) = SessionContext {
+                database: Some(db),
+                schema: None,
+            };
+        }
+        if let Some(schema) = schema {
+            let sql = dialect.use_schema(&schema).ok_or_else(|| {
+                CoreError::Unsupported(format!(
+                    "{} cannot switch schemas per session",
+                    slot.connection.engine.display_name()
+                ))
+            })?;
+            run_silently(inner.session.as_mut(), &sql).await?;
+            lock(&slot.context).schema = Some(schema);
+        }
+        Ok(lock(&slot.context).clone())
     }
 
     fn slot(&self, session: SessionId) -> Option<Arc<SessionSlot>> {
@@ -1616,6 +1697,11 @@ impl Service {
         };
         let conn_id = slot.connection.id.clone();
         let key = serde_json::to_string(&scope).unwrap_or_default();
+        // A session switched to another database caches apart from the profile's default.
+        let key = match lock(&slot.context).database.as_deref() {
+            Some(db) => format!("db={db};{key}"),
+            None => key,
+        };
         // Search results are per keystroke: never read from or written to the schema cache.
         let cacheable = scope.is_cacheable();
         if !refresh && cacheable {

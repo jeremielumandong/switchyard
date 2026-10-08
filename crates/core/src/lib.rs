@@ -19,8 +19,8 @@ pub mod terminals;
 
 pub use bus::{
     Command, Event, FetchLimit, FsOp, FsRef, OnConflict, PromptAnswer, QueryEvent, QueryId,
-    RequestId, SaveError, SessionId, StatementRequest, TermId, TermStatus, TermTarget, TextFile,
-    TransferError,
+    RequestId, SaveError, SessionContext, SessionId, StatementRequest, TermId, TermStatus,
+    TermTarget, TextFile, TransferError,
 };
 pub use error::{CoreError, Result};
 pub use runtime::{Core, EventReceiver, EventSender, RuntimeHandle};

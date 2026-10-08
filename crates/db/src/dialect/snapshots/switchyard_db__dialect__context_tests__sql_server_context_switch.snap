@@ -1,0 +1,7 @@
+---
+source: crates/db/src/dialect/context_tests.rs
+expression: "render(Engine::SqlServer, \"odd]name\", \"sales\")"
+---
+switches_context: true
+use_database("odd]name"): USE [odd]]name]
+use_schema("sales"): <reconnect / unsupported>

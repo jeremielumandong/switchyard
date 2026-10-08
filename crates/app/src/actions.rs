@@ -52,6 +52,8 @@ actions!(
         TreeOpen,
         TreeCopy,
         TreeRefresh,
+        PeekTable,
+        ClosePeek,
     ]
 );
 
@@ -104,6 +106,11 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("enter", TreeOpen, Some("SchemaTree")),
         KeyBinding::new("secondary-c", TreeCopy, Some("SchemaTree")),
         KeyBinding::new("f5", TreeRefresh, Some("SchemaTree")),
+        // Peek table: the columns of the table under the cursor; Escape closes it (the
+        // binding only exists while the popover is open, so the editor keeps Escape).
+        KeyBinding::new("f12", PeekTable, Some("SqlTab > Input")),
+        KeyBinding::new("escape", ClosePeek, Some("Peek > Input")),
+        KeyBinding::new("escape", ClosePeek, Some("Peek")),
     ]);
     // Inside a terminal, Ctrl+letter belongs to the shell (readline, vim, …). App
     // shortcuts there use Cmd on macOS and Ctrl+Shift elsewhere.

@@ -53,6 +53,8 @@ pub struct CatalogIndex {
     pub columns: HashMap<(String, String), Vec<(String, String)>>,
     /// How often each object name was used recently (higher ranks first).
     pub recent: HashMap<String, u32>,
+    /// The session's current schema; unqualified names resolve there first.
+    pub preferred_schema: Option<String>,
 }
 
 impl CatalogIndex {
@@ -68,6 +70,7 @@ impl CatalogIndex {
         Self {
             columns,
             recent: HashMap::new(),
+            preferred_schema: None,
         }
     }
 
@@ -86,7 +89,13 @@ impl CatalogIndex {
             .tables_named(name)
             .filter(|((s, _), _)| schema.is_none_or(|q| s.eq_ignore_ascii_case(q)))
             .collect();
-        found.sort_by_key(|((s, _), _)| !matches!(s.as_str(), "public" | "dbo"));
+        let preferred = self.preferred_schema.as_deref();
+        found.sort_by_key(|((s, _), _)| {
+            (
+                !preferred.is_some_and(|p| s.eq_ignore_ascii_case(p)),
+                !matches!(s.as_str(), "public" | "dbo"),
+            )
+        });
         found.first().map(|(_, c)| (*c).clone()).unwrap_or_default()
     }
 
@@ -224,6 +233,160 @@ pub fn table_refs(dialect: &dyn Dialect, sql: &str) -> Vec<TableRef> {
         }
     }
     out
+}
+
+/// The table an identifier under the cursor refers to (peek table, F12).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeekTarget {
+    /// Schema, when qualified in the identifier or its `FROM` reference.
+    pub schema: Option<String>,
+    /// Table name.
+    pub table: String,
+}
+
+/// The dotted identifier chain around byte `offset` as unquoted parts, using the lexer so
+/// quoted identifiers may contain spaces and dots. `None` in strings and comments.
+fn chain_at(dialect: &dyn Dialect, script: &str, offset: usize) -> Option<Vec<String>> {
+    #[derive(PartialEq)]
+    enum Tok {
+        Ident,
+        Dot,
+        Other,
+    }
+    let mut toks: Vec<(usize, usize, Tok)> = Vec::new();
+    for seg in lexer::segments(script, dialect.flavor()) {
+        match seg.kind {
+            SegKind::Ident => toks.push((seg.start, seg.end, Tok::Ident)),
+            SegKind::Str | SegKind::Comment => toks.push((seg.start, seg.end, Tok::Other)),
+            SegKind::Code => {
+                let text = &script[seg.start..seg.end];
+                let mut word: Option<usize> = None;
+                for (i, ch) in text.char_indices() {
+                    let at = seg.start + i;
+                    if ch.is_alphanumeric() || matches!(ch, '_' | '$' | '#') {
+                        word.get_or_insert(at);
+                        continue;
+                    }
+                    if let Some(w) = word.take() {
+                        toks.push((w, at, Tok::Ident));
+                    }
+                    if ch == '.' {
+                        toks.push((at, at + 1, Tok::Dot));
+                    } else if !ch.is_whitespace() {
+                        toks.push((at, at + ch.len_utf8(), Tok::Other));
+                    }
+                }
+                if let Some(w) = word {
+                    toks.push((w, seg.end, Tok::Ident));
+                }
+            }
+        }
+    }
+    // The identifier containing the cursor, or ending right at it.
+    let ix = toks
+        .iter()
+        .position(|(s, e, k)| *k == Tok::Ident && *s <= offset && offset <= *e)
+        .or_else(|| {
+            // On a dot: take the identifier after it.
+            toks.iter()
+                .position(|(s, e, k)| *k == Tok::Dot && *s <= offset && offset < *e)
+                .map(|d| d + 1)
+                .filter(|&i| toks.get(i).is_some_and(|t| t.2 == Tok::Ident))
+        })?;
+    let adjacent = |a: &(usize, usize, Tok), b: &(usize, usize, Tok)| a.1 == b.0;
+    let mut first = ix;
+    while first >= 2
+        && toks[first - 1].2 == Tok::Dot
+        && toks[first - 2].2 == Tok::Ident
+        && adjacent(&toks[first - 2], &toks[first - 1])
+        && adjacent(&toks[first - 1], &toks[first])
+    {
+        first -= 2;
+    }
+    let mut last = ix;
+    while last + 2 < toks.len()
+        && toks[last + 1].2 == Tok::Dot
+        && toks[last + 2].2 == Tok::Ident
+        && adjacent(&toks[last], &toks[last + 1])
+        && adjacent(&toks[last + 1], &toks[last + 2])
+    {
+        last += 2;
+    }
+    let parts: Vec<String> = toks[first..=last]
+        .iter()
+        .filter(|t| t.2 == Tok::Ident)
+        .map(|t| unquote(&script[t.0..t.1]))
+        .collect();
+    let lead = parts.first()?.chars().next()?;
+    (!lead.is_ascii_digit() && parts.iter().all(|p| !p.is_empty())).then_some(parts)
+}
+
+/// Resolve the identifier at byte `offset` to a table: a table name, `schema.table`, an
+/// alias from the statement's `FROM` list, or `alias.column` / `table.column` (the table).
+pub fn peek_target(dialect: &dyn Dialect, script: &str, offset: usize) -> Option<PeekTarget> {
+    let offset = offset.min(script.len());
+    let parts = chain_at(dialect, script, offset)?;
+    let stmt = dialect
+        .statement_at(script, offset)
+        .map(|s| &script[s.start..s.end])
+        .unwrap_or(script);
+    let refs = table_refs(dialect, stmt);
+    let by_alias = |name: &str| {
+        refs.iter()
+            .find(|r| {
+                r.alias
+                    .as_deref()
+                    .is_some_and(|a| a.eq_ignore_ascii_case(name))
+            })
+            .or_else(|| {
+                refs.iter()
+                    .find(|r| r.alias.is_none() && r.name.eq_ignore_ascii_case(name))
+            })
+            .map(|r| PeekTarget {
+                schema: r.schema.clone(),
+                table: r.name.clone(),
+            })
+    };
+    let schema_of = |schema: &str, table: &str| {
+        // A qualified table keeps its schema; a FROM reference adds nothing.
+        PeekTarget {
+            schema: Some(schema.to_owned()),
+            table: table.to_owned(),
+        }
+    };
+    match parts.as_slice() {
+        [name] => Some(by_alias(name).unwrap_or(PeekTarget {
+            schema: None,
+            table: name.clone(),
+        })),
+        [a, b] => {
+            // `alias.column` or `table.column` peeks the table; otherwise `schema.table`.
+            let qualifier = by_alias(a).filter(|_| {
+                refs.iter().all(|r| {
+                    !r.schema
+                        .as_deref()
+                        .is_some_and(|s| s.eq_ignore_ascii_case(a))
+                })
+            });
+            Some(qualifier.unwrap_or_else(|| schema_of(a, b)))
+        }
+        [a, b, c] => {
+            // `schema.table.column`, else `database.schema.table`.
+            let is_ref = refs.iter().any(|r| {
+                r.name.eq_ignore_ascii_case(b)
+                    && r.schema
+                        .as_deref()
+                        .is_some_and(|s| s.eq_ignore_ascii_case(a))
+            });
+            Some(if is_ref {
+                schema_of(a, b)
+            } else {
+                schema_of(b, c)
+            })
+        }
+        [.., s, t] => Some(schema_of(s, t)),
+        [] => None,
+    }
 }
 
 /// Candidates for completing at byte `offset` in `script`, where `typed` is the text typed
@@ -507,6 +670,47 @@ mod tests {
                 .insert,
             "SELECT"
         );
+    }
+
+    fn peek_at(sql: &str, marker: &str) -> Option<PeekTarget> {
+        // The cursor sits one character into the first occurrence of `marker`.
+        let at = sql.find(marker).unwrap() + 1;
+        peek_target(&PostgresDialect, sql, at)
+    }
+
+    fn target(schema: Option<&str>, table: &str) -> Option<PeekTarget> {
+        Some(PeekTarget {
+            schema: schema.map(str::to_owned),
+            table: table.to_owned(),
+        })
+    }
+
+    #[test]
+    fn peek_resolves_identifier_under_cursor() {
+        let sql = "SELECT o.status, c.segment FROM public.orders o JOIN customers c ON true";
+        // A bare table name.
+        assert_eq!(peek_at(sql, "customers"), target(None, "customers"));
+        // schema.table, with the cursor on either part.
+        assert_eq!(peek_at(sql, "public."), target(Some("public"), "orders"));
+        assert_eq!(peek_at(sql, "orders o"), target(Some("public"), "orders"));
+        // An alias, alone or as a column qualifier (cursor on the alias or the column).
+        assert_eq!(peek_at(sql, "o JOIN"), target(Some("public"), "orders"));
+        assert_eq!(peek_at(sql, "o.status"), target(Some("public"), "orders"));
+        assert_eq!(peek_at(sql, "status"), target(Some("public"), "orders"));
+        assert_eq!(peek_at(sql, "segment"), target(None, "customers"));
+        // A table name used as a qualifier.
+        let sql = "select customers.id from customers";
+        assert_eq!(peek_at(sql, "customers.id"), target(None, "customers"));
+        // Quoted parts and three-part names.
+        let sql = r#"select * from "Sales"."Big Orders""#;
+        assert_eq!(peek_at(sql, "Big"), target(Some("Sales"), "Big Orders"));
+        let sql = "select x.y.z from shop.public.orders";
+        assert_eq!(peek_at(sql, "orders"), target(Some("public"), "orders"));
+        // Strings, comments, numbers and whitespace resolve to nothing.
+        assert_eq!(peek_at("select 'orders'", "orders"), None);
+        assert_eq!(peek_at("select 1 -- orders", "orders"), None);
+        assert_eq!(peek_at("select 42", "42"), None);
+        assert_eq!(peek_target(&PostgresDialect, "select  1", 7), None);
     }
 
     #[test]

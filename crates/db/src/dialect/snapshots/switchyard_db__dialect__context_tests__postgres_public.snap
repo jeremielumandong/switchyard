@@ -1,0 +1,7 @@
+---
+source: crates/db/src/dialect/context_tests.rs
+expression: "render(Engine::Postgres, \"shop\", \"public\")"
+---
+switches_context: true
+use_database("shop"): <reconnect / unsupported>
+use_schema("public"): SET search_path TO public

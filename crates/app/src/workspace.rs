@@ -531,6 +531,13 @@ impl Workspace {
                     }
                 }
             }
+            Event::SessionContext {
+                session,
+                request,
+                result,
+            } => {
+                self.for_sql_session(session, cx, |t, cx| t.on_context(request, result, cx));
+            }
             Event::Transaction {
                 session,
                 open,
