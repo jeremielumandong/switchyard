@@ -4990,7 +4990,7 @@ impl WorkbenchPanel {
                     .border_color(colors.border)
                     .overflow_y_scrollbar()
                     .child(heading("Environments", colors.muted_foreground).px(space::SP_2).pb(space::SP_1))
-                    .child(Button::new("workbench-globals-open").debug_selector(|| "workbench-globals-open".into()).ghost().small().label("Workspace globals").disabled(self.storage_loading).on_click(cx.listener(|this, _, window, cx| this.open_globals(window, cx))))
+                    .child(Button::new("workbench-globals-open").debug_selector(|| "workbench-globals-open".into()).ghost().small().label("Project globals").disabled(self.storage_loading).on_click(cx.listener(|this, _, window, cx| this.open_globals(window, cx))))
                     .children(environments.iter().map(|environment| {
                         let id = environment.id.clone();
                         let menu_id = id.clone();
@@ -5201,7 +5201,7 @@ impl WorkbenchPanel {
                                             lavender,
                                             Some("sparkles"),
                                             format!(
-                                                "{unused} {} unused by any request in this workspace.",
+                                                "{unused} {} unused by any request in this project.",
                                                 if unused == 1 { "variable is" } else { "variables are" }
                                             ),
                                             cx,

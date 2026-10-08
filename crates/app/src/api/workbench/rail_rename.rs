@@ -49,7 +49,7 @@ fn commit_check(
     } else if name.is_empty() {
         CommitCheck::Blocked("Enter a name.")
     } else if workspace_changed {
-        CommitCheck::Blocked("The workspace changed. Press Escape and rename again.")
+        CommitCheck::Blocked("The project changed. Press Escape and rename again.")
     } else if storage_busy {
         CommitCheck::Blocked("Wait for the current save to finish.")
     } else {
@@ -372,7 +372,7 @@ impl WorkbenchPanel {
                         })
                     {
                         Err(
-                            "The workspace or request changed. Press Escape and rename again."
+                            "The project or request changed. Press Escape and rename again."
                                 .into(),
                         )
                     } else {
@@ -499,7 +499,7 @@ mod tests {
         );
         assert!(matches!(
             commit_check("Accounts", "Users", false, true, false),
-            CommitCheck::Blocked(message) if message.contains("workspace changed")
+            CommitCheck::Blocked(message) if message.contains("project changed")
         ));
         assert!(matches!(
             commit_check("Accounts", "Users", false, false, true),

@@ -65,7 +65,7 @@ impl WorkbenchPanel {
             let save = editor.clone();
             let cancel_editor = editor.clone();
             dialog
-                .title("Workspace globals")
+                .title("Project globals")
                 .w(dialogs::dialog_width(window, window.rem_size() * 44.))
                 .max_h(dialogs::dialog_ceiling(window))
                 .close_button(!saving)
@@ -120,7 +120,7 @@ impl GlobalsEditor {
         super::scope_editor::preserve_variable_metadata(&self.original, &mut variables, &secrets);
         let prepared = self.panel.update(cx, |panel, cx| {
             if panel.bound_workspace != self.workspace || current_workspace_id() != self.workspace {
-                return Err("The workspace changed. Reopen globals.".to_string());
+                return Err("The project changed. Reopen globals.".to_string());
             }
             if panel.storage_loading
                 || panel.send_state != SendState::Idle
@@ -176,11 +176,11 @@ impl GlobalsEditor {
                     if panel.bound_workspace != completion_workspace
                         || panel.storage_generation != generation
                     {
-                        return Err("The workspace changed. Reopen globals.".to_string());
+                        return Err("The project changed. Reopen globals.".to_string());
                     }
                     panel.storage_loading = false;
                     if result.is_ok() {
-                        panel.navigation_notice = Some("Workspace globals saved.".into());
+                        panel.navigation_notice = Some("Project globals saved.".into());
                     }
                     cx.notify();
                     result
