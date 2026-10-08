@@ -12,6 +12,7 @@ mod assistant_panel;
 mod assistant_settings;
 mod completion;
 mod conn_editor;
+mod ddl_tab;
 mod drivers_page;
 mod editor_tab;
 mod files_tab;

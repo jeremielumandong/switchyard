@@ -240,6 +240,13 @@ impl Dialect for OracleDialect {
         format!("SELECT * FROM {qualified} FETCH FIRST {limit} ROWS ONLY")
     }
 
+    fn select_template(&self, qualified: &str, cols: &[String], limit: u64) -> String {
+        format!(
+            "SELECT{}\nFROM {qualified}\nFETCH FIRST {limit} ROWS ONLY;",
+            super::select_list(self, cols)
+        )
+    }
+
     /// `:name` and `:1` placeholders; `:=` assignments and trigger `:NEW.x` / `:OLD.x`
     /// references are not parameters.
     fn find_params(&self, sql: &str) -> Vec<ParamRef> {

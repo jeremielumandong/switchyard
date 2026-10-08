@@ -153,6 +153,13 @@ impl Dialect for PostgresDialect {
         format!("SELECT * FROM {qualified} LIMIT {limit}")
     }
 
+    fn select_template(&self, qualified: &str, cols: &[String], limit: u64) -> String {
+        format!(
+            "SELECT{}\nFROM {qualified}\nLIMIT {limit};",
+            super::select_list(self, cols)
+        )
+    }
+
     fn find_params(&self, sql: &str) -> Vec<ParamRef> {
         let mut out = Vec::new();
         for seg in lexer::segments(sql, Flavor::Postgres) {

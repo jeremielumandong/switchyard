@@ -55,6 +55,8 @@ pub enum Tab {
     Editor(Entity<EditorTab>),
     /// Query and index statistics of a database.
     Workload(Entity<crate::workload_tab::WorkloadTab>),
+    /// Read-only DDL of a schema object.
+    Ddl(Entity<crate::ddl_tab::DdlTab>),
 }
 
 /// The root view.
@@ -533,7 +535,12 @@ impl Workspace {
                 cached_at,
             } => {
                 if self.schema.session == Some(session) {
-                    self.schema.on_catalog(scope, result, cached_at);
+                    if matches!(scope, switchyard_core::db::IntrospectScope::Detail { .. }) {
+                        // Object detail asked for by a schema-tree action (template, DDL).
+                        self.on_schema_detail(scope, result, window, cx);
+                    } else {
+                        self.schema.on_catalog(scope, result, cached_at);
+                    }
                 } else {
                     match result {
                         Ok(chunk) => {
@@ -950,6 +957,7 @@ impl Workspace {
             Some(Tab::Files(f)) => f.clone().into_any_element(),
             Some(Tab::Editor(e)) => e.clone().into_any_element(),
             Some(Tab::Workload(w)) => w.clone().into_any_element(),
+            Some(Tab::Ddl(d)) => d.clone().into_any_element(),
             _ => self.render_welcome(p, cx),
         }
     }
@@ -2178,6 +2186,10 @@ impl Workspace {
                 None,
                 false,
             ),
+            Tab::Ddl(d) => {
+                let d = d.read(cx);
+                (d.badge.into(), d.title.clone(), None, false)
+            }
         }
     }
 
