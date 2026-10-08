@@ -1,9 +1,11 @@
 //! SQL Server catalog from the `sys` views of the current database.
 
-use super::{TdsClient, simple_rows};
+use tiberius::Query;
+
+use super::{TdsClient, decode, map_error, simple_rows};
 use crate::catalog::{
     CatalogChunk, ColumnInfo, ConstraintInfo, ForeignKeyInfo, IndexInfo, IntrospectScope,
-    ObjectDetail, ObjectInfo, ObjectKind, SchemaInfo,
+    ObjectDetail, ObjectInfo, ObjectKind, SchemaInfo, like_contains, search_hit,
 };
 use crate::error::{DbError, Result};
 use crate::value::Value;
@@ -88,6 +90,42 @@ fn objects_sql(schema: &str, kind: ObjectKind) -> Option<String> {
         ),
         ObjectKind::MaterializedView => return None,
     })
+}
+
+/// Global object search over `sys.objects`: `@P1` is an escaped, lower-cased LIKE
+/// pattern, `@P2` the row cap, `@P3` = 1 includes system schemas and shipped objects.
+fn search_sql() -> String {
+    format!(
+        "SELECT TOP (@P2) s.name, o.name, \
+                CASE o.type WHEN 'U' THEN 'table' WHEN 'V' THEN 'view' \
+                            WHEN 'P' THEN 'procedure' WHEN 'PC' THEN 'procedure' \
+                            WHEN 'SO' THEN 'sequence' WHEN 'SN' THEN 'synonym' \
+                            ELSE 'function' END \
+         FROM sys.objects o \
+         JOIN sys.schemas s ON s.schema_id = o.schema_id \
+         WHERE o.type IN ('U','V','P','PC','FN','IF','TF','FS','FT','SO','SN') \
+           AND LOWER(o.name) LIKE @P1 ESCAPE '!' \
+           AND (@P3 = 1 OR (o.is_ms_shipped = 0 AND s.name NOT IN {SYSTEM_SCHEMAS})) \
+         ORDER BY LEN(o.name), o.name, s.name"
+    )
+}
+
+/// Run one parameterized query and collect its first result set.
+async fn param_rows(
+    client: &mut TdsClient,
+    sql: &str,
+    params: &[Value],
+) -> Result<Vec<Vec<Value>>> {
+    let mut q = Query::new(sql);
+    for p in params {
+        decode::bind(&mut q, p);
+    }
+    let stream = q.query(client).await.map_err(map_error)?;
+    let rows = stream.into_first_result().await.map_err(map_error)?;
+    Ok(rows
+        .iter()
+        .map(|r| r.cells().map(|(_, d)| decode::to_value(d)).collect())
+        .collect())
 }
 
 fn columns_sql(filter: &str) -> String {
@@ -210,6 +248,28 @@ pub(super) async fn introspect(
                         .then(|| text(r, 1).parse().unwrap_or_default()),
                         detail: opt_text(r, 2),
                     })
+                    .collect(),
+            ))
+        }
+        IntrospectScope::Search {
+            pattern,
+            limit,
+            include_system,
+        } => {
+            let like = like_contains(&pattern.to_lowercase(), true);
+            let rows = param_rows(
+                client,
+                &search_sql(),
+                &[
+                    Value::Text(like),
+                    Value::Int(i64::from(limit)),
+                    Value::Int(i64::from(include_system)),
+                ],
+            )
+            .await?;
+            Ok(CatalogChunk::Objects(
+                rows.iter()
+                    .filter_map(|r| search_hit(text(r, 0), text(r, 1), &text(r, 2)))
                     .collect(),
             ))
         }
@@ -380,5 +440,15 @@ pub(super) async fn introspect(
                 ddl,
             })))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_sql_snapshot() {
+        insta::assert_snapshot!("mssql_search_sql", search_sql());
     }
 }
