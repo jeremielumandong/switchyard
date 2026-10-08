@@ -1,6 +1,7 @@
 //! Small presentation helpers that mirror the design's component vocabulary: buttons,
 //! monogram badges, keyboard hints, environment dots and badges, segmented controls.
 
+use gpui_kit::component::{Icon, IconName};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, BoxShadow, ClickEvent, Div, ElementId, FontWeight, Hsla, InteractiveElement,
@@ -92,6 +93,32 @@ pub fn button_with_key(
             .font_weight(FontWeight::MEDIUM)
             .text_color(key_color),
     )
+}
+
+/// A compact square icon button (ghost style) for toolbars and the title bar. `active`
+/// keeps it highlighted, e.g. while the panel it toggles is open. Callers add the
+/// tooltip, since that is where the action name and shortcut are known.
+pub fn icon_button(
+    id: impl Into<ElementId>,
+    icon: IconName,
+    active: bool,
+    p: &Palette,
+) -> Stateful<Div> {
+    let hover = p.hover;
+    let fg_hover = p.fg;
+    div()
+        .id(id.into())
+        .size(px(26.))
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .rounded(px(6.))
+        .cursor_pointer()
+        .text_color(if active { p.acc } else { p.fg2 })
+        .when(active, |d| d.bg(p.sel))
+        .hover(move |s| s.bg(hover).text_color(fg_hover))
+        .child(Icon::new(icon).size(px(15.)))
 }
 
 /// Monospace text.
