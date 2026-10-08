@@ -7,8 +7,8 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, AppContext as _, Context, Entity, EventEmitter, FontWeight,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, deferred, div, px,
+    InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Window, deferred, div, px,
 };
 use secrecy::SecretString;
 use switchyard_core::db::{DbAuthMethod, Engine, SslMode};
@@ -38,6 +38,8 @@ pub enum ConnKind {
     Snowflake,
     /// Oracle Database.
     Oracle,
+    /// A local SQLite file.
+    Sqlite,
     /// SSH Host.
     Ssh,
     /// SFTP over a Host.
@@ -47,10 +49,11 @@ pub enum ConnKind {
 }
 
 impl ConnKind {
-    const ALL: [ConnKind; 8] = [
+    const ALL: [ConnKind; 9] = [
         ConnKind::Postgres,
         ConnKind::SqlServer,
         ConnKind::Oracle,
+        ConnKind::Sqlite,
         ConnKind::Snowflake,
         ConnKind::D1,
         ConnKind::Ssh,
@@ -65,6 +68,7 @@ impl ConnKind {
             ConnKind::D1 => "D1",
             ConnKind::Snowflake => "SF",
             ConnKind::Oracle => "OR",
+            ConnKind::Sqlite => "SL",
             ConnKind::Ssh => "SSH",
             ConnKind::Sftp => "SFTP",
             ConnKind::Ftp => "FTP",
@@ -78,6 +82,7 @@ impl ConnKind {
             ConnKind::D1 => "Cloudflare D1",
             ConnKind::Snowflake => "Snowflake",
             ConnKind::Oracle => "Oracle",
+            ConnKind::Sqlite => "SQLite",
             ConnKind::Ssh => "SSH Host",
             ConnKind::Sftp => "SFTP",
             ConnKind::Ftp => "FTP / FTPS",
@@ -92,6 +97,7 @@ impl ConnKind {
                 | ConnKind::Oracle
                 | ConnKind::D1
                 | ConnKind::Snowflake
+                | ConnKind::Sqlite
         )
     }
 
@@ -99,6 +105,7 @@ impl ConnKind {
         match self {
             ConnKind::Postgres | ConnKind::SqlServer | ConnKind::Oracle => "Database",
             ConnKind::D1 => "SQLite over HTTPS",
+            ConnKind::Sqlite => "Local database file",
             ConnKind::Snowflake => "Cloud warehouse",
             ConnKind::Ssh => "Terminal + tunnels",
             ConnKind::Sftp => "Files over a Host",
@@ -194,6 +201,7 @@ impl ConnEditor {
             Some(Profile::Db(d)) if d.engine == Engine::D1 => ConnKind::D1,
             Some(Profile::Db(d)) if d.engine == Engine::Snowflake => ConnKind::Snowflake,
             Some(Profile::Db(d)) if d.engine == Engine::Oracle => ConnKind::Oracle,
+            Some(Profile::Db(d)) if d.engine == Engine::Sqlite => ConnKind::Sqlite,
             Some(Profile::Db(_)) => ConnKind::Postgres,
             Some(Profile::Host(_)) => ConnKind::Ssh,
             Some(Profile::File(f)) => match f.protocol {
@@ -402,6 +410,20 @@ impl ConnEditor {
                         "API token with D1 Read or Edit"
                     },
                     true,
+                );
+            }
+            ConnKind::Sqlite => {
+                let d = match existing {
+                    Some(Profile::Db(d)) => d.clone(),
+                    _ => DbConnection::new("", Engine::Sqlite),
+                };
+                add(self, "name", &d.name, "app_local", false);
+                add(
+                    self,
+                    "database",
+                    &d.database,
+                    "~/data/app.db  or  :memory:",
+                    false,
                 );
             }
             ConnKind::Snowflake => {
@@ -801,6 +823,26 @@ impl ConnEditor {
                 d.assistant_agent = Some(self.chosen("assistant")).filter(|a| !a.is_empty());
                 Profile::Db(d)
             }
+            ConnKind::Sqlite => {
+                let mut d = match existing {
+                    Some(Profile::Db(d)) => d.clone(),
+                    _ => DbConnection::new("", Engine::Sqlite),
+                };
+                d.id = id;
+                d.engine = Engine::Sqlite;
+                d.name = self.value("name", cx);
+                d.server.clear();
+                d.port = Engine::Sqlite.default_port();
+                d.database = self.value("database", cx);
+                d.user.clear();
+                d.via_host = None;
+                d.environment = self.env;
+                d.read_only = self.read_only;
+                d.history_enabled = self.history;
+                d.agent_access = self.agents;
+                d.assistant_agent = Some(self.chosen("assistant")).filter(|a| !a.is_empty());
+                Profile::Db(d)
+            }
             ConnKind::Snowflake => {
                 let mut d = match existing {
                     Some(Profile::Db(d)) => d.clone(),
@@ -951,7 +993,11 @@ impl ConnEditor {
                 }
             }
             (
-                ConnKind::Postgres | ConnKind::Oracle | ConnKind::D1 | ConnKind::Snowflake,
+                ConnKind::Postgres
+                | ConnKind::Oracle
+                | ConnKind::D1
+                | ConnKind::Snowflake
+                | ConnKind::Sqlite,
                 Ok(Profile::Db(d)),
             ) => {
                 let request = next_id();
@@ -1182,6 +1228,47 @@ impl ConnEditor {
             .into_any_element()
     }
 
+    /// "Browse…" next to the SQLite file field: picks an existing file into it.
+    fn browse_button(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .col_span(1)
+            .flex()
+            .flex_col()
+            .justify_start()
+            // Lines the button up with the input under the field label.
+            .pt(px(19.))
+            .child(
+                ui::button("ce-browse-file", "Browse…", Kind::Secondary, p)
+                    .h(px(28.))
+                    .on_click(cx.listener(|this, _, w, cx| this.browse_file(w, cx))),
+            )
+            .into_any_element()
+    }
+
+    fn browse_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Open".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(mut paths))) = chosen.await else {
+                return;
+            };
+            let Some(path) = paths.pop() else { return };
+            let path = path.to_string_lossy().into_owned();
+            let _ = this.update_in(cx, |this, window, cx| {
+                if let Some(input) = this.inputs.get("database") {
+                    input.update(cx, |i, cx| i.set_value(path, window, cx));
+                }
+                this.test = TestState::Idle;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn fields(&self, p: &Palette, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut v = Vec::new();
         match self.kind {
@@ -1360,6 +1447,23 @@ impl ConnEditor {
                     p,
                     cx,
                 ));
+            }
+            ConnKind::Sqlite => {
+                v.push(self.field("name", "Name", 6, false, None, p, cx));
+                v.push(self.field(
+                    "database",
+                    "Database file",
+                    5,
+                    true,
+                    Some(if self.read_only {
+                        "Read-only: the file must exist"
+                    } else {
+                        "Created if it does not exist · :memory: for a scratch database"
+                    }),
+                    p,
+                    cx,
+                ));
+                v.push(self.browse_button(p, cx));
             }
             ConnKind::Oracle => {
                 v.push(self.field("name", "Name", 6, false, None, p, cx));

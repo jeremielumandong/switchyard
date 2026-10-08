@@ -914,3 +914,27 @@ are MIT/Apache-2.0 (memchr Unlicense OR MIT, unicode-ident adds Unicode-3.0), no
 Rejected `layout-rs` (renders through its own backend, no per-node positions) and
 `rust-sugiyama` (pulls in petgraph). Used from `switchyard-app` only; layout runs on the
 background executor (a dense 150-table graph takes ~1.4 s in release).
+
+## 2026-10-08 — Local SQLite as an engine (user request)
+
+The user asked for SQLite next to the server engines. Choices:
+
+- `Engine::Sqlite` (serde `sqlite`) through `rusqlite` with `bundled`, already approved and
+  used by `store`; `switchyard-db` turns on its `column_decltype` and `column_metadata`
+  features. Nothing is runtime-loaded, so SQLite needs no Driver Manager entry.
+- The profile's `database` field holds the file path (`~/` expanded, `:memory:` and `file:`
+  URIs accepted); `server`, `port` and `user` stay empty. No SSH tunnel: the file is opened on
+  this computer. A missing file is created unless the connection is read-only; read-only
+  opens with `SQLITE_OPEN_READ_ONLY` plus `PRAGMA query_only`.
+- `rusqlite` blocks, so each session owns a worker thread holding the `Connection`; jobs go
+  in over a channel and results come back over a bounded tokio channel (backpressure), keeping
+  I/O off both the UI thread and the tokio workers. Cancel calls `sqlite3_interrupt`.
+- SQLite types values, not columns: each result column is typed from the storage classes in
+  its first batch (declared type only for an all-NULL column). A later cell of another class
+  shows as NULL and the result ends with a warning naming the column, rather than a silently
+  wrong value.
+- `SqliteDialect` now carries its engine (`SqliteDialect::D1`, `SqliteDialect::LOCAL`) so
+  `Dialect::engine()` answers correctly: D1 has no transactions, a local file does.
+- Inline editing works: result columns carry an id hashed from their origin table
+  (`sqlite3_column_table_name`). Agent `run_query` begins a transaction that is rolled back,
+  like SQL Server. Attached databases appear as schemas.

@@ -254,6 +254,15 @@ Exit: integrated auth works on a Linux machine that started without Kerberos lib
   Note: tests run against a local stand-in (`crates/db/tests/d1.rs`); the real API was
   reached and its auth error parsed, but no query has run against a real D1 database yet. No transactions or inline editing (see DECISIONS).
 
+## Extra — SQLite (user request, 2026-10-08)
+
+- [x] **SQ-1 Local SQLite engine.** `Engine::Sqlite` through `rusqlite` (bundled, already
+  approved for the store), one worker thread per session, streamed batches, cancel via
+  `sqlite3_interrupt`, transactions, catalog over attached databases, inline editing,
+  connection editor with a file picker. See DECISIONS 2026-10-08.
+  Note: no query plans (`EXPLAIN QUERY PLAN` into `PlanNode` is a follow-up), no activity
+  monitor or workload stats (nothing to show for an in-process engine).
+
 ## M4 — File transfer
 
 Exit: resume an interrupted 1 GB upload.
@@ -677,6 +686,8 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 - Workload-wide index advisor, snippet library, import wizard, data compare, folder sync.
 
 ## Follow-ups
+
+- SQLite: `EXPLAIN QUERY PLAN` into `PlanNode`; a "New database file" save dialog in the connection editor (today a typed path is created on connect).
 
 - API Workbench: rename and delete workspaces (API-5 only adds and switches them).
 - `core/tests/flow.rs` `cancel_stops_a_running_query_quickly` times out (5 s) when the
