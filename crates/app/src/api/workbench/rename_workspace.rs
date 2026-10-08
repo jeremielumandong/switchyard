@@ -1,5 +1,6 @@
-//! The header menu's "Rename workspace…": a name dialog that renames the
-//! open workspace in the store, then in the panel's workspace list.
+//! The header menu's "Rename project…": a name dialog that renames the
+//! open workspace (shown as a project) in the store, then in the panel's
+//! workspace list.
 
 use super::*;
 use crate::api::compat::dialogs::{self, Dismiss};
@@ -43,7 +44,7 @@ impl WorkbenchPanel {
             let cancel_editor = editor.clone();
             let save = editor.clone();
             dialog
-                .title("Rename workspace")
+                .title("Rename project")
                 .w(dialogs::dialog_width(window, window.rem_size() * 28.))
                 .close_button(!saving)
                 .keyboard(!saving)
@@ -90,7 +91,7 @@ impl WorkbenchPanel {
         {
             saved.name = entry.name;
         }
-        self.navigation_notice = Some("Workspace renamed.".into());
+        self.navigation_notice = Some("Project renamed.".into());
         cx.notify();
     }
 }
@@ -123,10 +124,10 @@ impl RenameWorkspace {
 
     fn blocked_reason(&self, cx: &App) -> Option<String> {
         if self.saving {
-            return Some("Saving workspace name…".into());
+            return Some("Saving project name…".into());
         }
         if self.name.read(cx).value().trim().is_empty() {
-            return Some("Enter a workspace name.".into());
+            return Some("Enter a project name.".into());
         }
         None
     }
@@ -181,7 +182,7 @@ impl Render for RenameWorkspace {
             .flex_col()
             .gap_2()
             .text_sm()
-            .child("Workspace name")
+            .child("Project name")
             .child(Input::new(&self.name).disabled(self.saving))
             .when_some(message, |body, message| {
                 body.child(div().text_color(cx.theme().danger).child(message))

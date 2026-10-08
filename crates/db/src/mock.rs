@@ -9,7 +9,7 @@ use futures::future::BoxFuture;
 use futures::stream;
 
 use crate::batch::{ColumnMeta, RowBatchBuilder};
-use crate::catalog::{CatalogChunk, IntrospectScope, ObjectInfo, SchemaInfo};
+use crate::catalog::{CatalogChunk, IntrospectScope, ObjectInfo, ObjectKind, SchemaInfo};
 use crate::dialect::{Dialect, postgres::PostgresDialect};
 use crate::driver::{CancelHandle, ComponentId, DbConfig, DbSession, Driver, TunnelEndpoint};
 use crate::error::{DbError, Result};
@@ -179,6 +179,19 @@ impl DbSession for MockSession {
                             estimated_rows: Some(i * 100),
                             detail: None,
                         })
+                        .collect(),
+                ),
+                IntrospectScope::Search { pattern, limit, .. } => CatalogChunk::Objects(
+                    (1..=3)
+                        .map(|i| ObjectInfo {
+                            schema: "public".into(),
+                            name: format!("tables_{i}"),
+                            kind: ObjectKind::Table,
+                            estimated_rows: None,
+                            detail: None,
+                        })
+                        .filter(|o| o.name.contains(&pattern.to_lowercase()))
+                        .take(limit as usize)
                         .collect(),
                 ),
                 IntrospectScope::Detail { .. } | IntrospectScope::AllColumns => {

@@ -558,14 +558,14 @@ impl Render for WorkbenchPanel {
             if self.dirty {
                 self.pending_workspace = Some(workspace);
                 self.storage_error = Some(
-                    "Workspace changed with unsaved edits. Save or discard them to continue."
-                        .into(),
+                    "Project changed with unsaved edits. Save or discard them to continue.".into(),
                 );
             } else {
                 self.rehydrate_workspace(workspace, window, cx);
             }
         }
         self.load_pending_request(window, cx);
+        self.run_pending_start(has_workspace, window, cx);
         let colors = cx.theme().colors;
         if !has_workspace {
             return div()
@@ -576,7 +576,7 @@ impl Render for WorkbenchPanel {
                 .flex_col()
                 .size_full()
                 .bg(colors.background)
-                .child(self.render_empty_workbench(cx));
+                .child(self.render_first_run(cx));
         }
         let body = match self.tab {
             Tab::Compose => self.render_compose(window, cx),
@@ -590,6 +590,7 @@ impl Render for WorkbenchPanel {
             .id("api-workbench")
             .track_focus(&self.focus_handle)
             .key_context(KEY_CONTEXT)
+            .map(|root| self.on_panel_key_actions(root, cx))
             .on_action(cx.listener(|this, _: &CancelRequest, _, cx| this.cancel(cx)))
             .when(self.tab == Tab::Compose, |el| {
                 el.on_action(
@@ -604,17 +605,19 @@ impl Render for WorkbenchPanel {
                     cx.listener(|this, _: &NewRequest, window, cx| this.new_request(window, cx)),
                 )
                 .on_action(cx.listener(|this, _: &CloseRequest, window, cx| {
-                    let id = this.request_tabs[this.active_request_tab].id;
-                    this.close_request_tab(id, window, cx);
+                    if let Some(id) = this.active_request_tab_id() {
+                        this.close_request_tab(id, window, cx);
+                    }
                 }))
                 .on_action(cx.listener(|this, _: &NextRequest, window, cx| {
-                    let index = (this.active_request_tab + 1) % this.request_tabs.len();
-                    this.activate_request_tab(this.request_tabs[index].id, window, cx);
+                    if let Some(id) = this.neighbour_request_tab_id(true) {
+                        this.activate_request_tab(id, window, cx);
+                    }
                 }))
                 .on_action(cx.listener(|this, _: &PreviousRequest, window, cx| {
-                    let index = (this.active_request_tab + this.request_tabs.len() - 1)
-                        % this.request_tabs.len();
-                    this.activate_request_tab(this.request_tabs[index].id, window, cx);
+                    if let Some(id) = this.neighbour_request_tab_id(false) {
+                        this.activate_request_tab(id, window, cx);
+                    }
                 }))
             })
             .flex()
@@ -790,73 +793,8 @@ impl WorkbenchPanel {
         }
     }
 
-    /// What the panel shows before any workspace exists: a blank page with
-    /// one "Add workspace" button (or a loading line while the list loads).
-    fn render_empty_workbench(&self, cx: &mut Context<Self>) -> Div {
-        let colors = cx.theme().colors;
-        let loading = self.workspaces.is_none();
-        let adding = self.adding_workspace();
-        div()
-            .flex_1()
-            .min_h(px(0.))
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .gap(space::SP_3)
-            .p(space::SP_4)
-            .child(
-                div()
-                    .text_size(text::S13)
-                    .font_weight(text::weight::SEMIBOLD)
-                    .text_color(colors.foreground)
-                    .child(if loading {
-                        "Loading workspaces…"
-                    } else {
-                        "No workspaces yet"
-                    }),
-            )
-            .when(!loading, |el| {
-                el.child(
-                    div()
-                        .max_w(px(360.))
-                        .text_center()
-                        .text_size(text::S11)
-                        .text_color(palette::text_secondary(cx))
-                        .child(
-                            "A workspace holds your collections, environments and history. \
-                             Add one to start sending requests.",
-                        ),
-                )
-                .child(
-                    Button::new("workbench-add-workspace")
-                        .debug_selector(|| "workbench-add-workspace".into())
-                        .primary()
-                        .icon(IconName::Plus)
-                        .label(if adding {
-                            "Adding workspace…"
-                        } else {
-                            "Add workspace"
-                        })
-                        .disabled(adding)
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.add_workspace(window, cx)),
-                        ),
-                )
-            })
-            .when_some(self.storage_error.clone(), |el, error| {
-                el.child(
-                    div()
-                        .id("workbench-storage-error")
-                        .text_size(text::S10)
-                        .text_color(colors.danger)
-                        .child(format!("Workbench storage: {error}")),
-                )
-            })
-    }
-
-    /// The header's workspace picker: every workspace, then "Rename workspace…"
-    /// and "Add workspace".
+    /// The header's project (workspace) picker: every workspace, then
+    /// "Rename project…" and "Add project".
     fn workspace_menu(
         &self,
         cx: &Context<Self>,
@@ -883,25 +821,26 @@ impl WorkbenchPanel {
             menu.separator()
                 .item(menu_item(
                     "workbench-workspace-rename".into(),
-                    "Rename workspace…",
+                    "Rename project…",
                     &handle,
                     |this, window, cx| this.open_rename_workspace(window, cx),
                 ))
                 .item(menu_item(
                     "workbench-workspace-add".into(),
-                    "Add workspace",
+                    "Add project",
                     &handle,
                     |this, window, cx| this.add_workspace(window, cx),
                 ))
         }
     }
 
-    /// `gap 16 · padding 8px 16px · border-b`: spark, title, the workspace
+    /// `gap 16 · padding 8px 16px · border-b`: the project (workspace)
     /// picker, the six panel chips (the only shrinking child) and the env +
     /// Sync chips.
     fn render_header(&self, cx: &mut Context<Self>) -> Div {
         let colors = cx.theme().colors;
         let environment_name = self.environment_display_name();
+        let env_label_color = self.environment_label_color(cx);
         div()
             .flex()
             .items_center()
@@ -910,16 +849,6 @@ impl WorkbenchPanel {
             .py(space::SP_2)
             .border_b_1()
             .border_color(colors.border)
-            .child(icon("spark", 18., colors.muted_foreground))
-            .child(
-                div()
-                    .flex_none()
-                    .text_size(text::S13)
-                    .font_weight(text::weight::SEMIBOLD)
-                    .text_color(colors.foreground)
-                    .whitespace_nowrap()
-                    .child("API Workbench"),
-            )
             .child(
                 menu_trigger(
                     "workbench-workspace-chip",
@@ -961,6 +890,11 @@ impl WorkbenchPanel {
                                 self.tab == tab,
                                 cx,
                             )
+                            .tooltip_with_action(
+                                format!("Show {}", tab.label()),
+                                tab.action().as_ref(),
+                                Some(KEY_CONTEXT),
+                            )
                             .on_click(cx.listener(
                                 move |this, _, _, cx| {
                                     this.tab = tab;
@@ -988,13 +922,16 @@ impl WorkbenchPanel {
                         menu_trigger(
                             "workbench-env-chip",
                             cx.theme().transparent,
-                            colors.input,
-                            palette::text_secondary(cx),
+                            env_label_color.unwrap_or(colors.input),
+                            env_label_color.unwrap_or_else(|| palette::text_secondary(cx)),
                             div()
                                 .flex()
                                 .items_center()
                                 .gap(px(6.))
-                                .child(dot(6., self.environment_dot(cx)))
+                                .child(dot(
+                                    6.,
+                                    env_label_color.unwrap_or_else(|| self.environment_dot(cx)),
+                                ))
                                 .child(
                                     div()
                                         .font_family(crate::api::compat::fonts::mono(cx))
@@ -1025,6 +962,9 @@ impl WorkbenchPanel {
 
 impl WorkbenchPanel {
     fn render_compose(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        if !self.has_request_tab() {
+            return self.render_compose_without_tab(window, cx);
+        }
         let rail = self.render_collection_rail(window, cx);
         let editor = self.render_composer_content(window, cx);
         let response = self.render_response(window, cx);
@@ -1126,7 +1066,11 @@ impl WorkbenchPanel {
 
     /// The 248px rail: filter + `+` menu, then one group per collection with
     /// the selected collection's folder/request tree beneath it.
-    fn render_collection_rail(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_collection_rail(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = cx.theme().colors;
         let handle = cx.entity().downgrade();
         let filter = self.rail_filter.read(cx).value().trim().to_lowercase();
@@ -1169,6 +1113,12 @@ impl WorkbenchPanel {
                 ))
         });
         div()
+            .id("workbench-collection-rail")
+            .track_focus(&self.rail_focus)
+            .key_context(RAIL_KEY_CONTEXT)
+            .on_action(cx.listener(|this, _: &RenameRailItem, window, cx| {
+                this.rename_rail_selection(window, cx)
+            }))
             .w_full()
             .flex_none()
             .flex()
@@ -1208,9 +1158,6 @@ impl WorkbenchPanel {
                     )
                     .child(add_menu),
             )
-            .when(self.rename_target.is_some(), |el| {
-                el.child(self.render_rename_row(window, cx))
-            })
             .child(
                 div().flex_1().min_h(px(0.)).overflow_y_scrollbar().child(
                     div()
@@ -1219,56 +1166,20 @@ impl WorkbenchPanel {
                         .pt(px(6.))
                         .px(px(6.))
                         .pb(space::SP_3)
-                        .children(self.render_rail_groups(&filter, cx)),
+                        .children(self.render_rail_groups(&filter, window, cx)),
                 ),
             )
             .into_any_element()
     }
 
-    /// The inline rename field a row kebab's "Rename…" item opens.
-    fn render_rename_row(&self, window: &Window, cx: &mut Context<Self>) -> Div {
-        let colors = cx.theme().colors;
-        div()
-            .flex()
-            .items_center()
-            .gap(px(6.))
-            .px(space::SP_2)
-            .py(px(6.))
-            .border_b_1()
-            .border_color(colors.sidebar_border)
-            .child(
-                mono_field(&self.container_name, window, cx)
-                    .flex_1()
-                    .min_w(px(0.))
-                    .h(px(26.))
-                    .text_size(text::S11),
-            )
-            .child(
-                icon_button(
-                    "workbench-rename-container".into(),
-                    "check",
-                    Some(colors.primary),
-                    cx,
-                )
-                .size(px(26.))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.rename_selected_container(cx);
-                    cx.notify();
-                })),
-            )
-            .child(
-                icon_button("workbench-rename-cancel".into(), "close", None, cx)
-                    .size(px(26.))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.rename_target = None;
-                        cx.notify();
-                    })),
-            )
-    }
-
     /// `COLLECTION · name` headings, one per collection, with the selected
     /// collection's tree ([`rail_rows`]) under its heading.
-    fn render_rail_groups(&self, filter: &str, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn render_rail_groups(
+        &self,
+        filter: &str,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
         let colors = cx.theme().colors;
         let Some(data) = self.workspace_data.as_ref() else {
             return vec![
@@ -1351,7 +1262,11 @@ impl WorkbenchPanel {
                         "Rename collection…",
                         &handle,
                         move |this, window, cx| {
-                            this.open_collection_rename(rename.clone(), window, cx)
+                            this.open_rail_rename(
+                                RenameTarget::Collection(rename.clone()),
+                                window,
+                                cx,
+                            )
                         },
                     ))
                     .separator()
@@ -1405,6 +1320,9 @@ impl WorkbenchPanel {
                     ))
                 }
             };
+            let rename_field = self
+                .rail_rename_for(&RenameTarget::Collection(collection.id.clone()))
+                .map(|rename| self.render_rail_rename(rename, 0., window, cx));
             let menu = rail_item_menu(
                 format!("workbench-collection-{}-menu", collection.id.as_str()),
                 format!("workbench-collection-{index}-menu"),
@@ -1455,8 +1373,11 @@ impl WorkbenchPanel {
                                             );
                                         },
                                     ))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.toggle_collection_tree(id.clone(), window, cx)
+                                    .on_click(cx.listener(move |this, event, window, cx| {
+                                        let target = RenameTarget::Collection(id.clone());
+                                        if !this.rail_row_clicked(target, event, window, cx) {
+                                            this.toggle_collection_tree(id.clone(), window, cx)
+                                        }
                                     }))
                                     .child(icon(
                                         if expanded {
@@ -1476,6 +1397,10 @@ impl WorkbenchPanel {
                     )
                     .into_any_element(),
             );
+            // The rename field takes the heading's place while it is open.
+            if let (Some(field), Some(heading)) = (rename_field, out.last_mut()) {
+                *heading = field;
+            }
             if !expanded {
                 continue;
             }
@@ -1496,7 +1421,7 @@ impl WorkbenchPanel {
                         .into_any_element(),
                 );
             }
-            out.extend(self.render_rail_rows(rows, filter, cx));
+            out.extend(self.render_rail_rows(rows, filter, window, cx));
         }
         out
     }
@@ -1508,6 +1433,7 @@ impl WorkbenchPanel {
         &self,
         rows: Vec<RailRow<'_>>,
         filter: &str,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let colors = cx.theme().colors;
@@ -1527,6 +1453,10 @@ impl WorkbenchPanel {
                     let index = folder_index;
                     folder_index += 1;
                     let id = folder.id.clone();
+                    if let Some(rename) = self.rail_rename_for(&RenameTarget::Folder(id.clone())) {
+                        let indent = 12. * (depth as f32 + 1.);
+                        return Some(self.render_rail_rename(rename, indent, window, cx));
+                    }
                     let toggle_id = id.clone();
                     let expanded = !filter.is_empty() || !self.collapsed_folder_ids.contains(&id);
                     let toggle_selector = format!("workbench-folder-toggle-{}", id.as_str());
@@ -1576,7 +1506,11 @@ impl WorkbenchPanel {
                                 "Rename folder…",
                                 &handle,
                                 move |this, window, cx| {
-                                    this.open_folder_rename(rename.clone(), window, cx)
+                                    this.open_rail_rename(
+                                        RenameTarget::Folder(rename.clone()),
+                                        window,
+                                        cx,
+                                    )
                                 },
                             ))
                             .separator()
@@ -1703,9 +1637,16 @@ impl WorkbenchPanel {
                                                     );
                                                 },
                                             ))
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.select_folder(id.clone(), window, cx)
-                                            }))
+                                            .on_click(cx.listener(
+                                                move |this, event, window, cx| {
+                                                    let target = RenameTarget::Folder(id.clone());
+                                                    if !this
+                                                        .rail_row_clicked(target, event, window, cx)
+                                                    {
+                                                        this.select_folder(id.clone(), window, cx)
+                                                    }
+                                                },
+                                            ))
                                             .child(icon("folder", 12., colors.muted_foreground))
                                             .child(
                                                 heading(
@@ -1737,6 +1678,12 @@ impl WorkbenchPanel {
                         return None;
                     }
                     request_index += 1;
+                    if let Some(rename) =
+                        self.rail_rename_for(&RenameTarget::Request(request.id.clone()))
+                    {
+                        let indent = 12. * (depth as f32 + 1.);
+                        return Some(self.render_rail_rename(rename, indent, window, cx));
+                    }
                     // Row callbacks retain identity, not the potentially large
                     // body, scripts and credentials of every saved request.
                     let request_for_click = request.id.clone();
@@ -1769,8 +1716,9 @@ impl WorkbenchPanel {
                                     &handle,
                                     move |this, window, cx| {
                                         this.open_saved_request(&duplicate, window, cx);
-                                        if this.current_request_id.as_ref() == Some(&duplicate) {
-                                            let tab = this.request_tabs[this.active_request_tab].id;
+                                        if this.current_request_id.as_ref() == Some(&duplicate)
+                                            && let Some(tab) = this.active_request_tab_id()
+                                        {
                                             this.run_request_tab_action(
                                                 tab_menu::Action::Duplicate,
                                                 tab,
@@ -1786,7 +1734,11 @@ impl WorkbenchPanel {
                                     "Rename request…",
                                     &handle,
                                     move |this, window, cx| {
-                                        this.open_rename_request(rename.clone(), window, cx)
+                                        this.open_rail_rename(
+                                            RenameTarget::Request(rename.clone()),
+                                            window,
+                                            cx,
+                                        )
                                     },
                                 ));
                             let destinations = handle
@@ -1857,13 +1809,22 @@ impl WorkbenchPanel {
                                             } else {
                                                 palette::text_secondary(cx)
                                             })
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.open_saved_request(
-                                                    &request_for_click,
-                                                    window,
-                                                    cx,
-                                                );
-                                            }))
+                                            .on_click(cx.listener(
+                                                move |this, event, window, cx| {
+                                                    let target = RenameTarget::Request(
+                                                        request_for_click.clone(),
+                                                    );
+                                                    if !this
+                                                        .rail_row_clicked(target, event, window, cx)
+                                                    {
+                                                        this.open_saved_request(
+                                                            &request_for_click,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    }
+                                                },
+                                            ))
                                             .child(verb(
                                                 method.clone(),
                                                 self.method_tint_label(&method, cx),
@@ -2071,6 +2032,7 @@ impl WorkbenchPanel {
         let method = self.current_method(cx);
         let tint = self.method_tint_label(&method, cx);
         let url_focused = self.url.focus_handle(cx).is_focused(window);
+        let env_edge = self.environment_label_color(cx);
         // A relative URL shows what it will be prefixed with — or that
         // nothing will, which is the click-through to the Envs tab.
         let base_prefix = switchyard_api::is_relative_url(&self.url.read(cx).value())
@@ -2197,6 +2159,9 @@ impl WorkbenchPanel {
             .flex()
             .flex_col()
             .flex_none()
+            // The environment's colour down the request's edge, like a
+            // database editor's.
+            .when_some(env_edge, |el, color| el.border_l_2().border_color(color))
             .child(
                 div()
                     .flex()
@@ -2226,6 +2191,10 @@ impl WorkbenchPanel {
                                 colors.ring
                             } else {
                                 colors.input
+                            })
+                            // Production is red whatever the focus.
+                            .when(self.environment_label_in_force().is_production(), |el| {
+                                el.border_color(env_edge.unwrap_or(colors.danger))
                             })
                             .bg(colors.sidebar)
                             .font_family(crate::api::compat::fonts::mono(cx))
@@ -2307,6 +2276,19 @@ impl WorkbenchPanel {
                                 colors.primary_foreground
                             },
                         ))
+                        .tooltip(move |window, cx| {
+                            let tooltip = gpui_kit::component::tooltip::Tooltip::new(if sending {
+                                "Stop request"
+                            } else {
+                                "Send request"
+                            });
+                            if sending {
+                                tooltip.action(&CancelRequest, Some(KEY_CONTEXT))
+                            } else {
+                                tooltip.action(&SendRequest, Some(KEY_CONTEXT))
+                            }
+                            .build(window, cx)
+                        })
                         .on_click(cx.listener(|this, _, window, cx| {
                             if matches!(
                                 this.send_state,
@@ -2981,14 +2963,6 @@ impl WorkbenchPanel {
 // Compose: response
 // ---------------------------------------------------------------------------
 
-/// One painted row of the Trace pane.
-struct TraceRow {
-    offset_ms: u64,
-    tag: &'static str,
-    text: String,
-    duration: Option<u64>,
-}
-
 impl WorkbenchPanel {
     /// `flex-1 · border-t · bg sidebar`: tab chips, readouts, the lavender
     /// "Explain · write tests" menu, then the selected pane.
@@ -3089,35 +3063,59 @@ impl WorkbenchPanel {
             (ResponseTab::Raw, Some(_)) => self.render_response_editor(false, cx),
             (ResponseTab::Headers, Some(response)) => {
                 let cols = [Col::Px(220.), Col::Flex];
+                let all = response_copy::headers_text(&response.headers);
+                let table =
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(1.))
+                        .rounded(radius::md())
+                        .overflow_hidden()
+                        .bg(colors.muted)
+                        .font_family(crate::api::compat::fonts::mono(cx))
+                        .text_size(text::S11)
+                        .children(response.headers.iter().enumerate().map(
+                            |(index, (name, value))| {
+                                table_row(
+                                    &cols,
+                                    vec![
+                                        tinted_cell(name.clone(), colors.muted_foreground),
+                                        cell(value.clone()),
+                                    ],
+                                    false,
+                                    cx,
+                                )
+                                .bg(colors.sidebar)
+                                .items_center()
+                                .child(
+                                    div().flex_none().px(space::SP_1).child(self.copy_row_icon(
+                                        format!("workbench-header-copy-{index}"),
+                                        response_copy::header_line(name, value),
+                                        cx,
+                                    )),
+                                )
+                            },
+                        ))
+                        .when(response.headers.is_empty(), |el| {
+                            el.child(
+                                div()
+                                    .p(space::SP_2)
+                                    .text_color(palette::text_tertiary(cx))
+                                    .child("(no headers)"),
+                            )
+                        });
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(1.))
-                    .rounded(radius::md())
-                    .overflow_hidden()
-                    .bg(colors.muted)
-                    .font_family(crate::api::compat::fonts::mono(cx))
-                    .text_size(text::S11)
-                    .children(response.headers.iter().map(|(name, value)| {
-                        table_row(
-                            &cols,
-                            vec![
-                                tinted_cell(name.clone(), colors.muted_foreground),
-                                cell(value.clone()),
-                            ],
-                            false,
-                            cx,
-                        )
-                        .bg(colors.sidebar)
-                    }))
-                    .when(response.headers.is_empty(), |el| {
-                        el.child(
-                            div()
-                                .p(space::SP_2)
-                                .text_color(palette::text_tertiary(cx))
-                                .child("(no headers)"),
-                        )
-                    })
+                    .gap(space::SP_2)
+                    .child(div().flex().justify_end().child(self.copy_chip(
+                        "workbench-headers-copy-all",
+                        "Copy all",
+                        !all.is_empty(),
+                        move |_, _| all.clone(),
+                        cx,
+                    )))
+                    .child(table)
                     .into_any_element()
             }
             (ResponseTab::Trace, Some(response)) => self.render_trace(response, cx),
@@ -3129,15 +3127,24 @@ impl WorkbenchPanel {
                         .child("No test results. Add assertions in Compose → Scripts, then send the request." )
                         .into_any_element()
                 } else {
+                    let all = response_copy::tests_text(&response.test_results);
                     div()
                         .flex()
                         .flex_col()
                         .gap(px(6.))
+                        .child(div().flex().justify_end().child(self.copy_chip(
+                            "workbench-tests-copy-all",
+                            "Copy all",
+                            true,
+                            move |_, _| all.clone(),
+                            cx,
+                        )))
                         .children(
                             response
                                 .test_results
                                 .iter()
-                                .map(|result| self.response_test_row(result, cx)),
+                                .enumerate()
+                                .map(|(index, result)| self.response_test_row(index, result, cx)),
                         )
                         .into_any_element()
                 }
@@ -3196,9 +3203,9 @@ impl WorkbenchPanel {
                         | pretty::BodyPresentation::Virtualized { text, .. } => text.clone(),
                     },
                 ),
-                ResponseTab::Raw => Some(body.raw.clone()),
                 _ => None,
             });
+        let has_request = self.response_request.is_some();
         div()
             .id("workbench-response-pane")
             .debug_selector(|| "workbench-response-pane".into())
@@ -3269,26 +3276,34 @@ impl WorkbenchPanel {
                         )
                     })
                     .when_some(copy_payload, |el, payload| {
-                        el.child(
-                            outline_chip("workbench-copy-response".into(), "Copy view", cx)
-                                .child(icon("copy", 11., palette::text_secondary(cx)))
-                                .on_click(move |_, _, cx| {
-                                    if payload.is_empty() {
-                                        crate::api::compat::notify::warning(
-                                            cx,
-                                            "Response output is empty — nothing to copy.",
-                                        );
-                                    } else {
-                                        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
-                                            payload.to_string(),
-                                        ));
-                                        crate::api::compat::notify::success(
-                                            cx,
-                                            "Response output copied.",
-                                        );
-                                    }
-                                }),
-                        )
+                        el.child(self.copy_chip(
+                            "workbench-copy-response",
+                            "Copy view",
+                            !payload.is_empty(),
+                            move |_, _| payload.to_string(),
+                            cx,
+                        ))
+                    })
+                    .when(response.is_some(), |el| {
+                        el.child(self.copy_chip(
+                            "workbench-copy-response-body",
+                            "Copy response",
+                            true,
+                            |this, _| this.response_raw_text(),
+                            cx,
+                        ))
+                        .child(self.copy_chip(
+                            "workbench-copy-curl",
+                            "Copy as cURL",
+                            has_request,
+                            |this, _| {
+                                this.response_request
+                                    .as_ref()
+                                    .map(response_copy::curl_text)
+                                    .unwrap_or_default()
+                            },
+                            cx,
+                        ))
                     })
                     .child(ask_menu)
                     .context_menu({
@@ -3382,118 +3397,36 @@ impl WorkbenchPanel {
             .into_any_element()
     }
 
-    /// Trace rows built from the real exchange: connection timings, each
-    /// redirect, `done`, and the error line — no synthetic events.
-    fn render_trace(&self, response: &transport::Response, cx: &App) -> AnyElement {
+    /// The Trace pane: [`response_copy::trace_rows`] painted one per line,
+    /// each with a copy icon, under a "Copy all" chip.
+    fn render_trace(&self, response: &transport::Response, cx: &mut Context<Self>) -> AnyElement {
         let colors = cx.theme().colors;
-        let timings = &response.timings;
-        let mut rows = Vec::new();
-        let target = self
-            .response_request
-            .as_ref()
-            .map(|request| format!("{} {}", request.method, request.url))
-            .unwrap_or_else(|| response.final_url.clone());
-        rows.push(TraceRow {
-            offset_ms: 0,
-            tag: "send",
-            text: target,
-            duration: None,
-        });
-        // What the request authenticated with — the redacted snapshot keeps a
-        // bearer JWT's public claims, which is how two tokens are told apart.
-        if let Some((_, value)) = self.response_request.as_ref().and_then(|request| {
-            request
-                .headers
-                .iter()
-                .find(|(name, _)| name.eq_ignore_ascii_case("Authorization"))
-        }) {
-            rows.push(TraceRow {
-                offset_ms: 0,
-                tag: "auth",
-                text: value.clone(),
-                duration: None,
-            });
-        }
-        let mut offset = 0;
-        for (tag, value) in [
-            ("dns", timings.dns_ms),
-            ("conn", timings.connect_ms),
-            ("tls", timings.tls_ms),
-        ] {
-            if let Some(ms) = value {
-                rows.push(TraceRow {
-                    offset_ms: offset,
-                    tag,
-                    text: format!("{tag} resolved"),
-                    duration: Some(ms),
-                });
-                offset += ms;
-            }
-        }
-        if let Some(ms) = timings.first_byte_ms {
-            rows.push(TraceRow {
-                offset_ms: ms,
-                tag: "ttfb",
-                text: format!("first byte · HTTP {}", response.http_version),
-                duration: None,
-            });
-        }
-        for redirect in &response.redirects {
-            rows.push(TraceRow {
-                offset_ms: timings.first_byte_ms.unwrap_or(0),
-                tag: "redir",
-                text: format!(
-                    "{} {} → {}{}",
-                    redirect.status,
-                    redirect.from,
-                    redirect.to,
-                    if redirect.cross_origin {
-                        " · cross-origin credentials/body stripped"
-                    } else {
-                        ""
-                    }
-                ),
-                duration: None,
-            });
-        }
-        if let Some(ms) = timings.download_ms {
-            rows.push(TraceRow {
-                offset_ms: response.duration_ms.saturating_sub(ms),
-                tag: "body",
-                text: format!("{} received", pretty::human_size(response.received_bytes)),
-                duration: Some(ms),
-            });
-        }
-        rows.push(TraceRow {
-            offset_ms: response.duration_ms,
-            tag: if response.truncated { "warn" } else { "done" },
-            text: format!(
-                "{} {} · {}{}",
-                response.status,
-                response.reason,
-                response.final_url,
-                if response.truncated {
-                    " · response truncated at limit"
-                } else {
-                    ""
-                }
-            ),
-            duration: Some(response.duration_ms),
-        });
-        if let Some(error) = &self.error {
-            rows.push(TraceRow {
-                offset_ms: response.duration_ms,
-                tag: "error",
-                text: error.clone(),
-                duration: None,
-            });
-        }
+        let rows = response_copy::trace_rows(
+            response,
+            self.response_request.as_ref(),
+            self.error.as_deref(),
+        );
+        let all = response_copy::trace_text(&rows);
         div()
             .flex()
             .flex_col()
             .font_family(crate::api::compat::fonts::mono(cx))
             .text_size(text::S11)
-            .children(rows.into_iter().map(|row| {
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .pb(space::SP_1)
+                    .child(self.copy_chip(
+                        "workbench-trace-copy-all",
+                        "Copy all",
+                        !all.is_empty(),
+                        move |_, _| all.clone(),
+                        cx,
+                    )),
+            )
+            .children(rows.into_iter().enumerate().map(|(index, row)| {
+                let line = response_copy::trace_line(&row);
                 let tint = match row.tag {
                     "send" => colors.primary,
                     "dns" | "conn" | "tls" | "ttfb" | "body" | "auth" => colors.info,
@@ -3533,12 +3466,18 @@ impl WorkbenchPanel {
                                 .child(format!("{ms} ms")),
                         )
                     })
+                    .child(self.copy_row_icon(format!("workbench-trace-copy-{index}"), line, cx))
             }))
             .into_any_element()
     }
 
     /// `PASS name … ms` / `FAIL name` + detail line, on a `muted` row.
-    fn response_test_row(&self, result: &switchyard_api::TestResult, cx: &App) -> Div {
+    fn response_test_row(
+        &self,
+        index: usize,
+        result: &switchyard_api::TestResult,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let colors = cx.theme().colors;
         div()
             .flex()
@@ -3585,7 +3524,12 @@ impl WorkbenchPanel {
                             .min_w(px(0.))
                             .truncate()
                             .child(result.name.clone()),
-                    ),
+                    )
+                    .child(self.copy_row_icon(
+                        format!("workbench-test-copy-{index}"),
+                        response_copy::test_line(result),
+                        cx,
+                    )),
             )
             .when_some(result.error.clone(), |el, error| {
                 el.child(
@@ -3725,7 +3669,7 @@ impl WorkbenchPanel {
                         div()
                             .text_size(text::S11)
                             .text_color(colors.muted_foreground)
-                            .child("Parse a source to review what it contains before anything is written to the workspace."),
+                            .child("Parse a source to review what it contains before anything is written to the project."),
                     ),
                 Some(imported) => el
                     .child(
@@ -4522,9 +4466,9 @@ impl WorkbenchPanel {
                                     colors.danger
                                 },
                             ))
-                            .on_click(cx.listener(|this, _, _, cx| {
+                            .on_click(cx.listener(|this, _, window, cx| {
                                 if this.send_state == SendState::Idle {
-                                    this.run_collection(cx)
+                                    this.run_collection_confirmed(window, cx)
                                 } else if matches!(
                                     this.send_state,
                                     SendState::PreparingRun | SendState::Sending
@@ -4543,9 +4487,9 @@ impl WorkbenchPanel {
                                     "workbench-run-menu-start".into(),
                                     "Run collection",
                                     &handle,
-                                    |this, _, cx| {
+                                    |this, window, cx| {
                                         if this.send_state == SendState::Idle {
-                                            this.run_collection(cx);
+                                            this.run_collection_confirmed(window, cx);
                                         }
                                     },
                                 )
@@ -5046,7 +4990,7 @@ impl WorkbenchPanel {
                     .border_color(colors.border)
                     .overflow_y_scrollbar()
                     .child(heading("Environments", colors.muted_foreground).px(space::SP_2).pb(space::SP_1))
-                    .child(Button::new("workbench-globals-open").debug_selector(|| "workbench-globals-open".into()).ghost().small().label("Workspace globals").disabled(self.storage_loading).on_click(cx.listener(|this, _, window, cx| this.open_globals(window, cx))))
+                    .child(Button::new("workbench-globals-open").debug_selector(|| "workbench-globals-open".into()).ghost().small().label("Project globals").disabled(self.storage_loading).on_click(cx.listener(|this, _, window, cx| this.open_globals(window, cx))))
                     .children(environments.iter().map(|environment| {
                         let id = environment.id.clone();
                         let menu_id = id.clone();
@@ -5088,6 +5032,9 @@ impl WorkbenchPanel {
                                 },
                             ))
                             .child(div().flex_1().min_w(px(0.)).truncate().child(environment.name.clone()))
+                            .when_some(environment_label::label_color(environment.label, cx), |el, color| {
+                                el.child(div().text_size(text::S9).font_weight(text::weight::BOLD).text_color(color).child(environment_label::badge(environment.label)))
+                            })
                             .child(
                                 div()
                                     .font_family(crate::api::compat::fonts::mono(cx))
@@ -5238,6 +5185,7 @@ impl WorkbenchPanel {
                                     .flex_col()
                                     .gap(space::SP_3)
                                     .p(space::SP_4)
+                                    .child(self.render_env_label(cx))
                                     .child(self.render_env_base_url(window, cx))
                                     .child(self.render_env_auth(cx))
                                     .child(heading("Variables", colors.muted_foreground))
@@ -5253,7 +5201,7 @@ impl WorkbenchPanel {
                                             lavender,
                                             Some("sparkles"),
                                             format!(
-                                                "{unused} {} unused by any request in this workspace.",
+                                                "{unused} {} unused by any request in this project.",
                                                 if unused == 1 { "variable is" } else { "variables are" }
                                             ),
                                             cx,
@@ -5538,7 +5486,7 @@ impl WorkbenchPanel {
                                     .border_color(colors.border)
                                     .text_size(text::S11)
                                     .text_color(colors.muted_foreground)
-                                    .child("No requests have completed in this workspace."),
+                                    .child("No requests have completed in this project."),
                             );
                         }
                         el.child(
@@ -5812,7 +5760,7 @@ impl WorkbenchPanel {
         if entries.len() != 2 {
             return placeholder(
                 "Select two responses in History",
-                "Diff compares the durable, redacted response records saved with this workspace.",
+                "Diff compares the durable, redacted response records saved with this project.",
                 cx,
             );
         }

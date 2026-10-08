@@ -881,3 +881,22 @@ so every launch showed the editor straight away and there was nothing to add.
 - The chosen workspace is `compat::current_project`, which `current_workspace_id` already read,
   so the panel's existing scope-change guards apply unchanged. `opened_order` (a counter, not a
   clock, so two opens in one millisecond still order) picks the workspace to reopen on launch.
+
+## 2026-10-08 — UX pass: Projects naming, Production API environments, tabs on demand
+
+From a user-requested UX review (see the "Extra — UX pass" section in PLAN.md).
+
+- The API Workbench's named workspaces are called **Projects** in UI text, so they don't clash
+  with the title bar's Default ↔ API workspace switch. Rust types, store tables and ids keep the
+  `workspace` name; new ones are created as `Project N`.
+- API environments get their own `switchyard_api::EnvironmentLabel` (Production, Staging,
+  Development, Local; default Local), stored in a `label` column (Workbench store schema 6).
+  The api crate doesn't depend on store, so the app maps it onto the database label for
+  colours. The Envs editor's label applies, like the base URL; a saved Production label holds
+  until a lower one is saved. Send and collection runs against Production ask first for any
+  method other than uppercase GET, HEAD or OPTIONS (lowercase methods ask too).
+- The Workbench no longer seeds a blank request tab: zero open tabs is a valid state with an
+  empty Compose page (New request, Import, Paste cURL). Send, Save and tab actions are
+  no-ops without a tab. Opening a project with saved requests still opens the first one.
+- Rail rename is inline for collections, folders and requests (kebab, double-click, F2);
+  Enter and clicking away commit, Escape cancels. The request-rename dialog was removed.

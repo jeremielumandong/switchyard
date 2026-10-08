@@ -34,6 +34,17 @@ impl WorkbenchPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.create_seeded_request_in_selection(None, window, cx);
+    }
+
+    /// [`Self::create_request_in_selection`] with an optional name and URL to
+    /// start from (the empty state's sample request).
+    pub(super) fn create_seeded_request_in_selection(
+        &mut self,
+        seed: Option<empty_state::RequestSeed>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.request_tab_switch_is_blocked(cx) {
             return;
         }
@@ -68,7 +79,7 @@ impl WorkbenchPanel {
                 .iter()
                 .any(|folder| &folder.id == folder_id && folder.collection_id == id)
         });
-        self.create_request_at(id, folder, new_collection, window, cx);
+        self.create_seeded_request_at(id, folder, new_collection, seed, window, cx);
     }
 
     pub(super) fn create_request_at(
@@ -76,6 +87,18 @@ impl WorkbenchPanel {
         collection: CollectionId,
         folder: Option<FolderId>,
         new_collection: Option<Collection>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.create_seeded_request_at(collection, folder, new_collection, None, window, cx);
+    }
+
+    fn create_seeded_request_at(
+        &mut self,
+        collection: CollectionId,
+        folder: Option<FolderId>,
+        new_collection: Option<Collection>,
+        seed: Option<empty_state::RequestSeed>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -99,46 +122,7 @@ impl WorkbenchPanel {
             cx.notify();
             return;
         }
-        let mut number = 1usize;
-        let name =
-            loop {
-                let name = if number == 1 {
-                    "New request".to_string()
-                } else {
-                    format!("New request {number}")
-                };
-                if !data.requests.iter().any(|r| {
-                    r.collection_id == collection && r.folder_id == folder && r.name == name
-                }) {
-                    break name;
-                }
-                number += 1;
-            };
-        let sort_key = data
-            .requests
-            .iter()
-            .filter(|r| r.collection_id == collection && r.folder_id == folder)
-            .map(|r| r.sort_key)
-            .max()
-            .unwrap_or(-1)
-            .saturating_add(1);
-        let request = SavedRequest {
-            id: RequestId::new(),
-            collection_id: collection,
-            folder_id: folder.clone(),
-            name,
-            method: HttpMethod::get(),
-            url: String::new(),
-            params: Vec::new(),
-            headers: Vec::new(),
-            auth: AuthConfig::Inherit,
-            body: Body::None,
-            variables: Vec::new(),
-            scripts: Default::default(),
-            settings: Default::default(),
-            extensions: Default::default(),
-            sort_key,
-        };
+        let request = new_request_definition(&data.requests, collection, folder.clone(), seed);
         if let Some(collection) = &new_collection {
             data.collections.push(collection.clone());
             self.ux
@@ -236,5 +220,55 @@ impl WorkbenchPanel {
             "Could not create request: {error}. Its open tab retains your draft; use Save to retry."
         ));
         cx.notify();
+    }
+}
+
+/// The request a create adds: named `New request` (or the seed's name),
+/// numbered past any sibling with that name, sorted after its siblings.
+pub(super) fn new_request_definition(
+    existing: &[SavedRequest],
+    collection: CollectionId,
+    folder: Option<FolderId>,
+    seed: Option<empty_state::RequestSeed>,
+) -> SavedRequest {
+    let seed = seed.unwrap_or_default();
+    let mut number = 1usize;
+    let name = loop {
+        let name = if number == 1 {
+            seed.name.clone()
+        } else {
+            format!("{} {number}", seed.name)
+        };
+        if !existing
+            .iter()
+            .any(|r| r.collection_id == collection && r.folder_id == folder && r.name == name)
+        {
+            break name;
+        }
+        number += 1;
+    };
+    let sort_key = existing
+        .iter()
+        .filter(|r| r.collection_id == collection && r.folder_id == folder)
+        .map(|r| r.sort_key)
+        .max()
+        .unwrap_or(-1)
+        .saturating_add(1);
+    SavedRequest {
+        id: RequestId::new(),
+        collection_id: collection,
+        folder_id: folder,
+        name,
+        method: HttpMethod::get(),
+        url: seed.url,
+        params: Vec::new(),
+        headers: Vec::new(),
+        auth: AuthConfig::Inherit,
+        body: Body::None,
+        variables: Vec::new(),
+        scripts: Default::default(),
+        settings: Default::default(),
+        extensions: Default::default(),
+        sort_key,
     }
 }

@@ -7,7 +7,7 @@ use super::wire::{RawResult, Statement};
 use super::{D1Session, json_text};
 use crate::catalog::{
     CatalogChunk, ColumnInfo, ForeignKeyInfo, IndexInfo, IntrospectScope, ObjectDetail, ObjectInfo,
-    ObjectKind, SchemaInfo,
+    ObjectKind, SchemaInfo, like_contains, search_hit,
 };
 use crate::error::{DbError, Result};
 
@@ -15,6 +15,21 @@ const SCHEMA: &str = "main";
 
 const USER_OBJECTS: &str =
     "m.name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND m.name NOT LIKE '\\_cf\\_%' ESCAPE '\\'";
+
+/// Global object search over `sqlite_master` (SQLite's LIKE ignores ASCII case):
+/// `?1` is an escaped LIKE pattern, `?2` the row cap.
+fn search_sql(include_system: bool) -> String {
+    let user = if include_system {
+        String::new()
+    } else {
+        format!(" AND {USER_OBJECTS}")
+    };
+    format!(
+        "SELECT m.name, m.type FROM sqlite_master m \
+         WHERE m.type IN ('table', 'view') AND m.name LIKE ?1 ESCAPE '!'{user} \
+         ORDER BY length(m.name), m.name LIMIT ?2"
+    )
+}
 
 /// Column lookup by name in one result set.
 struct Table<'a> {
@@ -105,6 +120,26 @@ pub(super) async fn introspect(s: &D1Session, scope: IntrospectScope) -> Result<
                         kind,
                         estimated_rows: None,
                         detail: None,
+                    })
+                    .collect(),
+            ))
+        }
+        IntrospectScope::Search {
+            pattern,
+            limit,
+            include_system,
+        } => {
+            let params = vec![
+                Json::from(like_contains(&pattern, false)),
+                Json::from(limit),
+            ];
+            let results = s.query(&search_sql(include_system), params).await?;
+            let t = Table::of(results.first());
+            Ok(CatalogChunk::Objects(
+                t.rows
+                    .iter()
+                    .filter_map(|row| {
+                        search_hit(SCHEMA.into(), t.text(row, "name"), &t.text(row, "type"))
                     })
                     .collect(),
             ))
@@ -243,5 +278,15 @@ pub(super) async fn introspect(s: &D1Session, scope: IntrospectScope) -> Result<
                 ddl,
             })))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_sql_snapshot() {
+        insta::assert_snapshot!("d1_search_sql", search_sql(false));
     }
 }

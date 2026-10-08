@@ -3,6 +3,7 @@
 use super::SnowflakeSession;
 use crate::catalog::{
     CatalogChunk, ColumnInfo, IntrospectScope, ObjectDetail, ObjectInfo, ObjectKind, SchemaInfo,
+    like_contains, search_hit,
 };
 use crate::error::{DbError, Result};
 use crate::value::Value;
@@ -66,6 +67,31 @@ fn column_info(r: &Rows, row: &[Option<String>]) -> ColumnInfo {
 const COLUMNS: &str = "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE, IS_NULLABLE, \
                        COLUMN_DEFAULT, ORDINAL_POSITION FROM INFORMATION_SCHEMA.COLUMNS";
 
+/// Global object search over the current database's `INFORMATION_SCHEMA`: every `?` is
+/// the same escaped LIKE pattern. `limit` is a number, never user text.
+fn search_sql(limit: u32, include_system: bool) -> String {
+    let user = if include_system {
+        ""
+    } else {
+        " AND TABLE_SCHEMA <> 'INFORMATION_SCHEMA'"
+    };
+    format!(
+        "SELECT SCHEMA_NAME, OBJECT_NAME, KIND FROM ( \
+           SELECT TABLE_SCHEMA AS SCHEMA_NAME, TABLE_NAME AS OBJECT_NAME, \
+                  CASE TABLE_TYPE WHEN 'VIEW' THEN 'view' WHEN 'MATERIALIZED VIEW' THEN 'mview' \
+                       ELSE 'table' END AS KIND \
+           FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME ILIKE ? ESCAPE '!'{user} \
+           UNION ALL \
+           SELECT FUNCTION_SCHEMA, FUNCTION_NAME, 'function' \
+           FROM INFORMATION_SCHEMA.FUNCTIONS WHERE FUNCTION_NAME ILIKE ? ESCAPE '!' \
+           UNION ALL \
+           SELECT PROCEDURE_SCHEMA, PROCEDURE_NAME, 'procedure' \
+           FROM INFORMATION_SCHEMA.PROCEDURES WHERE PROCEDURE_NAME ILIKE ? ESCAPE '!' \
+         ) GROUP BY SCHEMA_NAME, OBJECT_NAME, KIND \
+         ORDER BY LENGTH(OBJECT_NAME), OBJECT_NAME, SCHEMA_NAME LIMIT {limit}"
+    )
+}
+
 /// `"schema"."name"`, quoted exactly as stored.
 fn quoted(schema: &str, name: &str) -> String {
     format!(
@@ -120,6 +146,31 @@ pub(super) async fn introspect(
                         kind,
                         estimated_rows: r.get(row, "ROW_COUNT").and_then(|v| v.parse().ok()),
                         detail: r.get(row, "COMMENT").map(str::to_owned),
+                    })
+                    .collect(),
+            ))
+        }
+        IntrospectScope::Search {
+            pattern,
+            limit,
+            include_system,
+        } => {
+            let like = Value::Text(like_contains(&pattern, false));
+            let r = Rows::of(
+                s,
+                &search_sql(limit, include_system),
+                &[like.clone(), like.clone(), like],
+            )
+            .await?;
+            Ok(CatalogChunk::Objects(
+                r.rows
+                    .iter()
+                    .filter_map(|row| {
+                        search_hit(
+                            r.text(row, "SCHEMA_NAME"),
+                            r.text(row, "OBJECT_NAME"),
+                            &r.text(row, "KIND"),
+                        )
                     })
                     .collect(),
             ))
@@ -200,5 +251,10 @@ mod tests {
         .map(|k| format!("{k:?}: {}", objects_sql(k).unwrap_or_else(|| "-".into())))
         .collect();
         insta::assert_snapshot!("snowflake_objects_sql", all.join("\n"));
+    }
+
+    #[test]
+    fn search_sql_snapshot() {
+        insta::assert_snapshot!("snowflake_search_sql", search_sql(200, false));
     }
 }

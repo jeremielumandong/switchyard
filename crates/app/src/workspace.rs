@@ -198,9 +198,19 @@ impl Workspace {
             &schema_search,
             |this, input, ev: &gpui_kit::component::input::InputEvent, cx| {
                 if let gpui_kit::component::input::InputEvent::Change = ev {
-                    this.schema.filter = input.read(cx).value().trim().to_owned();
-                    if !this.schema.filter.is_empty() {
-                        this.schema.load_all_folders(&this.core);
+                    let filter = input.read(cx).value().trim().to_owned();
+                    if let Some(ticket) = this.schema.filter_changed(filter, &this.core) {
+                        // Debounced server search; a newer keystroke makes the ticket stale.
+                        cx.spawn(async move |this, cx| {
+                            cx.background_executor()
+                                .timer(crate::object_search::DEBOUNCE)
+                                .await;
+                            let _ = this.update(cx, |this, cx| {
+                                this.schema.search_due(ticket, &this.core);
+                                cx.notify();
+                            });
+                        })
+                        .detach();
                     }
                     cx.notify();
                 }

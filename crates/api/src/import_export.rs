@@ -987,6 +987,7 @@ fn import_openapi(workspace: &WorkspaceId, value: Value) -> Result<ImportResult,
         base
     } else {
         environments.push(Environment {
+            label: Default::default(),
             id: super::EnvironmentId::new(),
             workspace_id: workspace.clone(),
             name: title.into(),
@@ -2458,6 +2459,7 @@ fn import_postman_environment(
         folders: Vec::new(),
         requests: Vec::new(),
         environments: vec![Environment {
+            label: Default::default(),
             id: super::EnvironmentId::new(),
             workspace_id: workspace.clone(),
             name: name.into(),
@@ -3009,6 +3011,7 @@ fn import_insomnia_environment(
         extensions.insert("insomnia_parent_id".into(), parent.clone());
     }
     Environment {
+        label: Default::default(),
         id: EnvironmentId::new(),
         workspace_id: workspace.clone(),
         name: resource
@@ -6043,6 +6046,7 @@ components:
             folders: Vec::new(),
             requests: vec![request],
             environments: vec![Environment {
+                label: Default::default(),
                 id: EnvironmentId::new(),
                 workspace_id: target_workspace.clone(),
                 name: "Imported environment".into(),
@@ -6504,6 +6508,7 @@ components:
         .unwrap();
         request.folder_id = Some(folder.id.clone());
         let mut environment = Environment {
+            label: Default::default(),
             id: EnvironmentId::new(),
             workspace_id: workspace,
             name: "Original environment".into(),
@@ -6760,6 +6765,7 @@ components:
             .collect::<Vec<_>>();
         let environments = (0..10)
             .map(|index| Environment {
+                label: Default::default(),
                 id: EnvironmentId::new(),
                 workspace_id: workspace.clone(),
                 name: format!("Environment {index}"),
@@ -6825,6 +6831,7 @@ components:
             "actual-basic-password!".into(),
         )]));
         let environment = Environment {
+            label: Default::default(),
             id: EnvironmentId::new(),
             workspace_id: workspace.clone(),
             name: "Active".into(),
@@ -7256,6 +7263,7 @@ components:
         .unwrap();
         request.auth = AuthConfig::Inherit;
         let environment = Environment {
+            label: Default::default(),
             id: EnvironmentId::new(),
             workspace_id: workspace.clone(),
             name: "Inactive".into(),
@@ -7307,6 +7315,7 @@ components:
         let mut collection = new_collection(&workspace, "Inherited Basic API", "");
         let password = SecretRef::new("environment-basic-password").unwrap();
         let environment = Environment {
+            label: Default::default(),
             id: EnvironmentId::new(),
             workspace_id: workspace.clone(),
             name: "Active".into(),
@@ -7474,6 +7483,7 @@ components:
         .unwrap();
         let secrets = Secrets(HashMap::new());
         let environment = Environment {
+            label: Default::default(),
             id: EnvironmentId::new(),
             workspace_id: workspace.clone(),
             name: "Environment".into(),
@@ -7716,6 +7726,7 @@ components:
         let workspace = WorkspaceId::new("project").unwrap();
         let collection = new_collection(&workspace, "API", "");
         let mut environment = Environment {
+            label: Default::default(),
             id: EnvironmentId::new(),
             workspace_id: WorkspaceId::new("other").unwrap(),
             name: "Foreign".into(),

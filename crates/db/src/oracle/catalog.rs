@@ -7,7 +7,7 @@ use oracle::sql_type::ToSql;
 use super::ora_error;
 use crate::catalog::{
     CatalogChunk, ColumnInfo, ForeignKeyInfo, IndexInfo, IntrospectScope, ObjectDetail, ObjectInfo,
-    ObjectKind, SchemaInfo,
+    ObjectKind, SchemaInfo, like_contains, search_hit,
 };
 use crate::error::{DbError, Result};
 
@@ -87,6 +87,35 @@ fn column(row: &[Option<String>], pk: &[String]) -> ColumnInfo {
     }
 }
 
+/// Global object search over `ALL_OBJECTS`: `:1` is an escaped LIKE pattern, `:2` = 1
+/// includes Oracle-maintained users and PUBLIC, `:3` caps the rows. `maintained` uses
+/// `ALL_USERS.ORACLE_MAINTAINED` (12c+); without it only SYS and SYSTEM count as system.
+fn search_sql(maintained: bool) -> String {
+    let system_users = if maintained {
+        "SELECT USERNAME FROM ALL_USERS WHERE ORACLE_MAINTAINED = 'Y'"
+    } else {
+        "SELECT 'SYS' FROM DUAL UNION ALL SELECT 'SYSTEM' FROM DUAL"
+    };
+    format!(
+        "SELECT OWNER, OBJECT_NAME, KIND FROM ( \
+           SELECT o.OWNER, o.OBJECT_NAME, \
+                  CASE o.OBJECT_TYPE WHEN 'TABLE' THEN 'table' WHEN 'VIEW' THEN 'view' \
+                       WHEN 'MATERIALIZED VIEW' THEN 'mview' WHEN 'SEQUENCE' THEN 'sequence' \
+                       WHEN 'SYNONYM' THEN 'synonym' WHEN 'PROCEDURE' THEN 'procedure' \
+                       ELSE 'function' END AS KIND \
+           FROM ALL_OBJECTS o \
+           WHERE o.OBJECT_TYPE IN ('TABLE', 'VIEW', 'MATERIALIZED VIEW', 'SEQUENCE', \
+                                   'SYNONYM', 'PROCEDURE', 'FUNCTION') \
+             AND UPPER(o.OBJECT_NAME) LIKE UPPER(:1) ESCAPE '!' \
+             AND o.OBJECT_NAME NOT LIKE 'BIN$%' \
+             AND NOT (o.OBJECT_TYPE = 'TABLE' AND EXISTS (SELECT 1 FROM ALL_MVIEWS m \
+                      WHERE m.OWNER = o.OWNER AND m.MVIEW_NAME = o.OBJECT_NAME)) \
+             AND (:2 = 1 OR (o.OWNER <> 'PUBLIC' AND o.OWNER NOT IN ({system_users}))) \
+           ORDER BY LENGTH(o.OBJECT_NAME), o.OBJECT_NAME, o.OWNER \
+         ) WHERE ROWNUM <= :3"
+    )
+}
+
 fn ddl_type(kind: ObjectKind) -> &'static str {
     match kind {
         ObjectKind::View => "VIEW",
@@ -157,6 +186,22 @@ pub(super) fn introspect(conn: &Connection, scope: IntrospectScope) -> Result<Ca
                         estimated_rows: row.get(1).cloned().flatten().and_then(|n| n.parse().ok()),
                         detail: None,
                     })
+                    .collect(),
+            ))
+        }
+        IntrospectScope::Search {
+            pattern,
+            limit,
+            include_system,
+        } => {
+            let like = like_contains(&pattern, false);
+            let (system, limit) = (i64::from(include_system), i64::from(limit));
+            let params: [&dyn ToSql; 3] = [&like, &system, &limit];
+            let r = rows(conn, &search_sql(true), &params)
+                .or_else(|_| rows(conn, &search_sql(false), &params))?;
+            Ok(CatalogChunk::Objects(
+                r.iter()
+                    .filter_map(|row| search_hit(text(row, 0), text(row, 1), &text(row, 2)))
                     .collect(),
             ))
         }
@@ -286,5 +331,16 @@ pub(super) fn introspect(conn: &Connection, scope: IntrospectScope) -> Result<Ca
                 ddl,
             })))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_sql_snapshot() {
+        insta::assert_snapshot!("oracle_search_sql", search_sql(true));
+        insta::assert_snapshot!("oracle_search_sql_pre12c", search_sql(false));
     }
 }

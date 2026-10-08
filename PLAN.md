@@ -512,6 +512,25 @@ server or bundled Unix tools on Windows (Tier 3).
   WSL distributions on Windows.
 - Also counted for parity: M2-5 (SSH agent) and M4-2 (FTP/FTPS) above.
 
+## Extra — UX pass (user request, 2026-10-08)
+
+- [x] UX-1 Main menu Assistant toggle; assistant panel also in the API workspace. Response
+  Pretty/Raw editors read-only instead of disabled (scrollbar drag, select, copy). v0.1.6.
+- [x] UX-2 Title bar: icon buttons with binding-aware tooltips (Sidebar, theme, Settings), an
+  Assistant toggle in both modes, Components only in debug builds, search stays centred across
+  modes; palette "Switch to Default/API Workspace" and a test that bound commands show keys.
+- [x] UX-3 Workbench header: named workspaces shown as "Projects" (new ones "Project N"),
+  spark/title removed, Ctrl/⌘+L focuses URL, Ctrl/⌘+1–6 switch panel tabs, shortcuts in
+  Send/tab tooltips; "Rename project…" in the project menu (store `rename_workspace`).
+- [x] UX-4 Response panel: Copy all and per-row copy on Headers/Console/Trace/Tests, toolbar
+  Copy response and Copy as cURL (from the redacted snapshot), in-place "Copied" feedback.
+- [x] UX-5 Rail: collections, folders and requests rename inline in place of their row (kebab,
+  double-click, F2; Enter/click-away commit, Escape cancels); request rename dialog removed.
+- [x] UX-6 API environment labels (Prod/Stg/Dev/Local, Workbench store v6): Production red on
+  the env chip, URL bar and request edge; confirm before Send or a run with unsafe methods.
+- [x] UX-7 Workbench first-run page (Create project / Import collection / Paste cURL / sample
+  request), empty Compose state with quick actions; request tabs open only on demand.
+
 ## DBX — Database explorer and editors at DBeaver / SSMS level (user request)
 
 Gap analysis (2026-10-08): the explorer is a lazy, virtualized, single-connection tree
@@ -600,6 +619,10 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   running app's unlocked secrets over the loopback handoff, scoped by the session token.
 
 (Add items here instead of doing them mid-task.)
+- UX pass: Headers/Console/Trace/Tests response tabs copy via buttons only (no drag-select);
+  `pm.sendRequest` inside runs skips the Production check; env dropdown doesn't show labels;
+  no window-level UI tests for the new Workbench interactions; "Unsaved changes" on tab
+  close could be a tab marker instead of a toast.
 - Agent actual plans: approval prompt in the app for `explain` with ANALYZE / STATISTICS XML
   from an agent (the MCP server refuses them until then).
 - Assistant panel: markdown is prose + code blocks only (no bold/lists/tables); GPUI tests
