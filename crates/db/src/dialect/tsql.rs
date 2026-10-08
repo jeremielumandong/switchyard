@@ -345,6 +345,26 @@ impl Dialect for TSqlDialect {
     fn use_database(&self, database: &str) -> Option<String> {
         Some(format!("USE [{}]", database.replace(']', "]]")))
     }
+
+    /// `OFFSET … FETCH`, which needs an `ORDER BY`: `(SELECT NULL)` when none is given
+    /// (callers pass the primary key first, so pages are stable when there is one).
+    fn select_page(
+        &self,
+        qualified: &str,
+        cols: &[String],
+        where_: Option<&str>,
+        order: &[super::SortKey],
+        limit: u64,
+        offset: u64,
+    ) -> String {
+        let head = super::page_head(self, qualified, cols, where_, order);
+        let order_by = if order.is_empty() {
+            "\nORDER BY (SELECT NULL)"
+        } else {
+            ""
+        };
+        format!("{head}{order_by}\nOFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY")
+    }
 }
 
 #[cfg(test)]

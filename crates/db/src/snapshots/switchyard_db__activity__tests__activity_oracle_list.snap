@@ -1,0 +1,21 @@
+---
+source: crates/db/src/activity.rs
+expression: ORACLE_LIST
+---
+SELECT s.sid || ',' || s.serial# AS id,
+       s.username AS username,
+       s.schemaname AS database_name,
+       s.machine AS client,
+       s.program AS program,
+       s.status AS state,
+       CASE WHEN s.wait_class <> 'Idle' THEN s.event END AS wait,
+       s.last_call_et * 1000 AS age_ms,
+       CASE WHEN s.status = 'ACTIVE' THEN 1 ELSE 0 END AS running,
+       q.sql_text AS sql_text,
+       TO_CHAR(s.blocking_session) AS blocked_by,
+       CASE WHEN s.sid = TO_NUMBER(SYS_CONTEXT('USERENV', 'SID')) THEN 1 ELSE 0 END AS is_self
+FROM v$session s
+LEFT JOIN v$sql q ON q.sql_id = s.sql_id AND q.child_number = s.sql_child_number
+WHERE s.type = 'USER'
+ORDER BY running DESC, s.last_call_et DESC
+FETCH FIRST 500 ROWS ONLY

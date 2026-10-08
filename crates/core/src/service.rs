@@ -43,6 +43,7 @@ use crate::bus::{
 use crate::error::{CoreError, Result};
 use crate::runtime::EventSender;
 
+mod activity;
 pub mod agent;
 mod assistant;
 
@@ -700,6 +701,23 @@ impl Service {
                 error,
                 tags,
             } => self.record_agent_call(session, summary, error, tags).await,
+            Command::Activity {
+                session,
+                connection,
+                request,
+            } => self.activity(session, connection, request).await,
+            Command::SessionAction {
+                session,
+                request,
+                action,
+                target,
+                confirmed,
+            } => {
+                let span = info_span!("session_action", request, session);
+                self.session_action(session, request, action, target, confirmed)
+                    .instrument(span)
+                    .await
+            }
             Command::Workload { session, request } => {
                 let span = info_span!("workload", request, session);
                 self.workload(session, request).instrument(span).await

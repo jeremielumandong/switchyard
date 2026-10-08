@@ -491,3 +491,169 @@ async fn global_object_search() {
     // System schemas are left out by default.
     assert!(search(s.as_mut(), "pg_class").await.is_empty());
 }
+
+/// Rows of `sql` as text, one string per row (`a|b|NULL`).
+async fn rows_text(s: &mut Box<dyn DbSession>, sql: &str) -> Vec<String> {
+    let r = run(s, sql, &[]).await.unwrap();
+    let mut out = Vec::new();
+    for b in &r.batches {
+        for row in 0..b.len() {
+            let cells: Vec<String> = (0..r.columns.len())
+                .map(|c| match b.cell(row, c) {
+                    CellRef::Null => "NULL".to_owned(),
+                    cell => cell.to_display(),
+                })
+                .collect();
+            out.push(cells.join("|"));
+        }
+    }
+    out
+}
+
+/// Applies `statements` in one transaction like `ApplyEdits`: each must change one row.
+async fn apply(s: &mut Box<dyn DbSession>, statements: &[String], commit: bool) {
+    s.begin().await.unwrap();
+    for sql in statements {
+        let r = run(s, sql, &[]).await.unwrap();
+        assert_eq!(r.affected, Some(1), "{sql}");
+    }
+    if commit {
+        s.commit().await.unwrap();
+    } else {
+        s.rollback().await.unwrap();
+    }
+}
+
+/// DBX-3b: insert (defaults), duplicate (minus key and serial) and delete, rolled back
+/// and then committed.
+#[tokio::test]
+#[ignore = "needs docker postgres"]
+async fn row_insert_delete_duplicate() {
+    use switchyard_db::dialect::postgres::PostgresDialect;
+    use switchyard_db::edit::{
+        EditTable, RowDelete, RowInsert, delete_statements, duplicate_values, generated_columns,
+        insert_statements,
+    };
+    let mut s = session().await;
+    for sql in [
+        "DROP SCHEMA IF EXISTS dbx3b CASCADE",
+        "CREATE SCHEMA dbx3b",
+        "CREATE TABLE dbx3b.lines (id serial PRIMARY KEY, sku text NOT NULL, \
+         qty int NOT NULL DEFAULT 1, note text)",
+        "INSERT INTO dbx3b.lines (sku, qty, note) VALUES ('A-1', 5, 'gift')",
+    ] {
+        run(&mut s, sql, &[]).await.unwrap();
+    }
+    let CatalogChunk::Detail(d) = s
+        .introspect(IntrospectScope::Detail {
+            schema: "dbx3b".into(),
+            name: "lines".into(),
+            kind: ObjectKind::Table,
+        })
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    let generated = generated_columns(&d);
+    assert_eq!(generated, ["id"]);
+    let pk: Vec<String> = d
+        .columns
+        .iter()
+        .filter(|c| c.is_primary_key)
+        .map(|c| c.name.clone())
+        .collect();
+    assert_eq!(pk, ["id"]);
+    let columns: Vec<String> = ["id", "sku", "qty", "note"].map(String::from).to_vec();
+    let source = vec![
+        ("id".to_owned(), Value::Int(1)),
+        ("sku".to_owned(), Value::Text("A-1".into())),
+        ("qty".to_owned(), Value::Int(5)),
+        ("note".to_owned(), Value::Text("gift".into())),
+    ];
+    let t = EditTable {
+        schema: Some("dbx3b".into()),
+        table: "lines".into(),
+    };
+    let dialect = PostgresDialect;
+    let mut statements = delete_statements(
+        &dialect,
+        &t,
+        &[RowDelete {
+            key: vec![("id".into(), Value::Int(1))],
+        }],
+    );
+    statements.extend(insert_statements(
+        &dialect,
+        &t,
+        &columns,
+        &generated,
+        &[
+            RowInsert {
+                values: vec![("sku".into(), Value::Text("B-2".into()))],
+            },
+            RowInsert {
+                values: duplicate_values(&source, &pk, &generated),
+            },
+        ],
+    ));
+    let all = "SELECT id, sku, qty, note FROM dbx3b.lines ORDER BY id";
+
+    apply(&mut s, &statements, false).await;
+    assert_eq!(rows_text(&mut s, all).await, ["1|A-1|5|gift"]);
+
+    apply(&mut s, &statements, true).await;
+    let rows = rows_text(&mut s, all).await;
+    run(&mut s, "DROP SCHEMA dbx3b CASCADE", &[]).await.unwrap();
+    // The rolled-back inserts used ids 2 and 3 of the sequence.
+    assert_eq!(rows, ["4|B-2|1|NULL", "5|A-1|5|gift"]);
+}
+
+/// DBX-3a / 3c: a filtered, sorted page and a key filter run on the server.
+#[tokio::test]
+#[ignore = "needs docker postgres"]
+async fn select_page_filters_sorts_and_pages() {
+    use switchyard_db::Dialect;
+    use switchyard_db::dialect::SortKey;
+    use switchyard_db::dialect::postgres::PostgresDialect;
+    use switchyard_db::edit::{key_condition, page_order, validate_where};
+    let mut s = session().await;
+    for sql in [
+        "DROP SCHEMA IF EXISTS dbx3a CASCADE",
+        "CREATE SCHEMA dbx3a",
+        "CREATE TABLE dbx3a.items (id int PRIMARY KEY, grp text, n int)",
+        "INSERT INTO dbx3a.items SELECT g, CASE WHEN g % 2 = 0 THEN 'even' ELSE 'odd' END, \
+         g * 10 FROM generate_series(1, 25) g",
+    ] {
+        run(&mut s, sql, &[]).await.unwrap();
+    }
+    let d = PostgresDialect;
+    let q = d.qualified("dbx3a", "items");
+    let cond = "grp = 'even'";
+    validate_where(&d, cond).unwrap();
+    let order = page_order(&[], &["id".into()]);
+    let page2 = d.select_page(&q, &[], Some(cond), &order, 5, 5);
+    let ids: Vec<String> = rows_text(&mut s, &page2)
+        .await
+        .into_iter()
+        .map(|r| r.split('|').next().unwrap_or_default().to_owned())
+        .collect();
+    assert_eq!(ids, ["12", "14", "16", "18", "20"]);
+    let desc = [SortKey {
+        column: "n".into(),
+        descending: true,
+    }];
+    let top = d.select_page(&q, &["id".into()], None, &page_order(&desc, &[]), 2, 0);
+    assert_eq!(rows_text(&mut s, &top).await, ["25", "24"]);
+    let key = key_condition(
+        &d,
+        &[
+            ("id".into(), Value::Int(7)),
+            ("grp".into(), Value::Text("odd".into())),
+        ],
+    );
+    let one = d.select_page(&q, &["n".into()], Some(&key), &[], 10, 0);
+    let rows = rows_text(&mut s, &one).await;
+    run(&mut s, "DROP SCHEMA dbx3a CASCADE", &[]).await.unwrap();
+    assert_eq!(rows, ["70"]);
+}

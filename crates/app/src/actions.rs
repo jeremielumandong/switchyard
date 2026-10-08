@@ -182,8 +182,12 @@ pub enum CommandId {
     ExportProfiles,
     ShowHistory,
     ShowWorkload,
+    /// Open the activity monitor (DBX-5b).
+    ShowActivity,
     /// Open the snippet manager (DBX-4b).
     ManageSnippets,
+    /// ER diagram of the schema under the tree cursor (DBX-5d).
+    ErDiagram,
     SplitRight,
     SplitDown,
     Unsplit,
@@ -285,8 +289,15 @@ pub fn palette_commands() -> Vec<PaletteCommand> {
             "Editor",
             "".into(),
         ),
+        c(ShowActivity, "Activity Monitor", "Editor", "".into()),
         c(ManageSnippets, "Manage Snippets…", "Editor", "".into()),
         c(RefreshSchema, "Refresh Schema", "Schema", "".into()),
+        c(
+            ErDiagram,
+            "ER Diagram for Current Schema",
+            "Schema",
+            "".into(),
+        ),
         c(SplitRight, "Split Right", "View", k("⌘\\", "Ctrl+\\")),
         c(SplitDown, "Split Down", "View", k("⇧⌘\\", "Ctrl+Shift+\\")),
         c(Unsplit, "Close Split", "View", "".into()),

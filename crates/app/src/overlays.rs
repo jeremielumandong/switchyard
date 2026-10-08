@@ -495,9 +495,10 @@ impl Workspace {
     }
 
     fn render_ctx_menu(&self, ctx: &CtxMenu, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let items: Vec<(&'static str, &'static str, bool, SharedString)> = match &ctx.target {
+        let mut items: Vec<(&'static str, &'static str, bool, SharedString)> = match &ctx.target {
+            CtxTarget::Schema(_) => vec![("er", "ER diagram…", false, "".into())],
             CtxTarget::Object(_, _, kind) if kind.is_relation() => vec![
-                ("open", "Open data (first 100 rows)", false, "↵".into()),
+                ("open", "Open data", false, "↵".into()),
                 ("select", "Generate SELECT", false, "".into()),
                 ("insert", "Generate INSERT", false, "".into()),
                 ("update", "Generate UPDATE", false, "".into()),
@@ -541,6 +542,7 @@ impl Workspace {
                 ("edit", "Edit…", false, "".into()),
                 ("-", "", false, "".into()),
                 ("refresh_schema", "Refresh schema", false, "".into()),
+                ("activity", "Activity monitor", false, "".into()),
                 ("disconnect", "Disconnect", false, "".into()),
                 ("-", "", false, "".into()),
                 ("delete", "Delete", true, "".into()),
@@ -552,6 +554,9 @@ impl Workspace {
                 ("delete", "Delete", true, "".into()),
             ],
         };
+        if matches!(ctx.target, CtxTarget::Object(_, _, ObjectKind::Table)) {
+            items.insert(7, ("er", "Show in ER diagram", false, "".into()));
+        }
         let target = ctx.target.clone();
         let actions: Vec<&'static str> = items.iter().map(|i| i.0).collect();
         // The open submenu, beside its item.
@@ -797,6 +802,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         match target {
+            CtxTarget::Schema(s) => self.open_er_diagram(s.clone(), None, window, cx),
+            CtxTarget::Object(s, n, _) if action == "er" => {
+                self.open_er_diagram(s.clone(), Some(n.clone()), window, cx)
+            }
             CtxTarget::Object(s, n, k) => {
                 self.object_action(action, s.clone(), n.clone(), *k, window, cx)
             }
@@ -813,6 +822,7 @@ impl Workspace {
                     .send(switchyard_core::Command::DeleteProfile { id: id.clone() }),
                 "new_query" => self.new_query_here(id, window, cx),
                 "refresh_schema" => self.refresh_connection_schema(id, window, cx),
+                "activity" => self.open_activity_for(id, window, cx),
                 "disconnect" => self.disconnect_connection(id, false, window, cx),
                 _ => {}
             },

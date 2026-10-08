@@ -145,6 +145,7 @@ pin them in `[workspace.dependencies]`.
 | Serialization | `serde`, `serde_json` |
 | Errors / logs | `thiserror`, `anyhow`, `tracing`, `tracing-subscriber` |
 | Plans / CLI / MCP | `quick-xml` (showplan), `clap` (`swy`), `rmcp` (official Rust MCP SDK) |
+| Diagrams | `dagre` (ER diagram layout; see `docs/DECISIONS.md`) |
 | Testing | `insta`, `criterion`, `tempfile` |
 
 ## Licensing

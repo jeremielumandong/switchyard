@@ -4,6 +4,7 @@
 //! Engine-specific code lives in one module per driver (`pg`). Nothing outside a driver
 //! module should branch on [`Engine`]; dialect differences go through [`Dialect`].
 
+pub mod activity;
 pub mod batch;
 pub mod catalog;
 pub mod complete;

@@ -1,0 +1,20 @@
+---
+source: crates/db/src/activity.rs
+expression: PG_LIST
+---
+SELECT a.pid::text AS id,
+       a.usename AS username,
+       a.datname AS database_name,
+       COALESCE(host(a.client_addr), CASE WHEN a.client_port = -1 THEN 'local socket' END) AS client,
+       a.application_name AS program,
+       a.state,
+       CASE WHEN a.wait_event IS NOT NULL THEN a.wait_event_type || ': ' || a.wait_event END AS wait,
+       (extract(epoch FROM (now() - COALESCE(a.query_start, a.backend_start))) * 1000)::bigint AS age_ms,
+       (a.state IS NOT NULL AND a.state <> 'idle') AS running,
+       a.query AS sql_text,
+       NULLIF(array_to_string(pg_blocking_pids(a.pid), ', '), '') AS blocked_by,
+       (a.pid = pg_backend_pid()) AS is_self
+FROM pg_stat_activity a
+WHERE a.backend_type = 'client backend'
+ORDER BY running DESC, a.query_start NULLS LAST
+LIMIT 500

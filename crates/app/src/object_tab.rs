@@ -3,12 +3,17 @@
 //!
 //! The tab owns a catalog/query session on its connection. `Detail` comes back through
 //! the workspace's event routing ([`ObjectTab::on_catalog`]); the Data page streams into
-//! the same [`GridDelegate`] the SQL tab uses. Every value can be copied: tables have a
-//! per-row Copy, the DDL and trigger sources sit in read-only editors.
+//! the same [`GridDelegate`] the SQL tab uses, paged, filtered and sorted on the server by
+//! a [`Pager`] bar (DBX-3a); a foreign-key cell opens the referenced row (DBX-3c). Every
+//! value can be copied: tables have a per-row Copy, the DDL and trigger sources sit in
+//! read-only editors.
 
 use std::sync::Arc;
 
-use gpui_kit::component::input::{Editor, EditorState};
+use std::rc::Rc;
+
+use gpui_kit::component::input::{Editor, EditorState, InputEvent};
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::table::{DataTable, TableEvent, TableState};
 use gpui_kit::component::{Sizable as _, Size};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -19,7 +24,7 @@ use gpui_kit::{
     uniform_list,
 };
 use switchyard_core::db::{
-    CatalogChunk, ColumnMeta, ForeignKeyInfo, IntrospectScope, ObjectDetail, ObjectKind,
+    CatalogChunk, ColumnMeta, Dialect, ForeignKeyInfo, IntrospectScope, ObjectDetail, ObjectKind,
     TriggerInfo, dialect_for,
 };
 use switchyard_core::store::DbConnection;
@@ -28,13 +33,12 @@ use switchyard_core::{
 };
 
 use crate::app_state::{SessionState, next_id};
-use crate::grid::GridDelegate;
+use crate::grid::{
+    GridDelegate, PagedView, Pager, PagerAction, pager_action, reference_filter, render_pager,
+};
 use crate::theme::{MONO, Palette, palette};
 use crate::ui::{self, Kind, thousands};
 use crate::workspace::{Tab, Workspace};
-
-/// Rows the Data page shows.
-pub const DATA_ROWS: u64 = 100;
 
 /// Height of one row in the property tables.
 const ROW_H: f32 = 26.;
@@ -53,6 +57,15 @@ pub enum ObjectTabEvent {
     },
     /// Show a toast.
     Toast(String),
+    /// Open the data view of a table filtered by `filter` (a foreign key's referenced row).
+    OpenData {
+        /// Schema.
+        schema: String,
+        /// Table.
+        name: String,
+        /// WHERE condition.
+        filter: String,
+    },
 }
 
 /// The pages of the tab.
@@ -108,7 +121,7 @@ struct Grid {
     link: Option<usize>,
 }
 
-/// The Data page: one `SELECT … LIMIT` streamed into the SQL tab's grid.
+/// The Data page: one page (`Dialect::select_page`) streamed into the SQL tab's grid.
 #[derive(Default)]
 struct DataPage {
     query: Option<QueryId>,
@@ -120,6 +133,13 @@ struct DataPage {
     /// Selected cell (view row, table column).
     selected: Option<(usize, usize)>,
     _sub: Option<Subscription>,
+}
+
+/// What the Data page's row menu does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DataAction {
+    Reference,
+    CopyCell,
 }
 
 /// An object properties tab.
@@ -145,6 +165,9 @@ pub struct ObjectTab {
     ddl_editor: Entity<EditorState>,
     trigger_editor: Entity<EditorState>,
     data: DataPage,
+    /// Server-side filter, sort and paging of the Data page.
+    pager: Pager,
+    _pager_sub: Subscription,
 }
 
 impl EventEmitter<ObjectTabEvent> for ObjectTab {}
@@ -185,6 +208,16 @@ impl ObjectTab {
             session,
             connection: connection.id.clone(),
         });
+        let pager = Pager::new(schema.clone(), name.clone(), kind, None, window, cx);
+        let pager_sub = cx.subscribe_in(
+            &pager.where_input,
+            window,
+            |this, _, ev: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = ev {
+                    pager_action(this, PagerAction::Apply, window, cx);
+                }
+            },
+        );
         Self {
             key: Self::key_for(&connection, &schema, &name, kind),
             title: format!("{schema}.{name}").into(),
@@ -204,6 +237,8 @@ impl ObjectTab {
             ddl_editor: code_editor(window, cx),
             trigger_editor: code_editor(window, cx),
             data: DataPage::default(),
+            pager,
+            _pager_sub: pager_sub,
         }
     }
 
@@ -308,8 +343,10 @@ impl ObjectTab {
             return;
         }
         self.loading = false;
+        let waiting = !self.pager.ready;
         match result {
             Ok(CatalogChunk::Detail(d)) => {
+                self.pager.set_detail(&d);
                 self.error = None;
                 self.grids = grids(&d);
                 self.trigger = self.trigger.min(d.trigger_details.len().saturating_sub(1));
@@ -320,7 +357,14 @@ impl ObjectTab {
                 self.show_trigger(window, cx);
             }
             Ok(_) => {}
-            Err(e) => self.error = Some(e),
+            Err(e) => {
+                // The Data page still pages, without a key order.
+                self.pager.ready = true;
+                self.error = Some(e);
+            }
+        }
+        if waiting && self.page == Page::Data && self.data.table.is_none() {
+            self.run_data(cx);
         }
         cx.notify();
     }
@@ -344,18 +388,22 @@ impl ObjectTab {
         cx.notify();
     }
 
-    /// Run the first-page `SELECT` for the Data page.
+    /// Run the Data page's current page (once the detail brought the key).
     fn run_data(&mut self, cx: &mut Context<Self>) {
         let (Some(session), SessionState::Open { .. }) = (self.session, &self.session_state) else {
             return;
         };
+        if !self.pager.ready || !self.kind.is_relation() {
+            return;
+        }
         if let Some(q) = self.data.query.take()
             && self.data.running
         {
             self.core.send(Command::Cancel { query: q });
         }
-        let d = dialect_for(self.connection.engine);
-        let sql = d.select_rows(&d.qualified(&self.schema, &self.name), DATA_ROWS);
+        let sql = self.pager.sql(dialect_for(self.connection.engine));
+        self.pager.last_sql = sql.clone();
+        self.pager.rows = 0;
         let query = next_id();
         self.data = DataPage {
             query: Some(query),
@@ -372,7 +420,7 @@ impl ObjectTab {
             }],
             tags: vec![],
             confirmed_destructive: false,
-            fetch_limit: FetchLimit::Rows(DATA_ROWS as usize),
+            fetch_limit: FetchLimit::Rows(self.pager.page_size as usize),
         });
         cx.notify();
     }
@@ -390,6 +438,7 @@ impl ObjectTab {
                 if let Some(t) = &self.data.table {
                     let first = self.data.rows == 0;
                     self.data.rows += batch.len();
+                    self.pager.rows = self.data.rows;
                     t.update(cx, |t, cx| {
                         t.delegate_mut().push(batch);
                         if first {
@@ -415,20 +464,57 @@ impl ObjectTab {
 
     fn add_grid(&mut self, cols: Arc<[ColumnMeta]>, window: &mut Window, cx: &mut Context<Self>) {
         self.data.columns = cols.iter().map(|c| c.name.clone()).collect();
+        let mut delegate = GridDelegate::new(cols.clone());
+        let weak = cx.entity().downgrade();
+        delegate.set_server_sort(
+            self.pager.sort_indexes(&cols),
+            Rc::new(move |order, _window, cx| {
+                let _ = weak.update(cx, |this, cx| {
+                    let Some(t) = &this.data.table else { return };
+                    let cols = t.read(cx).delegate().columns();
+                    this.pager.set_sort(&cols, &order);
+                    this.run_data(cx);
+                });
+            }),
+        );
+        delegate.set_fk_cols(self.pager.fk_indexes(&cols));
+        let weak = cx.entity().downgrade();
+        delegate.set_menu(Rc::new(move |_row, menu: PopupMenu, _window, _cx| {
+            let item = |label: &'static str, action: DataAction| {
+                let weak = weak.clone();
+                PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                    let _ = weak.update(cx, |this, cx| this.data_action(action, cx));
+                })
+            };
+            menu.item(item("Open referenced row", DataAction::Reference))
+                .item(item("Copy cell", DataAction::CopyCell))
+        }));
         let table = cx.new(|cx| {
-            TableState::new(GridDelegate::new(cols), window, cx)
+            TableState::new(delegate, window, cx)
                 .cell_selectable(true)
                 .row_header(false)
                 .col_movable(true)
                 .col_resizable(true)
                 .sortable(true)
         });
-        let sub = cx.subscribe(&table, |this, _, ev: &TableEvent, cx| {
-            if let TableEvent::SelectCell(r, c) = ev {
-                this.data.selected = Some((*r, *c));
-                cx.notify();
-            }
-        });
+        let sub = cx.subscribe_in(
+            &table,
+            window,
+            |this, _, ev: &TableEvent, window, cx| match ev {
+                TableEvent::SelectCell(r, c) | TableEvent::RightClickedCell(r, c) => {
+                    this.data.selected = Some((*r, *c));
+                    // Ctrl/Cmd+click follows a foreign key (DBX-3c).
+                    if matches!(ev, TableEvent::SelectCell(..))
+                        && window.modifiers().secondary()
+                        && !window.modifiers().shift
+                    {
+                        this.data_action(DataAction::Reference, cx);
+                    }
+                    cx.notify();
+                }
+                _ => {}
+            },
+        );
         self.data.table = Some(table);
         self.data._sub = Some(sub);
     }
@@ -449,6 +535,45 @@ impl ObjectTab {
             }
         };
         cx.write_to_clipboard(ClipboardItem::new_string(text));
+    }
+
+    /// A row-menu or Ctrl/Cmd+click action on the selected Data cell.
+    fn data_action(&mut self, action: DataAction, cx: &mut Context<Self>) {
+        match action {
+            DataAction::CopyCell => self.copy_data(false, cx),
+            DataAction::Reference => {
+                let (Some(table), Some((r, c))) = (&self.data.table, self.data.selected) else {
+                    return;
+                };
+                let t = table.read(cx);
+                let d = t.delegate();
+                let Some(col) = d.data_col(c) else { return };
+                let cols = d.columns();
+                let Some(column) = cols.get(col).map(|m| m.name.clone()) else {
+                    return;
+                };
+                let row = d.data_row(r);
+                let found = reference_filter(
+                    dialect_for(self.connection.engine),
+                    &self.pager.foreign_keys,
+                    &column,
+                    &self.schema,
+                    |name| {
+                        let i = cols.iter().position(|m| m.name == name)?;
+                        let v = d.data().cell(row, i)?.to_value(cols[i].data_type);
+                        Some(v)
+                    },
+                );
+                match found {
+                    Ok((schema, name, filter)) => cx.emit(ObjectTabEvent::OpenData {
+                        schema,
+                        name,
+                        filter,
+                    }),
+                    Err(e) => cx.emit(ObjectTabEvent::Toast(e)),
+                }
+            }
+        }
     }
 
     fn open_reference(&mut self, row: usize, cx: &mut Context<Self>) {
@@ -841,22 +966,24 @@ impl ObjectTab {
         }
         let status = if let Some(e) = &self.data.error {
             e.clone()
-        } else if self.data.running {
+        } else if self.data.running || !self.pager.ready {
             "Loading…".into()
         } else if self.data.table.is_some() {
             format!(
-                "First {} row{}",
+                "{} row{} on this page · Ctrl/⌘+click a foreign key to open its row",
                 thousands(self.data.rows as u64),
                 if self.data.rows == 1 { "" } else { "s" }
             )
         } else {
             String::new()
         };
+        let busy = self.data.running || !self.pager.ready;
         div()
             .flex_1()
             .min_h_0()
             .flex()
             .flex_col()
+            .child(render_pager(&self.pager, busy, p, cx))
             .child(
                 div()
                     .h(px(30.))
@@ -903,6 +1030,20 @@ impl ObjectTab {
                 )
             }))
             .into_any_element()
+    }
+}
+
+impl PagedView for ObjectTab {
+    fn pager_mut(&mut self) -> Option<&mut Pager> {
+        Some(&mut self.pager)
+    }
+
+    fn pager_dialect(&self) -> &'static dyn Dialect {
+        dialect_for(self.connection.engine)
+    }
+
+    fn reload_page(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.run_data(cx);
     }
 }
 
@@ -1162,11 +1303,40 @@ impl Workspace {
                     );
                 }
                 ObjectTabEvent::Toast(t) => this.toast(t.clone(), cx),
+                ObjectTabEvent::OpenData {
+                    schema,
+                    name,
+                    filter,
+                } => {
+                    let conn = tab.read(cx).connection.clone();
+                    let (s, n, f) = (schema.clone(), name.clone(), Some(filter.clone()));
+                    this.open_table_data(conn, s, n, ObjectKind::Table, f, window, cx);
+                }
             },
         )
         .detach();
         self.tabs.push(Tab::Object(tab));
         self.activate(self.tabs.len() - 1, cx);
+    }
+
+    /// Open `schema.name` as a table data view in a new SQL tab: server-side filter, sort
+    /// and paging (DBX-3a), `filter` applied from the start (DBX-3c), staged row edits.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn open_table_data(
+        &mut self,
+        connection: DbConnection,
+        schema: String,
+        name: String,
+        kind: ObjectKind,
+        filter: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let tab = self.open_query_tab(&connection, &name, window, cx);
+        tab.update(cx, |t, cx| {
+            t.open_data(schema, name, kind, filter, window, cx)
+        });
+        cx.notify();
     }
 
     /// The schema tree's "Properties…" item: the object on the tree's connection.

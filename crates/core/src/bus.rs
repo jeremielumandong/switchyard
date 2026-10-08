@@ -367,6 +367,31 @@ pub enum Command {
         /// Request id.
         request: RequestId,
     },
+    /// List the server's sessions and running queries (activity monitor, DBX-5b) on the
+    /// monitor's own session, opening it on `connection` first when needed. App only:
+    /// never sent by the MCP server or `swy`.
+    Activity {
+        /// The monitor's session.
+        session: SessionId,
+        /// Connection to open it on.
+        connection: ProfileId,
+        /// Request id.
+        request: RequestId,
+    },
+    /// Cancel a query or end a session from the activity monitor; recorded in history.
+    /// App only: never sent by the MCP server or `swy`.
+    SessionAction {
+        /// The monitor's session (never the target).
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// What to do.
+        action: switchyard_db::activity::ActivityAction,
+        /// Whom to do it to (validated ids from the listing).
+        target: switchyard_db::activity::SessionTarget,
+        /// The user typed the second confirmation (required on Production).
+        confirmed: bool,
+    },
     /// Plan a statement with hypothetical indexes (PostgreSQL + HypoPG). Nothing is created.
     WhatIf {
         /// Session.
@@ -840,6 +865,20 @@ pub enum Event {
         request: RequestId,
         /// The workload, or what went wrong.
         result: Result<Arc<switchyard_plan::access::Workload>, String>,
+    },
+    /// Result of [`Command::Activity`].
+    Activity {
+        /// Request id.
+        request: RequestId,
+        /// Sessions, or what went wrong.
+        result: Result<Arc<switchyard_db::activity::Activity>, String>,
+    },
+    /// Result of [`Command::SessionAction`].
+    SessionAction {
+        /// Request id.
+        request: RequestId,
+        /// What happened, or why nothing was done.
+        result: Result<String, String>,
     },
     /// Result of [`Command::WhatIf`].
     WhatIf {

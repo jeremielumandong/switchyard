@@ -1,0 +1,25 @@
+---
+source: crates/db/src/activity.rs
+expression: MSSQL_LIST
+---
+SELECT CAST(s.session_id AS varchar(11)) AS id,
+       s.login_name AS username,
+       DB_NAME(COALESCE(r.database_id, s.database_id)) AS database_name,
+       COALESCE(c.client_net_address, s.host_name) AS client,
+       s.program_name AS program,
+       COALESCE(r.status, s.status) AS state,
+       r.wait_type + COALESCE(' (' + NULLIF(r.wait_resource, '') + ')', '') AS wait,
+       DATEDIFF_BIG(MILLISECOND, COALESCE(r.start_time, s.last_request_start_time), GETDATE()) AS age_ms,
+       CASE WHEN r.session_id IS NULL THEN 0 ELSE 1 END AS running,
+       t.text AS sql_text,
+       CAST(NULLIF(r.blocking_session_id, 0) AS varchar(11)) AS blocked_by,
+       CASE WHEN s.session_id = @@SPID THEN 1 ELSE 0 END AS is_self
+FROM sys.dm_exec_sessions s
+LEFT JOIN sys.dm_exec_requests r ON r.session_id = s.session_id
+OUTER APPLY (SELECT TOP (1) ec.client_net_address
+             FROM sys.dm_exec_connections ec
+             WHERE ec.session_id = s.session_id) c
+OUTER APPLY sys.dm_exec_sql_text(r.sql_handle) t
+WHERE s.is_user_process = 1
+ORDER BY running DESC, age_ms DESC
+OFFSET 0 ROWS FETCH NEXT 500 ROWS ONLY

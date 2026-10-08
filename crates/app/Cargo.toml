@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 chrono.workspace = true
+dagre.workspace = true
 quick-xml.workspace = true
 switchyard-core.workspace = true
 switchyard-api.workspace = true
@@ -35,6 +36,9 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
 
 [lints]
 workspace = true

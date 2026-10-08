@@ -136,6 +136,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # editor completion items (must match gpui-component)
 lsp-types = "0.97"
 
+# ER diagram layout (DBX-5d): dagre port, Apache-2.0; its default `json` feature is
+# required (the crate does not build without it) and only pulls serde / serde_json.
+dagre = "=0.1.1"
+
 # plans / cli
 quick-xml = "0.42"
 clap = { version = "4.6", features = ["derive"] }

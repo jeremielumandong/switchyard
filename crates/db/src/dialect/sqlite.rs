@@ -324,6 +324,25 @@ impl Dialect for SqliteDialect {
         // A D1 database is the whole connection; there is nothing to switch to.
         false
     }
+
+    /// SQLite has no `DEFAULT` in `VALUES`: columns left at their default are omitted.
+    fn insert_row(&self, qualified: &str, values: &[(String, Option<String>)]) -> String {
+        let set: Vec<(String, Option<String>)> = values
+            .iter()
+            .filter(|(_, v)| v.is_some())
+            .cloned()
+            .collect();
+        if set.is_empty() {
+            return format!("INSERT INTO {qualified} DEFAULT VALUES;");
+        }
+        let names: Vec<String> = set.iter().map(|(c, _)| self.quote_ident(c)).collect();
+        let vals: Vec<&str> = set.iter().filter_map(|(_, v)| v.as_deref()).collect();
+        format!(
+            "INSERT INTO {qualified} ({}) VALUES ({});",
+            names.join(", "),
+            vals.join(", ")
+        )
+    }
 }
 
 #[cfg(test)]

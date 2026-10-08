@@ -408,6 +408,22 @@ impl Dialect for OracleDialect {
             self.quote_ident(schema)
         ))
     }
+
+    /// Oracle 12c+ `OFFSET … FETCH` (no `ORDER BY` needed).
+    fn select_page(
+        &self,
+        qualified: &str,
+        cols: &[String],
+        where_: Option<&str>,
+        order: &[super::SortKey],
+        limit: u64,
+        offset: u64,
+    ) -> String {
+        format!(
+            "{}\nOFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY",
+            super::page_head(self, qualified, cols, where_, order)
+        )
+    }
 }
 
 #[cfg(test)]
