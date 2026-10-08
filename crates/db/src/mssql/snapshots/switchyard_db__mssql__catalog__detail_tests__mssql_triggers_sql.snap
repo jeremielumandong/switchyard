@@ -1,0 +1,5 @@
+---
+source: crates/db/src/mssql/catalog.rs
+expression: detail_triggers_sql(id)
+---
+SELECT t.name, OBJECT_DEFINITION(t.object_id), t.is_instead_of_trigger, OBJECTPROPERTY(t.object_id, 'ExecIsInsertTrigger'), OBJECTPROPERTY(t.object_id, 'ExecIsUpdateTrigger'), OBJECTPROPERTY(t.object_id, 'ExecIsDeleteTrigger') FROM sys.triggers t WHERE t.parent_id = OBJECT_ID(N'[dbo].[t]') ORDER BY t.name

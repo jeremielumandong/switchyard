@@ -1,0 +1,5 @@
+---
+source: crates/db/src/oracle/catalog.rs
+expression: DETAIL_COMMENT
+---
+SELECT COMMENTS FROM ALL_TAB_COMMENTS WHERE OWNER = :1 AND TABLE_NAME = :2

@@ -1,0 +1,5 @@
+---
+source: crates/db/src/mssql/catalog.rs
+expression: detail_comment_sql(id)
+---
+SELECT CAST(ep.value AS nvarchar(max)) FROM sys.extended_properties ep WHERE ep.class = 1 AND ep.major_id = OBJECT_ID(N'[dbo].[t]') AND ep.minor_id = 0 AND ep.name = 'MS_Description'

@@ -3,9 +3,12 @@
 use serde::{Deserialize, Serialize};
 
 /// Kind of schema object.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize,
+)]
 pub enum ObjectKind {
     /// Base table.
+    #[default]
     Table,
     /// View.
     View,
@@ -162,7 +165,7 @@ pub struct SchemaInfo {
 }
 
 /// A schema object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ObjectInfo {
     /// Schema.
     pub schema: String,
@@ -177,7 +180,7 @@ pub struct ObjectInfo {
 }
 
 /// A column of a relation.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ColumnInfo {
     /// Schema.
     pub schema: String,
@@ -195,10 +198,13 @@ pub struct ColumnInfo {
     pub ordinal: i32,
     /// Part of the primary key.
     pub is_primary_key: bool,
+    /// Column comment (`COMMENT ON COLUMN`, `MS_Description`), when the engine has one.
+    #[serde(default)]
+    pub comment: Option<String>,
 }
 
 /// An index.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct IndexInfo {
     /// Name.
     pub name: String,
@@ -210,10 +216,13 @@ pub struct IndexInfo {
     pub is_primary: bool,
     /// Full definition.
     pub definition: String,
+    /// Access method or index type (`btree`, `clustered`, `bitmap`), when known.
+    #[serde(default)]
+    pub method: Option<String>,
 }
 
 /// A table constraint (primary key, unique, check, exclusion).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ConstraintInfo {
     /// Name.
     pub name: String,
@@ -224,7 +233,7 @@ pub struct ConstraintInfo {
 }
 
 /// A foreign key.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ForeignKeyInfo {
     /// Name.
     pub name: String,
@@ -234,10 +243,30 @@ pub struct ForeignKeyInfo {
     pub references: String,
     /// Referenced columns.
     pub referenced_columns: Vec<String>,
+    /// Referential action on delete (`CASCADE`, `SET NULL`, `NO ACTION`, …), when known.
+    #[serde(default)]
+    pub on_delete: Option<String>,
+    /// Referential action on update, when the engine has one.
+    #[serde(default)]
+    pub on_update: Option<String>,
 }
 
-/// Full detail of one object.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// A trigger and its source.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TriggerInfo {
+    /// Name.
+    pub name: String,
+    /// `BEFORE`, `AFTER` or `INSTEAD OF`, with `FOR EACH ROW` where the engine says so.
+    pub timing: String,
+    /// Firing events joined with ` OR ` (`INSERT OR UPDATE`).
+    pub event: String,
+    /// Full definition (`CREATE TRIGGER …`); empty when the server would not show it.
+    pub definition: String,
+}
+
+/// Full detail of one object. Fields after `ddl` were added later and are optional, so
+/// cached details from older versions still load.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ObjectDetail {
     /// The object.
     pub object: ObjectInfo,
@@ -253,6 +282,16 @@ pub struct ObjectDetail {
     pub triggers: Vec<String>,
     /// Generated DDL.
     pub ddl: String,
+    /// Total size on disk in bytes (table, indexes and TOAST/LOB data where the engine
+    /// counts them); `None` when unknown or not permitted.
+    #[serde(default)]
+    pub size_bytes: Option<i64>,
+    /// Object comment (`COMMENT ON`, `MS_Description`, `ALL_TAB_COMMENTS`).
+    #[serde(default)]
+    pub comment: Option<String>,
+    /// Triggers with timing, events and definition (same order as `triggers`).
+    #[serde(default)]
+    pub trigger_details: Vec<TriggerInfo>,
 }
 
 /// The answer to an [`IntrospectScope`].

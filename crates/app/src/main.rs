@@ -20,6 +20,7 @@ mod folds;
 mod forwards_editor;
 mod grid;
 mod object_search;
+mod object_tab;
 mod overlays;
 mod palette;
 mod plan_view;

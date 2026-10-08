@@ -415,6 +415,7 @@ impl Workspace {
                 ("update", "Generate UPDATE", false, "".into()),
                 ("delete", "Generate DELETE", false, "".into()),
                 ("ddl", "View DDL", false, "".into()),
+                ("properties", "Properties…", false, "".into()),
                 (
                     "copy",
                     "Copy qualified name",

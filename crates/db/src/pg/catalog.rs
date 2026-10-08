@@ -5,7 +5,7 @@ use tokio_postgres::Client;
 use super::map_error;
 use crate::catalog::{
     CatalogChunk, ColumnInfo, ConstraintInfo, ForeignKeyInfo, IndexInfo, IntrospectScope,
-    ObjectDetail, ObjectInfo, ObjectKind, SchemaInfo, like_contains, search_hit,
+    ObjectDetail, ObjectInfo, ObjectKind, SchemaInfo, TriggerInfo, like_contains, search_hit,
 };
 use crate::dialect::{Dialect, postgres::PostgresDialect};
 use crate::error::Result;
@@ -66,7 +66,8 @@ SELECT n.nspname::text, c.relname::text, a.attname::text,
        pg_catalog.pg_get_expr(d.adbin, d.adrelid) AS default_expr,
        a.attnum::int4,
        EXISTS (SELECT 1 FROM pg_catalog.pg_index i
-               WHERE i.indrelid = c.oid AND i.indisprimary AND a.attnum = ANY(i.indkey)) AS is_pk
+               WHERE i.indrelid = c.oid AND i.indisprimary AND a.attnum = ANY(i.indkey)) AS is_pk,
+       pg_catalog.col_description(c.oid, a.attnum) AS comment
 FROM pg_catalog.pg_attribute a
 JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
@@ -82,9 +83,11 @@ ORDER BY n.nspname, c.relname, a.attnum";
 pub const INDEXES_SQL: &str = "\
 SELECT ic.relname::text, i.indisunique, i.indisprimary, pg_catalog.pg_get_indexdef(i.indexrelid),
        ARRAY(SELECT pg_catalog.pg_get_indexdef(i.indexrelid, k, true)
-             FROM generate_subscripts(i.indkey, 1) AS k ORDER BY k)::text[]
+             FROM generate_subscripts(i.indkey, 1) AS k ORDER BY k)::text[],
+       am.amname::text
 FROM pg_catalog.pg_index i
 JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid
+LEFT JOIN pg_catalog.pg_am am ON am.oid = ic.relam
 JOIN pg_catalog.pg_class c ON c.oid = i.indrelid
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = $1 AND c.relname = $2
@@ -99,7 +102,8 @@ SELECT con.conname::text, con.contype::text, pg_catalog.pg_get_constraintdef(con
        fn.nspname::text, fc.relname::text,
        ARRAY(SELECT a.attname::text FROM unnest(con.confkey) WITH ORDINALITY k(n, o)
              JOIN pg_catalog.pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.n
-             ORDER BY k.o)::text[]
+             ORDER BY k.o)::text[],
+       con.confdeltype::text, con.confupdtype::text
 FROM pg_catalog.pg_constraint con
 JOIN pg_catalog.pg_class c ON c.oid = con.conrelid
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
@@ -108,14 +112,23 @@ LEFT JOIN pg_catalog.pg_namespace fn ON fn.oid = fc.relnamespace
 WHERE n.nspname = $1 AND c.relname = $2
 ORDER BY con.contype, con.conname";
 
-/// Triggers of one table.
+/// Triggers of one table or view: name, `tgtype` bits and definition.
 pub const TRIGGERS_SQL: &str = "\
-SELECT t.tgname::text
+SELECT t.tgname::text, t.tgtype::int4, pg_catalog.pg_get_triggerdef(t.oid, true)
 FROM pg_catalog.pg_trigger t
 JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = $1 AND c.relname = $2 AND NOT t.tgisinternal
 ORDER BY 1";
+
+/// Size on disk (table, indexes and TOAST), comment and estimated rows of one relation.
+/// Run on its own so a failure (a relation dropped meanwhile) only loses these values.
+pub const RELATION_PROPS_SQL: &str = "\
+SELECT pg_catalog.pg_total_relation_size(c.oid),
+       pg_catalog.obj_description(c.oid, 'pg_class'),
+       CASE WHEN c.reltuples < 0 THEN NULL ELSE c.reltuples::int8 END
+FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = $1 AND c.relname = $2";
 
 /// Definition of a view or materialized view.
 pub const VIEW_DEF_SQL: &str = "\
@@ -152,6 +165,49 @@ WHERE s.schema_name NOT LIKE 'pg\\_toast%' AND s.schema_name NOT LIKE 'pg\\_temp
 GROUP BY s.schema_name, s.object_name, s.kind
 ORDER BY length(s.object_name), s.object_name, s.schema_name
 LIMIT $2::int8";
+
+/// Timing and events of a trigger from its `pg_trigger.tgtype` bits
+/// (row 1, before 2, insert 4, delete 8, update 16, truncate 32, instead 64).
+pub fn trigger_timing(tgtype: i32) -> (String, String) {
+    let when = if tgtype & 64 != 0 {
+        "INSTEAD OF"
+    } else if tgtype & 2 != 0 {
+        "BEFORE"
+    } else {
+        "AFTER"
+    };
+    let level = if tgtype & 1 != 0 {
+        "FOR EACH ROW"
+    } else {
+        "FOR EACH STATEMENT"
+    };
+    let events: Vec<&str> = [
+        (4, "INSERT"),
+        (16, "UPDATE"),
+        (8, "DELETE"),
+        (32, "TRUNCATE"),
+    ]
+    .into_iter()
+    .filter(|(bit, _)| tgtype & bit != 0)
+    .map(|(_, e)| e)
+    .collect();
+    (format!("{when} {level}"), events.join(" OR "))
+}
+
+/// A foreign key action from `pg_constraint.confdeltype` / `confupdtype`.
+pub fn fk_action(code: &str) -> Option<String> {
+    Some(
+        match code {
+            "a" => "NO ACTION",
+            "r" => "RESTRICT",
+            "c" => "CASCADE",
+            "n" => "SET NULL",
+            "d" => "SET DEFAULT",
+            _ => return None,
+        }
+        .into(),
+    )
+}
 
 fn relkinds(kind: ObjectKind) -> &'static str {
     match kind {
@@ -307,12 +363,43 @@ pub async fn introspect(client: &Client, scope: IntrospectScope) -> Result<Catal
                     detail: None,
                 },
                 columns,
-                indexes: Vec::new(),
-                constraints: Vec::new(),
-                foreign_keys: Vec::new(),
-                triggers: Vec::new(),
-                ddl: String::new(),
+                ..ObjectDetail::default()
             };
+            if kind.is_relation() {
+                // Optional extras: an error here never fails the whole detail.
+                if let Ok(Some(r)) = client
+                    .query_opt(RELATION_PROPS_SQL, &[&schema, &name])
+                    .await
+                {
+                    detail.size_bytes = if kind == ObjectKind::View {
+                        None
+                    } else {
+                        r.get(0)
+                    };
+                    detail.comment = r.get(1);
+                    detail.object.estimated_rows = if kind == ObjectKind::View {
+                        None
+                    } else {
+                        r.get(2)
+                    };
+                }
+            }
+            if matches!(kind, ObjectKind::Table | ObjectKind::View) {
+                let rows = client
+                    .query(TRIGGERS_SQL, &[&schema, &name])
+                    .await
+                    .map_err(err)?;
+                for r in &rows {
+                    let (timing, event) = trigger_timing(r.get(1));
+                    detail.triggers.push(r.get(0));
+                    detail.trigger_details.push(TriggerInfo {
+                        name: r.get(0),
+                        timing,
+                        event,
+                        definition: r.get::<_, Option<String>>(2).unwrap_or_default(),
+                    });
+                }
+            }
             let d = PostgresDialect;
             match kind {
                 ObjectKind::Table => {
@@ -328,6 +415,7 @@ pub async fn introspect(client: &Client, scope: IntrospectScope) -> Result<Catal
                             is_primary: r.get(2),
                             definition: r.get(3),
                             columns: r.get(4),
+                            method: r.get(5),
                         })
                         .collect();
                     let rows = client
@@ -348,6 +436,8 @@ pub async fn introspect(client: &Client, scope: IntrospectScope) -> Result<Catal
                                     ft.unwrap_or_default()
                                 ),
                                 referenced_columns: r.get(6),
+                                on_delete: fk_action(r.get::<_, &str>(7)),
+                                on_update: fk_action(r.get::<_, &str>(8)),
                             });
                         }
                         detail.constraints.push(ConstraintInfo {
@@ -364,11 +454,6 @@ pub async fn introspect(client: &Client, scope: IntrospectScope) -> Result<Catal
                             definition: r.get(2),
                         });
                     }
-                    let rows = client
-                        .query(TRIGGERS_SQL, &[&schema, &name])
-                        .await
-                        .map_err(err)?;
-                    detail.triggers = rows.iter().map(|r| r.get(0)).collect();
                     detail.ddl = table_ddl(
                         &schema,
                         &name,
@@ -452,6 +537,7 @@ async fn load_columns(
             default: r.get(5),
             ordinal: r.get(6),
             is_primary_key: r.get(7),
+            comment: r.get(8),
         })
         .collect())
 }
@@ -463,5 +549,44 @@ mod tests {
     #[test]
     fn search_sql_snapshot() {
         insta::assert_snapshot!("pg_search_sql", SEARCH_SQL);
+    }
+}
+
+#[cfg(test)]
+mod detail_tests {
+    use super::*;
+
+    #[test]
+    fn detail_sql_snapshots() {
+        insta::assert_snapshot!("pg_columns_sql", COLUMNS_SQL);
+        insta::assert_snapshot!("pg_indexes_sql", INDEXES_SQL);
+        insta::assert_snapshot!("pg_constraints_sql", CONSTRAINTS_SQL);
+        insta::assert_snapshot!("pg_triggers_sql", TRIGGERS_SQL);
+        insta::assert_snapshot!("pg_relation_props_sql", RELATION_PROPS_SQL);
+    }
+
+    #[test]
+    fn trigger_bits_decode() {
+        // BEFORE INSERT OR UPDATE FOR EACH ROW
+        assert_eq!(
+            trigger_timing(1 | 2 | 4 | 16),
+            ("BEFORE FOR EACH ROW".into(), "INSERT OR UPDATE".into())
+        );
+        assert_eq!(
+            trigger_timing(8 | 32),
+            (
+                "AFTER FOR EACH STATEMENT".into(),
+                "DELETE OR TRUNCATE".into()
+            )
+        );
+        assert_eq!(trigger_timing(1 | 64 | 4).0, "INSTEAD OF FOR EACH ROW");
+    }
+
+    #[test]
+    fn fk_actions_decode() {
+        assert_eq!(fk_action("c").as_deref(), Some("CASCADE"));
+        assert_eq!(fk_action("n").as_deref(), Some("SET NULL"));
+        assert_eq!(fk_action("a").as_deref(), Some("NO ACTION"));
+        assert_eq!(fk_action(" "), None);
     }
 }

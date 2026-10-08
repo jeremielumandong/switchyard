@@ -5,7 +5,7 @@ use tiberius::Query;
 use super::{TdsClient, decode, map_error, simple_rows};
 use crate::catalog::{
     CatalogChunk, ColumnInfo, ConstraintInfo, ForeignKeyInfo, IndexInfo, IntrospectScope,
-    ObjectDetail, ObjectInfo, ObjectKind, SchemaInfo, like_contains, search_hit,
+    ObjectDetail, ObjectInfo, ObjectKind, SchemaInfo, TriggerInfo, like_contains, search_hit,
 };
 use crate::error::{DbError, Result};
 use crate::value::Value;
@@ -136,7 +136,11 @@ fn columns_sql(filter: &str) -> String {
                     JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id \
                     WHERE i.object_id = o.object_id AND i.is_primary_key = 1 AND ic.column_id = c.column_id) \
                 THEN 1 ELSE 0 END, \
-                c.is_identity \
+                c.is_identity, \
+                CAST((SELECT ep.value FROM sys.extended_properties ep \
+                      WHERE ep.class = 1 AND ep.major_id = c.object_id \
+                        AND ep.minor_id = c.column_id AND ep.name = 'MS_Description') \
+                     AS nvarchar(max)) \
          FROM sys.columns c \
          JOIN sys.objects o ON o.object_id = c.object_id \
          JOIN sys.types t ON t.user_type_id = c.user_type_id \
@@ -155,7 +159,69 @@ fn column_from(row: &[Value]) -> ColumnInfo {
         default: opt_text(row, 5),
         ordinal: int(row, 6) as i32,
         is_primary_key: int(row, 7) != 0,
+        comment: opt_text(row, 9),
     }
+}
+
+/// Indexes of the object `id` (an `OBJECT_ID(…)` expression), one row per key column.
+fn detail_indexes_sql(id: &str) -> String {
+    format!(
+        "SELECT i.name, i.is_unique, i.is_primary_key, i.type_desc, c.name, ic.is_descending_key \
+         FROM sys.indexes i \
+         JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id \
+         JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id \
+         WHERE i.object_id = {id} AND i.name IS NOT NULL AND ic.is_included_column = 0 \
+         ORDER BY i.name, ic.key_ordinal"
+    )
+}
+
+/// Foreign keys of the object `id`, one row per column pair, with their actions.
+fn detail_foreign_keys_sql(id: &str) -> String {
+    format!(
+        "SELECT fk.name, pc.name, SCHEMA_NAME(rt.schema_id) + '.' + rt.name, rc.name, \
+                fk.delete_referential_action_desc, fk.update_referential_action_desc \
+         FROM sys.foreign_keys fk \
+         JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id \
+         JOIN sys.columns pc ON pc.object_id = fkc.parent_object_id AND pc.column_id = fkc.parent_column_id \
+         JOIN sys.tables rt ON rt.object_id = fkc.referenced_object_id \
+         JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id \
+         WHERE fk.parent_object_id = {id} ORDER BY fk.name, fkc.constraint_column_id"
+    )
+}
+
+/// Triggers of the object `id`: name, definition, INSTEAD OF flag and events.
+fn detail_triggers_sql(id: &str) -> String {
+    format!(
+        "SELECT t.name, OBJECT_DEFINITION(t.object_id), t.is_instead_of_trigger, \
+                OBJECTPROPERTY(t.object_id, 'ExecIsInsertTrigger'), \
+                OBJECTPROPERTY(t.object_id, 'ExecIsUpdateTrigger'), \
+                OBJECTPROPERTY(t.object_id, 'ExecIsDeleteTrigger') \
+         FROM sys.triggers t WHERE t.parent_id = {id} ORDER BY t.name"
+    )
+}
+
+/// Reserved bytes and rows of the object `id`. Needs `VIEW DATABASE STATE`; callers
+/// treat an error as unknown.
+fn detail_size_sql(id: &str) -> String {
+    format!(
+        "SELECT SUM(ps.reserved_page_count) * 8192, \
+                SUM(CASE WHEN ps.index_id IN (0, 1) THEN ps.row_count ELSE 0 END) \
+         FROM sys.dm_db_partition_stats ps WHERE ps.object_id = {id}"
+    )
+}
+
+/// The `MS_Description` extended property of the object `id`.
+fn detail_comment_sql(id: &str) -> String {
+    format!(
+        "SELECT CAST(ep.value AS nvarchar(max)) FROM sys.extended_properties ep \
+         WHERE ep.class = 1 AND ep.major_id = {id} AND ep.minor_id = 0 \
+           AND ep.name = 'MS_Description'"
+    )
+}
+
+/// `NO_ACTION` → `NO ACTION`.
+fn action_label(desc: &str) -> Option<String> {
+    (!desc.is_empty()).then(|| desc.replace('_', " "))
 }
 
 fn quote(ident: &str) -> String {
@@ -296,18 +362,7 @@ pub(super) async fn introspect(
                 .map(|r| (column_from(r), int(r, 8) != 0))
                 .collect();
 
-            let idx_rows = simple_rows(
-                client,
-                &format!(
-                    "SELECT i.name, i.is_unique, i.is_primary_key, i.type_desc, c.name, ic.is_descending_key \
-                     FROM sys.indexes i \
-                     JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id \
-                     JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id \
-                     WHERE i.object_id = {id} AND i.name IS NOT NULL AND ic.is_included_column = 0 \
-                     ORDER BY i.name, ic.key_ordinal"
-                ),
-            )
-            .await?;
+            let idx_rows = simple_rows(client, &detail_indexes_sql(&id)).await?;
             let mut indexes: Vec<IndexInfo> = Vec::new();
             for r in &idx_rows {
                 let iname = text(r, 0);
@@ -322,6 +377,7 @@ pub(super) async fn introspect(
                         is_unique: int(r, 1) != 0,
                         is_primary: int(r, 2) != 0,
                         definition: text(r, 3).to_ascii_lowercase().replace('_', " "),
+                        method: Some(text(r, 3).to_ascii_lowercase().replace('_', " ")),
                         name: iname,
                         columns: vec![col],
                     }),
@@ -337,19 +393,7 @@ pub(super) async fn introspect(
                 );
             }
 
-            let fk_rows = simple_rows(
-                client,
-                &format!(
-                    "SELECT fk.name, pc.name, SCHEMA_NAME(rt.schema_id) + '.' + rt.name, rc.name \
-                     FROM sys.foreign_keys fk \
-                     JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id \
-                     JOIN sys.columns pc ON pc.object_id = fkc.parent_object_id AND pc.column_id = fkc.parent_column_id \
-                     JOIN sys.tables rt ON rt.object_id = fkc.referenced_object_id \
-                     JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id \
-                     WHERE fk.parent_object_id = {id} ORDER BY fk.name, fkc.constraint_column_id"
-                ),
-            )
-            .await?;
+            let fk_rows = simple_rows(client, &detail_foreign_keys_sql(&id)).await?;
             let mut foreign_keys: Vec<ForeignKeyInfo> = Vec::new();
             for r in &fk_rows {
                 let fname = text(r, 0);
@@ -363,6 +407,8 @@ pub(super) async fn introspect(
                         columns: vec![text(r, 1)],
                         references: text(r, 2),
                         referenced_columns: vec![text(r, 3)],
+                        on_delete: action_label(&text(r, 4)),
+                        on_update: action_label(&text(r, 5)),
                     }),
                 }
             }
@@ -385,12 +431,29 @@ pub(super) async fn introspect(
                 })
                 .collect();
 
-            let trig_rows = simple_rows(
-                client,
-                &format!("SELECT name FROM sys.triggers WHERE parent_id = {id} ORDER BY name"),
-            )
-            .await?;
+            let trig_rows = simple_rows(client, &detail_triggers_sql(&id)).await?;
             let triggers = trig_rows.iter().map(|r| text(r, 0)).collect();
+            let trigger_details = trig_rows
+                .iter()
+                .map(|r| {
+                    let events: Vec<&str> = [(3, "INSERT"), (4, "UPDATE"), (5, "DELETE")]
+                        .into_iter()
+                        .filter(|(i, _)| int(r, *i) != 0)
+                        .map(|(_, e)| e)
+                        .collect();
+                    TriggerInfo {
+                        name: text(r, 0),
+                        timing: if int(r, 2) != 0 {
+                            "INSTEAD OF"
+                        } else {
+                            "AFTER"
+                        }
+                        .into(),
+                        event: events.join(" OR "),
+                        definition: text(r, 1),
+                    }
+                })
+                .collect();
 
             let ddl = if kind == ObjectKind::Table {
                 let pk: Vec<String> = indexes
@@ -410,7 +473,27 @@ pub(super) async fn introspect(
                 rows.first().map(|r| text(r, 0)).unwrap_or_default()
             };
 
-            let estimated_rows = if kind == ObjectKind::Table {
+            // Size and rows need VIEW DATABASE STATE; without it they stay unknown and the
+            // row estimate falls back to sys.partitions.
+            let (size_bytes, stats_rows) = match simple_rows(client, &detail_size_sql(&id)).await {
+                Ok(rows) => rows.first().map_or((None, None), |r| {
+                    let n = |i| (!matches!(r.get(i), None | Some(Value::Null))).then(|| int(r, i));
+                    (n(0), n(1))
+                }),
+                Err(e) => {
+                    tracing::debug!(error = %e, "partition stats unavailable");
+                    (None, None)
+                }
+            };
+            let comment = simple_rows(client, &detail_comment_sql(&id))
+                .await
+                .ok()
+                .and_then(|rows| rows.first().and_then(|r| opt_text(r, 0)));
+            let estimated_rows = if kind != ObjectKind::Table {
+                None
+            } else if stats_rows.is_some() {
+                stats_rows
+            } else {
                 simple_rows(
                     client,
                     &format!(
@@ -420,8 +503,6 @@ pub(super) async fn introspect(
                 .await?
                 .first()
                 .map(|r| int(r, 0))
-            } else {
-                None
             };
 
             Ok(CatalogChunk::Detail(Box::new(ObjectDetail {
@@ -438,6 +519,9 @@ pub(super) async fn introspect(
                 foreign_keys,
                 triggers,
                 ddl,
+                size_bytes,
+                comment,
+                trigger_details,
             })))
         }
     }
@@ -450,5 +534,31 @@ mod tests {
     #[test]
     fn search_sql_snapshot() {
         insta::assert_snapshot!("mssql_search_sql", search_sql());
+    }
+}
+
+#[cfg(test)]
+mod detail_tests {
+    use super::*;
+
+    #[test]
+    fn detail_sql_snapshots() {
+        let id = "OBJECT_ID(N'[dbo].[t]')";
+        insta::assert_snapshot!(
+            "mssql_columns_sql",
+            columns_sql(&format!("o.object_id = {id}"))
+        );
+        insta::assert_snapshot!("mssql_indexes_sql", detail_indexes_sql(id));
+        insta::assert_snapshot!("mssql_foreign_keys_sql", detail_foreign_keys_sql(id));
+        insta::assert_snapshot!("mssql_triggers_sql", detail_triggers_sql(id));
+        insta::assert_snapshot!("mssql_size_sql", detail_size_sql(id));
+        insta::assert_snapshot!("mssql_comment_sql", detail_comment_sql(id));
+    }
+
+    #[test]
+    fn referential_actions_read_as_words() {
+        assert_eq!(action_label("SET_NULL").as_deref(), Some("SET NULL"));
+        assert_eq!(action_label("CASCADE").as_deref(), Some("CASCADE"));
+        assert_eq!(action_label(""), None);
     }
 }

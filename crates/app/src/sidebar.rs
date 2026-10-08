@@ -875,6 +875,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if action == "properties" {
+            return self.open_tree_object_properties(schema, name, kind, window, cx);
+        }
         if NEEDS_DETAIL.contains(&action)
             && self
                 .schema
@@ -2109,6 +2112,7 @@ mod tests {
             default: None,
             ordinal,
             is_primary_key: pk,
+            ..ColumnInfo::default()
         }
     }
 
@@ -2127,6 +2131,7 @@ mod tests {
             foreign_keys: Vec::new(),
             triggers: Vec::new(),
             ddl: String::new(),
+            ..ObjectDetail::default()
         }
     }
 
@@ -2152,6 +2157,7 @@ mod tests {
                 is_unique: true,
                 is_primary: true,
                 definition: String::new(),
+                ..IndexInfo::default()
             }],
         );
         assert_eq!(columns_and_key(&d).1, ["a"]);

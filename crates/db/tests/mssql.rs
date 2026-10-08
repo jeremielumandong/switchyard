@@ -439,6 +439,11 @@ async fn catalog_of_the_sample_schema() {
         detail.ddl
     );
     assert!(detail.ddl.contains("PRIMARY KEY ([id])"), "{}", detail.ddl);
+    // DBX-2b extras (sa has VIEW DATABASE STATE).
+    assert!(detail.size_bytes.is_some_and(|b| b > 0));
+    assert_eq!(detail.object.estimated_rows, Some(1000));
+    let pk = detail.indexes.iter().find(|i| i.is_primary).expect("pk");
+    assert_eq!(pk.method.as_deref(), Some("clustered"));
     insta::assert_snapshot!("mssql_customers_ddl", redact_generated_names(&detail.ddl));
     let mut snap = Vec::new();
     for kind in TSqlDialect.object_folders() {
@@ -465,6 +470,61 @@ async fn catalog_of_the_sample_schema() {
         all.iter()
             .any(|c| c.table == "customers" && c.name == "email")
     );
+}
+
+/// DBX-2b: `MS_Description` comments, trigger definitions and FK actions, on scratch
+/// tables dropped again at the end.
+#[tokio::test]
+#[ignore = "needs docker mssql"]
+async fn object_properties_detail() {
+    let mut s = shop().await;
+    for sql in [
+        "DROP TABLE IF EXISTS dbo.dbx2b_lines",
+        "DROP TABLE IF EXISTS dbo.dbx2b_items",
+        "CREATE TABLE dbo.dbx2b_items (id int PRIMARY KEY, label nvarchar(40) DEFAULT N'x')",
+        "CREATE TABLE dbo.dbx2b_lines (id int PRIMARY KEY, \
+           item_id int REFERENCES dbo.dbx2b_items(id) ON DELETE CASCADE)",
+        "EXEC sp_addextendedproperty N'MS_Description', N'Things we sell', \
+           N'SCHEMA', N'dbo', N'TABLE', N'dbx2b_items'",
+        "EXEC sp_addextendedproperty N'MS_Description', N'Shown to customers', \
+           N'SCHEMA', N'dbo', N'TABLE', N'dbx2b_items', N'COLUMN', N'label'",
+        "CREATE TRIGGER dbo.dbx2b_touch ON dbo.dbx2b_items AFTER INSERT, UPDATE AS SET NOCOUNT ON",
+    ] {
+        drain(s.as_mut(), sql, &[]).await.expect(sql);
+    }
+    let detail = |name: &str| IntrospectScope::Detail {
+        schema: "dbo".into(),
+        name: name.into(),
+        kind: ObjectKind::Table,
+    };
+    let CatalogChunk::Detail(items) = s.introspect(detail("dbx2b_items")).await.unwrap() else {
+        panic!()
+    };
+    let CatalogChunk::Detail(lines) = s.introspect(detail("dbx2b_lines")).await.unwrap() else {
+        panic!()
+    };
+    for sql in ["DROP TABLE dbo.dbx2b_lines", "DROP TABLE dbo.dbx2b_items"] {
+        drain(s.as_mut(), sql, &[]).await.expect(sql);
+    }
+    assert_eq!(items.comment.as_deref(), Some("Things we sell"));
+    let label = items.columns.iter().find(|c| c.name == "label").unwrap();
+    assert_eq!(label.comment.as_deref(), Some("Shown to customers"));
+    assert_eq!(label.default.as_deref(), Some("(N'x')"));
+    assert_eq!(items.triggers, ["dbx2b_touch"]);
+    let t = &items.trigger_details[0];
+    assert_eq!(
+        (t.timing.as_str(), t.event.as_str()),
+        ("AFTER", "INSERT OR UPDATE")
+    );
+    assert!(
+        t.definition.starts_with("CREATE TRIGGER dbo.dbx2b_touch"),
+        "{}",
+        t.definition
+    );
+    let fk = &lines.foreign_keys[0];
+    assert_eq!(fk.references, "dbo.dbx2b_items");
+    assert_eq!(fk.on_delete.as_deref(), Some("CASCADE"));
+    assert_eq!(fk.on_update.as_deref(), Some("NO ACTION"));
 }
 
 /// Records what the driver asked for and hands back a token the server can't accept.
