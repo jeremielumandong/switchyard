@@ -1,0 +1,5 @@
+---
+source: crates/db/src/snowflake/catalog.rs
+expression: TABLE_PROPS
+---
+SELECT BYTES, ROW_COUNT, COMMENT FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?

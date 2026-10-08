@@ -1,0 +1,20 @@
+---
+source: crates/db/src/pg/catalog.rs
+expression: CONSTRAINTS_SQL
+---
+SELECT con.conname::text, con.contype::text, pg_catalog.pg_get_constraintdef(con.oid, true),
+       ARRAY(SELECT a.attname::text FROM unnest(con.conkey) WITH ORDINALITY k(n, o)
+             JOIN pg_catalog.pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.n
+             ORDER BY k.o)::text[],
+       fn.nspname::text, fc.relname::text,
+       ARRAY(SELECT a.attname::text FROM unnest(con.confkey) WITH ORDINALITY k(n, o)
+             JOIN pg_catalog.pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.n
+             ORDER BY k.o)::text[],
+       con.confdeltype::text, con.confupdtype::text
+FROM pg_catalog.pg_constraint con
+JOIN pg_catalog.pg_class c ON c.oid = con.conrelid
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+LEFT JOIN pg_catalog.pg_class fc ON fc.oid = con.confrelid
+LEFT JOIN pg_catalog.pg_namespace fn ON fn.oid = fc.relnamespace
+WHERE n.nspname = $1 AND c.relname = $2
+ORDER BY con.contype, con.conname

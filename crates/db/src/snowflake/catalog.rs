@@ -61,11 +61,17 @@ fn column_info(r: &Rows, row: &[Option<String>]) -> ColumnInfo {
             .and_then(|v| v.parse().ok())
             .unwrap_or_default(),
         is_primary_key: false,
+        comment: r.get(row, "COMMENT").map(str::to_owned),
     }
 }
 
 const COLUMNS: &str = "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE, IS_NULLABLE, \
-                       COLUMN_DEFAULT, ORDINAL_POSITION FROM INFORMATION_SCHEMA.COLUMNS";
+                       COLUMN_DEFAULT, ORDINAL_POSITION, COMMENT FROM INFORMATION_SCHEMA.COLUMNS";
+
+/// Size, row count and comment of one table or view (`?` schema, `?` name). Views
+/// have NULL bytes and rows.
+const TABLE_PROPS: &str = "SELECT BYTES, ROW_COUNT, COMMENT FROM INFORMATION_SCHEMA.TABLES \
+                           WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?";
 
 /// Global object search over the current database's `INFORMATION_SCHEMA`: every `?` is
 /// the same escaped LIKE pattern. `limit` is a number, never user text.
@@ -216,20 +222,33 @@ pub(super) async fn introspect(
             .ok()
             .and_then(|d| d.rows.first().map(|row| d.text(row, "DDL")))
             .unwrap_or_default();
+            // Extras: an error leaves them unknown.
+            let props = Rows::of(
+                s,
+                TABLE_PROPS,
+                &[Value::Text(schema.clone()), Value::Text(name.clone())],
+            )
+            .await
+            .ok();
+            let prop = |col: &str| {
+                props
+                    .as_ref()
+                    .and_then(|p| p.rows.first().and_then(|row| p.get(row, col)))
+                    .map(str::to_owned)
+            };
             Ok(CatalogChunk::Detail(Box::new(ObjectDetail {
                 object: ObjectInfo {
+                    estimated_rows: prop("ROW_COUNT").and_then(|v| v.parse().ok()),
                     schema,
                     name,
                     kind,
-                    estimated_rows: None,
                     detail: None,
                 },
                 columns,
-                indexes: Vec::new(),
-                constraints: Vec::new(),
-                foreign_keys: Vec::new(),
-                triggers: Vec::new(),
                 ddl,
+                size_bytes: prop("BYTES").and_then(|v| v.parse().ok()),
+                comment: prop("COMMENT").filter(|c| !c.is_empty()),
+                ..ObjectDetail::default()
             })))
         }
     }
@@ -256,5 +275,16 @@ mod tests {
     #[test]
     fn search_sql_snapshot() {
         insta::assert_snapshot!("snowflake_search_sql", search_sql(200, false));
+    }
+}
+
+#[cfg(test)]
+mod detail_tests {
+    use super::*;
+
+    #[test]
+    fn detail_sql_snapshots() {
+        insta::assert_snapshot!("snowflake_columns_sql", COLUMNS);
+        insta::assert_snapshot!("snowflake_table_props_sql", TABLE_PROPS);
     }
 }
