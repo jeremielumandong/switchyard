@@ -1,4 +1,5 @@
-//! Connection editor dialog: type picker, a form per type, environment label, Driver
+//! Connection editor dialog: a rail of connection types (Database, SSH Host, SFTP, FTP), a
+//! database engine picker with a form per engine (`engines/`), environment label, Driver
 //! Manager card, Test connection and Save.
 
 use std::collections::HashMap;
@@ -11,15 +12,19 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Styled as _, Window, deferred, div, px,
 };
 use secrecy::SecretString;
-use switchyard_core::db::{DbAuthMethod, Engine, SslMode};
+use switchyard_core::db::Engine;
 use switchyard_core::drivers::{Component, ComponentStatus};
 use switchyard_core::store::{
-    DbConnection, EnvironmentLabel, FileConnection, FileProtocol, FtpMode, FtpTls, Host, Profile,
-    ProfileId, SshAuth,
+    EnvironmentLabel, FileConnection, FileProtocol, FtpMode, FtpTls, Host, Profile, ProfileId,
+    SshAuth,
 };
 use switchyard_core::{Command, RequestId, RuntimeHandle};
 
 mod driver_card;
+mod engines;
+mod form;
+
+use form::{Field, FieldError, FieldSet, Values};
 
 use crate::app_state::{Profiles, next_id};
 use crate::theme::{MONO, Palette, palette};
@@ -28,16 +33,8 @@ use crate::ui::{self, Kind};
 /// Connection types offered by the editor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConnKind {
-    /// PostgreSQL.
-    Postgres,
-    /// SQL Server.
-    SqlServer,
-    /// Cloudflare D1.
-    D1,
-    /// Snowflake.
-    Snowflake,
-    /// Oracle Database.
-    Oracle,
+    /// A database; the engine's form comes from [`engines::form`].
+    Db(Engine),
     /// SSH Host.
     Ssh,
     /// SFTP over a Host.
@@ -47,24 +44,25 @@ pub enum ConnKind {
 }
 
 impl ConnKind {
-    const ALL: [ConnKind; 8] = [
-        ConnKind::Postgres,
-        ConnKind::SqlServer,
-        ConnKind::Oracle,
-        ConnKind::Snowflake,
-        ConnKind::D1,
+    /// The rail's entries: one for every database engine, then the remote kinds.
+    const RAIL: [ConnKind; 4] = [
+        ConnKind::Db(Engine::Postgres),
         ConnKind::Ssh,
         ConnKind::Sftp,
         ConnKind::Ftp,
     ];
 
+    /// Whether `self` and `other` share a rail entry.
+    fn same_rail(self, other: ConnKind) -> bool {
+        match (self, other) {
+            (ConnKind::Db(_), ConnKind::Db(_)) => true,
+            _ => self == other,
+        }
+    }
+
     fn badge(self) -> &'static str {
         match self {
-            ConnKind::Postgres => "PG",
-            ConnKind::SqlServer => "MS",
-            ConnKind::D1 => "D1",
-            ConnKind::Snowflake => "SF",
-            ConnKind::Oracle => "OR",
+            ConnKind::Db(_) => "DB",
             ConnKind::Ssh => "SSH",
             ConnKind::Sftp => "SFTP",
             ConnKind::Ftp => "FTP",
@@ -73,33 +71,27 @@ impl ConnKind {
 
     fn label(self) -> &'static str {
         match self {
-            ConnKind::Postgres => "PostgreSQL",
-            ConnKind::SqlServer => "SQL Server",
-            ConnKind::D1 => "Cloudflare D1",
-            ConnKind::Snowflake => "Snowflake",
-            ConnKind::Oracle => "Oracle",
+            ConnKind::Db(e) => e.display_name(),
             ConnKind::Ssh => "SSH Host",
             ConnKind::Sftp => "SFTP",
             ConnKind::Ftp => "FTP / FTPS",
         }
     }
 
+    fn rail_label(self) -> &'static str {
+        match self {
+            ConnKind::Db(_) => "Database",
+            k => k.label(),
+        }
+    }
+
     fn is_db(self) -> bool {
-        matches!(
-            self,
-            ConnKind::Postgres
-                | ConnKind::SqlServer
-                | ConnKind::Oracle
-                | ConnKind::D1
-                | ConnKind::Snowflake
-        )
+        matches!(self, ConnKind::Db(_))
     }
 
     fn sub(self) -> &'static str {
         match self {
-            ConnKind::Postgres | ConnKind::SqlServer | ConnKind::Oracle => "Database",
-            ConnKind::D1 => "SQLite over HTTPS",
-            ConnKind::Snowflake => "Cloud warehouse",
+            ConnKind::Db(e) => e.display_name(),
             ConnKind::Ssh => "Terminal + tunnels",
             ConnKind::Sftp => "Files over a Host",
             ConnKind::Ftp => "Files, own login",
@@ -135,6 +127,8 @@ pub struct ConnEditor {
     core: RuntimeHandle,
     profiles: Profiles,
     kind: ConnKind,
+    /// The database engine last picked, restored when the rail goes back to Database.
+    engine: Engine,
     existing_id: Option<ProfileId>,
     inputs: HashMap<&'static str, Entity<InputState>>,
     selects: HashMap<&'static str, Select>,
@@ -190,11 +184,7 @@ impl ConnEditor {
         cx: &mut Context<Self>,
     ) -> Self {
         let kind = match &existing {
-            Some(Profile::Db(d)) if d.engine == Engine::SqlServer => ConnKind::SqlServer,
-            Some(Profile::Db(d)) if d.engine == Engine::D1 => ConnKind::D1,
-            Some(Profile::Db(d)) if d.engine == Engine::Snowflake => ConnKind::Snowflake,
-            Some(Profile::Db(d)) if d.engine == Engine::Oracle => ConnKind::Oracle,
-            Some(Profile::Db(_)) => ConnKind::Postgres,
+            Some(Profile::Db(d)) => ConnKind::Db(d.engine),
             Some(Profile::Host(_)) => ConnKind::Ssh,
             Some(Profile::File(f)) => match f.protocol {
                 FileProtocol::Sftp { .. } => ConnKind::Sftp,
@@ -206,6 +196,10 @@ impl ConnEditor {
             core,
             profiles,
             kind,
+            engine: match kind {
+                ConnKind::Db(e) => e,
+                _ => Engine::Postgres,
+            },
             existing_id: existing.as_ref().map(|p| p.id().clone()),
             inputs: HashMap::new(),
             selects: HashMap::new(),
@@ -272,183 +266,20 @@ impl ConnEditor {
             Select { options, chosen }
         };
         match self.kind {
-            ConnKind::Postgres | ConnKind::SqlServer | ConnKind::Oracle => {
-                let engine = match self.kind {
-                    ConnKind::Postgres => Engine::Postgres,
-                    ConnKind::Oracle => Engine::Oracle,
-                    _ => Engine::SqlServer,
-                };
+            ConnKind::Db(engine) => {
+                let form = engines::form(engine);
                 let d = match existing {
                     Some(Profile::Db(d)) => d.clone(),
-                    _ => {
-                        let mut d = DbConnection::new("", engine);
-                        d.database = match engine {
-                            Engine::Postgres => "postgres".into(),
-                            Engine::Oracle => String::new(),
-                            _ => "master".into(),
-                        };
-                        d
-                    }
+                    _ => form.new_profile(),
                 };
-                add(
-                    self,
-                    "name",
-                    &d.name,
-                    match engine {
-                        Engine::Postgres => "shop_prod",
-                        Engine::Oracle => "erp",
-                        _ => "Reporting",
+                add(self, "name", &d.name, form.name_placeholder(), false);
+                form.init(
+                    &d,
+                    &mut FieldSet {
+                        editor: self,
+                        window,
+                        cx,
                     },
-                    false,
-                );
-                add(self, "host", &d.server, "localhost", false);
-                add(self, "port", &d.port.to_string(), "", false);
-                add(
-                    self,
-                    "database",
-                    &d.database,
-                    if engine == Engine::Oracle {
-                        "FREEPDB1"
-                    } else {
-                        ""
-                    },
-                    false,
-                );
-                add(self, "user", &d.user, "app_ro", false);
-                add(
-                    self,
-                    "password",
-                    "",
-                    if d.secret.is_some() {
-                        "•••••••• (stored)"
-                    } else {
-                        ""
-                    },
-                    true,
-                );
-                let ssl = sel(
-                    SslMode::ALL
-                        .iter()
-                        .map(|m| (m.label().to_owned(), m.label().to_owned()))
-                        .collect(),
-                    d.ssl_mode.label(),
-                );
-                self.selects.insert("ssl", ssl);
-                self.selects.insert(
-                    "via",
-                    sel(
-                        self.host_options("None — direct"),
-                        d.via_host.as_ref().map_or("", |h| h.0.as_str()),
-                    ),
-                );
-                if engine == Engine::SqlServer {
-                    self.selects.insert(
-                        "auth",
-                        sel(
-                            MSSQL_AUTH
-                                .iter()
-                                .map(|(key, m)| (m.label().into(), (*key).into()))
-                                .collect(),
-                            auth_key(d.auth),
-                        ),
-                    );
-                    add(
-                        self,
-                        "tenant",
-                        d.tenant.as_deref().unwrap_or_default(),
-                        "contoso.onmicrosoft.com",
-                        false,
-                    );
-                    add(
-                        self,
-                        "client_id",
-                        d.entra_client_id.as_deref().unwrap_or_default(),
-                        "Switchyard's own",
-                        false,
-                    );
-                }
-            }
-            ConnKind::D1 => {
-                let d = match existing {
-                    Some(Profile::Db(d)) => d.clone(),
-                    _ => {
-                        let mut d = DbConnection::new("", Engine::D1);
-                        d.server.clear();
-                        d
-                    }
-                };
-                add(self, "name", &d.name, "edge_prod", false);
-                add(
-                    self,
-                    "server",
-                    &d.server,
-                    "0123456789abcdef0123456789abcdef",
-                    false,
-                );
-                add(
-                    self,
-                    "database",
-                    &d.database,
-                    "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-                    false,
-                );
-                add(
-                    self,
-                    "password",
-                    "",
-                    if d.secret.is_some() {
-                        "•••••••• (stored)"
-                    } else {
-                        "API token with D1 Read or Edit"
-                    },
-                    true,
-                );
-            }
-            ConnKind::Snowflake => {
-                let d = match existing {
-                    Some(Profile::Db(d)) => d.clone(),
-                    _ => {
-                        let mut d = DbConnection::new("", Engine::Snowflake);
-                        d.server.clear();
-                        d.auth = DbAuthMethod::KeyPair;
-                        d
-                    }
-                };
-                let option = |k: &str| d.option(k).unwrap_or_default().to_owned();
-                add(self, "name", &d.name, "analytics", false);
-                add(self, "server", &d.server, "myorg-myaccount", false);
-                add(self, "user", &d.user, "REPORTING_SVC", false);
-                add(self, "database", &d.database, "ANALYTICS", false);
-                add(self, "schema", &option("schema"), "PUBLIC", false);
-                add(self, "warehouse", &option("warehouse"), "COMPUTE_WH", false);
-                add(self, "role", &option("role"), "The user's default", false);
-                add(
-                    self,
-                    "private_key_path",
-                    &option("private_key_path"),
-                    "~/.snowflake/rsa_key.p8",
-                    false,
-                );
-                add(
-                    self,
-                    "password",
-                    "",
-                    if d.secret.is_some() {
-                        "•••••••• (stored)"
-                    } else {
-                        ""
-                    },
-                    true,
-                );
-                self.selects.insert(
-                    "auth",
-                    sel(
-                        SNOWFLAKE_AUTH
-                            .iter()
-                            .map(|(key, m)| (m.label().into(), (*key).into()))
-                            .collect(),
-                        snowflake_auth_key(d.auth),
-                    ),
                 );
             }
             ConnKind::Ssh => {
@@ -736,95 +567,23 @@ impl ConnEditor {
             .ok_or_else(|| "Port must be 1–65535".to_owned())
     }
 
-    fn build(&self, cx: &Context<Self>) -> Result<Profile, (Option<&'static str>, String)> {
+    fn build(&self, cx: &Context<Self>) -> Result<Profile, FieldError> {
         let id = self.existing_id.clone().unwrap_or_default();
         let existing = self
             .existing_id
             .as_ref()
             .and_then(|i| self.profiles.all.iter().find(|p| p.id() == i));
         Ok(match self.kind {
-            ConnKind::Postgres | ConnKind::SqlServer | ConnKind::Oracle => {
-                let engine = match self.kind {
-                    ConnKind::Postgres => Engine::Postgres,
-                    ConnKind::Oracle => Engine::Oracle,
-                    _ => Engine::SqlServer,
-                };
+            ConnKind::Db(engine) => {
+                let form = engines::form(engine);
                 let mut d = match existing {
                     Some(Profile::Db(d)) => d.clone(),
-                    _ => DbConnection::new("", engine),
+                    _ => form.new_profile(),
                 };
                 d.id = id;
                 d.engine = engine;
                 d.name = self.value("name", cx);
-                d.server = self.value("host", cx);
-                d.port = self
-                    .port(cx, engine.default_port())
-                    .map_err(|m| (Some("port"), m))?;
-                d.database = self.value("database", cx);
-                d.user = self.value("user", cx);
-                d.ssl_mode = SslMode::ALL
-                    .into_iter()
-                    .find(|m| m.label() == self.chosen("ssl"))
-                    .unwrap_or_default();
-                let via = self.chosen("via");
-                d.via_host = (!via.is_empty()).then_some(ProfileId(via));
-                d.auth = auth_from_key(&self.chosen("auth"));
-                let opt = |v: String| (!v.is_empty()).then_some(v);
-                if engine == Engine::SqlServer {
-                    d.tenant = opt(self.value("tenant", cx));
-                    d.entra_client_id = opt(self.value("client_id", cx));
-                }
-                d.environment = self.env;
-                d.read_only = self.read_only;
-                d.history_enabled = self.history;
-                d.agent_access = self.agents;
-                d.assistant_agent = Some(self.chosen("assistant")).filter(|a| !a.is_empty());
-                Profile::Db(d)
-            }
-            ConnKind::D1 => {
-                let mut d = match existing {
-                    Some(Profile::Db(d)) => d.clone(),
-                    _ => DbConnection::new("", Engine::D1),
-                };
-                d.id = id;
-                d.engine = Engine::D1;
-                d.name = self.value("name", cx);
-                d.server = self.value("server", cx);
-                d.port = Engine::D1.default_port();
-                d.database = self.value("database", cx);
-                d.user.clear();
-                d.via_host = None;
-                d.environment = self.env;
-                d.read_only = self.read_only;
-                d.history_enabled = self.history;
-                d.agent_access = self.agents;
-                d.assistant_agent = Some(self.chosen("assistant")).filter(|a| !a.is_empty());
-                Profile::Db(d)
-            }
-            ConnKind::Snowflake => {
-                let mut d = match existing {
-                    Some(Profile::Db(d)) => d.clone(),
-                    _ => DbConnection::new("", Engine::Snowflake),
-                };
-                d.id = id;
-                d.engine = Engine::Snowflake;
-                d.name = self.value("name", cx);
-                d.server = self.value("server", cx);
-                d.port = Engine::Snowflake.default_port();
-                d.database = self.value("database", cx);
-                d.user = self.value("user", cx);
-                d.auth = snowflake_auth_from_key(&self.chosen("auth"));
-                d.via_host = None;
-                for key in ["schema", "warehouse", "role", "private_key_path"] {
-                    let v = self.value(key, cx);
-                    if v.is_empty()
-                        || (key == "private_key_path" && d.auth != DbAuthMethod::KeyPair)
-                    {
-                        d.options.remove(key);
-                    } else {
-                        d.options.insert(key.to_owned(), v);
-                    }
-                }
+                form.apply(&Values { editor: self, cx }, &mut d)?;
                 d.environment = self.env;
                 d.read_only = self.read_only;
                 d.history_enabled = self.history;
@@ -944,33 +703,16 @@ impl ConnEditor {
     fn test(&mut self, cx: &mut Context<Self>) {
         self.error = None;
         match (self.kind, self.build(cx)) {
-            (ConnKind::Oracle, Ok(Profile::Db(_))) if self.oracle_client_missing() => {
-                self.test = TestState::Missing;
-                if self.card.as_ref().is_none_or(|c| c.id != ORACLE_CLIENT) {
-                    self.card = Some(driver_card::DriverCard::new(ORACLE_CLIENT));
-                }
-            }
-            (
-                ConnKind::Postgres | ConnKind::Oracle | ConnKind::D1 | ConnKind::Snowflake,
-                Ok(Profile::Db(d)),
-            ) => {
-                let request = next_id();
-                self.test = TestState::Testing(request);
-                self.core.send(Command::TestConnection {
-                    request,
-                    connection: d,
-                    secret: self.secret(cx),
+            (ConnKind::Db(engine), Ok(Profile::Db(d))) => {
+                let missing = engines::form(engine).required_component(&d).filter(|id| {
+                    self.components
+                        .iter()
+                        .any(|c| c.id == *id && !c.status.is_installed())
                 });
-            }
-            (ConnKind::SqlServer, Ok(Profile::Db(d))) => {
-                let gss_missing = self
-                    .components
-                    .iter()
-                    .any(|c| c.id == "gssapi" && !c.status.is_installed());
-                if d.auth == DbAuthMethod::Integrated && gss_missing {
+                if let Some(id) = missing {
                     self.test = TestState::Missing;
-                    if self.card.as_ref().is_none_or(|c| c.id != "gssapi") {
-                        self.card = Some(driver_card::DriverCard::new("gssapi"));
+                    if self.card.as_ref().is_none_or(|c| c.id != id) {
+                        self.card = Some(driver_card::DriverCard::new(id));
                     }
                 } else {
                     let request = next_id();
@@ -1031,32 +773,41 @@ impl ConnEditor {
         cx.notify();
     }
 
-    fn oracle_client_missing(&self) -> bool {
-        self.components
-            .iter()
-            .any(|c| c.id == ORACLE_CLIENT && !c.status.is_installed())
-    }
-
     fn set_kind(&mut self, kind: ConnKind, window: &mut Window, cx: &mut Context<Self>) {
         if self.existing_id.is_some() || kind == self.kind {
             return;
         }
+        // Moving between engines keeps what was typed into fields they share.
+        let carried: Vec<(&str, String)> = if kind.is_db() && self.kind.is_db() {
+            ["name", "host", "user"]
+                .into_iter()
+                .map(|k| (k, self.value(k, cx)))
+                .filter(|(_, v)| !v.is_empty())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if let ConnKind::Db(e) = kind {
+            self.engine = e;
+        }
         self.kind = kind;
         self.build_fields(None, window, cx);
+        for (k, v) in carried {
+            if let Some(i) = self.inputs.get(k) {
+                i.update(cx, |i, cx| i.set_value(v, window, cx));
+            }
+        }
         cx.notify();
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn field(
-        &self,
-        key: &'static str,
-        label: &str,
-        span: u16,
-        mono: bool,
-        hint: Option<&str>,
-        p: &Palette,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn field(&self, f: &Field, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let Field {
+            key,
+            label,
+            span,
+            mono,
+            hint,
+        } = *f;
         let err = self
             .error
             .as_ref()
@@ -1182,349 +933,141 @@ impl ConnEditor {
             .into_any_element()
     }
 
-    fn fields(&self, p: &Palette, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    /// The database engines, as a grid of tiles above the form.
+    fn render_engine_picker(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .child(
+                div()
+                    .text_size(px(11.5))
+                    .text_color(p.fg2)
+                    .font_weight(FontWeight::MEDIUM)
+                    .child("Database type"),
+            )
+            .child(
+                div()
+                    .grid()
+                    .grid_cols(4)
+                    .gap(px(6.))
+                    .children(engines::ALL.iter().map(|e| {
+                        let e = *e;
+                        let active = self.kind == ConnKind::Db(e);
+                        div()
+                            .id(SharedString::from(format!("engine-{}", e.badge())))
+                            .min_w_0()
+                            .h(px(32.))
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .px(px(8.))
+                            .border_1()
+                            .border_color(if active { p.acc } else { p.bd2 })
+                            .rounded(px(6.))
+                            .bg(if active { p.sel } else { p.bg })
+                            .when(!active, |d| d.hover(|s| s.bg(p.hover)))
+                            .on_click(cx.listener(move |this, _, w, cx| {
+                                this.set_kind(ConnKind::Db(e), w, cx)
+                            }))
+                            .child(
+                                div()
+                                    .w(px(24.))
+                                    .flex_none()
+                                    .flex()
+                                    .justify_center()
+                                    .border_1()
+                                    .border_color(if active { p.acc } else { p.bd2 })
+                                    .rounded(px(3.))
+                                    .text_color(if active { p.acc } else { p.fg2 })
+                                    .font_family(MONO)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_size(px(8.5))
+                                    .line_height(px(16.))
+                                    .child(e.badge()),
+                            )
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .text_size(px(12.5))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .truncate()
+                                    .child(e.display_name()),
+                            )
+                    })),
+            )
+            .into_any_element()
+    }
+
+    /// The form's fields, in grid order.
+    fn layout(&self, cx: &Context<Self>) -> Vec<Field> {
         let mut v = Vec::new();
         match self.kind {
-            ConnKind::Postgres => {
-                v.push(self.field("name", "Name", 6, false, None, p, cx));
-                v.push(self.field("host", "Host", 4, true, None, p, cx));
-                v.push(self.field("port", "Port", 2, true, None, p, cx));
-                v.push(self.field("database", "Database", 3, false, None, p, cx));
-                v.push(self.field("user", "User", 3, false, None, p, cx));
-                v.push(self.field(
-                    "password",
-                    "Password",
-                    3,
-                    false,
-                    Some("Stored in the OS keychain"),
-                    p,
-                    cx,
-                ));
-                v.push(self.field("ssl", "SSL mode", 3, false, None, p, cx));
-                v.push(self.field(
-                    "via",
-                    "Connect via Host",
-                    6,
-                    false,
-                    Some("Opens an ephemeral local port automatically"),
-                    p,
-                    cx,
-                ));
-            }
-            ConnKind::SqlServer => {
-                let auth = auth_from_key(&self.chosen("auth"));
-                let server_hint = (auth == DbAuthMethod::Integrated).then_some(
-                    "Full host name (db.corp.example.com): Kerberos looks up MSSQLSvc/<server>:<port>",
-                );
-                v.push(self.field("name", "Name", 6, false, None, p, cx));
-                v.push(self.field("host", "Server", 4, true, server_hint, p, cx));
-                v.push(self.field("port", "Port", 2, true, None, p, cx));
-                v.push(self.field("database", "Database", 3, false, None, p, cx));
-                v.push(self.field(
-                    "auth",
-                    "Authentication",
-                    3,
-                    false,
-                    (auth == DbAuthMethod::Integrated).then_some(if cfg!(windows) {
-                        "Signs in as the current Windows user"
-                    } else {
-                        "Uses your Kerberos ticket (kinit or your desktop's sign-in)"
-                    }),
-                    p,
-                    cx,
-                ));
-                match auth {
-                    DbAuthMethod::Integrated
-                    | DbAuthMethod::KeyPair
-                    | DbAuthMethod::AccessToken => {}
-                    DbAuthMethod::WindowsPassword => {
-                        v.push(self.field(
-                            "user",
-                            "Windows account",
-                            3,
-                            false,
-                            Some("DOMAIN\\user"),
-                            p,
-                            cx,
-                        ));
-                        v.push(self.field(
-                            "password",
-                            "Password",
-                            3,
-                            false,
-                            Some("Stored in the OS keychain"),
-                            p,
-                            cx,
-                        ));
-                    }
-                    DbAuthMethod::EntraInteractive | DbAuthMethod::EntraDeviceCode => {
-                        v.push(self.field(
-                            "user",
-                            "Account (optional)",
-                            3,
-                            false,
-                            Some("Pre-fills the Microsoft sign-in, e.g. name@company.com"),
-                            p,
-                            cx,
-                        ));
-                        v.push(self.field(
-                            "tenant",
-                            "Tenant (optional)",
-                            3,
-                            true,
-                            Some("Directory id or domain; blank = any work or school account"),
-                            p,
-                            cx,
-                        ));
-                        v.push(self.field(
-                            "client_id",
-                            "Application (client) id",
-                            3,
-                            true,
-                            Some("Leave empty to sign in as Microsoft's SQL client (like SSMS)"),
-                            p,
-                            cx,
-                        ));
-                    }
-                    DbAuthMethod::EntraServicePrincipal => {
-                        v.push(self.field("user", "Application (client) id", 3, true, None, p, cx));
-                        v.push(self.field(
-                            "password",
-                            "Client secret",
-                            3,
-                            false,
-                            Some("Stored in the OS keychain"),
-                            p,
-                            cx,
-                        ));
-                        v.push(self.field("tenant", "Tenant", 3, true, None, p, cx));
-                    }
-                    DbAuthMethod::Password | DbAuthMethod::EntraPassword => {
-                        let user = if auth == DbAuthMethod::EntraPassword {
-                            "Microsoft account"
-                        } else {
-                            "User"
-                        };
-                        v.push(self.field("user", user, 3, false, None, p, cx));
-                        v.push(self.field(
-                            "password",
-                            "Password",
-                            3,
-                            false,
-                            Some("Stored in the OS keychain"),
-                            p,
-                            cx,
-                        ));
-                        if auth == DbAuthMethod::EntraPassword {
-                            v.push(self.field(
-                                "tenant",
-                                "Tenant (optional)",
-                                3,
-                                true,
-                                Some("No MFA with this method; use browser sign-in for MFA"),
-                                p,
-                                cx,
-                            ));
-                        }
-                    }
-                }
-                v.push(self.field("ssl", "Encrypt", 3, false, None, p, cx));
-                v.push(self.field("via", "Connect via Host", 3, false, None, p, cx));
-            }
-            ConnKind::D1 => {
-                v.push(self.field("name", "Name", 6, false, None, p, cx));
-                v.push(self.field(
-                    "server",
-                    "Account ID",
-                    6,
-                    true,
-                    Some("Cloudflare dashboard → Workers & Pages overview (right column), or the dashboard URL"),
-                    p,
-                    cx,
-                ));
-                v.push(self.field(
-                    "database",
-                    "Database ID",
-                    6,
-                    true,
-                    Some("From `wrangler d1 list` or the D1 database page"),
-                    p,
-                    cx,
-                ));
-                v.push(self.field(
-                    "password",
-                    "API token",
-                    6,
-                    false,
-                    Some("Stored in the OS keychain · needs the D1 Read or D1 Edit permission"),
-                    p,
-                    cx,
-                ));
-            }
-            ConnKind::Oracle => {
-                v.push(self.field("name", "Name", 6, false, None, p, cx));
-                v.push(self.field("host", "Host", 4, true, None, p, cx));
-                v.push(self.field("port", "Port", 2, true, None, p, cx));
-                v.push(self.field(
-                    "database",
-                    "Service name",
-                    6,
-                    true,
-                    Some("FREEPDB1, ORCLPDB1… or, with Host empty, a TNS alias or descriptor"),
-                    p,
-                    cx,
-                ));
-                v.push(self.field("user", "User", 3, false, None, p, cx));
-                v.push(self.field(
-                    "password",
-                    "Password",
-                    3,
-                    false,
-                    Some("Stored in the OS keychain"),
-                    p,
-                    cx,
-                ));
-                v.push(self.field(
-                    "via",
-                    "Connect via Host",
-                    6,
-                    false,
-                    Some("Opens an ephemeral local port automatically"),
-                    p,
-                    cx,
-                ));
-            }
-            ConnKind::Snowflake => {
-                let auth = snowflake_auth_from_key(&self.chosen("auth"));
-                v.push(self.field("name", "Name", 6, false, None, p, cx));
-                v.push(self.field(
-                    "server",
-                    "Account identifier",
-                    6,
-                    true,
-                    Some("orgname-accountname, or the host before .snowflakecomputing.com"),
-                    p,
-                    cx,
-                ));
-                v.push(self.field("user", "User", 3, false, None, p, cx));
-                v.push(self.field("auth", "Authentication", 3, false, None, p, cx));
-                if auth == DbAuthMethod::KeyPair {
-                    v.push(self.field(
-                        "private_key_path",
-                        "Private key file",
-                        6,
-                        true,
-                        Some("PKCS#8 .p8 (or PKCS#1) PEM; read in place, never copied"),
-                        p,
-                        cx,
-                    ));
-                    v.push(self.field(
-                        "password",
-                        "Key passphrase (optional)",
-                        6,
-                        false,
-                        Some("Only for an encrypted key · stored in the OS keychain"),
-                        p,
-                        cx,
-                    ));
-                } else {
-                    v.push(self.field(
-                        "password",
-                        "Programmatic access token",
-                        6,
-                        false,
-                        Some("Snowsight → your profile → Programmatic access tokens · stored in the OS keychain"),
-                        p,
-                        cx,
-                    ));
-                }
-                v.push(self.field("warehouse", "Warehouse", 3, true, None, p, cx));
-                v.push(self.field("role", "Role", 3, true, None, p, cx));
-                v.push(self.field("database", "Database", 3, true, None, p, cx));
-                v.push(self.field("schema", "Schema", 3, true, None, p, cx));
+            ConnKind::Db(engine) => {
+                v.push(Field::new("name", "Name"));
+                v.extend(engines::form(engine).layout(&Values { editor: self, cx }));
             }
             ConnKind::Ssh => {
-                v.push(self.field("name", "Name", 6, false, None, p, cx));
-                v.push(self.field("address", "Address", 4, true, None, p, cx));
-                v.push(self.field("port", "Port", 2, true, None, p, cx));
-                v.push(self.field("user", "User", 3, false, None, p, cx));
-                v.push(self.field("auth", "Auth", 3, false, None, p, cx));
+                v.push(Field::new("name", "Name"));
+                v.push(Field::new("address", "Address").span(4).mono());
+                v.push(Field::new("port", "Port").span(2).mono());
+                v.push(Field::new("user", "User").span(3));
+                v.push(Field::new("auth", "Auth").span(3));
                 match self.chosen("auth").as_str() {
                     "agent" => {
-                        v.push(self.field(
-                            "agent_socket",
-                            "Agent socket",
-                            3,
-                            true,
-                            Some(if cfg!(windows) {
-                                "A named pipe (\\\\.\\pipe\\…), or pageant for PuTTY's Pageant"
-                            } else {
-                                "1Password: ~/.1password/agent.sock (macOS: the Group Containers path)"
-                            }),
-                            p,
-                            cx,
-                        ));
-                        v.push(self.field(
-                            "agent_key",
-                            "Public key (optional)",
-                            3,
-                            true,
-                            Some("Offer only this key, e.g. ~/.ssh/prod.pub; 1Password asks you to approve"),
-                            p,
-                            cx,
-                        ));
+                        v.push(
+                            Field::new("agent_socket", "Agent socket")
+                                .span(3)
+                                .mono()
+                                .hint(if cfg!(windows) {
+                                    "A named pipe (\\\\.\\pipe\\…), or pageant for PuTTY's Pageant"
+                                } else {
+                                    "1Password: ~/.1password/agent.sock (macOS: the Group Containers path)"
+                                }),
+                        );
+                        v.push(
+                            Field::new("agent_key", "Public key (optional)")
+                                .span(3)
+                                .mono()
+                                .hint("Offer only this key, e.g. ~/.ssh/prod.pub; 1Password asks you to approve"),
+                        );
                     }
                     "key" => {
-                        v.push(self.field(
-                            "key",
-                            "Key file",
-                            6,
-                            true,
-                            Some("Read in place — never copied"),
-                            p,
-                            cx,
-                        ));
+                        v.push(
+                            Field::new("key", "Key file")
+                                .mono()
+                                .hint("Read in place — never copied"),
+                        );
                     }
                     "password" => {
-                        v.push(self.field(
-                            "password",
-                            "Password",
-                            6,
-                            false,
-                            Some("Stored in the OS keychain"),
-                            p,
-                            cx,
-                        ));
+                        v.push(Field::password("Password").span(6));
                     }
                     _ => {}
                 }
-                v.push(self.field("jump", "Jump host", 4, true, None, p, cx));
-                v.push(self.field("keepalive", "Keepalive (s)", 2, false, None, p, cx));
+                v.push(Field::new("jump", "Jump host").span(4).mono());
+                v.push(Field::new("keepalive", "Keepalive (s)").span(2));
                 if self.forward_x11 {
-                    v.push(self.field(
-                        "x11_display",
-                        "X display",
-                        3,
-                        true,
-                        Some("Empty: DISPLAY (Windows: VcXsrv/X410 on localhost:0)"),
-                        p,
-                        cx,
-                    ));
+                    v.push(
+                        Field::new("x11_display", "X display")
+                            .span(3)
+                            .mono()
+                            .hint("Empty: DISPLAY (Windows: VcXsrv/X410 on localhost:0)"),
+                    );
                 }
             }
             ConnKind::Sftp => {
-                v.push(self.field("name", "Name", 6, false, None, p, cx));
-                v.push(self.field("host", "Host", 6, false, Some("No second login"), p, cx));
-                v.push(self.field("path", "Default remote path", 6, true, None, p, cx));
+                v.push(Field::new("name", "Name"));
+                v.push(Field::new("host", "Host").hint("No second login"));
+                v.push(Field::new("path", "Default remote path").mono());
             }
             ConnKind::Ftp => {
-                v.push(self.field("name", "Name", 6, false, None, p, cx));
-                v.push(self.field("server", "Server", 4, true, None, p, cx));
-                v.push(self.field("port", "Port", 2, true, None, p, cx));
-                v.push(self.field("tls", "TLS", 3, false, None, p, cx));
-                v.push(self.field("mode", "Mode", 3, false, None, p, cx));
-                v.push(self.field("user", "User", 3, false, None, p, cx));
-                v.push(self.field("password", "Password", 3, false, None, p, cx));
+                v.push(Field::new("name", "Name"));
+                v.push(Field::new("server", "Server").span(4).mono());
+                v.push(Field::new("port", "Port").span(2).mono());
+                v.push(Field::new("tls", "TLS").span(3));
+                v.push(Field::new("mode", "Mode").span(3));
+                v.push(Field::new("user", "User").span(3));
+                v.push(Field::new("password", "Password").span(3));
             }
         }
         v
@@ -1541,18 +1084,15 @@ impl Render for ConnEditor {
         } else {
             "New connection".into()
         };
-        let fields = self.fields(&p, cx);
+        let layout = self.layout(cx);
+        let fields: Vec<AnyElement> = layout.iter().map(|f| self.field(f, &p, cx)).collect();
         let assistant_field = (self.kind.is_db() && self.agents).then(|| {
-            div().w(px(300.)).child(self.field(
-                "assistant",
-                "Assistant CLI",
-                6,
-                false,
-                None,
-                &p,
-                cx,
-            ))
+            div()
+                .w(px(300.))
+                .child(self.field(&Field::new("assistant", "Assistant CLI"), &p, cx))
         });
+        let engine_picker = (self.kind.is_db() && self.existing_id.is_none())
+            .then(|| self.render_engine_picker(&p, cx));
         let forwards = (self.kind == ConnKind::Ssh).then(|| {
             crate::forwards_editor::render(&self.forwards, &p, cx, |this: &mut Self, a, w, cx| {
                 this.forward_action(a, w, cx)
@@ -1633,9 +1173,13 @@ impl Render for ConnEditor {
                             .bg(p.panel)
                             .border_r_1()
                             .border_color(p.bd)
-                            .children(ConnKind::ALL.iter().map(|k| {
-                                let k = *k;
-                                let active = k == self.kind;
+                            .children(ConnKind::RAIL.iter().map(|k| {
+                                let active = k.same_rail(self.kind);
+                                let k = match k {
+                                    ConnKind::Db(_) if active => self.kind,
+                                    ConnKind::Db(_) => ConnKind::Db(self.engine),
+                                    k => *k,
+                                };
                                 let disabled = self.existing_id.is_some() && !active;
                                 div()
                                     .id(SharedString::from(format!("ctype-{}", k.badge())))
@@ -1677,7 +1221,7 @@ impl Render for ConnEditor {
                                                     .text_size(px(12.5))
                                                     .font_weight(FontWeight::MEDIUM)
                                                     .whitespace_nowrap()
-                                                    .child(k.label()),
+                                                    .child(k.rail_label()),
                                             )
                                             .child(
                                                 div()
@@ -1700,6 +1244,7 @@ impl Render for ConnEditor {
                             .flex()
                             .flex_col()
                             .gap(px(14.))
+                            .children(engine_picker)
                             .child(div().grid().grid_cols(6).gap(px(12.)).children(fields))
                             .children(forwards)
                             .when(self.kind == ConnKind::Ssh, |d| {
@@ -1913,52 +1458,4 @@ impl Render for ConnEditor {
                     ),
             )
     }
-}
-
-/// SQL Server authentication choices: (select key, method), in menu order.
-const MSSQL_AUTH: [(&str, DbAuthMethod); 7] = [
-    ("password", DbAuthMethod::Password),
-    ("entra-interactive", DbAuthMethod::EntraInteractive),
-    ("entra-device", DbAuthMethod::EntraDeviceCode),
-    ("entra-password", DbAuthMethod::EntraPassword),
-    ("entra-sp", DbAuthMethod::EntraServicePrincipal),
-    ("integrated", DbAuthMethod::Integrated),
-    ("windows", DbAuthMethod::WindowsPassword),
-];
-
-/// The Driver Manager component Oracle connections need.
-const ORACLE_CLIENT: &str = "oracle-instant-client";
-
-/// Snowflake sign-in methods (its SQL API takes no passwords).
-const SNOWFLAKE_AUTH: [(&str, DbAuthMethod); 2] = [
-    ("key-pair", DbAuthMethod::KeyPair),
-    ("token", DbAuthMethod::AccessToken),
-];
-
-fn snowflake_auth_key(m: DbAuthMethod) -> &'static str {
-    SNOWFLAKE_AUTH
-        .iter()
-        .find(|(_, a)| *a == m)
-        .map_or("key-pair", |(k, _)| k)
-}
-
-fn snowflake_auth_from_key(key: &str) -> DbAuthMethod {
-    SNOWFLAKE_AUTH
-        .iter()
-        .find(|(k, _)| *k == key)
-        .map_or(DbAuthMethod::KeyPair, |(_, a)| *a)
-}
-
-fn auth_key(m: DbAuthMethod) -> &'static str {
-    MSSQL_AUTH
-        .iter()
-        .find(|(_, a)| *a == m)
-        .map_or("password", |(k, _)| k)
-}
-
-fn auth_from_key(key: &str) -> DbAuthMethod {
-    MSSQL_AUTH
-        .iter()
-        .find(|(k, _)| *k == key)
-        .map_or(DbAuthMethod::Password, |(_, a)| *a)
 }
