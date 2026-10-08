@@ -1,5 +1,6 @@
-//! Named Workbench workspaces: listing them when the panel opens, the empty
-//! page's and the header menu's "Add workspace", and switching between them.
+//! Named Workbench workspaces (called "projects" in the UI): listing them
+//! when the panel opens, the empty page's and the header menu's "Add project",
+//! and switching between them.
 //!
 //! The chosen workspace is [`crate::api::compat::current_project`]; the
 //! panel's frame-time check rehydrates when it differs from the bound one.
@@ -61,7 +62,7 @@ impl WorkbenchPanel {
     }
 
     /// The empty page's button and the header menu's last row: create
-    /// `Workspace N` and open it.
+    /// `Project N` and open it.
     pub(super) fn add_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.refuse_dirty_switch(cx) || self._workspace_work.is_some() {
             return;
@@ -135,7 +136,7 @@ impl WorkbenchPanel {
             .iter()
             .find(|entry| entry.id == self.bound_workspace)
             .map(|entry| entry.name.clone())
-            .unwrap_or_else(|| "Workspace".into())
+            .unwrap_or_else(|| "Project".into())
     }
 
     /// `true` while a workspace is being created.
