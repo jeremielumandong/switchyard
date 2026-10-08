@@ -16,6 +16,9 @@ pub enum Flavor {
     Snowflake,
     /// Oracle: `"ident"`, `q'[..]'` alternative quoting, flat block comments.
     Oracle,
+    /// JavaScript-like shell text (MongoDB): `'..'` and `".."` strings with backslash
+    /// escapes, `//` comments, flat block comments, no `--` comments.
+    JavaScript,
 }
 
 /// Kind of a lexical segment.
@@ -64,8 +67,10 @@ pub fn segments(sql: &str, flavor: Flavor) -> Vec<Segment> {
         let c = b[i];
         let next = if i + 1 < n { b[i + 1] } else { 0 };
         // Start of a non-code segment?
-        let (kind, end) = if (c == b'-' && next == b'-')
-            || (c == b'/' && next == b'/' && flavor == Flavor::Snowflake)
+        let (kind, end) = if (c == b'-' && next == b'-' && flavor != Flavor::JavaScript)
+            || (c == b'/'
+                && next == b'/'
+                && matches!(flavor, Flavor::Snowflake | Flavor::JavaScript))
         {
             let end = sql[i..].find('\n').map_or(n, |p| i + p);
             (SegKind::Comment, end)
@@ -78,7 +83,10 @@ pub fn segments(sql: &str, flavor: Flavor) -> Vec<Segment> {
                     && j + 1 < n
                     && b[j + 1] == b'*'
                     && (depth == 0
-                        || !matches!(flavor, Flavor::Sqlite | Flavor::Snowflake | Flavor::Oracle))
+                        || !matches!(
+                            flavor,
+                            Flavor::Sqlite | Flavor::Snowflake | Flavor::Oracle | Flavor::JavaScript
+                        ))
                 {
                     depth += 1;
                     j += 2;
@@ -122,7 +130,7 @@ pub fn segments(sql: &str, flavor: Flavor) -> Vec<Segment> {
             }
             (SegKind::Str, end)
         } else if c == b'\'' {
-            let backslash = flavor == Flavor::Snowflake
+            let backslash = matches!(flavor, Flavor::Snowflake | Flavor::JavaScript)
                 || (flavor == Flavor::Postgres
                     && i > 0
                     && (b[i - 1] == b'E' || b[i - 1] == b'e')
@@ -139,6 +147,20 @@ pub fn segments(sql: &str, flavor: Flavor) -> Vec<Segment> {
                         end = j + 1;
                         break;
                     }
+                } else {
+                    j += 1;
+                }
+            }
+            (SegKind::Str, end.min(n))
+        } else if c == b'"' && flavor == Flavor::JavaScript {
+            let mut j = i + 1;
+            let mut end = n;
+            while j < n {
+                if b[j] == b'\\' {
+                    j += 2;
+                } else if b[j] == b'"' {
+                    end = j + 1;
+                    break;
                 } else {
                     j += 1;
                 }

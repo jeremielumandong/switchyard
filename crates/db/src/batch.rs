@@ -9,6 +9,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::value::{self, DataType, Value};
 
+/// [`ColumnMeta::type_name`] of a JSON column that holds each whole source row as one
+/// document (MongoDB). Row viewers show that document instead of rebuilding an object
+/// from the other columns.
+pub const DOCUMENT_TYPE: &str = "document";
+
 /// Metadata for one result column.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ColumnMeta {

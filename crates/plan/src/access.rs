@@ -194,6 +194,9 @@ pub async fn workload(session: &mut dyn DbSession, engine: Engine) -> Result<Wor
         Engine::D1 => Err(PlanError::Unsupported(
             "workload statistics are not available for Cloudflare D1".into(),
         )),
+        Engine::MongoDb => Err(PlanError::Unsupported(
+            "workload statistics are not available for MongoDB yet".into(),
+        )),
         Engine::Snowflake => Err(PlanError::Unsupported(
             "workload statistics are not available for Snowflake yet".into(),
         )),
