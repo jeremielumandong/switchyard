@@ -879,7 +879,12 @@ impl Workspace {
                 "open" => self.open_profile(id, window, cx),
                 "edit" => {
                     if let Some(p) = self.profiles.all.iter().find(|p| p.id() == id).cloned() {
-                        self.open_conn_editor(ConnKind::Postgres, Some(p), window, cx);
+                        self.open_conn_editor(
+                            ConnKind::Db(switchyard_core::db::Engine::Postgres),
+                            Some(p),
+                            window,
+                            cx,
+                        );
                     }
                 }
                 "delete" => self

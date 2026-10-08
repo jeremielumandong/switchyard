@@ -1923,7 +1923,12 @@ impl Workspace {
                         ui::button("new-conn", "New connection", ui::Kind::Secondary, p)
                             .flex_1()
                             .on_click(cx.listener(|this, _, w, cx| {
-                                this.open_conn_editor(ConnKind::Postgres, None, w, cx)
+                                this.open_conn_editor(
+                                    ConnKind::Db(switchyard_core::db::Engine::Postgres),
+                                    None,
+                                    w,
+                                    cx,
+                                )
                             })),
                     )
                     .child(
