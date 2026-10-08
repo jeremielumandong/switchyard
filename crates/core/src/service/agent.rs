@@ -203,7 +203,7 @@ async fn read_only(
         }
         Engine::SqlServer => s.begin().await.map_err(|e| e.to_string())?,
         // No transactions across requests: the SELECT-only check is the guard.
-        Engine::D1 | Engine::Snowflake => {}
+        Engine::D1 | Engine::Snowflake | Engine::MongoDb => {}
     }
     let mut stream = s.execute(sql, &[]).await.map_err(|e| e.to_string())?;
     let mut out = AgentRows {
