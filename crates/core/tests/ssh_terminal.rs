@@ -144,6 +144,31 @@ async fn ssh_terminal_prompts_runs_and_reconnects() {
         _ => None,
     })
     .await;
+    // Connected means the channel is up, not that the new shell reads yet: input typed
+    // before it sets up the terminal can be discarded. Ask it to set the title until it
+    // does, then type.
+    let mut ready = false;
+    for _ in 0..10 {
+        h.send(Command::TerminalInput {
+            term: 9,
+            bytes: b"printf '\\033]0;swy-again\\007'\r".to_vec(),
+        });
+        let title = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let Event::TerminalTitle { term: 9, title } = rx.next().await.expect("events")
+                    && title == "swy-again"
+                {
+                    return;
+                }
+            }
+        })
+        .await;
+        if title.is_ok() {
+            ready = true;
+            break;
+        }
+    }
+    assert!(ready, "the reconnected shell never answered");
 
     for b in b"echo ssh-$((6*7)); exit 3\r" {
         h.send(Command::TerminalInput {
