@@ -855,7 +855,8 @@ impl WorkbenchPanel {
             })
     }
 
-    /// The header's workspace picker: every workspace, then "Add workspace".
+    /// The header's workspace picker: every workspace, then "Rename workspace…"
+    /// and "Add workspace".
     fn workspace_menu(
         &self,
         cx: &Context<Self>,
@@ -879,12 +880,19 @@ impl WorkbenchPanel {
                     .checked(selected),
                 );
             }
-            menu.separator().item(menu_item(
-                "workbench-workspace-add".into(),
-                "Add workspace",
-                &handle,
-                |this, window, cx| this.add_workspace(window, cx),
-            ))
+            menu.separator()
+                .item(menu_item(
+                    "workbench-workspace-rename".into(),
+                    "Rename workspace…",
+                    &handle,
+                    |this, window, cx| this.open_rename_workspace(window, cx),
+                ))
+                .item(menu_item(
+                    "workbench-workspace-add".into(),
+                    "Add workspace",
+                    &handle,
+                    |this, window, cx| this.add_workspace(window, cx),
+                ))
         }
     }
 

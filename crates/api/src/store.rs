@@ -252,6 +252,30 @@ impl WorkbenchStore {
         Ok(WorkspaceEntry { id, name })
     }
 
+    /// Rename `workspace` to `name` (trimmed).
+    pub fn rename_workspace(
+        &self,
+        workspace: &WorkspaceId,
+        name: &str,
+    ) -> StoreResult<WorkspaceEntry> {
+        validate_name("workspace", name)?;
+        let name = name.trim().to_owned();
+        let changed = self.conn().execute(
+            "UPDATE workbench_workspaces SET name=?2 WHERE id=?1",
+            params![workspace.as_str(), name],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::InvalidInput(format!(
+                "workspace {} does not exist",
+                workspace.as_str()
+            )));
+        }
+        Ok(WorkspaceEntry {
+            id: workspace.clone(),
+            name,
+        })
+    }
+
     /// Record that `workspace` was opened, so the next launch reopens it.
     pub fn mark_workspace_opened(&self, workspace: &WorkspaceId) -> StoreResult<()> {
         self.conn().execute(
@@ -3327,7 +3351,10 @@ mod tests {
             store.list_workspaces().unwrap(),
             vec![first.clone(), second.clone()]
         );
-        assert_eq!(store.last_opened_workspace().unwrap(), Some(second.id));
+        assert_eq!(
+            store.last_opened_workspace().unwrap(),
+            Some(second.id.clone())
+        );
 
         store.mark_workspace_opened(&first.id).unwrap();
         assert_eq!(
@@ -3335,6 +3362,19 @@ mod tests {
             Some(first.id.clone())
         );
         assert!(store.list_collections(&first.id).unwrap().is_empty());
+
+        let renamed = store.rename_workspace(&first.id, " Billing ").unwrap();
+        assert_eq!(renamed.name, "Billing");
+        assert_eq!(store.list_workspaces().unwrap(), vec![renamed, second]);
+        assert!(matches!(
+            store.rename_workspace(&first.id, " "),
+            Err(StoreError::InvalidInput(_))
+        ));
+        let missing = WorkspaceId::new("workspace-missing").unwrap();
+        assert!(matches!(
+            store.rename_workspace(&missing, "Ghost"),
+            Err(StoreError::InvalidInput(_))
+        ));
     }
 
     #[test]

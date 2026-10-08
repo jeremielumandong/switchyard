@@ -1,4 +1,4 @@
-//! Retained, selectable response documents. The input owns selection and scrolling;
+//! Retained, selectable, read-only response documents. The input owns selection and scrolling;
 //! response formatting remains on the workbench's background executor.
 
 use std::sync::Arc;
@@ -116,9 +116,10 @@ impl Render for ResponseEditor {
             .font_family(crate::api::compat::fonts::mono(cx))
             .child(
                 Editor::new(input)
-                    // Disabled inputs still expose selection, navigation, search,
-                    // and Copy/Select All, while all mutation paths are blocked.
-                    .disabled(true)
+                    // Read-only, not disabled: a disabled input swallows every
+                    // mouse-down, so the scrollbar could not be dragged and text
+                    // could not be selected or copied.
+                    .readonly(true)
                     .appearance(false)
                     .h_full()
                     .w_full(),
