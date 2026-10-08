@@ -143,6 +143,13 @@ pub fn kind_label(kind: ObjectKind) -> &'static str {
         ObjectKind::Sequence => "sequence",
         ObjectKind::Type => "type",
         ObjectKind::Synonym => "synonym",
+        ObjectKind::Role => "user / role",
+        ObjectKind::Job => "agent job",
+        ObjectKind::Extension => "extension",
+        ObjectKind::Package => "package",
+        ObjectKind::Stage => "stage",
+        ObjectKind::Task => "task",
+        ObjectKind::Pipe => "pipe",
     }
 }
 

@@ -1,0 +1,74 @@
+---
+source: crates/db/src/pg/catalog.rs
+expression: DEPENDENCIES_SQL
+---
+WITH target AS (
+  SELECT 'pg_catalog.pg_class'::regclass::oid AS cls, c.oid
+  FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+  WHERE $3::text = 'class' AND n.nspname = $1 AND c.relname = $2
+  UNION ALL
+  SELECT 'pg_catalog.pg_proc'::regclass::oid, p.oid
+  FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+  WHERE $3::text = 'proc' AND n.nspname = $1 AND p.proname = $2
+  UNION ALL
+  SELECT 'pg_catalog.pg_type'::regclass::oid, t.oid
+  FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+  WHERE $3::text = 'type' AND n.nspname = $1 AND t.typname = $2
+), edge AS (
+  SELECT CASE WHEN rw.oid IS NOT NULL OR ad.oid IS NOT NULL OR tg.oid IS NOT NULL
+              THEN 'pg_catalog.pg_class'::regclass::oid ELSE d.classid END AS from_cls,
+         COALESCE(rw.ev_class, ad.adrelid, tg.tgrelid, d.objid) AS from_oid,
+         d.refclassid AS to_cls, d.refobjid AS to_oid,
+         CASE WHEN rw.oid IS NOT NULL THEN 'query'
+              WHEN ad.oid IS NOT NULL THEN 'column default'
+              WHEN tg.oid IS NOT NULL THEN 'trigger ' || tg.tgname
+              WHEN d.deptype = 'a' THEN 'owned by'
+              ELSE 'reference' END AS how
+  FROM pg_catalog.pg_depend d
+  LEFT JOIN pg_catalog.pg_rewrite rw
+         ON d.classid = 'pg_catalog.pg_rewrite'::regclass AND rw.oid = d.objid
+  LEFT JOIN pg_catalog.pg_attrdef ad
+         ON d.classid = 'pg_catalog.pg_attrdef'::regclass AND ad.oid = d.objid
+  LEFT JOIN pg_catalog.pg_trigger tg
+         ON d.classid = 'pg_catalog.pg_trigger'::regclass AND tg.oid = d.objid
+  WHERE d.deptype IN ('n', 'a')
+    AND d.classid IN ('pg_catalog.pg_class'::regclass, 'pg_catalog.pg_proc'::regclass,
+                      'pg_catalog.pg_type'::regclass, 'pg_catalog.pg_rewrite'::regclass,
+                      'pg_catalog.pg_attrdef'::regclass, 'pg_catalog.pg_trigger'::regclass)
+    AND d.refclassid IN ('pg_catalog.pg_class'::regclass, 'pg_catalog.pg_proc'::regclass,
+                         'pg_catalog.pg_type'::regclass)
+  UNION ALL
+  SELECT 'pg_catalog.pg_class'::regclass::oid, con.conrelid,
+         'pg_catalog.pg_class'::regclass::oid, con.confrelid, 'foreign key ' || con.conname
+  FROM pg_catalog.pg_constraint con WHERE con.contype = 'f'
+), dep AS (
+  SELECT 'uses' AS direction, e.to_cls AS cls, e.to_oid AS oid, e.how
+  FROM edge e JOIN target t ON e.from_cls = t.cls AND e.from_oid = t.oid
+  WHERE NOT (e.to_cls = e.from_cls AND e.to_oid = e.from_oid)
+  UNION
+  SELECT 'used_by', e.from_cls, e.from_oid, e.how
+  FROM edge e JOIN target t ON e.to_cls = t.cls AND e.to_oid = t.oid
+  WHERE NOT (e.to_cls = e.from_cls AND e.to_oid = e.from_oid)
+)
+SELECT dep.direction, o.schema_name, o.object_name, o.kind, dep.how
+FROM dep
+JOIN LATERAL (
+  SELECT n.nspname::text, c.relname::text,
+         CASE c.relkind WHEN 'v' THEN 'view' WHEN 'm' THEN 'mview' WHEN 'S' THEN 'sequence'
+                        ELSE 'table' END
+  FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+  WHERE dep.cls = 'pg_catalog.pg_class'::regclass AND c.oid = dep.oid
+    AND c.relkind IN ('r', 'p', 'f', 'v', 'm', 'S')
+  UNION ALL
+  SELECT n.nspname::text, p.proname::text,
+         CASE p.prokind WHEN 'p' THEN 'procedure' ELSE 'function' END
+  FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+  WHERE dep.cls = 'pg_catalog.pg_proc'::regclass AND p.oid = dep.oid
+  UNION ALL
+  SELECT n.nspname::text, t.typname::text, 'type'
+  FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+  WHERE dep.cls = 'pg_catalog.pg_type'::regclass AND t.oid = dep.oid
+    AND t.typrelid = 0 AND t.typcategory <> 'A'
+) o(schema_name, object_name, kind) ON true
+WHERE o.schema_name NOT IN ('pg_catalog', 'information_schema')
+ORDER BY 1 DESC, 4, 2, 3, 5

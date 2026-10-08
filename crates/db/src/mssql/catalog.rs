@@ -4,8 +4,9 @@ use tiberius::Query;
 
 use super::{TdsClient, decode, map_error, simple_rows};
 use crate::catalog::{
-    CatalogChunk, ColumnInfo, ConstraintInfo, ForeignKeyInfo, IndexInfo, IntrospectScope,
-    ObjectDetail, ObjectInfo, ObjectKind, SchemaInfo, TriggerInfo, like_contains, search_hit,
+    CatalogChunk, ColumnInfo, ConstraintInfo, Dependencies, DependencyInfo, ForeignKeyInfo,
+    IndexInfo, IntrospectScope, ObjectDetail, ObjectInfo, ObjectKind, SchemaInfo, TriggerInfo,
+    dependency_kind, like_contains, search_hit,
 };
 use crate::error::{DbError, Result};
 use crate::value::Value;
@@ -88,8 +89,379 @@ fn objects_sql(schema: &str, kind: ObjectKind) -> Option<String> {
             "SELECT o.name, NULL, NULL FROM sys.types o \
              WHERE o.is_user_defined = 1 AND SCHEMA_NAME(o.schema_id) = {s} ORDER BY o.name"
         ),
-        ObjectKind::MaterializedView => return None,
+        ObjectKind::Role => ROLES_SQL.to_owned(),
+        _ => return None,
     })
+}
+
+/// Users and roles (DBX-5c): the database's principals (with their login and default
+/// schema), then the server logins mapped to none of them. `sys.server_principals` shows
+/// only what the user may see (their own login without `VIEW ANY DEFINITION`).
+const ROLES_SQL: &str = "SELECT p.name COLLATE DATABASE_DEFAULT, NULL, \
+       LOWER(REPLACE(p.type_desc, '_', ' ')) COLLATE DATABASE_DEFAULT \
+       + CASE WHEN sp.name IS NOT NULL \
+              THEN ' · login ' + sp.name COLLATE DATABASE_DEFAULT ELSE '' END \
+       + CASE WHEN p.default_schema_name IS NOT NULL \
+              THEN ' · schema ' + p.default_schema_name COLLATE DATABASE_DEFAULT ELSE '' END \
+     FROM sys.database_principals p \
+     LEFT JOIN sys.server_principals sp ON sp.sid = p.sid \
+     WHERE p.type IN ('S','U','G','R','E','X','C','K') AND p.is_fixed_role = 0 \
+       AND p.name NOT IN ('sys','INFORMATION_SCHEMA','guest','public') \
+     UNION ALL \
+     SELECT sp.name COLLATE DATABASE_DEFAULT, NULL, \
+       'login · ' + LOWER(REPLACE(sp.type_desc, '_', ' ')) COLLATE DATABASE_DEFAULT \
+       + CASE WHEN sp.is_disabled = 1 THEN ' · disabled' ELSE '' END \
+     FROM sys.server_principals sp \
+     WHERE sp.type IN ('S','U','G','E','X') AND sp.name NOT LIKE '##%' \
+       AND NOT EXISTS (SELECT 1 FROM sys.database_principals p \
+                       WHERE p.sid = sp.sid \
+                          OR p.name = sp.name COLLATE DATABASE_DEFAULT) \
+     ORDER BY 1";
+
+/// One database principal (`@P1` name): type, type text, default schema, login.
+const PRINCIPAL_SQL: &str = "SELECT p.type, p.type_desc, p.default_schema_name, \
+       sp.name COLLATE DATABASE_DEFAULT \
+     FROM sys.database_principals p LEFT JOIN sys.server_principals sp ON sp.sid = p.sid \
+     WHERE p.name = @P1";
+
+/// The database roles `@P1` is a member of.
+const PRINCIPAL_ROLES_SQL: &str = "SELECT r.name FROM sys.database_role_members m \
+     JOIN sys.database_principals r ON r.principal_id = m.role_principal_id \
+     JOIN sys.database_principals u ON u.principal_id = m.member_principal_id \
+     WHERE u.name = @P1 ORDER BY 1";
+
+/// One server login (`@P1` name): type, type text, disabled, default database.
+const LOGIN_SQL: &str = "SELECT sp.type, sp.type_desc, sp.is_disabled, sp.default_database_name \
+     FROM sys.server_principals sp WHERE sp.name = @P1";
+
+/// SQL Agent jobs (DBX-5c): enabled flag, last outcome (`sysjobhistory` step 0), next
+/// scheduled run and schedule count. Needs msdb access (`SQLAgentReaderRole`).
+const JOBS_SQL: &str = "SELECT j.name, j.enabled, h.run_status, h.run_date, h.run_time, \
+       (SELECT MIN(CAST(s.next_run_date AS bigint) * 1000000 + s.next_run_time) \
+        FROM msdb.dbo.sysjobschedules s WHERE s.job_id = j.job_id AND s.next_run_date > 0), \
+       (SELECT COUNT(*) FROM msdb.dbo.sysjobschedules s WHERE s.job_id = j.job_id) \
+     FROM msdb.dbo.sysjobs j \
+     OUTER APPLY (SELECT TOP 1 jh.run_status, jh.run_date, jh.run_time \
+                  FROM msdb.dbo.sysjobhistory jh \
+                  WHERE jh.job_id = j.job_id AND jh.step_id = 0 \
+                  ORDER BY jh.instance_id DESC) h \
+     ORDER BY j.name";
+
+/// One job (`@P1` name) with its steps, one row per step.
+const JOB_DETAIL_SQL: &str = "SELECT j.enabled, j.description, SUSER_SNAME(j.owner_sid), \
+       c.name, s.step_id, s.step_name, s.subsystem, s.database_name, s.command \
+     FROM msdb.dbo.sysjobs j \
+     LEFT JOIN msdb.dbo.syscategories c ON c.category_id = j.category_id \
+     LEFT JOIN msdb.dbo.sysjobsteps s ON s.job_id = j.job_id \
+     WHERE j.name = @P1 ORDER BY s.step_id";
+
+/// The schedules of one job (`@P1` name): name and enabled flag.
+const JOB_SCHEDULES_SQL: &str = "SELECT sc.name, sc.enabled FROM msdb.dbo.sysjobs j \
+     JOIN msdb.dbo.sysjobschedules js ON js.job_id = j.job_id \
+     JOIN msdb.dbo.sysschedules sc ON sc.schedule_id = js.schedule_id \
+     WHERE j.name = @P1 ORDER BY sc.name";
+
+/// The hint shown instead of the jobs when msdb cannot be read.
+const JOBS_HINT: &str = "SQL Agent jobs need read access to msdb (SQLAgentReaderRole)";
+
+/// Dependencies (DBX-5a) of the object `id`: `sys.sql_expression_dependencies` in both
+/// directions plus foreign keys. Columns: direction, schema, name, type, link, database
+/// of a cross-database reference.
+fn dependencies_sql(id: &str) -> String {
+    format!(
+        "SELECT 'uses', COALESCE(d.referenced_schema_name, SCHEMA_NAME(o.schema_id), ''), \
+                d.referenced_entity_name, COALESCE(o.type_desc, d.referenced_class_desc), \
+                CASE WHEN d.is_schema_bound_reference = 1 THEN 'schema-bound' \
+                     ELSE 'reference' END, d.referenced_database_name \
+         FROM sys.sql_expression_dependencies d \
+         LEFT JOIN sys.objects o ON o.object_id = d.referenced_id \
+         WHERE d.referencing_id = {id} \
+         UNION ALL \
+         SELECT 'used_by', SCHEMA_NAME(o.schema_id), o.name, o.type_desc, \
+                CASE WHEN d.is_schema_bound_reference = 1 THEN 'schema-bound' \
+                     ELSE 'reference' END, NULL \
+         FROM sys.sql_expression_dependencies d \
+         JOIN sys.objects o ON o.object_id = d.referencing_id \
+         WHERE d.referenced_id = {id} \
+         UNION ALL \
+         SELECT 'uses', SCHEMA_NAME(t.schema_id), t.name, t.type_desc, 'foreign key ' + fk.name, NULL \
+         FROM sys.foreign_keys fk JOIN sys.objects t ON t.object_id = fk.referenced_object_id \
+         WHERE fk.parent_object_id = {id} AND fk.referenced_object_id <> {id} \
+         UNION ALL \
+         SELECT 'used_by', SCHEMA_NAME(t.schema_id), t.name, t.type_desc, 'foreign key ' + fk.name, NULL \
+         FROM sys.foreign_keys fk JOIN sys.objects t ON t.object_id = fk.parent_object_id \
+         WHERE fk.referenced_object_id = {id} AND fk.parent_object_id <> {id} \
+         ORDER BY 1 DESC, 4, 2, 3"
+    )
+}
+
+/// `2026-10-01 03:00` from Agent's `yyyymmdd` date and `hhmmss` time integers.
+fn agent_time(date: i64, time: i64) -> String {
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}",
+        date / 10000,
+        date / 100 % 100,
+        date % 100,
+        time / 10000,
+        time / 100 % 100
+    )
+}
+
+/// A job's tree line: `enabled · last run succeeded 2026-10-01 03:00 · next 2026-10-09
+/// 03:00` (`status` is `sysjobhistory.run_status`, `next` is `yyyymmddhhmmss`).
+fn job_summary(
+    enabled: bool,
+    status: Option<i64>,
+    run: Option<(i64, i64)>,
+    next: Option<i64>,
+    schedules: i64,
+) -> String {
+    let mut parts = vec![if enabled { "enabled" } else { "disabled" }.to_owned()];
+    match status {
+        Some(s) => {
+            let word = match s {
+                0 => "failed",
+                1 => "succeeded",
+                2 => "retrying",
+                3 => "canceled",
+                4 => "in progress",
+                _ => "unknown",
+            };
+            let at = run.map(|(d, t)| format!(" {}", agent_time(d, t)));
+            parts.push(format!("last run {word}{}", at.unwrap_or_default()));
+        }
+        None => parts.push("never run".into()),
+    }
+    match next {
+        Some(n) if n > 0 => {
+            parts.push(format!("next {}", agent_time(n / 1_000_000, n % 1_000_000)))
+        }
+        _ if schedules == 0 => parts.push("no schedule".into()),
+        _ => {}
+    }
+    parts.join(" · ")
+}
+
+/// `CREATE USER` / `CREATE ROLE` text of a database principal and its role memberships
+/// (`kind` is `sys.database_principals.type`).
+fn principal_ddl(
+    name: &str,
+    kind: &str,
+    type_desc: &str,
+    default_schema: Option<&str>,
+    login: Option<&str>,
+    roles: &[String],
+) -> String {
+    let who = quote(name);
+    let schema = default_schema
+        .map(|s| format!(" WITH DEFAULT_SCHEMA = {}", quote(s)))
+        .unwrap_or_default();
+    let mut ddl = format!("-- {type_desc}\n");
+    ddl.push_str(&match kind.trim() {
+        "R" => format!("CREATE ROLE {who};"),
+        "A" => format!("CREATE APPLICATION ROLE {who} WITH PASSWORD = N'<password>';"),
+        "E" | "X" => format!("CREATE USER {who} FROM EXTERNAL PROVIDER{schema};"),
+        _ => match login {
+            Some(l) => format!("CREATE USER {who} FOR LOGIN {}{schema};", quote(l)),
+            None => format!("CREATE USER {who} WITHOUT LOGIN{schema};"),
+        },
+    });
+    ddl.push('\n');
+    for r in roles {
+        ddl.push_str(&format!("ALTER ROLE {} ADD MEMBER {who};\n", quote(r)));
+    }
+    ddl
+}
+
+/// `CREATE LOGIN` text of a server login (the password is never scripted).
+fn login_ddl(name: &str, kind: &str, type_desc: &str, disabled: bool, db: Option<&str>) -> String {
+    let who = quote(name);
+    let db = db
+        .map(|d| format!("DEFAULT_DATABASE = {}", quote(d)))
+        .unwrap_or_default();
+    let mut ddl = format!(
+        "-- Login ({type_desc}){}\n",
+        if disabled { ", disabled" } else { "" }
+    );
+    ddl.push_str(&match kind.trim() {
+        "U" | "G" => {
+            let with = if db.is_empty() {
+                String::new()
+            } else {
+                format!(" WITH {db}")
+            };
+            format!("CREATE LOGIN {who} FROM WINDOWS{with};")
+        }
+        "E" | "X" => format!("CREATE LOGIN {who} FROM EXTERNAL PROVIDER;"),
+        _ => {
+            let db = if db.is_empty() {
+                String::new()
+            } else {
+                format!(", {db}")
+            };
+            format!("CREATE LOGIN {who} WITH PASSWORD = N'<password>'{db};")
+        }
+    });
+    ddl.push('\n');
+    if disabled {
+        ddl.push_str(&format!("ALTER LOGIN {who} DISABLE;\n"));
+    }
+    ddl
+}
+
+/// [`IntrospectScope::Objects`] for Agent jobs, or a hint without msdb access.
+async fn jobs(client: &mut TdsClient) -> Result<CatalogChunk> {
+    let rows = match simple_rows(client, JOBS_SQL).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::debug!(error = %e, "msdb jobs unavailable");
+            return Ok(CatalogChunk::Hint(JOBS_HINT.into()));
+        }
+    };
+    let opt =
+        |r: &[Value], i: usize| (!matches!(r.get(i), None | Some(Value::Null))).then(|| int(r, i));
+    Ok(CatalogChunk::Objects(
+        rows.iter()
+            .map(|r| ObjectInfo {
+                schema: String::new(),
+                name: text(r, 0),
+                kind: ObjectKind::Job,
+                estimated_rows: None,
+                detail: Some(job_summary(
+                    int(r, 1) != 0,
+                    opt(r, 2),
+                    opt(r, 3).zip(opt(r, 4)),
+                    opt(r, 5),
+                    int(r, 6),
+                )),
+            })
+            .collect(),
+    ))
+}
+
+/// `Detail` of a user, role, login or Agent job (DBX-5c): its text in `ddl`.
+async fn admin_detail(
+    client: &mut TdsClient,
+    name: &str,
+    kind: ObjectKind,
+) -> Result<CatalogChunk> {
+    let key = [Value::Text(name.to_owned())];
+    let ddl = if kind == ObjectKind::Job {
+        let rows = match param_rows(client, JOB_DETAIL_SQL, &key).await {
+            Ok(rows) => rows,
+            Err(_) => return Ok(CatalogChunk::Hint(JOBS_HINT.into())),
+        };
+        let Some(first) = rows.first() else {
+            return Err(DbError::Unsupported(format!("{name} no longer exists")));
+        };
+        let mut ddl = format!(
+            "-- SQL Agent job {}\n-- {}\n",
+            quote(name),
+            if int(first, 0) != 0 {
+                "Enabled"
+            } else {
+                "Disabled"
+            }
+        );
+        for (label, i) in [("Owner", 2), ("Category", 3), ("Description", 1)] {
+            if let Some(v) = opt_text(first, i).filter(|v| !v.is_empty()) {
+                ddl.push_str(&format!("-- {label}: {}\n", v.replace('\n', "\n--   ")));
+            }
+        }
+        let schedules = param_rows(client, JOB_SCHEDULES_SQL, &key)
+            .await
+            .unwrap_or_default();
+        for s in &schedules {
+            let off = if int(s, 1) != 0 { "" } else { " (disabled)" };
+            ddl.push_str(&format!("-- Schedule: {}{off}\n", text(s, 0)));
+        }
+        for r in rows.iter().filter(|r| opt_text(r, 4).is_some()) {
+            ddl.push_str(&format!(
+                "\n-- Step {}: {} ({}{})\n{}\n",
+                text(r, 4),
+                text(r, 5),
+                text(r, 6),
+                opt_text(r, 7)
+                    .map(|d| format!(", database {d}"))
+                    .unwrap_or_default(),
+                text(r, 8).trim_end()
+            ));
+        }
+        ddl
+    } else if let Some(p) = param_rows(client, PRINCIPAL_SQL, &key).await?.first() {
+        let roles: Vec<String> = param_rows(client, PRINCIPAL_ROLES_SQL, &key)
+            .await
+            .unwrap_or_default()
+            .iter()
+            .map(|r| text(r, 0))
+            .collect();
+        principal_ddl(
+            name,
+            &text(p, 0),
+            &text(p, 1),
+            opt_text(p, 2).as_deref(),
+            opt_text(p, 3).as_deref(),
+            &roles,
+        )
+    } else if let Some(l) = param_rows(client, LOGIN_SQL, &key).await?.first() {
+        login_ddl(
+            name,
+            &text(l, 0),
+            &text(l, 1),
+            int(l, 2) != 0,
+            opt_text(l, 3).as_deref(),
+        )
+    } else {
+        return Err(DbError::Unsupported(format!("{name} no longer exists")));
+    };
+    Ok(CatalogChunk::Detail(Box::new(ObjectDetail {
+        object: ObjectInfo {
+            schema: String::new(),
+            name: name.to_owned(),
+            kind,
+            estimated_rows: None,
+            detail: None,
+        },
+        ddl,
+        ..ObjectDetail::default()
+    })))
+}
+
+/// [`IntrospectScope::Dependencies`]; a failed read (no `VIEW DEFINITION`) is a hint.
+async fn dependencies(client: &mut TdsClient, schema: &str, name: &str) -> Result<CatalogChunk> {
+    let full = format!("{}.{}", quote(schema), quote(name));
+    let id = format!("OBJECT_ID({})", lit(&full));
+    let rows = match simple_rows(client, &dependencies_sql(&id)).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            return Ok(CatalogChunk::Dependencies(Box::new(Dependencies::hint(
+                format!("Dependencies unavailable (VIEW DEFINITION needed): {e}"),
+            ))));
+        }
+    };
+    let mut deps = Dependencies::default();
+    for r in &rows {
+        let type_label = text(r, 3);
+        let other_db = opt_text(r, 5).filter(|d| !d.is_empty());
+        let schema = match &other_db {
+            Some(db) => format!("{db}.{}", text(r, 1)),
+            None => text(r, 1),
+        };
+        deps.push(
+            &text(r, 0),
+            DependencyInfo {
+                schema,
+                name: text(r, 2),
+                kind: other_db
+                    .is_none()
+                    .then(|| dependency_kind(&type_label))
+                    .flatten(),
+                type_label: type_label.to_ascii_lowercase().replace('_', " "),
+                dependency: text(r, 4),
+            },
+        );
+    }
+    Ok(CatalogChunk::Dependencies(Box::new(deps)))
 }
 
 /// Global object search over `sys.objects`: `@P1` is an escaped, lower-cased LIKE
@@ -336,11 +708,28 @@ pub(super) async fn introspect(
                     .collect(),
             ))
         }
+        IntrospectScope::Objects {
+            kind: ObjectKind::Job,
+            ..
+        } => jobs(client).await,
+        IntrospectScope::Detail { name, kind, .. }
+            if matches!(kind, ObjectKind::Role | ObjectKind::Job) =>
+        {
+            admin_detail(client, &name, kind).await
+        }
+        IntrospectScope::Dependencies { schema, name, .. } => {
+            dependencies(client, &schema, &name).await
+        }
         IntrospectScope::Objects { schema, kind } => {
             let Some(sql) = objects_sql(&schema, kind) else {
                 return Ok(CatalogChunk::Objects(Vec::new()));
             };
             let rows = simple_rows(client, &sql).await?;
+            let schema = if kind.is_server_level() {
+                String::new()
+            } else {
+                schema
+            };
             Ok(CatalogChunk::Objects(
                 rows.iter()
                     .map(|r| ObjectInfo {
@@ -577,6 +966,71 @@ mod tests {
     #[test]
     fn search_sql_snapshot() {
         insta::assert_snapshot!("mssql_search_sql", search_sql());
+    }
+
+    #[test]
+    fn admin_sql_snapshots() {
+        insta::assert_snapshot!(
+            "mssql_admin_sql",
+            [
+                ROLES_SQL,
+                PRINCIPAL_SQL,
+                PRINCIPAL_ROLES_SQL,
+                LOGIN_SQL,
+                JOBS_SQL,
+                JOB_DETAIL_SQL,
+                JOB_SCHEDULES_SQL,
+            ]
+            .join("\n")
+        );
+        insta::assert_snapshot!(
+            "mssql_dependencies_sql",
+            dependencies_sql("OBJECT_ID(N'[dbo].[orders]')")
+        );
+    }
+
+    #[test]
+    fn job_lines() {
+        assert_eq!(
+            job_summary(
+                true,
+                Some(1),
+                Some((20261001, 30000)),
+                Some(20_261_009_030_000),
+                1
+            ),
+            "enabled · last run succeeded 2026-10-01 03:00 · next 2026-10-09 03:00"
+        );
+        assert_eq!(
+            job_summary(false, None, None, None, 0),
+            "disabled · never run · no schedule"
+        );
+        assert_eq!(
+            job_summary(true, Some(0), Some((20260102, 235959)), None, 2),
+            "enabled · last run failed 2026-01-02 23:59"
+        );
+    }
+
+    #[test]
+    fn principal_and_login_text() {
+        insta::assert_snapshot!(
+            "mssql_principal_ddl",
+            [
+                principal_ddl(
+                    "app",
+                    "S",
+                    "SQL_USER",
+                    Some("dbo"),
+                    Some("app_login"),
+                    &["db_datareader".into()]
+                ),
+                principal_ddl("readers", "R", "DATABASE_ROLE", None, None, &[]),
+                principal_ddl("orphan", "S", "SQL_USER", None, None, &[]),
+                login_ddl("sa", "S", "SQL_LOGIN", true, Some("master")),
+                login_ddl("DOM\\ann", "U", "WINDOWS_LOGIN", false, None),
+            ]
+            .join("\n")
+        );
     }
 
     #[test]

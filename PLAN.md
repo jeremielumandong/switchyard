@@ -617,7 +617,11 @@ are shared hotspots: one owner at a time.
   common column.
 
 ### Phase 5 — advanced
-- [ ] DBX-5a Dependencies (uses / used by) per engine.
+- [x] DBX-5a Dependencies (uses / used by) per engine.
+  Note: `IntrospectScope::Dependencies` (PG `pg_depend`/`pg_rewrite`/FKs, MSSQL
+  `sql_expression_dependencies` + FKs, Oracle `ALL_DEPENDENCIES` + FKs, Snowflake `ACCOUNT_USAGE`
+  with a latency/privilege hint, D1 hidden), never cached; Dependencies page on the properties
+  tab and "Show dependencies". Deferred: MSSQL docker test not run, Oracle/Snowflake not live.
 - [x] DBX-5b Activity monitor with kill session (never over MCP; Production double confirm).
   Note: `db::activity` (per-engine list/action SQL, typed `SessionTarget`, own-session refusal),
   core `Command::{Activity, SessionAction}` on a monitor-owned session (Production needs the typed
@@ -625,8 +629,12 @@ are shared hotspots: one owner at a time.
   virtualized, read-only SQL); never in MCP/`swy` (cli test). Oracle CANCEL SQL gated on 18c+.
   Deferred: Oracle/Snowflake not run live; the SQL Server docker test needs
   `SWITCHYARD_MSSQL_CA`; CI wiring for `--test activity`; a list filter.
-- [ ] DBX-5c Users/roles, SQL Agent jobs, Oracle packages, Snowflake stages/tasks
+- [x] DBX-5c Users/roles, SQL Agent jobs, Oracle packages, Snowflake stages/tasks
   (new `ObjectKind`s; bump the schema cache key).
+  Note: `ObjectKind` Role/Job/Extension/Package/Stage/Task/Pipe; `Dialect::server_folders`
+  (database-level folders); `CatalogChunk::Hint` for missing privileges; cache keys `v2;`;
+  read-only (View DDL, Script as CREATE only). Deferred: MSSQL/Oracle/Snowflake not run live,
+  old unversioned cache rows stay in SQLite, server-side search for MSSQL principals.
 - [x] DBX-5d ER diagram from foreign keys (`dagre` layout, user-approved; see DECISIONS).
   Note: `er_tab.rs` (`Tab::Er`, own session, Detail per table 6 in flight, cap 150 with a filter
   and "Only related"); layout on the background executor, cached per selection; crow's-foot

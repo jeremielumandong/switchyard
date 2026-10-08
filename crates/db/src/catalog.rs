@@ -24,6 +24,20 @@ pub enum ObjectKind {
     Type,
     /// Synonym (SQL Server).
     Synonym,
+    /// Login user or role (DBX-5c). Server level: listed with an empty schema.
+    Role,
+    /// SQL Server Agent job (DBX-5c). Server level.
+    Job,
+    /// PostgreSQL extension (DBX-5c). Database level, outside any schema.
+    Extension,
+    /// Oracle package: specification and body as one node (DBX-5c).
+    Package,
+    /// Snowflake stage (DBX-5c).
+    Stage,
+    /// Snowflake task (DBX-5c).
+    Task,
+    /// Snowflake pipe (DBX-5c).
+    Pipe,
 }
 
 impl ObjectKind {
@@ -38,6 +52,13 @@ impl ObjectKind {
             ObjectKind::Sequence => "Sequences",
             ObjectKind::Type => "Types",
             ObjectKind::Synonym => "Synonyms",
+            ObjectKind::Role => "Users & roles",
+            ObjectKind::Job => "SQL Agent jobs",
+            ObjectKind::Extension => "Extensions",
+            ObjectKind::Package => "Packages",
+            ObjectKind::Stage => "Stages",
+            ObjectKind::Task => "Tasks",
+            ObjectKind::Pipe => "Pipes",
         }
     }
 
@@ -52,7 +73,51 @@ impl ObjectKind {
             ObjectKind::Sequence => "#",
             ObjectKind::Type => "τ",
             ObjectKind::Synonym => "≈",
+            ObjectKind::Role => "R",
+            ObjectKind::Job => "J",
+            ObjectKind::Extension => "E",
+            ObjectKind::Package => "K",
+            ObjectKind::Stage => "St",
+            ObjectKind::Task => "Tk",
+            ObjectKind::Pipe => "Pi",
         }
+    }
+
+    /// Lives outside any schema (users and roles, Agent jobs, extensions): listed with
+    /// an empty schema in a folder at the database level of the tree.
+    pub fn is_server_level(self) -> bool {
+        matches!(
+            self,
+            ObjectKind::Role | ObjectKind::Job | ObjectKind::Extension
+        )
+    }
+
+    /// Whether [`IntrospectScope::Dependencies`] means anything for this kind.
+    pub fn has_dependencies(self) -> bool {
+        !self.is_server_level()
+    }
+
+    /// Whether `Script as CREATE` is offered: the old kinds always, the DBX-5c kinds
+    /// only where the engine can produce a `CREATE` statement (not jobs or stages, whose
+    /// "DDL" is a description).
+    pub fn scripts_create(self) -> bool {
+        !matches!(self, ObjectKind::Job | ObjectKind::Stage)
+    }
+
+    /// The DBX-5c kinds: browsed read-only (no DROP, no data, no templates), their
+    /// [`ObjectInfo::detail`] is a description (role attributes, job status, version)
+    /// rather than a signature.
+    pub fn is_admin(self) -> bool {
+        matches!(
+            self,
+            ObjectKind::Role
+                | ObjectKind::Job
+                | ObjectKind::Extension
+                | ObjectKind::Package
+                | ObjectKind::Stage
+                | ObjectKind::Task
+                | ObjectKind::Pipe
+        )
     }
 
     /// Whether rows can be selected from this object.
@@ -114,17 +179,46 @@ pub enum IntrospectScope {
         /// Also search system schemas (`pg_catalog`, `sys`, Oracle-maintained users).
         include_system: bool,
     },
+    /// What one object uses and what uses it (DBX-5a). Answered with
+    /// [`CatalogChunk::Dependencies`]; a missing privilege or an unavailable source gives
+    /// a [`Dependencies::hint`], not an error. Never cached (other objects' DDL changes it).
+    Dependencies {
+        /// Schema name.
+        schema: String,
+        /// Object name.
+        name: String,
+        /// Object kind.
+        kind: ObjectKind,
+    },
 }
+
+/// Version of the schema cache's keys. Bumped when a cached answer could be misread by
+/// a newer build (DBX-5c added object kinds and folders): older entries are no longer
+/// found and reload from the server.
+pub const CATALOG_CACHE_VERSION: u32 = 2;
 
 impl IntrospectScope {
     /// Whether the answer may be kept in the schema cache.
     pub fn is_cacheable(&self) -> bool {
-        !matches!(self, IntrospectScope::Search { .. })
+        !matches!(
+            self,
+            IntrospectScope::Search { .. } | IntrospectScope::Dependencies { .. }
+        )
+    }
+
+    /// Key of this scope in the schema cache: the scope as JSON behind
+    /// [`CATALOG_CACHE_VERSION`].
+    pub fn cache_key(&self) -> String {
+        format!(
+            "v{CATALOG_CACHE_VERSION};{}",
+            serde_json::to_string(self).unwrap_or_default()
+        )
     }
 }
 
 /// Kind of a search hit from the `kind` tag every engine's search SQL returns
-/// (`table`, `view`, `mview`, `sequence`, `function`, `procedure`, `synonym`, `type`).
+/// (`table`, `view`, `mview`, `sequence`, `function`, `procedure`, `synonym`, `type`,
+/// `package`, `extension`, `role`, `stage`, `task`, `pipe`).
 pub fn search_kind(tag: &str) -> Option<ObjectKind> {
     Some(match tag.trim() {
         "table" => ObjectKind::Table,
@@ -135,6 +229,41 @@ pub fn search_kind(tag: &str) -> Option<ObjectKind> {
         "procedure" => ObjectKind::Procedure,
         "synonym" => ObjectKind::Synonym,
         "type" => ObjectKind::Type,
+        "package" => ObjectKind::Package,
+        "extension" => ObjectKind::Extension,
+        "role" => ObjectKind::Role,
+        "stage" => ObjectKind::Stage,
+        "task" => ObjectKind::Task,
+        "pipe" => ObjectKind::Pipe,
+        _ => return None,
+    })
+}
+
+/// Kind of a dependency from the engine's object type text (`TABLE`, `PACKAGE BODY`,
+/// `MATERIALIZED VIEW`, SQL Server `USER_TABLE`, …) or a search tag. `None` for a type
+/// the explorer cannot open (an index, a trigger, a column).
+pub fn dependency_kind(type_text: &str) -> Option<ObjectKind> {
+    let t = type_text.trim().to_ascii_uppercase().replace('_', " ");
+    Some(match t.as_str() {
+        "TABLE" | "BASE TABLE" | "USER TABLE" | "EXTERNAL TABLE" | "TEMPORARY TABLE"
+        | "DYNAMIC TABLE" | "ICEBERG TABLE" | "HYBRID TABLE" => ObjectKind::Table,
+        "VIEW" | "SECURE VIEW" => ObjectKind::View,
+        "MATERIALIZED VIEW" | "MVIEW" => ObjectKind::MaterializedView,
+        "FUNCTION"
+        | "SQL SCALAR FUNCTION"
+        | "SQL INLINE TABLE VALUED FUNCTION"
+        | "SQL TABLE VALUED FUNCTION"
+        | "CLR SCALAR FUNCTION"
+        | "CLR TABLE VALUED FUNCTION"
+        | "EXTERNAL FUNCTION" => ObjectKind::Function,
+        "PROCEDURE" | "SQL STORED PROCEDURE" | "CLR STORED PROCEDURE" => ObjectKind::Procedure,
+        "SEQUENCE" | "SEQUENCE OBJECT" => ObjectKind::Sequence,
+        "SYNONYM" => ObjectKind::Synonym,
+        "TYPE" | "TYPE BODY" => ObjectKind::Type,
+        "PACKAGE" | "PACKAGE BODY" => ObjectKind::Package,
+        "STAGE" => ObjectKind::Stage,
+        "TASK" => ObjectKind::Task,
+        "PIPE" => ObjectKind::Pipe,
         _ => return None,
     })
 }
@@ -353,6 +482,58 @@ impl ObjectDetail {
     }
 }
 
+/// One object on either side of a dependency (DBX-5a).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DependencyInfo {
+    /// Schema (owner); `db.schema` for an object in another database.
+    pub schema: String,
+    /// Name.
+    pub name: String,
+    /// Kind, when the explorer can open it (`None` for an index, a trigger, another
+    /// database's object).
+    pub kind: Option<ObjectKind>,
+    /// The engine's own type text (`view`, `PACKAGE BODY`, `SQL_STORED_PROCEDURE`).
+    pub type_label: String,
+    /// How the two are linked (`query`, `foreign key orders_customer_id_fkey`, `HARD`,
+    /// `schema-bound`).
+    pub dependency: String,
+}
+
+/// The answer to [`IntrospectScope::Dependencies`].
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Dependencies {
+    /// Objects this one uses (depends on).
+    pub uses: Vec<DependencyInfo>,
+    /// Objects that use (depend on) this one.
+    pub used_by: Vec<DependencyInfo>,
+    /// A note shown above the lists: why they may be empty or incomplete (a missing
+    /// privilege, Snowflake's `ACCOUNT_USAGE` latency).
+    pub hint: Option<String>,
+}
+
+impl Dependencies {
+    /// No rows, only `hint`.
+    pub fn hint(hint: impl Into<String>) -> Self {
+        Dependencies {
+            hint: Some(hint.into()),
+            ..Dependencies::default()
+        }
+    }
+
+    /// Add one row from a `uses` / `used_by` direction tag; any other tag is ignored.
+    /// Duplicate rows (same direction, object and link) are dropped.
+    pub fn push(&mut self, direction: &str, dep: DependencyInfo) {
+        let list = match direction.trim() {
+            "uses" => &mut self.uses,
+            "used_by" => &mut self.used_by,
+            _ => return,
+        };
+        if !list.contains(&dep) {
+            list.push(dep);
+        }
+    }
+}
+
 /// The answer to an [`IntrospectScope`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum CatalogChunk {
@@ -366,6 +547,11 @@ pub enum CatalogChunk {
     Detail(Box<ObjectDetail>),
     /// All columns of all relations.
     AllColumns(Vec<ColumnInfo>),
+    /// Uses / used-by lists of one object (DBX-5a).
+    Dependencies(Box<Dependencies>),
+    /// The scope could not be read for a reason the user can act on (a missing
+    /// privilege such as msdb access for Agent jobs): shown as a hint, never cached.
+    Hint(String),
 }
 
 #[cfg(test)]
@@ -390,6 +576,76 @@ mod tests {
     }
 
     #[test]
+    fn dependency_kinds_from_engine_type_text() {
+        assert_eq!(dependency_kind("PACKAGE BODY"), Some(ObjectKind::Package));
+        assert_eq!(dependency_kind("USER_TABLE"), Some(ObjectKind::Table));
+        assert_eq!(
+            dependency_kind("SQL_STORED_PROCEDURE"),
+            Some(ObjectKind::Procedure)
+        );
+        assert_eq!(dependency_kind("mview"), Some(ObjectKind::MaterializedView));
+        assert_eq!(dependency_kind("INDEX"), None);
+        assert_eq!(dependency_kind("SQL_TRIGGER"), None);
+    }
+
+    #[test]
+    fn dependencies_split_by_direction_without_duplicates() {
+        let dep = |n: &str| DependencyInfo {
+            schema: "s".into(),
+            name: n.into(),
+            ..DependencyInfo::default()
+        };
+        let mut d = Dependencies::default();
+        d.push("uses", dep("a"));
+        d.push("uses", dep("a"));
+        d.push("used_by", dep("b"));
+        d.push("other", dep("c"));
+        assert_eq!(d.uses, [dep("a")]);
+        assert_eq!(d.used_by, [dep("b")]);
+        assert_eq!(Dependencies::hint("x").hint.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn new_kinds_are_additive_and_server_level_ones_are_marked() {
+        // Serde names of the old kinds are unchanged (cached chunks keep loading).
+        assert_eq!(
+            serde_json::to_string(&ObjectKind::Synonym).unwrap(),
+            "\"Synonym\""
+        );
+        assert_eq!(
+            serde_json::from_str::<ObjectKind>("\"Package\"").unwrap(),
+            ObjectKind::Package
+        );
+        for k in [ObjectKind::Role, ObjectKind::Job, ObjectKind::Extension] {
+            assert!(k.is_server_level() && k.is_admin() && !k.has_dependencies());
+        }
+        for k in [
+            ObjectKind::Package,
+            ObjectKind::Stage,
+            ObjectKind::Task,
+            ObjectKind::Pipe,
+        ] {
+            assert!(!k.is_server_level() && k.is_admin() && k.has_dependencies());
+        }
+        assert!(!ObjectKind::Table.is_admin());
+        assert!(!ObjectKind::Job.scripts_create() && ObjectKind::Package.scripts_create());
+    }
+
+    #[test]
+    fn cache_keys_carry_the_version() {
+        let scope = IntrospectScope::Objects {
+            schema: "public".into(),
+            kind: ObjectKind::Table,
+        };
+        let json = serde_json::to_string(&scope).unwrap();
+        let key = scope.cache_key();
+        // An entry written under the old (unversioned) key is never read back.
+        assert_ne!(key, json);
+        assert_eq!(key, format!("v{CATALOG_CACHE_VERSION};{json}"));
+        const { assert!(CATALOG_CACHE_VERSION >= 2) };
+    }
+
+    #[test]
     fn search_is_never_cached() {
         let search = IntrospectScope::Search {
             pattern: "x".into(),
@@ -398,5 +654,11 @@ mod tests {
         };
         assert!(!search.is_cacheable());
         assert!(IntrospectScope::Schemas.is_cacheable());
+        let deps = IntrospectScope::Dependencies {
+            schema: "s".into(),
+            name: "t".into(),
+            kind: ObjectKind::Table,
+        };
+        assert!(!deps.is_cacheable());
     }
 }

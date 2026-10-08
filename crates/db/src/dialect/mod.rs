@@ -185,6 +185,17 @@ pub trait Dialect: Send + Sync {
         ]
     }
 
+    /// Folders the schema explorer shows at the database level, beside the schemas:
+    /// objects outside any schema (users and roles, Agent jobs, extensions; DBX-5c).
+    fn server_folders(&self) -> &'static [ObjectKind] {
+        &[]
+    }
+
+    /// Whether the engine can list an object's dependencies (DBX-5a).
+    fn supports_dependencies(&self) -> bool {
+        true
+    }
+
     /// The unit containing byte `offset` (statement at cursor). Falls back to the closest
     /// preceding unit, then the following one.
     fn statement_at(&self, sql: &str, offset: usize) -> Option<StatementSpan> {
@@ -390,6 +401,14 @@ pub(crate) fn drop_keyword(kind: ObjectKind) -> &'static str {
         ObjectKind::Sequence => "SEQUENCE",
         ObjectKind::Type => "TYPE",
         ObjectKind::Synonym => "SYNONYM",
+        // Read-only kinds (DBX-5c): never offered, spelled for completeness.
+        ObjectKind::Role => "ROLE",
+        ObjectKind::Job => "JOB",
+        ObjectKind::Extension => "EXTENSION",
+        ObjectKind::Package => "PACKAGE",
+        ObjectKind::Stage => "STAGE",
+        ObjectKind::Task => "TASK",
+        ObjectKind::Pipe => "PIPE",
     }
 }
 
@@ -611,6 +630,36 @@ mod tests {
         ObjectKind::Type,
         ObjectKind::Synonym,
     ];
+
+    /// DBX-5c: schema-level folders per engine and the database-level (server) ones.
+    #[test]
+    fn folders_per_engine() {
+        use ObjectKind as K;
+        let server = |e| dialect_for(e).server_folders().to_vec();
+        let has = |e, k| dialect_for(e).object_folders().contains(&k);
+        assert_eq!(server(Engine::Postgres), [K::Role, K::Extension]);
+        assert_eq!(server(Engine::SqlServer), [K::Role, K::Job]);
+        assert_eq!(server(Engine::Oracle), [K::Role]);
+        assert_eq!(server(Engine::Snowflake), [K::Role]);
+        assert!(server(Engine::D1).is_empty());
+        assert!(has(Engine::Oracle, K::Package));
+        for k in [K::Stage, K::Task, K::Pipe] {
+            assert!(has(Engine::Snowflake, k));
+        }
+        for e in [
+            Engine::Postgres,
+            Engine::SqlServer,
+            Engine::Oracle,
+            Engine::Snowflake,
+            Engine::D1,
+        ] {
+            let d = dialect_for(e);
+            // Server-level kinds never sit under a schema, and schema kinds never at the top.
+            assert!(d.object_folders().iter().all(|k| !k.is_server_level()));
+            assert!(d.server_folders().iter().all(|k| k.is_server_level()));
+            assert_eq!(d.supports_dependencies(), e != Engine::D1);
+        }
+    }
 
     fn names(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| (*s).to_owned()).collect()

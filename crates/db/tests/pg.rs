@@ -657,3 +657,184 @@ async fn select_page_filters_sorts_and_pages() {
     run(&mut s, "DROP SCHEMA dbx3a CASCADE", &[]).await.unwrap();
     assert_eq!(rows, ["70"]);
 }
+
+/// `direction kind schema.name (link)` lines of a dependency answer.
+async fn dependencies(
+    s: &mut dyn DbSession,
+    schema: &str,
+    name: &str,
+    kind: ObjectKind,
+) -> Vec<String> {
+    let chunk = s
+        .introspect(IntrospectScope::Dependencies {
+            schema: schema.into(),
+            name: name.into(),
+            kind,
+        })
+        .await
+        .expect("dependencies");
+    let CatalogChunk::Dependencies(d) = chunk else {
+        panic!("dependencies answer with Dependencies");
+    };
+    assert_eq!(d.hint, None);
+    let line = |dir: &str, x: &switchyard_db::DependencyInfo| {
+        format!(
+            "{dir} {:?} {}.{} ({})",
+            x.kind, x.schema, x.name, x.dependency
+        )
+    };
+    d.uses
+        .iter()
+        .map(|x| line("uses", x))
+        .chain(d.used_by.iter().map(|x| line("used_by", x)))
+        .collect()
+}
+
+/// DBX-5a: a view on a table, a foreign key, a serial column's sequence and a trigger
+/// function, in both directions, on a scratch schema.
+#[tokio::test]
+#[ignore = "needs docker postgres"]
+async fn dependencies_both_directions() {
+    let mut s = session().await;
+    for sql in [
+        "DROP SCHEMA IF EXISTS dbx5a CASCADE",
+        "CREATE SCHEMA dbx5a",
+        "CREATE TABLE dbx5a.parent (id int PRIMARY KEY)",
+        "CREATE TABLE dbx5a.child (id serial PRIMARY KEY, \
+         parent_id int CONSTRAINT child_parent_fk REFERENCES dbx5a.parent (id))",
+        "CREATE VIEW dbx5a.parent_v AS SELECT p.id FROM dbx5a.parent p",
+        "CREATE FUNCTION dbx5a.touch() RETURNS trigger LANGUAGE plpgsql \
+         AS 'BEGIN RETURN NEW; END'",
+        "CREATE TRIGGER child_touch BEFORE INSERT ON dbx5a.child \
+         FOR EACH ROW EXECUTE FUNCTION dbx5a.touch()",
+    ] {
+        run(&mut s, sql, &[]).await.unwrap();
+    }
+    let parent = dependencies(s.as_mut(), "dbx5a", "parent", ObjectKind::Table).await;
+    let view = dependencies(s.as_mut(), "dbx5a", "parent_v", ObjectKind::View).await;
+    let child = dependencies(s.as_mut(), "dbx5a", "child", ObjectKind::Table).await;
+    let func = dependencies(s.as_mut(), "dbx5a", "touch", ObjectKind::Function).await;
+    run(&mut s, "DROP SCHEMA dbx5a CASCADE", &[]).await.unwrap();
+    assert_eq!(
+        parent,
+        [
+            "used_by Some(Table) dbx5a.child (foreign key child_parent_fk)",
+            "used_by Some(View) dbx5a.parent_v (query)",
+        ]
+    );
+    assert_eq!(view, ["uses Some(Table) dbx5a.parent (query)"]);
+    assert!(
+        child.contains(&"uses Some(Table) dbx5a.parent (foreign key child_parent_fk)".to_owned())
+    );
+    assert!(child.contains(&"uses Some(Sequence) dbx5a.child_id_seq (column default)".to_owned()));
+    assert!(child.contains(&"uses Some(Function) dbx5a.touch (trigger child_touch)".to_owned()));
+    assert!(child.contains(&"used_by Some(Sequence) dbx5a.child_id_seq (owned by)".to_owned()));
+    assert_eq!(
+        func,
+        ["used_by Some(Table) dbx5a.child (trigger child_touch)"]
+    );
+}
+
+/// DBX-5c: roles and extensions sit outside any schema, with attribute / version lines,
+/// `CREATE` text and search hits.
+#[tokio::test]
+#[ignore = "needs docker postgres"]
+async fn roles_and_extensions() {
+    let mut s = session().await;
+    let objects = |chunk: CatalogChunk| match chunk {
+        CatalogChunk::Objects(o) => o,
+        other => panic!("objects expected, got {other:?}"),
+    };
+    let roles = objects(
+        s.introspect(IntrospectScope::Objects {
+            schema: String::new(),
+            kind: ObjectKind::Role,
+        })
+        .await
+        .unwrap(),
+    );
+    let me = roles
+        .iter()
+        .find(|r| r.name == "switchyard")
+        .expect("the test login is listed");
+    assert!(me.schema.is_empty());
+    assert!(me.detail.as_deref().unwrap_or("").starts_with("user"));
+    assert!(roles.iter().all(|r| !r.name.starts_with("pg_")));
+
+    let exts = objects(
+        s.introspect(IntrospectScope::Objects {
+            schema: String::new(),
+            kind: ObjectKind::Extension,
+        })
+        .await
+        .unwrap(),
+    );
+    let names: Vec<&str> = exts.iter().map(|e| e.name.as_str()).collect();
+    // hypopg is optional in the image; pg_stat_statements and plpgsql are always there.
+    for e in ["pg_stat_statements", "plpgsql"] {
+        assert!(names.contains(&e), "{e} in {names:?}");
+    }
+    let plpgsql = exts.iter().find(|e| e.name == "plpgsql").unwrap();
+    assert!(
+        plpgsql
+            .detail
+            .as_deref()
+            .unwrap()
+            .ends_with(" · pg_catalog")
+    );
+
+    let detail = |chunk: CatalogChunk| match chunk {
+        CatalogChunk::Detail(d) => d,
+        other => panic!("detail expected, got {other:?}"),
+    };
+    let role = detail(
+        s.introspect(IntrospectScope::Detail {
+            schema: String::new(),
+            name: "switchyard".into(),
+            kind: ObjectKind::Role,
+        })
+        .await
+        .unwrap(),
+    );
+    assert!(
+        role.ddl
+            .starts_with("CREATE ROLE switchyard WITH LOGIN SUPERUSER"),
+        "{}",
+        role.ddl
+    );
+    let ext = detail(
+        s.introspect(IntrospectScope::Detail {
+            schema: String::new(),
+            name: "pg_stat_statements".into(),
+            kind: ObjectKind::Extension,
+        })
+        .await
+        .unwrap(),
+    );
+    assert!(
+        ext.ddl.starts_with(
+            "CREATE EXTENSION IF NOT EXISTS pg_stat_statements WITH SCHEMA public VERSION '"
+        ),
+        "{}",
+        ext.ddl
+    );
+    assert!(
+        s.introspect(IntrospectScope::Detail {
+            schema: String::new(),
+            name: "swy_no_such_ext".into(),
+            kind: ObjectKind::Extension,
+        })
+        .await
+        .is_err()
+    );
+    assert!(
+        search(s.as_mut(), "stat_statements")
+            .await
+            .contains(&".pg_stat_statements Extension".to_owned())
+    );
+    assert!(
+        search(s.as_mut(), "switchyard")
+            .await
+            .contains(&".switchyard Role".to_owned())
+    );
+}

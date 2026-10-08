@@ -309,6 +309,10 @@ impl Dialect for PostgresDialect {
         "public"
     }
 
+    fn server_folders(&self) -> &'static [ObjectKind] {
+        &[ObjectKind::Role, ObjectKind::Extension]
+    }
+
     fn use_database(&self, _database: &str) -> Option<String> {
         // A PostgreSQL connection is bound to one database: switching reconnects.
         None

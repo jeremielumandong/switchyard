@@ -136,9 +136,17 @@ const MENU_W: f32 = 230.;
 const ITEM_H: f32 = 26.;
 const SEPARATOR_H: f32 = 9.;
 
-/// The "Script as" submenu (DBX-2c) for an object of `kind`.
+/// The "Script as" submenu (DBX-2c) for an object of `kind`. The read-only DBX-5c
+/// kinds offer only CREATE, and only where the engine can produce it.
 fn script_items(kind: ObjectKind) -> Vec<MenuItem> {
     let item = |action, label| (action, label, false, SharedString::default());
+    if kind.is_admin() {
+        return if kind.scripts_create() {
+            vec![item("script_create", "CREATE")]
+        } else {
+            Vec::new()
+        };
+    }
     let mut items = vec![
         item("script_create", "CREATE"),
         item("script_drop", "DROP"),
@@ -157,6 +165,30 @@ fn script_items(kind: ObjectKind) -> Vec<MenuItem> {
             ("-", "", false, SharedString::default()),
             item("script_exec", "EXEC"),
         ]);
+    }
+    items
+}
+
+/// Context-menu items of a non-relation object. The DBX-5c kinds (roles, jobs,
+/// extensions, packages, stages, tasks, pipes) are read-only: no Drop, and Script as only
+/// when it has a CREATE.
+fn object_items(kind: ObjectKind) -> Vec<MenuItem> {
+    let copy = if kind.is_server_level() {
+        "Copy name"
+    } else {
+        "Copy qualified name"
+    };
+    let mut items: Vec<MenuItem> = vec![("ddl", "View DDL", false, "".into())];
+    if !kind.is_server_level() {
+        items.push(("properties", "Properties…", false, "".into()));
+    }
+    items.push(("copy", copy, false, ui::keys("⌘C", "Ctrl+C")));
+    if !script_items(kind).is_empty() {
+        items.push(("script", "Script as", false, "▸".into()));
+    }
+    if !kind.is_admin() {
+        items.push(("-", "", false, "".into()));
+        items.push(("drop", "Drop…", true, "".into()));
     }
     items
 }
@@ -516,18 +548,7 @@ impl Workspace {
                 ("truncate", "Truncate…", true, "".into()),
                 ("drop", "Drop…", true, "".into()),
             ],
-            CtxTarget::Object(..) => vec![
-                ("ddl", "View DDL", false, "".into()),
-                (
-                    "copy",
-                    "Copy qualified name",
-                    false,
-                    ui::keys("⌘C", "Ctrl+C"),
-                ),
-                ("script", "Script as", false, "▸".into()),
-                ("-", "", false, "".into()),
-                ("drop", "Drop…", true, "".into()),
-            ],
+            CtxTarget::Object(_, _, kind) => object_items(*kind),
             CtxTarget::Tab(_) => vec![
                 ("close", "Close", false, ui::keys("⌘W", "Ctrl+W")),
                 ("close_others", "Close others", false, "".into()),
@@ -556,6 +577,20 @@ impl Workspace {
         };
         if matches!(ctx.target, CtxTarget::Object(_, _, ObjectKind::Table)) {
             items.insert(7, ("er", "Show in ER diagram", false, "".into()));
+        }
+        // Show dependencies (DBX-5a), after Properties / View DDL, where the engine has them.
+        if let CtxTarget::Object(_, _, kind) = &ctx.target {
+            let engine_has = self.schema.connection.as_ref().is_some_and(|c| {
+                switchyard_core::db::dialect_for(c.engine).supports_dependencies()
+            });
+            if engine_has && kind.has_dependencies() {
+                let at = items
+                    .iter()
+                    .position(|i| i.0 == "properties")
+                    .or_else(|| items.iter().position(|i| i.0 == "ddl"))
+                    .map_or(0, |i| i + 1);
+                items.insert(at, ("deps", "Show dependencies", false, "".into()));
+            }
         }
         let target = ctx.target.clone();
         let actions: Vec<&'static str> = items.iter().map(|i| i.0).collect();
@@ -2300,6 +2335,38 @@ mod tests {
     }
 
     #[test]
+    fn read_only_kinds_have_no_destructive_items() {
+        let actions = |k| {
+            object_items(k)
+                .into_iter()
+                .map(|i| i.0)
+                .filter(|a| *a != "-")
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(actions(ObjectKind::Role), ["ddl", "copy", "script"]);
+        assert_eq!(actions(ObjectKind::Job), ["ddl", "copy"]);
+        assert_eq!(
+            actions(ObjectKind::Package),
+            ["ddl", "properties", "copy", "script"]
+        );
+        assert_eq!(
+            actions(ObjectKind::Function),
+            ["ddl", "properties", "copy", "script", "drop"]
+        );
+        for k in [
+            ObjectKind::Role,
+            ObjectKind::Job,
+            ObjectKind::Extension,
+            ObjectKind::Package,
+            ObjectKind::Stage,
+            ObjectKind::Task,
+            ObjectKind::Pipe,
+        ] {
+            assert!(!actions(k).contains(&"drop"), "{k:?}");
+        }
+    }
+
+    #[test]
     fn script_as_items_per_kind() {
         let actions = |k| {
             script_items(k)
@@ -2333,6 +2400,11 @@ mod tests {
             actions(ObjectKind::Sequence),
             ["script_create", "script_drop", "script_drop_create"]
         );
+        // DBX-5c kinds: CREATE only, and nothing for jobs and stages.
+        assert_eq!(actions(ObjectKind::Role), ["script_create"]);
+        assert_eq!(actions(ObjectKind::Package), ["script_create"]);
+        assert!(actions(ObjectKind::Job).is_empty());
+        assert!(actions(ObjectKind::Stage).is_empty());
         let target = CtxTarget::Object("s".into(), "t".into(), ObjectKind::View);
         assert!(submenu(&target, "script").is_some());
         assert!(submenu(&target, "copy").is_none());

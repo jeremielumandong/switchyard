@@ -196,6 +196,7 @@ impl DbSession for MockSession {
                 ),
                 IntrospectScope::Detail { .. }
                 | IntrospectScope::RoutineDefinition { .. }
+                | IntrospectScope::Dependencies { .. }
                 | IntrospectScope::AllColumns => {
                     return Err(DbError::Unsupported("mock detail".into()));
                 }

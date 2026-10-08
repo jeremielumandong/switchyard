@@ -6,8 +6,9 @@ use oracle::sql_type::ToSql;
 
 use super::ora_error;
 use crate::catalog::{
-    CatalogChunk, ColumnInfo, ForeignKeyInfo, IndexInfo, IntrospectScope, ObjectDetail, ObjectInfo,
-    ObjectKind, SchemaInfo, TriggerInfo, like_contains, search_hit,
+    CatalogChunk, ColumnInfo, Dependencies, DependencyInfo, ForeignKeyInfo, IndexInfo,
+    IntrospectScope, ObjectDetail, ObjectInfo, ObjectKind, SchemaInfo, TriggerInfo,
+    dependency_kind, like_contains, search_hit,
 };
 use crate::error::{DbError, Result};
 
@@ -170,10 +171,10 @@ fn search_sql(maintained: bool) -> String {
                   CASE o.OBJECT_TYPE WHEN 'TABLE' THEN 'table' WHEN 'VIEW' THEN 'view' \
                        WHEN 'MATERIALIZED VIEW' THEN 'mview' WHEN 'SEQUENCE' THEN 'sequence' \
                        WHEN 'SYNONYM' THEN 'synonym' WHEN 'PROCEDURE' THEN 'procedure' \
-                       ELSE 'function' END AS KIND \
+                       WHEN 'PACKAGE' THEN 'package' ELSE 'function' END AS KIND \
            FROM ALL_OBJECTS o \
            WHERE o.OBJECT_TYPE IN ('TABLE', 'VIEW', 'MATERIALIZED VIEW', 'SEQUENCE', \
-                                   'SYNONYM', 'PROCEDURE', 'FUNCTION') \
+                                   'SYNONYM', 'PROCEDURE', 'FUNCTION', 'PACKAGE') \
              AND UPPER(o.OBJECT_NAME) LIKE UPPER(:1) ESCAPE '!' \
              AND o.OBJECT_NAME NOT LIKE 'BIN$%' \
              AND NOT (o.OBJECT_TYPE = 'TABLE' AND EXISTS (SELECT 1 FROM ALL_MVIEWS m \
@@ -212,6 +213,210 @@ const ROUTINE_PARAMS_SQL: &str = "SELECT ARGUMENT_NAME, DATA_TYPE FROM ALL_ARGUM
      WHERE OWNER = :1 AND OBJECT_NAME = :2 AND PACKAGE_NAME IS NULL AND DATA_LEVEL = 0 \
        AND POSITION > 0 AND ARGUMENT_NAME IS NOT NULL AND IN_OUT IN ('IN', 'IN/OUT') \
      ORDER BY POSITION";
+
+/// Packages of `:1` (DBX-5c): name and `valid · spec + body`.
+const PACKAGES_SQL: &str = "SELECT o.OBJECT_NAME, LOWER(o.STATUS) || CASE WHEN EXISTS ( \
+       SELECT 1 FROM ALL_OBJECTS b WHERE b.OWNER = o.OWNER AND b.OBJECT_NAME = o.OBJECT_NAME \
+         AND b.OBJECT_TYPE = 'PACKAGE BODY') THEN ' · spec + body' ELSE ' · spec only' END \
+     FROM ALL_OBJECTS o WHERE o.OWNER = :1 AND o.OBJECT_TYPE = 'PACKAGE' \
+     ORDER BY o.OBJECT_NAME";
+
+/// Users (DBX-5c), Oracle-maintained ones left out (12c+; `USERS_SQL_PRE12C` lists all).
+const USERS_SQL: &str = "SELECT USERNAME, 'user · created ' || TO_CHAR(CREATED, 'YYYY-MM-DD') \
+     FROM ALL_USERS WHERE ORACLE_MAINTAINED = 'N' ORDER BY USERNAME";
+
+/// [`USERS_SQL`] before 12c (no `ORACLE_MAINTAINED`).
+const USERS_SQL_PRE12C: &str = "SELECT USERNAME, 'user · created ' || TO_CHAR(CREATED, 'YYYY-MM-DD') \
+     FROM ALL_USERS ORDER BY USERNAME";
+
+/// Every role, with a DBA grant (`DBA_ROLES`, user-created ones).
+const ROLES_SQL_DBA: &str =
+    "SELECT ROLE, 'role' FROM DBA_ROLES WHERE ORACLE_MAINTAINED = 'N' ORDER BY ROLE";
+
+/// Without `DBA_ROLES`: the roles granted to the session user.
+const ROLES_SQL_GRANTED: &str =
+    "SELECT GRANTED_ROLE, 'role · granted to you' FROM USER_ROLE_PRIVS ORDER BY 1";
+
+/// One user (`:1`): name and creation time; no row for a role.
+const USER_SQL: &str = "SELECT USERNAME, TO_CHAR(CREATED, 'YYYY-MM-DD HH24:MI:SS') \
+     FROM ALL_USERS WHERE USERNAME = :1";
+
+/// `DBMS_METADATA.GET_DDL(:1, :2)` of a user or role (needs `SELECT_CATALOG_ROLE` for
+/// anyone but yourself).
+const PRINCIPAL_DDL_SQL: &str = "SELECT DBMS_METADATA.GET_DDL(:1, :2) FROM DUAL";
+
+/// Dependencies (DBX-5a) from `ALL_DEPENDENCIES` (`:1`–`:4` owner, name and the two
+/// type texts of the object, `:5`–`:8` again for the other direction) and foreign keys
+/// (`:9`/`:10`, `:11`/`:12` owner and table). `SYS` and `PUBLIC` references (STANDARD,
+/// DUAL) are left out. Columns: direction, owner, name, type, link, database link.
+const DEPENDENCIES_SQL: &str = "SELECT 'uses', d.REFERENCED_OWNER, d.REFERENCED_NAME, \
+       d.REFERENCED_TYPE, d.DEPENDENCY_TYPE, d.REFERENCED_LINK_NAME \
+     FROM ALL_DEPENDENCIES d \
+     WHERE d.OWNER = :1 AND d.NAME = :2 AND d.TYPE IN (:3, :4) \
+       AND d.REFERENCED_OWNER NOT IN ('SYS', 'PUBLIC') \
+       AND NOT (d.REFERENCED_OWNER = d.OWNER AND d.REFERENCED_NAME = d.NAME) \
+     UNION ALL \
+     SELECT 'used_by', d.OWNER, d.NAME, d.TYPE, d.DEPENDENCY_TYPE, NULL \
+     FROM ALL_DEPENDENCIES d \
+     WHERE d.REFERENCED_OWNER = :5 AND d.REFERENCED_NAME = :6 AND d.REFERENCED_TYPE IN (:7, :8) \
+       AND NOT (d.REFERENCED_OWNER = d.OWNER AND d.REFERENCED_NAME = d.NAME) \
+     UNION ALL \
+     SELECT 'uses', r.OWNER, r.TABLE_NAME, 'TABLE', 'foreign key ' || c.CONSTRAINT_NAME, NULL \
+     FROM ALL_CONSTRAINTS c \
+     JOIN ALL_CONSTRAINTS r ON r.OWNER = c.R_OWNER AND r.CONSTRAINT_NAME = c.R_CONSTRAINT_NAME \
+     WHERE c.OWNER = :9 AND c.TABLE_NAME = :10 AND c.CONSTRAINT_TYPE = 'R' \
+       AND NOT (r.OWNER = c.OWNER AND r.TABLE_NAME = c.TABLE_NAME) \
+     UNION ALL \
+     SELECT 'used_by', c.OWNER, c.TABLE_NAME, 'TABLE', 'foreign key ' || c.CONSTRAINT_NAME, NULL \
+     FROM ALL_CONSTRAINTS c \
+     JOIN ALL_CONSTRAINTS r ON r.OWNER = c.R_OWNER AND r.CONSTRAINT_NAME = c.R_CONSTRAINT_NAME \
+     WHERE r.OWNER = :11 AND r.TABLE_NAME = :12 AND c.CONSTRAINT_TYPE = 'R' \
+       AND NOT (r.OWNER = c.OWNER AND r.TABLE_NAME = c.TABLE_NAME) \
+     ORDER BY 1 DESC, 4, 2, 3";
+
+/// The two `ALL_DEPENDENCIES.TYPE` texts of a kind (a package's spec and body), or
+/// `None` for a kind Oracle does not track.
+fn dependency_types(kind: ObjectKind) -> Option<(&'static str, &'static str)> {
+    Some(match kind {
+        ObjectKind::Table => ("TABLE", "TABLE"),
+        ObjectKind::View => ("VIEW", "VIEW"),
+        ObjectKind::MaterializedView => ("MATERIALIZED VIEW", "TABLE"),
+        ObjectKind::Function => ("FUNCTION", "FUNCTION"),
+        ObjectKind::Procedure => ("PROCEDURE", "PROCEDURE"),
+        ObjectKind::Package => ("PACKAGE", "PACKAGE BODY"),
+        ObjectKind::Sequence => ("SEQUENCE", "SEQUENCE"),
+        ObjectKind::Synonym => ("SYNONYM", "SYNONYM"),
+        ObjectKind::Type => ("TYPE", "TYPE BODY"),
+        _ => return None,
+    })
+}
+
+/// [`IntrospectScope::Dependencies`]; any error (privileges) is a hint.
+fn dependencies(conn: &Connection, schema: &str, name: &str, kind: ObjectKind) -> CatalogChunk {
+    let Some((t1, t2)) = dependency_types(kind) else {
+        return CatalogChunk::Dependencies(Box::default());
+    };
+    let params: [&dyn ToSql; 12] = [
+        &schema, &name, &t1, &t2, &schema, &name, &t1, &t2, &schema, &name, &schema, &name,
+    ];
+    let deps = match rows(conn, DEPENDENCIES_SQL, &params) {
+        Ok(r) => {
+            let mut deps = Dependencies::default();
+            for row in &r {
+                let link = row.get(5).cloned().flatten();
+                let type_label = text(row, 3);
+                deps.push(
+                    &text(row, 0),
+                    DependencyInfo {
+                        schema: match &link {
+                            Some(l) => format!("{}@{l}", text(row, 1)),
+                            None => text(row, 1),
+                        },
+                        name: text(row, 2),
+                        kind: link
+                            .is_none()
+                            .then(|| dependency_kind(&type_label))
+                            .flatten(),
+                        type_label: type_label.to_ascii_lowercase(),
+                        dependency: text(row, 4).to_ascii_lowercase(),
+                    },
+                );
+            }
+            deps
+        }
+        Err(e) => Dependencies::hint(format!("Dependencies unavailable: {e}")),
+    };
+    CatalogChunk::Dependencies(Box::new(deps))
+}
+
+/// Users, then roles (every role with `DBA_ROLES`, else the ones granted to you), by name.
+fn roles(conn: &Connection) -> Result<Vec<ObjectInfo>> {
+    let mut all = rows(conn, USERS_SQL, &[]).or_else(|_| rows(conn, USERS_SQL_PRE12C, &[]))?;
+    all.extend(
+        rows(conn, ROLES_SQL_DBA, &[])
+            .or_else(|_| rows(conn, ROLES_SQL_GRANTED, &[]))
+            .unwrap_or_default(),
+    );
+    let mut out: Vec<ObjectInfo> = all
+        .iter()
+        .map(|r| ObjectInfo {
+            schema: String::new(),
+            name: text(r, 0),
+            kind: ObjectKind::Role,
+            estimated_rows: None,
+            detail: r.get(1).cloned().flatten(),
+        })
+        .collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out.dedup_by(|a, b| a.name == b.name);
+    Ok(out)
+}
+
+/// `Detail` of a user or role: `GET_DDL`, else what the dictionary shows as text.
+fn role_detail(conn: &Connection, name: &str) -> Result<CatalogChunk> {
+    let user = rows(conn, USER_SQL, &[&name])?.into_iter().next();
+    let ddl_type = if user.is_some() { "USER" } else { "ROLE" };
+    let ddl = rows(conn, PRINCIPAL_DDL_SQL, &[&ddl_type, &name])
+        .ok()
+        .and_then(|r| r.first().map(|row| text(row, 0).trim().to_owned()))
+        .filter(|d| !d.is_empty())
+        .unwrap_or_else(|| match &user {
+            Some(u) => format!(
+                "-- User {name}, created {}\n-- DBMS_METADATA.GET_DDL needs SELECT_CATALOG_ROLE\n",
+                text(u, 1)
+            ),
+            None => format!("CREATE ROLE \"{}\";", name.replace('"', "\"\"")),
+        });
+    Ok(CatalogChunk::Detail(Box::new(ObjectDetail {
+        object: ObjectInfo {
+            schema: String::new(),
+            name: name.to_owned(),
+            kind: ObjectKind::Role,
+            estimated_rows: None,
+            detail: None,
+        },
+        ddl,
+        ..ObjectDetail::default()
+    })))
+}
+
+/// A package's specification then body (DBX-5c): `GET_DDL('PACKAGE_SPEC' / 'PACKAGE_BODY')`,
+/// else `ALL_SOURCE`, joined by a `/` line so the script runs as two PL/SQL units.
+fn package_definition(conn: &Connection, schema: &str, name: &str) -> Result<CatalogChunk> {
+    let get = |ty: &str| {
+        rows(conn, ROUTINE_DDL_SQL, &[&ty, &name, &schema])
+            .ok()
+            .and_then(|r| r.first().map(|row| text(row, 0).trim().to_owned()))
+            .filter(|d| !d.is_empty())
+    };
+    let source = |ty: &str| -> Result<Option<String>> {
+        let lines = rows(conn, ROUTINE_SOURCE_SQL, &[&schema, &name, &ty])?;
+        let body: String = lines.iter().map(|r| text(r, 0)).collect();
+        Ok((!body.trim().is_empty()).then(|| format!("CREATE OR REPLACE {}", body.trim())))
+    };
+    let spec = match get("PACKAGE_SPEC") {
+        Some(s) => Some(s),
+        None => source("PACKAGE")?,
+    };
+    let Some(spec) = spec else {
+        return Err(DbError::Unsupported(format!("{name} no longer exists")));
+    };
+    let body = match get("PACKAGE_BODY") {
+        Some(b) => Some(b),
+        None => source("PACKAGE BODY").ok().flatten(),
+    };
+    let ddl = match body {
+        Some(b) => format!("{spec}\n/\n\n{b}"),
+        None => spec,
+    };
+    Ok(CatalogChunk::Detail(Box::new(ObjectDetail::routine(
+        schema,
+        name,
+        ObjectKind::Package,
+        ddl,
+        Vec::new(),
+    ))))
+}
 
 /// [`IntrospectScope::RoutineDefinition`]: `GET_DDL`, else `ALL_SOURCE`.
 fn routine_definition(
@@ -279,6 +484,46 @@ pub(super) fn introspect(conn: &Connection, scope: IntrospectScope) -> Result<Ca
                     })
                     .collect(),
             ))
+        }
+        IntrospectScope::Objects {
+            kind: ObjectKind::Role,
+            ..
+        } => Ok(CatalogChunk::Objects(roles(conn)?)),
+        IntrospectScope::Objects {
+            schema,
+            kind: ObjectKind::Package,
+        } => {
+            let r = rows(conn, PACKAGES_SQL, &[&schema])?;
+            Ok(CatalogChunk::Objects(
+                r.iter()
+                    .map(|row| ObjectInfo {
+                        schema: schema.clone(),
+                        name: text(row, 0),
+                        kind: ObjectKind::Package,
+                        estimated_rows: None,
+                        detail: row.get(1).cloned().flatten(),
+                    })
+                    .collect(),
+            ))
+        }
+        IntrospectScope::Detail {
+            name,
+            kind: ObjectKind::Role,
+            ..
+        } => role_detail(conn, &name),
+        IntrospectScope::Detail {
+            schema,
+            name,
+            kind: ObjectKind::Package,
+        }
+        | IntrospectScope::RoutineDefinition {
+            schema,
+            name,
+            kind: ObjectKind::Package,
+            ..
+        } => package_definition(conn, &schema, &name),
+        IntrospectScope::Dependencies { schema, name, kind } => {
+            Ok(dependencies(conn, &schema, &name, kind))
         }
         IntrospectScope::Objects { schema, kind } => {
             let Some((view, name_col, filter)) = listing(kind) else {
@@ -482,6 +727,37 @@ mod tests {
     fn search_sql_snapshot() {
         insta::assert_snapshot!("oracle_search_sql", search_sql(true));
         insta::assert_snapshot!("oracle_search_sql_pre12c", search_sql(false));
+    }
+
+    #[test]
+    fn admin_sql_snapshots() {
+        insta::assert_snapshot!(
+            "oracle_admin_sql",
+            [
+                PACKAGES_SQL,
+                USERS_SQL,
+                USERS_SQL_PRE12C,
+                ROLES_SQL_DBA,
+                ROLES_SQL_GRANTED,
+                USER_SQL,
+                PRINCIPAL_DDL_SQL,
+            ]
+            .join("\n")
+        );
+        insta::assert_snapshot!("oracle_dependencies_sql", DEPENDENCIES_SQL);
+    }
+
+    #[test]
+    fn dependency_types_per_kind() {
+        assert_eq!(
+            dependency_types(ObjectKind::Package),
+            Some(("PACKAGE", "PACKAGE BODY"))
+        );
+        assert_eq!(
+            dependency_types(ObjectKind::Table),
+            Some(("TABLE", "TABLE"))
+        );
+        assert_eq!(dependency_types(ObjectKind::Role), None);
     }
 
     #[test]

@@ -7,6 +7,10 @@
 //! a [`Pager`] bar (DBX-3a); a foreign-key cell opens the referenced row (DBX-3c). Every
 //! value can be copied: tables have a per-row Copy, the DDL and trigger sources sit in
 //! read-only editors.
+//!
+//! DBX-5a adds a Dependencies page (what the object uses and what uses it; double-click
+//! opens one), and the tab also shows non-relations (routines, sequences, packages,
+//! Snowflake tasks …) with only their Dependencies and DDL pages.
 
 use std::sync::Arc;
 
@@ -24,8 +28,8 @@ use gpui_kit::{
     uniform_list,
 };
 use switchyard_core::db::{
-    CatalogChunk, ColumnMeta, Dialect, ForeignKeyInfo, IntrospectScope, ObjectDetail, ObjectKind,
-    TriggerInfo, dialect_for,
+    CatalogChunk, ColumnMeta, Dependencies, DependencyInfo, Dialect, ForeignKeyInfo,
+    IntrospectScope, ObjectDetail, ObjectKind, TriggerInfo, dialect_for,
 };
 use switchyard_core::store::DbConnection;
 use switchyard_core::{
@@ -81,6 +85,8 @@ pub enum Page {
     ForeignKeys,
     /// Triggers.
     Triggers,
+    /// Uses / used by (DBX-5a).
+    Dependencies,
     /// DDL.
     Ddl,
     /// First rows.
@@ -88,15 +94,31 @@ pub enum Page {
 }
 
 impl Page {
-    const ALL: [Page; 7] = [
+    const RELATION: [Page; 8] = [
         Page::Columns,
         Page::Indexes,
         Page::Constraints,
         Page::ForeignKeys,
         Page::Triggers,
+        Page::Dependencies,
         Page::Ddl,
         Page::Data,
     ];
+
+    /// The pages of an object of `kind`: every page for a relation, Dependencies and DDL
+    /// for anything else; Dependencies only where the engine lists them (`deps`).
+    pub fn for_kind(kind: ObjectKind, deps: bool) -> Vec<Page> {
+        let deps = deps && kind.has_dependencies();
+        let all: &[Page] = if kind.is_relation() {
+            &Page::RELATION
+        } else {
+            &[Page::Dependencies, Page::Ddl]
+        };
+        all.iter()
+            .copied()
+            .filter(|p| deps || *p != Page::Dependencies)
+            .collect()
+    }
 
     fn label(self) -> &'static str {
         match self {
@@ -105,10 +127,20 @@ impl Page {
             Page::Constraints => "Constraints",
             Page::ForeignKeys => "Foreign keys",
             Page::Triggers => "Triggers",
+            Page::Dependencies => "Dependencies",
             Page::Ddl => "DDL",
             Page::Data => "Data",
         }
     }
+}
+
+/// Which property table a row belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GridRef {
+    /// Columns, Indexes, Constraints or Foreign keys (index into `grids`).
+    Detail(usize),
+    /// Uses (0) or Used by (1).
+    Deps(usize),
 }
 
 /// A property table: headers, column widths (the last one stretches) and text cells.
@@ -119,6 +151,8 @@ struct Grid {
     rows: Arc<Vec<Vec<SharedString>>>,
     /// Column whose cells open the referenced object (foreign keys).
     link: Option<usize>,
+    /// A double-click on a row opens its object (dependencies).
+    open_on_double: bool,
 }
 
 /// The Data page: one page (`Dialect::select_page`) streamed into the SQL tab's grid.
@@ -160,7 +194,14 @@ pub struct ObjectTab {
     loading: bool,
     error: Option<String>,
     page: Page,
+    /// The pages this object shows ([`Page::for_kind`]).
+    pages: Vec<Page>,
     grids: Vec<Grid>,
+    /// Uses / used-by answer (loaded when the Dependencies page first shows).
+    deps: Option<Box<Dependencies>>,
+    deps_loading: bool,
+    /// Uses and Used by tables of the Dependencies page.
+    dep_grids: Vec<Grid>,
     trigger: usize,
     ddl_editor: Entity<EditorState>,
     trigger_editor: Entity<EditorState>,
@@ -218,9 +259,15 @@ impl ObjectTab {
                 }
             },
         );
+        let pages = Page::for_kind(kind, dialect_for(connection.engine).supports_dependencies());
+        let page = pages.first().copied().unwrap_or(Page::Ddl);
         Self {
             key: Self::key_for(&connection, &schema, &name, kind),
-            title: format!("{schema}.{name}").into(),
+            title: if schema.is_empty() {
+                name.clone().into()
+            } else {
+                format!("{schema}.{name}").into()
+            },
             connection,
             schema,
             name,
@@ -231,8 +278,12 @@ impl ObjectTab {
             detail: None,
             loading: true,
             error: None,
-            page: Page::Columns,
+            page,
+            pages,
             grids: Vec::new(),
+            deps: None,
+            deps_loading: false,
+            dep_grids: Vec::new(),
             trigger: 0,
             ddl_editor: code_editor(window, cx),
             trigger_editor: code_editor(window, cx),
@@ -282,8 +333,30 @@ impl ObjectTab {
             if self.page == Page::Data {
                 self.run_data(cx);
             }
+            if self.page == Page::Dependencies {
+                self.request_deps(cx);
+            }
         }
         cx.notify();
+    }
+
+    /// The scope that brings this object's DDL (and, for relations, everything else):
+    /// the routine definition for functions, procedures and packages, else `Detail`.
+    fn detail_scope(&self) -> IntrospectScope {
+        let (schema, name, kind) = (self.schema.clone(), self.name.clone(), self.kind);
+        if matches!(
+            kind,
+            ObjectKind::Function | ObjectKind::Procedure | ObjectKind::Package
+        ) {
+            IntrospectScope::RoutineDefinition {
+                schema,
+                name,
+                kind,
+                signature: None,
+            }
+        } else {
+            IntrospectScope::Detail { schema, name, kind }
+        }
     }
 
     fn request_detail(&mut self, refresh: bool, cx: &mut Context<Self>) {
@@ -291,14 +364,35 @@ impl ObjectTab {
         self.loading = true;
         self.core.send(Command::Introspect {
             session,
-            scope: IntrospectScope::Detail {
+            scope: self.detail_scope(),
+            refresh,
+        });
+        cx.notify();
+    }
+
+    /// Ask for the uses / used-by lists (never cached by core).
+    fn request_deps(&mut self, cx: &mut Context<Self>) {
+        let (Some(session), SessionState::Open { .. }) = (self.session, &self.session_state) else {
+            return;
+        };
+        self.deps_loading = true;
+        self.core.send(Command::Introspect {
+            session,
+            scope: IntrospectScope::Dependencies {
                 schema: self.schema.clone(),
                 name: self.name.clone(),
                 kind: self.kind,
             },
-            refresh,
+            refresh: true,
         });
         cx.notify();
+    }
+
+    /// Show `page` (when this object has it).
+    pub fn show_page(&mut self, page: Page, cx: &mut Context<Self>) {
+        if self.pages.contains(&page) {
+            self.set_page(page, cx);
+        }
     }
 
     /// Re-read the detail from the server (and the Data page, when it was loaded).
@@ -326,6 +420,9 @@ impl ObjectTab {
         if self.data.table.is_some() || self.data.error.is_some() {
             self.run_data(cx);
         }
+        if self.deps.is_some() || self.page == Page::Dependencies {
+            self.request_deps(cx);
+        }
     }
 
     /// A catalog answer on this tab's session.
@@ -336,8 +433,18 @@ impl ObjectTab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let IntrospectScope::Detail { schema, name, kind } = scope else {
-            return;
+        let (schema, name, kind) = match scope {
+            IntrospectScope::Detail { schema, name, kind }
+            | IntrospectScope::RoutineDefinition {
+                schema, name, kind, ..
+            } => (schema, name, kind),
+            IntrospectScope::Dependencies { schema, name, kind } => {
+                if (schema, name, kind) == (self.schema.clone(), self.name.clone(), self.kind) {
+                    self.on_dependencies(result, cx);
+                }
+                return;
+            }
+            _ => return,
         };
         if schema != self.schema || name != self.name || kind != self.kind {
             return;
@@ -356,6 +463,10 @@ impl ObjectTab {
                 self.detail = Some(d);
                 self.show_trigger(window, cx);
             }
+            Ok(CatalogChunk::Hint(h)) => {
+                self.pager.ready = true;
+                self.error = Some(h);
+            }
             Ok(_) => {}
             Err(e) => {
                 // The Data page still pages, without a key order.
@@ -367,6 +478,30 @@ impl ObjectTab {
             self.run_data(cx);
         }
         cx.notify();
+    }
+
+    /// The uses / used-by answer arrived (an error reads like a hint).
+    fn on_dependencies(&mut self, result: Result<CatalogChunk, String>, cx: &mut Context<Self>) {
+        self.deps_loading = false;
+        let deps = match result {
+            Ok(CatalogChunk::Dependencies(d)) => d,
+            Ok(CatalogChunk::Hint(h)) => Box::new(Dependencies::hint(h)),
+            Ok(_) => return,
+            Err(e) => Box::new(Dependencies::hint(format!("Dependencies unavailable: {e}"))),
+        };
+        self.dep_grids = dependency_grids(&deps);
+        self.deps = Some(deps);
+        cx.notify();
+    }
+
+    /// The dependency row `row` of the Uses (0) or Used by (1) list.
+    fn dependency(&self, list: usize, row: usize) -> Option<&DependencyInfo> {
+        let d = self.deps.as_ref()?;
+        if list == 0 {
+            d.uses.get(row)
+        } else {
+            d.used_by.get(row)
+        }
     }
 
     fn show_trigger(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -384,6 +519,9 @@ impl ObjectTab {
         self.page = page;
         if page == Page::Data && self.data.query.is_none() && self.data.table.is_none() {
             self.run_data(cx);
+        }
+        if page == Page::Dependencies && self.deps.is_none() && !self.deps_loading {
+            self.request_deps(cx);
         }
         cx.notify();
     }
@@ -576,20 +714,49 @@ impl ObjectTab {
         }
     }
 
-    fn open_reference(&mut self, row: usize, cx: &mut Context<Self>) {
-        let Some(fk) = self.detail.as_ref().and_then(|d| d.foreign_keys.get(row)) else {
-            return;
-        };
-        let (schema, name) = split_reference(&fk.references, &self.schema);
-        cx.emit(ObjectTabEvent::OpenObject {
-            schema,
-            name,
-            kind: ObjectKind::Table,
-        });
+    /// Open the object a row points at: a foreign key's referenced table, or a
+    /// dependency (when the explorer can open its kind).
+    fn open_row(&mut self, grid: GridRef, row: usize, cx: &mut Context<Self>) {
+        match grid {
+            GridRef::Detail(_) => {
+                let Some(fk) = self.detail.as_ref().and_then(|d| d.foreign_keys.get(row)) else {
+                    return;
+                };
+                let (schema, name) = split_reference(&fk.references, &self.schema);
+                cx.emit(ObjectTabEvent::OpenObject {
+                    schema,
+                    name,
+                    kind: ObjectKind::Table,
+                });
+            }
+            GridRef::Deps(list) => {
+                let Some(dep) = self.dependency(list, row).cloned() else {
+                    return;
+                };
+                match dep.kind {
+                    Some(kind) => cx.emit(ObjectTabEvent::OpenObject {
+                        schema: dep.schema,
+                        name: dep.name,
+                        kind,
+                    }),
+                    None => cx.emit(ObjectTabEvent::Toast(format!(
+                        "{} {}.{} cannot be opened here",
+                        dep.type_label, dep.schema, dep.name
+                    ))),
+                }
+            }
+        }
     }
 
-    fn copy_row(&self, grid: usize, row: usize, cx: &mut Context<Self>) {
-        if let Some(cells) = self.grids.get(grid).and_then(|g| g.rows.get(row)) {
+    fn grid(&self, grid: GridRef) -> Option<&Grid> {
+        match grid {
+            GridRef::Detail(i) => self.grids.get(i),
+            GridRef::Deps(i) => self.dep_grids.get(i),
+        }
+    }
+
+    fn copy_row(&self, grid: GridRef, row: usize, cx: &mut Context<Self>) {
+        if let Some(cells) = self.grid(grid).and_then(|g| g.rows.get(row)) {
             let text = cells
                 .iter()
                 .map(|c| c.as_ref())
@@ -601,6 +768,10 @@ impl ObjectTab {
     }
 
     fn count(&self, page: Page) -> Option<usize> {
+        if page == Page::Dependencies {
+            let deps = self.deps.as_ref()?;
+            return Some(deps.uses.len() + deps.used_by.len());
+        }
         let d = self.detail.as_ref()?;
         Some(match page {
             Page::Columns => d.columns.len(),
@@ -608,7 +779,7 @@ impl ObjectTab {
             Page::Constraints => d.constraints.len(),
             Page::ForeignKeys => d.foreign_keys.len(),
             Page::Triggers => d.triggers.len().max(d.trigger_details.len()),
-            Page::Ddl | Page::Data => return None,
+            Page::Dependencies | Page::Ddl | Page::Data => return None,
         })
     }
 
@@ -716,7 +887,7 @@ impl ObjectTab {
             .border_b_1()
             .border_color(p.bd)
             .bg(p.panel)
-            .children(Page::ALL.into_iter().enumerate().map(|(i, page)| {
+            .children(self.pages.iter().copied().enumerate().map(|(i, page)| {
                 let on = page == self.page;
                 let label = match self.count(page) {
                     Some(n) => format!("{} {n}", page.label()),
@@ -745,8 +916,8 @@ impl ObjectTab {
             .into_any_element()
     }
 
-    fn render_grid(&self, ix: usize, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let Some(g) = self.grids.get(ix) else {
+    fn render_grid(&self, which: GridRef, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let Some(g) = self.grid(which) else {
             return self.render_empty("Loading…", p);
         };
         if g.rows.is_empty() {
@@ -772,7 +943,7 @@ impl ObjectTab {
             )
             .child(div().w(px(44.)).flex_none());
         let rows = g.rows.clone();
-        let (id, widths, link) = (g.id, g.widths, g.link);
+        let (id, widths, link, double) = (g.id, g.widths, g.link, g.open_on_double);
         let p2 = *p;
         div()
             .flex_1()
@@ -800,6 +971,15 @@ impl ObjectTab {
                                     .text_size(px(12.))
                                     .text_color(p.fg)
                                     .hover(|s| s.bg(p.hover))
+                                    .when(double, |d| {
+                                        d.on_click(cx.listener(
+                                            move |this, ev: &gpui_kit::ClickEvent, _, cx| {
+                                                if ev.click_count() >= 2 {
+                                                    this.open_row(which, r, cx);
+                                                }
+                                            },
+                                        ))
+                                    })
                                     .children(rows[r].iter().enumerate().map(|(c, text)| {
                                         let cell = cell_box(widths, c)
                                             .truncate()
@@ -810,7 +990,7 @@ impl ObjectTab {
                                                 .cursor_pointer()
                                                 .id(("obj-link", r))
                                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.open_reference(r, cx)
+                                                    this.open_row(which, r, cx)
                                                 }))
                                                 .into_any_element()
                                         } else {
@@ -827,7 +1007,7 @@ impl ObjectTab {
                                             .cursor_pointer()
                                             .hover(|s| s.text_color(p.acc))
                                             .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.copy_row(ix, r, cx)
+                                                this.copy_row(which, r, cx)
                                             }))
                                             .child("Copy"),
                                     )
@@ -837,6 +1017,62 @@ impl ObjectTab {
                 )
                 .flex_1(),
             )
+            .into_any_element()
+    }
+
+    /// The Dependencies page: a hint when there is one, then Uses and Used by.
+    fn render_dependencies(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let Some(deps) = self.deps.as_deref() else {
+            return self.render_empty("Loading…", p);
+        };
+        let section = |label: &str, n: usize, which: GridRef, cx: &mut Context<Self>| {
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .h(px(28.))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .px(px(12.))
+                        .gap(px(6.))
+                        .border_b_1()
+                        .border_color(p.bd)
+                        .bg(p.panel)
+                        .text_size(px(12.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(p.fg)
+                        .child(format!("{label} {n}"))
+                        .child(
+                            div()
+                                .text_color(p.fg3)
+                                .font_weight(FontWeight::NORMAL)
+                                .child("· double-click to open"),
+                        ),
+                )
+                .child(self.render_grid(which, p, cx))
+        };
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .children(deps.hint.clone().map(|h| {
+                div()
+                    .flex_none()
+                    .px(px(12.))
+                    .py(px(6.))
+                    .border_b_1()
+                    .border_color(p.bd)
+                    .text_size(px(12.))
+                    .text_color(p.fg2)
+                    .child(h)
+            }))
+            .child(section("Uses", deps.uses.len(), GridRef::Deps(0), cx))
+            .child(section("Used by", deps.used_by.len(), GridRef::Deps(1), cx))
             .into_any_element()
     }
 
@@ -1051,11 +1287,12 @@ impl Render for ObjectTab {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         let body = match self.page {
-            Page::Columns => self.render_grid(0, &p, cx),
-            Page::Indexes => self.render_grid(1, &p, cx),
-            Page::Constraints => self.render_grid(2, &p, cx),
-            Page::ForeignKeys => self.render_grid(3, &p, cx),
+            Page::Columns => self.render_grid(GridRef::Detail(0), &p, cx),
+            Page::Indexes => self.render_grid(GridRef::Detail(1), &p, cx),
+            Page::Constraints => self.render_grid(GridRef::Detail(2), &p, cx),
+            Page::ForeignKeys => self.render_grid(GridRef::Detail(3), &p, cx),
             Page::Triggers => self.render_triggers(&p, cx),
+            Page::Dependencies => self.render_dependencies(&p, cx),
             Page::Ddl => {
                 let ddl = self
                     .detail
@@ -1102,6 +1339,7 @@ fn grids(d: &ObjectDetail) -> Vec<Grid> {
             widths: &[180., 150., 44., 160., 60., 0.],
             rows: cells(column_rows(d)),
             link: None,
+            open_on_double: false,
         },
         Grid {
             id: "obj-indexes",
@@ -1121,6 +1359,7 @@ fn grids(d: &ObjectDetail) -> Vec<Grid> {
                     .collect(),
             ),
             link: None,
+            open_on_double: false,
         },
         Grid {
             id: "obj-constraints",
@@ -1133,6 +1372,7 @@ fn grids(d: &ObjectDetail) -> Vec<Grid> {
                     .collect(),
             ),
             link: None,
+            open_on_double: false,
         },
         Grid {
             id: "obj-fks",
@@ -1153,8 +1393,45 @@ fn grids(d: &ObjectDetail) -> Vec<Grid> {
                     .collect(),
             ),
             link: Some(2),
+            open_on_double: false,
         },
     ]
+}
+
+/// The Uses and Used by tables of the Dependencies page: kind, `schema.name`, link.
+fn dependency_grids(d: &Dependencies) -> Vec<Grid> {
+    let rows = |list: &[DependencyInfo]| {
+        Arc::new(
+            dependency_rows(list)
+                .into_iter()
+                .map(|r| r.into_iter().map(SharedString::from).collect())
+                .collect::<Vec<Vec<SharedString>>>(),
+        )
+    };
+    let grid = |id, list| Grid {
+        id,
+        headers: &["Object", "Kind", "Dependency"],
+        widths: &[320., 150., 0.],
+        rows: rows(list),
+        link: None,
+        open_on_double: true,
+    };
+    vec![grid("obj-uses", &d.uses), grid("obj-used-by", &d.used_by)]
+}
+
+/// One row per dependency: `schema.name` (just the name without a schema), the engine's
+/// type text and the link.
+fn dependency_rows(list: &[DependencyInfo]) -> Vec<Vec<String>> {
+    list.iter()
+        .map(|x| {
+            let name = if x.schema.is_empty() {
+                x.name.clone()
+            } else {
+                format!("{}.{}", x.schema, x.name)
+            };
+            vec![name, x.type_label.clone(), x.dependency.clone()]
+        })
+        .collect()
 }
 
 /// Columns page rows: name, type, nullable, default, key marker, comment.
@@ -1239,6 +1516,13 @@ fn kind_label(kind: ObjectKind) -> &'static str {
         ObjectKind::Sequence => "Sequence",
         ObjectKind::Type => "Type",
         ObjectKind::Synonym => "Synonym",
+        ObjectKind::Role => "User / role",
+        ObjectKind::Job => "SQL Agent job",
+        ObjectKind::Extension => "Extension",
+        ObjectKind::Package => "Package",
+        ObjectKind::Stage => "Stage",
+        ObjectKind::Task => "Task",
+        ObjectKind::Pipe => "Pipe",
     }
 }
 
@@ -1276,17 +1560,42 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_object_page(connection, schema, name, kind, None, window, cx);
+    }
+
+    /// Open (or focus) the properties tab of `schema.name` on `connection`, on `page`
+    /// when given (Show dependencies, DBX-5a).
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_object_page(
+        &mut self,
+        connection: DbConnection,
+        schema: String,
+        name: String,
+        kind: ObjectKind,
+        page: Option<Page>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let key = ObjectTab::key_for(&connection, &schema, &name, kind);
         if let Some(ix) = self
             .tabs
             .iter()
             .position(|t| matches!(t, Tab::Object(o) if o.read(cx).key == key))
         {
+            if let (Some(page), Tab::Object(o)) = (page, &self.tabs[ix]) {
+                o.update(cx, |o, cx| o.show_page(page, cx));
+            }
             self.activate(ix, cx);
             return;
         }
         let core = self.core.clone();
-        let tab = cx.new(|cx| ObjectTab::new(core, connection, schema, name, kind, window, cx));
+        let tab = cx.new(|cx| {
+            let mut t = ObjectTab::new(core, connection, schema, name, kind, window, cx);
+            if let Some(page) = page {
+                t.show_page(page, cx);
+            }
+            t
+        });
         cx.subscribe_in(
             &tab,
             window,
@@ -1339,17 +1648,19 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The schema tree's "Properties…" item: the object on the tree's connection.
+    /// The schema tree's "Properties…" (or "Show dependencies", on that `page`) item:
+    /// the object on the tree's connection.
     pub(crate) fn open_tree_object_properties(
         &mut self,
         schema: String,
         name: String,
         kind: ObjectKind,
+        page: Option<Page>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if let Some(conn) = self.schema.connection.clone() {
-            self.open_object_properties(conn, schema, name, kind, window, cx);
+            self.open_object_page(conn, schema, name, kind, page, window, cx);
         }
     }
 
@@ -1463,6 +1774,46 @@ mod tests {
         assert_eq!(rows[0], ["id", "int", "YES", "", "PK", ""]);
         assert_eq!(rows[1], ["customer_id", "int", "YES", "0", "FK", "who"]);
         assert_eq!(key_marker(true, true), "PK FK");
+    }
+
+    #[test]
+    fn pages_per_kind() {
+        assert_eq!(Page::for_kind(ObjectKind::Table, true).len(), 8);
+        assert!(!Page::for_kind(ObjectKind::Table, false).contains(&Page::Dependencies));
+        assert_eq!(
+            Page::for_kind(ObjectKind::Package, true),
+            [Page::Dependencies, Page::Ddl]
+        );
+        // D1 (no dependency catalog) and server-level kinds: DDL only.
+        assert_eq!(Page::for_kind(ObjectKind::Function, false), [Page::Ddl]);
+        assert_eq!(Page::for_kind(ObjectKind::Role, true), [Page::Ddl]);
+    }
+
+    #[test]
+    fn dependency_rows_show_kind_name_and_link() {
+        let d = Dependencies {
+            uses: vec![DependencyInfo {
+                schema: "public".into(),
+                name: "orders".into(),
+                kind: Some(ObjectKind::Table),
+                type_label: "table".into(),
+                dependency: "foreign key fk".into(),
+            }],
+            used_by: vec![DependencyInfo {
+                name: "x".into(),
+                type_label: "trigger".into(),
+                ..DependencyInfo::default()
+            }],
+            hint: None,
+        };
+        assert_eq!(
+            dependency_rows(&d.uses),
+            [["public.orders", "table", "foreign key fk"]]
+        );
+        assert_eq!(dependency_rows(&d.used_by)[0][0], "x");
+        let grids = dependency_grids(&d);
+        assert!(grids.iter().all(|g| g.open_on_double));
+        assert_eq!(grids[1].rows.len(), 1);
     }
 
     #[test]

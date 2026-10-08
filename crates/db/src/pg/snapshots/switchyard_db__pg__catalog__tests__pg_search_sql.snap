@@ -15,6 +15,13 @@ SELECT s.schema_name, s.object_name, s.kind FROM (
   FROM pg_catalog.pg_proc p
   JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
   WHERE p.prokind IN ('f', 'p') AND p.proname ILIKE $1 ESCAPE '!'
+  UNION ALL
+  SELECT '', e.extname::text, 'extension'
+  FROM pg_catalog.pg_extension e WHERE e.extname ILIKE $1 ESCAPE '!'
+  UNION ALL
+  SELECT '', r.rolname::text, 'role'
+  FROM pg_catalog.pg_roles r
+  WHERE r.rolname ILIKE $1 ESCAPE '!' AND ($3::bool OR r.rolname NOT LIKE 'pg\_%')
 ) s
 WHERE s.schema_name NOT LIKE 'pg\_toast%' AND s.schema_name NOT LIKE 'pg\_temp%'
   AND ($3::bool OR s.schema_name NOT IN ('pg_catalog', 'information_schema'))

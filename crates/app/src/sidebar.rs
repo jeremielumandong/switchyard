@@ -57,6 +57,9 @@ pub struct SchemaState {
     pub state: SessionState2,
     pub schemas: Loadable<Vec<SchemaInfo>>,
     pub objects: HashMap<(String, ObjectKind), Loadable<Vec<ObjectInfo>>>,
+    /// Folders the server answered with a hint instead of objects (a missing privilege,
+    /// such as msdb access for Agent jobs; DBX-5c).
+    pub hints: HashMap<(String, ObjectKind), String>,
     pub expanded: HashSet<String>,
     pub cached_at: Option<i64>,
     pub selected: Option<(String, String, ObjectKind)>,
@@ -263,10 +266,16 @@ impl SchemaState {
         );
     }
 
-    /// The folder (schema, kind) a `f:<schema>:<Kind>` key names.
+    /// The folder (schema, kind) a `f:<schema>:<Kind>` key names; a database-level
+    /// folder (`f::<Kind>`, DBX-5c) has an empty schema.
     fn folder_of(&self, key: &str) -> Option<(String, ObjectKind)> {
         let (schema, kind) = key.strip_prefix("f:")?.rsplit_once(':')?;
-        let kind = self.folders().iter().find(|k| format!("{k:?}") == kind)?;
+        let kinds = if schema.is_empty() {
+            self.server_folders()
+        } else {
+            self.folders()
+        };
+        let kind = kinds.iter().find(|k| format!("{k:?}") == kind)?;
         Some((schema.to_owned(), *kind))
     }
 
@@ -368,12 +377,21 @@ impl SchemaState {
 
     /// Object folders for the connection's dialect.
     pub fn folders(&self) -> &'static [ObjectKind] {
+        self.dialect().object_folders()
+    }
+
+    /// Database-level folders (users and roles, jobs, extensions; DBX-5c).
+    pub fn server_folders(&self) -> &'static [ObjectKind] {
+        self.dialect().server_folders()
+    }
+
+    /// The connection's dialect (PostgreSQL before one is bound).
+    fn dialect(&self) -> &'static dyn switchyard_core::db::Dialect {
         dialect_for(
             self.connection
                 .as_ref()
                 .map_or(Engine::Postgres, |c| c.engine),
         )
-        .object_folders()
     }
 
     /// The filter text changed: returns a ticket for [`Self::search_due`] when a debounced
@@ -408,21 +426,17 @@ impl SchemaState {
                 .collect(),
             _ => return,
         };
-        for schema in schemas {
-            for kind in self.folders() {
-                if matches!(
-                    self.objects.get(&(schema.clone(), *kind)),
-                    None | Some(Loadable::NotLoaded)
-                ) {
-                    self.request(
-                        IntrospectScope::Objects {
-                            schema: schema.clone(),
-                            kind: *kind,
-                        },
-                        false,
-                        core,
-                    );
-                }
+        let schema_folders = schemas
+            .into_iter()
+            .flat_map(|s| self.folders().iter().map(move |k| (s.clone(), *k)));
+        let server_folders = self.server_folders().iter().map(|k| (String::new(), *k));
+        let folders: Vec<(String, ObjectKind)> = schema_folders.chain(server_folders).collect();
+        for (schema, kind) in folders {
+            if matches!(
+                self.objects.get(&(schema.clone(), kind)),
+                None | Some(Loadable::NotLoaded)
+            ) {
+                self.request(IntrospectScope::Objects { schema, kind }, false, core);
             }
         }
     }
@@ -476,7 +490,13 @@ impl SchemaState {
             }
             (IntrospectScope::Schemas, Err(e)) => self.schemas = Loadable::Failed(e),
             (IntrospectScope::Objects { schema, kind }, Ok(CatalogChunk::Objects(o))) => {
+                self.hints.remove(&(schema.clone(), kind));
                 self.objects.insert((schema, kind), Loadable::Loaded(o));
+            }
+            (IntrospectScope::Objects { schema, kind }, Ok(CatalogChunk::Hint(h))) => {
+                self.hints.insert((schema.clone(), kind), h);
+                self.objects
+                    .insert((schema, kind), Loadable::Loaded(Vec::new()));
             }
             (IntrospectScope::Objects { schema, kind }, Err(e)) => {
                 self.objects.insert((schema, kind), Loadable::Failed(e));
@@ -544,11 +564,13 @@ const NEEDS_DETAIL: &[&str] = &[
 /// Whether `action` on an object of `kind` needs its routine definition
 /// (`IntrospectScope::RoutineDefinition`) rather than its `Detail`.
 fn needs_routine(action: &str, kind: ObjectKind) -> bool {
-    matches!(kind, ObjectKind::Function | ObjectKind::Procedure)
-        && matches!(
-            action,
-            "script_create" | "script_drop_create" | "script_exec"
-        )
+    matches!(
+        kind,
+        ObjectKind::Function | ObjectKind::Procedure | ObjectKind::Package
+    ) && matches!(
+        action,
+        "script_create" | "script_drop_create" | "script_exec"
+    )
 }
 
 /// Actions that cannot run without the catalog data they asked for.
@@ -770,6 +792,108 @@ fn relation_rows(
     }
 }
 
+/// One object folder and, when open, its objects: a schema's folder (`schema` set, at
+/// `depth` 2) or a database-level one (`schema` empty, at depth 1; DBX-5c). With a
+/// filter, only matching objects show and a folder without any is left out.
+fn folder_rows(
+    s: &SchemaState,
+    schema: &str,
+    kind: ObjectKind,
+    depth: usize,
+    filter: &str,
+    quote: &dyn Fn(&str) -> String,
+    rows: &mut Vec<TreeRow>,
+) {
+    let fkey = format!("f:{schema}:{kind:?}");
+    let fopen = s.expanded.contains(&fkey);
+    let state = s.objects.get(&(schema.to_owned(), kind));
+    let hint = s.hints.get(&(schema.to_owned(), kind));
+    let count = match state {
+        Some(Loadable::Loaded(o)) if hint.is_none() => o.len().to_string(),
+        _ => String::new(),
+    };
+    let matching: Vec<&ObjectInfo> = match state {
+        Some(Loadable::Loaded(o)) => o
+            .iter()
+            .filter(|o| filter.is_empty() || crate::actions::fuzzy(filter, &o.name))
+            .collect(),
+        _ => Vec::new(),
+    };
+    if !filter.is_empty() && matching.is_empty() {
+        return;
+    }
+    let show = fopen || (!filter.is_empty() && !matching.is_empty());
+    let row = |depth: usize, key: String| TreeRow {
+        depth,
+        caret: "",
+        icon: "".into(),
+        label: "".into(),
+        sub: "".into(),
+        loading: false,
+        key,
+        object: None,
+        dim: true,
+        owner: None,
+        leaf: None,
+    };
+    rows.push(TreeRow {
+        caret: if show { "▾" } else { "▸" },
+        label: kind.folder_label().into(),
+        sub: count.into(),
+        loading: matches!(state, Some(Loadable::Loading)),
+        ..row(depth, fkey)
+    });
+    if !show {
+        return;
+    }
+    if let Some(Loadable::Failed(e)) = state {
+        rows.push(TreeRow {
+            icon: "!".into(),
+            label: e.clone().into(),
+            ..row(depth + 1, format!("err:{schema}:{kind:?}"))
+        });
+    }
+    if let Some(h) = hint {
+        rows.push(TreeRow {
+            icon: "i".into(),
+            label: h.clone().into(),
+            ..row(depth + 1, format!("hint:{schema}:{kind:?}"))
+        });
+    }
+    for o in matching {
+        let okey = format!("o:{schema}:{kind:?}:{}", o.name);
+        let object = (schema.to_owned(), o.name.clone(), kind);
+        let expandable = kind.is_relation();
+        let oopen = expandable && s.expanded.contains(&okey);
+        // DBX-5c kinds describe themselves on the right (role attributes, job status,
+        // version); the others append their signature to the name.
+        let (label, sub) = if kind.is_admin() {
+            (o.name.clone(), o.detail.clone().unwrap_or_default())
+        } else {
+            (
+                format!("{}{}", o.name, o.detail.clone().unwrap_or_default()),
+                o.estimated_rows.map(compact).unwrap_or_default(),
+            )
+        };
+        rows.push(TreeRow {
+            caret: match (expandable, oopen) {
+                (false, _) => "",
+                (true, false) => "▸",
+                (true, true) => "▾",
+            },
+            icon: kind.icon().into(),
+            label: label.into(),
+            sub: sub.into(),
+            object: Some(object.clone()),
+            dim: false,
+            ..row(depth + 1, okey.clone())
+        });
+        if oopen {
+            relation_rows(s, &object, &okey, depth + 1, quote, rows);
+        }
+    }
+}
+
 /// Flat object-search results: local fuzzy matches from loaded folders merged with the
 /// server's hits. While the search runs, or if it failed, only the local matches show.
 fn search_rows(s: &SchemaState, filter: &str, rows: &mut Vec<TreeRow>) {
@@ -820,13 +944,17 @@ fn search_rows(s: &SchemaState, filter: &str, rows: &mut Vec<TreeRow>) {
             depth: 1,
             caret: "",
             icon: o.kind.icon().into(),
-            label: format!(
-                "{}.{}{}",
-                o.schema,
-                o.name,
-                o.detail.as_deref().unwrap_or("")
-            )
-            .into(),
+            label: if o.schema.is_empty() {
+                o.name.clone().into()
+            } else {
+                format!(
+                    "{}.{}{}",
+                    o.schema,
+                    o.name,
+                    o.detail.as_deref().unwrap_or("")
+                )
+                .into()
+            },
             sub: kind_label(o.kind).into(),
             loading: false,
             key: format!("q:{}:{:?}:{}", o.schema, o.kind, o.name),
@@ -908,14 +1036,58 @@ pub enum CtxTarget {
 }
 
 /// The schema of a tree row key: a schema row (`s:<schema>`) or a folder
-/// (`f:<schema>:<Kind>`).
+/// (`f:<schema>:<Kind>`). A database-level folder (`f::<Kind>`) has none.
 pub(crate) fn schema_of_row_key(key: &str) -> Option<String> {
     match key.strip_prefix("s:") {
         Some(s) => Some(s.to_owned()),
         None => key
             .strip_prefix("f:")
             .and_then(|f| f.rsplit_once(':'))
-            .map(|(s, _)| s.to_owned()),
+            .map(|(s, _)| s.to_owned())
+            .filter(|s| !s.is_empty()),
+    }
+}
+
+/// The text an object copies and drags: its qualified name, or its quoted name alone
+/// for one outside any schema (users and roles, jobs, extensions).
+pub(crate) fn object_name_text(
+    d: &dyn switchyard_core::db::Dialect,
+    schema: &str,
+    name: &str,
+    kind: ObjectKind,
+) -> String {
+    if kind.is_server_level() || schema.is_empty() {
+        d.quote_ident(name)
+    } else {
+        d.qualified(schema, name)
+    }
+}
+
+/// Whether `action` may run on an object of `kind`. The DBX-5c kinds (roles, jobs,
+/// extensions, packages, stages, tasks, pipes) are browsed read-only: View DDL, copy,
+/// dependencies and Script as CREATE where the engine can produce one; never DROP,
+/// templates or anything that starts or changes them.
+pub(crate) fn action_allowed(action: &str, kind: ObjectKind) -> bool {
+    if !kind.is_admin() {
+        return true;
+    }
+    match action {
+        "ddl" | "copy" | "deps" => true,
+        "properties" => !kind.is_server_level(),
+        "script_create" => kind.scripts_create(),
+        _ => false,
+    }
+}
+
+/// What Enter or a double-click does on an object row: open a relation's data, show
+/// the DDL of a DBX-5c kind (read-only browsing), nothing for the rest.
+fn default_action(kind: ObjectKind) -> Option<&'static str> {
+    if kind.is_relation() {
+        Some("open")
+    } else if kind.is_admin() {
+        Some("ddl")
+    } else {
+        None
     }
 }
 
@@ -1291,89 +1463,12 @@ impl Workspace {
                         continue;
                     }
                     for kind in s.folders() {
-                        let fkey = format!("f:{}:{kind:?}", sc.name);
-                        let fopen = s.expanded.contains(&fkey);
-                        let state = s.objects.get(&(sc.name.clone(), *kind));
-                        let count = match state {
-                            Some(Loadable::Loaded(o)) => o.len().to_string(),
-                            _ => String::new(),
-                        };
-                        let matching: Vec<&ObjectInfo> = match state {
-                            Some(Loadable::Loaded(o)) => o
-                                .iter()
-                                .filter(|o| {
-                                    filter.is_empty() || crate::actions::fuzzy(&filter, &o.name)
-                                })
-                                .collect(),
-                            _ => Vec::new(),
-                        };
-                        if !filter.is_empty() && matching.is_empty() {
-                            continue;
-                        }
-                        let show = fopen || (!filter.is_empty() && !matching.is_empty());
-                        rows.push(TreeRow {
-                            depth: 2,
-                            caret: if show { "▾" } else { "▸" },
-                            icon: "".into(),
-                            label: kind.folder_label().into(),
-                            sub: count.into(),
-                            loading: matches!(state, Some(Loadable::Loading)),
-                            key: fkey,
-                            object: None,
-                            dim: true,
-                            owner: None,
-                            leaf: None,
-                        });
-                        if !show {
-                            continue;
-                        }
-                        if let Some(Loadable::Failed(e)) = state {
-                            rows.push(TreeRow {
-                                depth: 3,
-                                caret: "",
-                                icon: "!".into(),
-                                label: e.clone().into(),
-                                sub: "".into(),
-                                loading: false,
-                                key: format!("err:{}", sc.name),
-                                object: None,
-                                dim: true,
-                                owner: None,
-                                leaf: None,
-                            });
-                        }
-                        for o in matching {
-                            let okey = format!("o:{}:{kind:?}:{}", sc.name, o.name);
-                            let object = (sc.name.clone(), o.name.clone(), *kind);
-                            let expandable = kind.is_relation();
-                            let oopen = expandable && s.expanded.contains(&okey);
-                            rows.push(TreeRow {
-                                depth: 3,
-                                caret: match (expandable, oopen) {
-                                    (false, _) => "",
-                                    (true, false) => "▸",
-                                    (true, true) => "▾",
-                                },
-                                icon: kind.icon().into(),
-                                label: format!(
-                                    "{}{}",
-                                    o.name,
-                                    o.detail.clone().unwrap_or_default()
-                                )
-                                .into(),
-                                sub: o.estimated_rows.map(compact).unwrap_or_default().into(),
-                                loading: false,
-                                key: okey.clone(),
-                                object: Some(object.clone()),
-                                dim: false,
-                                owner: None,
-                                leaf: None,
-                            });
-                            if oopen {
-                                relation_rows(s, &object, &okey, 3, &quote, &mut rows);
-                            }
-                        }
+                        folder_rows(s, &sc.name, *kind, 2, &filter, &quote, &mut rows);
                     }
+                }
+                // Database-level folders (users and roles, jobs, extensions; DBX-5c).
+                for kind in s.server_folders() {
+                    folder_rows(s, "", *kind, 1, &filter, &quote, &mut rows);
                 }
             }
             Loadable::Loading | Loadable::NotLoaded => rows.push(TreeRow {
@@ -1417,8 +1512,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !action_allowed(action, kind) {
+            return;
+        }
         if action == "properties" {
-            return self.open_tree_object_properties(schema, name, kind, window, cx);
+            return self.open_tree_object_properties(schema, name, kind, None, window, cx);
+        }
+        if action == "deps" {
+            let page = Some(crate::object_tab::Page::Dependencies);
+            return self.open_tree_object_properties(schema, name, kind, page, window, cx);
         }
         if NEEDS_DETAIL.contains(&action) {
             let routine = needs_routine(action, kind);
@@ -1471,6 +1573,10 @@ impl Workspace {
         }
         let detail = match result {
             Ok(CatalogChunk::Detail(d)) => Some(d),
+            Ok(CatalogChunk::Hint(h)) => {
+                self.toast(h, cx);
+                None
+            }
             Ok(_) => None,
             Err(e) => {
                 self.toast(format!("Could not read {name}: {e}"), cx);
@@ -1499,6 +1605,9 @@ impl Workspace {
         let Some(conn) = self.schema.connection.clone() else {
             return;
         };
+        if !action_allowed(action, kind) {
+            return;
+        }
         if action == "open" {
             // Table data view: server-side filter, sort and paging (DBX-3a).
             let (s, n) = (schema.to_owned(), name.to_owned());
@@ -1506,7 +1615,7 @@ impl Workspace {
             return;
         }
         let d = dialect_for(conn.engine);
-        let q = d.qualified(schema, name);
+        let q = object_name_text(d, schema, name, kind);
         let (cols, pk) = detail.map(columns_and_key).unwrap_or_default();
         let text = match action {
             "select" => d.select_template(&q, &cols, 100),
@@ -2073,8 +2182,11 @@ impl Workspace {
             return;
         };
         match rows[ix].object.clone() {
-            Some((s, n, k)) if k.is_relation() => self.object_action("open", s, n, k, window, cx),
-            Some(_) => {}
+            Some((s, n, k)) => {
+                if let Some(action) = default_action(k) {
+                    self.object_action(action, s, n, k, window, cx);
+                }
+            }
             None if !rows[ix].caret.is_empty() => {
                 let core = self.core.clone();
                 self.schema.toggle(&rows[ix].key, None, &core);
@@ -2134,8 +2246,8 @@ impl Workspace {
                 qualified: leaf.clone(),
             }),
             None => r.object.as_ref().zip(self.schema.connection.as_ref()).map(
-                |((schema, name, _), conn)| DraggedObject {
-                    qualified: dialect_for(conn.engine).qualified(schema, name),
+                |((schema, name, kind), conn)| DraggedObject {
+                    qualified: object_name_text(dialect_for(conn.engine), schema, name, *kind),
                 },
             ),
         };
@@ -2169,8 +2281,10 @@ impl Workspace {
                 }
                 if let Some((s, n, k)) = &object {
                     this.schema.selected = Some((s.clone(), n.clone(), *k));
-                    if ev.click_count() >= 2 && k.is_relation() {
-                        this.object_action("open", s.clone(), n.clone(), *k, w, cx);
+                    if ev.click_count() >= 2
+                        && let Some(action) = default_action(*k)
+                    {
+                        this.object_action(action, s.clone(), n.clone(), *k, w, cx);
                     }
                 } else if has_caret {
                     let core = this.core.clone();
@@ -2238,6 +2352,11 @@ impl Workspace {
                         .font_family(MONO)
                         .text_size(px(11.))
                         .text_color(p.fg3)
+                        // Long descriptions (job status, role attributes) give way to the name.
+                        .flex_shrink(1.)
+                        .min_w_0()
+                        .max_w(gpui_kit::relative(0.6))
+                        .truncate()
                         .child(r.sub.clone()),
                 )
             })
@@ -2949,6 +3068,108 @@ mod tests {
         let mut rows = Vec::new();
         relation_rows(&s, &owner, "o:s:Table:t", 3, &quote, &mut rows);
         assert_eq!(rows[0].label.as_ref(), "gone");
+    }
+
+    /// DBX-5c: a database-level folder (`f::<Kind>`) lists objects without a schema,
+    /// with their description on the right, and shows a hint instead of an error.
+    #[test]
+    fn server_level_folders_list_and_hint() {
+        let mut s = SchemaState::default();
+        let quote = |n: &str| format!("\"{n}\"");
+        s.expanded.insert("f::Role".into());
+        s.on_catalog(
+            IntrospectScope::Objects {
+                schema: String::new(),
+                kind: ObjectKind::Role,
+            },
+            Ok(CatalogChunk::Objects(vec![ObjectInfo {
+                name: "app".into(),
+                kind: ObjectKind::Role,
+                detail: Some("user · create db".into()),
+                ..ObjectInfo::default()
+            }])),
+            1,
+        );
+        s.on_catalog(
+            IntrospectScope::Objects {
+                schema: String::new(),
+                kind: ObjectKind::Job,
+            },
+            Ok(CatalogChunk::Hint("needs msdb".into())),
+            1,
+        );
+        s.expanded.insert("f::Job".into());
+        let mut rows = Vec::new();
+        folder_rows(&s, "", ObjectKind::Role, 1, "", &quote, &mut rows);
+        folder_rows(&s, "", ObjectKind::Job, 1, "", &quote, &mut rows);
+        let got: Vec<(&str, &str, &str, usize)> = rows
+            .iter()
+            .map(|r| (r.key.as_str(), r.label.as_ref(), r.sub.as_ref(), r.depth))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("f::Role", "Users & roles", "1", 1),
+                ("o::Role:app", "app", "user · create db", 2),
+                ("f::Job", "SQL Agent jobs", "", 1),
+                ("hint::Job", "needs msdb", "", 2),
+            ]
+        );
+        assert_eq!(
+            rows[1].object,
+            Some((String::new(), "app".into(), ObjectKind::Role))
+        );
+        // A filter that matches nothing hides the folder.
+        let mut rows = Vec::new();
+        folder_rows(&s, "", ObjectKind::Role, 1, "zz", &quote, &mut rows);
+        assert!(rows.is_empty());
+        // No ER diagram (schema menu) for a database-level folder.
+        assert_eq!(schema_of_row_key("f::Role"), None);
+        assert_eq!(schema_of_row_key("f:sales:Table"), Some("sales".into()));
+        assert_eq!(
+            s.folder_of("f::Role"),
+            Some((String::new(), ObjectKind::Role))
+        );
+    }
+
+    #[test]
+    fn read_only_kinds_refuse_changes() {
+        for k in [
+            ObjectKind::Role,
+            ObjectKind::Job,
+            ObjectKind::Package,
+            ObjectKind::Task,
+        ] {
+            for a in [
+                "drop",
+                "truncate",
+                "script_drop",
+                "script_drop_create",
+                "open",
+                "insert",
+            ] {
+                assert!(!action_allowed(a, k), "{a} on {k:?}");
+            }
+            assert!(action_allowed("ddl", k) && action_allowed("copy", k));
+        }
+        assert!(action_allowed("script_create", ObjectKind::Role));
+        assert!(!action_allowed("script_create", ObjectKind::Job));
+        assert!(!action_allowed("properties", ObjectKind::Role));
+        assert!(action_allowed("properties", ObjectKind::Package));
+        assert!(action_allowed("drop", ObjectKind::Table));
+        assert_eq!(default_action(ObjectKind::Table), Some("open"));
+        assert_eq!(default_action(ObjectKind::Extension), Some("ddl"));
+        assert_eq!(default_action(ObjectKind::Function), None);
+        assert!(needs_routine("script_create", ObjectKind::Package));
+        let d = dialect_for(Engine::SqlServer);
+        assert_eq!(
+            object_name_text(d, "", "app user", ObjectKind::Role),
+            "[app user]"
+        );
+        assert_eq!(
+            object_name_text(d, "dbo", "my t", ObjectKind::Table),
+            d.qualified("dbo", "my t")
+        );
     }
 
     #[test]

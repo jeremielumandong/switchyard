@@ -18,8 +18,8 @@ use switchyard_db::guard;
 use switchyard_db::mssql::MssqlDriver;
 use switchyard_db::pg::PgDriver;
 use switchyard_db::{
-    CancelHandle, DbConfig, DbError, DbSession, Driver, Engine, IntrospectScope, ResultEvent,
-    dialect_for,
+    CancelHandle, CatalogChunk, DbConfig, DbError, DbSession, Driver, Engine, IntrospectScope,
+    ResultEvent, dialect_for,
 };
 use switchyard_db::{DbAuthMethod, TunnelEndpoint};
 use switchyard_drivers::Registry;
@@ -1735,7 +1735,7 @@ impl Service {
             });
         };
         let conn_id = slot.connection.id.clone();
-        let key = serde_json::to_string(&scope).unwrap_or_default();
+        let key = scope.cache_key();
         // A session switched to another database caches apart from the profile's default.
         let key = match lock(&slot.context).database.as_deref() {
             Some(db) => format!("db={db};{key}"),
@@ -1758,8 +1758,10 @@ impl Service {
             let mut inner = slot.inner.lock().await;
             inner.session.introspect(scope.clone()).await
         };
+        // A hint (missing privilege) is never cached: the next read tries again.
         if let Ok(chunk) = &result
             && cacheable
+            && !matches!(chunk, CatalogChunk::Hint(_))
         {
             let chunk = chunk.clone();
             let _ = self

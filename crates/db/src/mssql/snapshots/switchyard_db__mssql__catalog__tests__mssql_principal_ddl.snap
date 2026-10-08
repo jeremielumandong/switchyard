@@ -1,0 +1,20 @@
+---
+source: crates/db/src/mssql/catalog.rs
+expression: "[principal_ddl(\"app\", \"S\", \"SQL_USER\", Some(\"dbo\"), Some(\"app_login\"),\n&[\"db_datareader\".into()]),\nprincipal_ddl(\"readers\", \"R\", \"DATABASE_ROLE\", None, None, &[]),\nprincipal_ddl(\"orphan\", \"S\", \"SQL_USER\", None, None, &[]),\nlogin_ddl(\"sa\", \"S\", \"SQL_LOGIN\", true, Some(\"master\")),\nlogin_ddl(\"DOM\\\\ann\", \"U\", \"WINDOWS_LOGIN\", false, None),].join(\"\\n\")"
+---
+-- SQL_USER
+CREATE USER [app] FOR LOGIN [app_login] WITH DEFAULT_SCHEMA = [dbo];
+ALTER ROLE [db_datareader] ADD MEMBER [app];
+
+-- DATABASE_ROLE
+CREATE ROLE [readers];
+
+-- SQL_USER
+CREATE USER [orphan] WITHOUT LOGIN;
+
+-- Login (SQL_LOGIN), disabled
+CREATE LOGIN [sa] WITH PASSWORD = N'<password>', DEFAULT_DATABASE = [master];
+ALTER LOGIN [sa] DISABLE;
+
+-- Login (WINDOWS_LOGIN)
+CREATE LOGIN [DOM\ann] FROM WINDOWS;

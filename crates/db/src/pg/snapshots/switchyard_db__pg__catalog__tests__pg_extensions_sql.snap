@@ -1,0 +1,8 @@
+---
+source: crates/db/src/pg/catalog.rs
+expression: EXTENSIONS_SQL
+---
+SELECT e.extname::text, e.extversion || ' · ' || n.nspname
+FROM pg_catalog.pg_extension e
+JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace
+ORDER BY 1
