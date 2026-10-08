@@ -13,7 +13,7 @@ use switchyard_drivers::{Component, InstallProgress};
 use switchyard_remote::FileEntry;
 use switchyard_remote::ssh::{HostKeyDecision, HostKeyRequest, InteractiveRequest, TunnelInfo};
 use switchyard_store::{
-    BufferState, DbConnection, HistoryEntry, Host, Profile, ProfileId, Snippet, Workspace,
+    BufferState, DbConnection, Favorite, HistoryEntry, Host, Profile, ProfileId, Snippet, Workspace,
 };
 use switchyard_term::{TermSize, Terminal};
 
@@ -418,6 +418,20 @@ pub enum Command {
     DeleteSnippet {
         /// Snippet id.
         id: String,
+    },
+    /// Load the pinned schema-tree objects ([`Event::Favorites`]).
+    LoadFavorites,
+    /// Pin an object at the end of the Favorites (a pin it already has is kept), then reload.
+    AddFavorite(Favorite),
+    /// Unpin, then reload.
+    RemoveFavorite {
+        /// Pin id.
+        id: i64,
+    },
+    /// Put the pins in this order (unlisted ones follow), then reload.
+    ReorderFavorites {
+        /// Pin ids.
+        ids: Vec<i64>,
     },
     /// Search query history.
     SearchHistory {
@@ -898,6 +912,8 @@ pub enum Event {
     },
     /// The user's SQL snippets (built-ins excluded), answering the snippet commands.
     Snippets(Vec<Snippet>),
+    /// The pinned schema-tree objects in order, answering the favorite commands.
+    Favorites(Vec<Favorite>),
     /// History search results.
     History {
         /// Request id.

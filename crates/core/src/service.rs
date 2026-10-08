@@ -407,6 +407,14 @@ impl Service {
         }
     }
 
+    /// Emit the pinned objects ([`Event::Favorites`]).
+    async fn emit_favorites(&self) {
+        match self.with_store(|s| s.favorites()).await {
+            Ok(list) => self.emit(Event::Favorites(list)),
+            Err(e) => self.error("Favorites", e),
+        }
+    }
+
     async fn with_secrets<T: Send + 'static>(
         &self,
         f: impl FnOnce(&dyn SecretStore) -> Result<T, StoreError> + Send + 'static,
@@ -744,6 +752,25 @@ impl Service {
                 match self.with_store(move |s| s.delete_snippet(&id)).await {
                     Ok(_) => self.emit_snippets().await,
                     Err(e) => self.error("Snippets", e),
+                }
+            }
+            Command::LoadFavorites => self.emit_favorites().await,
+            Command::AddFavorite(fav) => {
+                match self.with_store(move |s| s.add_favorite(&fav)).await {
+                    Ok(_) => self.emit_favorites().await,
+                    Err(e) => self.error("Favorites", e),
+                }
+            }
+            Command::RemoveFavorite { id } => {
+                match self.with_store(move |s| s.remove_favorite(id)).await {
+                    Ok(_) => self.emit_favorites().await,
+                    Err(e) => self.error("Favorites", e),
+                }
+            }
+            Command::ReorderFavorites { ids } => {
+                match self.with_store(move |s| s.reorder_favorites(&ids)).await {
+                    Ok(()) => self.emit_favorites().await,
+                    Err(e) => self.error("Favorites", e),
                 }
             }
             Command::SearchHistory {

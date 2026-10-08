@@ -17,6 +17,7 @@ mod ddl_tab;
 mod drivers_page;
 mod editor_tab;
 mod er_tab;
+mod explorer;
 mod files_tab;
 mod folds;
 mod forwards_editor;
