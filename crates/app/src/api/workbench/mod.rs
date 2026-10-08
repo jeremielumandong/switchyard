@@ -20,6 +20,7 @@ mod rename_request;
 mod rename_workspace;
 mod request_creation;
 mod response_controls;
+mod response_copy;
 mod response_editor;
 mod response_inspector;
 mod response_preview;
