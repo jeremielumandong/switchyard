@@ -9,6 +9,7 @@ mod body_editor;
 mod collection_urls;
 mod coordinator;
 mod draft;
+mod empty_state;
 mod entries;
 mod environment_label;
 mod globals;
@@ -901,7 +902,8 @@ impl WorkbenchPanel {
             workspace_data,
             workspaces: None,
             _workspace_work: None,
-            request_tabs: vec![RequestTabState::blank(0, current_collection_id.clone())],
+            // A tab opens only when a request is opened or created.
+            request_tabs: Vec::new(),
             active_request_tab: 0,
             next_request_tab_id: 1,
             right_clicked_request_tab: None,
@@ -1143,12 +1145,9 @@ impl WorkbenchPanel {
                 self.workspace_data = Some(data);
                 self.ux.request_settings.clear();
                 self.ux.creation = Default::default();
+                // No blank tab: `load_saved_request` opens one for the
+                // first request, and an empty project shows the empty state.
                 self.request_tabs.clear();
-                self.request_tabs.push(RequestTabState::blank(
-                    self.next_request_tab_id,
-                    self.current_collection_id.clone(),
-                ));
-                self.next_request_tab_id = self.next_request_tab_id.wrapping_add(1);
                 self.active_request_tab = 0;
                 self.current_request_id = None;
                 self.current_definition = None;
@@ -1180,9 +1179,9 @@ impl WorkbenchPanel {
     }
 
     fn clear_request_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.ux
-            .request_settings
-            .remove(&self.request_tabs[self.active_request_tab].id);
+        if let Some(id) = self.active_request_tab_id() {
+            self.ux.request_settings.remove(&id);
+        }
         self.current_request_id = None;
         self.current_definition = None;
         self.method = transport::Method::Get;
@@ -1202,7 +1201,9 @@ impl WorkbenchPanel {
             .iter()
             .map(|input| input.as_text().text(cx).to_string())
             .collect();
-        let tab = &mut self.request_tabs[self.active_request_tab];
+        let Some(tab) = self.request_tabs.get_mut(self.active_request_tab) else {
+            return;
+        };
         tab.current_definition = self.current_definition.clone();
         tab.current_request_id = self.current_request_id.clone();
         tab.current_collection_id = self.current_collection_id.clone();
@@ -1221,7 +1222,14 @@ impl WorkbenchPanel {
     }
 
     fn restore_active_request_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let tab = self.request_tabs[self.active_request_tab].clone();
+        // With no tab open, a blank template resets the hidden editor.
+        let tab = self
+            .request_tabs
+            .get(self.active_request_tab)
+            .cloned()
+            .unwrap_or_else(|| {
+                RequestTabState::blank(self.next_request_tab_id, self.current_collection_id.clone())
+            });
         self.current_definition = tab.current_definition;
         self.current_request_id = tab.current_request_id;
         self.current_collection_id = tab.current_collection_id;
@@ -1312,25 +1320,22 @@ impl WorkbenchPanel {
             return;
         }
         self.capture_active_request_tab(cx);
-        let active_id = self.request_tabs[self.active_request_tab].id;
+        let active_id = self.active_request_tab_id();
         self.request_tabs.retain(|tab| !ids.contains(&tab.id));
         self.ux.request_settings.retain(|id, _| !ids.contains(id));
-        if self.request_tabs.is_empty() {
-            let id = self.next_request_tab_id;
-            self.next_request_tab_id = self.next_request_tab_id.wrapping_add(1);
-            self.request_tabs.push(RequestTabState::blank(
-                id,
-                self.current_collection_id.clone(),
-            ));
-        }
-        self.active_request_tab = preferred_active
-            .or(Some(active_id))
-            .and_then(|id| self.request_tabs.iter().position(|tab| tab.id == id))
-            .unwrap_or_else(|| {
-                first_closed_index
-                    .saturating_sub(1)
-                    .min(self.request_tabs.len() - 1)
-            });
+        // Closing the last tab leaves none; the Compose area then shows the
+        // empty state instead of a fresh blank tab.
+        let remaining = self
+            .request_tabs
+            .iter()
+            .map(|tab| tab.id)
+            .collect::<Vec<_>>();
+        self.active_request_tab = empty_state::active_after_close(
+            &remaining,
+            preferred_active.or(active_id),
+            first_closed_index,
+        )
+        .unwrap_or(0);
         self.restore_active_request_tab(window, cx);
         self.navigation_notice = None;
         cx.notify();
@@ -1479,7 +1484,8 @@ impl WorkbenchPanel {
             self.current_collection_id = Some(collection.id);
             self.clear_request_editor(window, cx);
             set_input(&self.container_name, &collection.name, window, cx);
-            self.dirty = true;
+            // With no request tab open there is no draft to mark unsaved.
+            self.dirty = self.has_request_tab();
         }
         cx.notify();
     }
@@ -2095,9 +2101,9 @@ impl WorkbenchPanel {
     }
 
     fn discard_changes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.ux
-            .request_settings
-            .remove(&self.request_tabs[self.active_request_tab].id);
+        if let Some(id) = self.active_request_tab_id() {
+            self.ux.request_settings.remove(&id);
+        }
         if let Some(request) = self.current_definition.clone() {
             self.load_saved_request(&request, window, cx);
         } else {
@@ -2217,9 +2223,8 @@ impl WorkbenchPanel {
             }
         }
         if let Some(settings) = self
-            .ux
-            .request_settings
-            .get(&self.request_tabs[self.active_request_tab].id)
+            .active_request_tab_id()
+            .and_then(|id| self.ux.request_settings.get(&id))
         {
             request.settings = settings.clone();
             request.settings.allow_private_network = self.allow_private_network;
@@ -2229,6 +2234,9 @@ impl WorkbenchPanel {
     }
 
     fn save_clicked(&mut self, cx: &mut Context<Self>) {
+        if !self.has_request_tab() {
+            return;
+        }
         if self.storage_loading {
             self.storage_error = Some("A Workbench storage operation is already running.".into());
             cx.notify();
@@ -2446,9 +2454,9 @@ impl WorkbenchPanel {
                 self.active_request_tab = self.request_tabs.len() - 1;
             }
         }
-        self.ux
-            .request_settings
-            .remove(&self.request_tabs[self.active_request_tab].id);
+        if let Some(id) = self.active_request_tab_id() {
+            self.ux.request_settings.remove(&id);
+        }
         self.current_request_id = Some(request.id.clone());
         self.current_collection_id = Some(request.collection_id.clone());
         self.current_definition = Some(request.clone());
@@ -2522,6 +2530,10 @@ impl WorkbenchPanel {
 
     /// Send without the Production confirmation; see `send`.
     fn send_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // No open request tab: nothing to send, whatever triggered it.
+        if !self.has_request_tab() {
+            return;
+        }
         self.ux.console_cleared_error = None;
         if self.bound_workspace != current_workspace_id() {
             self.error =
@@ -4116,9 +4128,11 @@ impl WorkbenchPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.ux
-            .request_settings
-            .remove(&self.request_tabs[self.active_request_tab].id);
+        // A replay needs a tab to land in when none is open.
+        self.ensure_request_tab();
+        if let Some(id) = self.active_request_tab_id() {
+            self.ux.request_settings.remove(&id);
+        }
         if let Some(replay) = snapshot.replay.as_ref() {
             let id = RequestId::new();
             let definition = SavedRequest {

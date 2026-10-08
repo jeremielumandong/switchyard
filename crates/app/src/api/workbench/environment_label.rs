@@ -109,6 +109,10 @@ impl WorkbenchPanel {
     /// Send, asking first when the method is not safe and the environment
     /// in force is Production.
     pub(super) fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // No open request tab: nothing to send or confirm.
+        if !self.has_request_tab() {
+            return;
+        }
         let method = self.current_method(cx);
         let label = self.environment_label_in_force();
         if !send_needs_confirmation(&method, label) {
