@@ -1,0 +1,18 @@
+---
+source: crates/db/src/pg/catalog.rs
+expression: ROUTINE_DEFINITION_SQL
+---
+WITH r AS (
+  SELECT p.oid, p.proallargtypes, p.proargtypes, p.proargnames, p.proargmodes
+  FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+  WHERE n.nspname = $1 AND p.proname = $2
+    AND ($3::text IS NULL OR pg_catalog.pg_get_function_identity_arguments(p.oid) = $3)
+  ORDER BY p.oid LIMIT 1
+)
+SELECT pg_catalog.pg_get_functiondef(r.oid), a.name::text,
+       pg_catalog.format_type(a.type, NULL)
+FROM r
+LEFT JOIN LATERAL unnest(COALESCE(r.proallargtypes, r.proargtypes::oid[]), r.proargnames,
+                         r.proargmodes::text[]) WITH ORDINALITY AS a(type, name, mode, n)
+       ON COALESCE(a.mode, 'i') IN ('i', 'b', 'v')
+ORDER BY a.n

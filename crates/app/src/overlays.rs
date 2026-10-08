@@ -8,9 +8,11 @@ use gpui_kit::{
     IntoElement, MouseButton, ParentElement as _, SharedString, StatefulInteractiveElement as _,
     Styled as _, Window, div, px,
 };
+use switchyard_core::db::ObjectKind;
 use switchyard_core::remote::ssh::ForwardKind;
-use switchyard_core::store::{EnvironmentLabel, HistoryStatus};
+use switchyard_core::store::{EnvironmentLabel, HistoryStatus, ProfileId};
 
+use crate::actions::{MenuCloseSub, MenuConfirm, MenuDown, MenuOpenSub, MenuUp};
 use crate::conn_editor::{ConnEditor, ConnKind};
 use crate::palette::PaletteView;
 use crate::sidebar::{CtxMenu, CtxTarget};
@@ -81,6 +83,15 @@ pub enum Overlay {
     History(Entity<InputState>),
     /// Hosts found in `~/.ssh/config`, to pick before importing.
     SshImport(SshImportPreview),
+    /// Disconnect a connection whose tabs hold an open transaction or staged edits.
+    ConfirmDisconnect {
+        /// The connection.
+        profile: ProfileId,
+        /// Its name.
+        name: String,
+        /// One line per tab and what would be lost.
+        reasons: Vec<String>,
+    },
 }
 
 /// The `~/.ssh/config` import preview.
@@ -117,6 +128,70 @@ fn dialog(p: &Palette, width: f32) -> gpui_kit::Stateful<gpui_kit::Div> {
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
 }
 
+/// One context-menu entry: (action, label, danger, shortcut or submenu marker).
+type MenuItem = (&'static str, &'static str, bool, SharedString);
+
+/// Context-menu geometry (the submenu opens beside its item).
+const MENU_W: f32 = 230.;
+const ITEM_H: f32 = 26.;
+const SEPARATOR_H: f32 = 9.;
+
+/// The "Script as" submenu (DBX-2c) for an object of `kind`.
+fn script_items(kind: ObjectKind) -> Vec<MenuItem> {
+    let item = |action, label| (action, label, false, SharedString::default());
+    let mut items = vec![
+        item("script_create", "CREATE"),
+        item("script_drop", "DROP"),
+        item("script_drop_create", "DROP + CREATE"),
+    ];
+    if kind.is_relation() {
+        items.extend([
+            ("-", "", false, SharedString::default()),
+            item("script_select", "SELECT"),
+            item("script_insert", "INSERT"),
+            item("script_update", "UPDATE"),
+            item("script_delete", "DELETE"),
+        ]);
+    } else if matches!(kind, ObjectKind::Function | ObjectKind::Procedure) {
+        items.extend([
+            ("-", "", false, SharedString::default()),
+            item("script_exec", "EXEC"),
+        ]);
+    }
+    items
+}
+
+/// The submenu a context-menu item opens, if it has one.
+fn submenu(target: &CtxTarget, action: &str) -> Option<Vec<MenuItem>> {
+    match (target, action) {
+        (CtxTarget::Object(_, _, kind), "script") => Some(script_items(*kind)),
+        _ => None,
+    }
+}
+
+/// The item `delta` steps from `current` among `actions`, skipping separators and
+/// wrapping around; from nothing, Down starts at the first item and Up at the last.
+fn menu_step(current: Option<usize>, delta: isize, actions: &[&str]) -> Option<usize> {
+    let n = actions.len() as isize;
+    if n == 0 {
+        return None;
+    }
+    let mut ix = match current {
+        Some(c) => c as isize + delta,
+        None if delta >= 0 => 0,
+        None => n - 1,
+    };
+    let step = if delta >= 0 { 1 } else { -1 };
+    for _ in 0..n {
+        ix = ix.rem_euclid(n);
+        if actions[ix as usize] != "-" {
+            return Some(ix as usize);
+        }
+        ix += step;
+    }
+    None
+}
+
 impl Workspace {
     pub(crate) fn render_overlays(
         &mut self,
@@ -127,6 +202,14 @@ impl Workspace {
         let mut out = Vec::new();
         if self.tunnels_open {
             out.push(self.render_tunnels(p, cx));
+        }
+        // A newly opened context menu takes the keyboard (arrows, Enter, Escape).
+        if let Some(ctx) = self.ctx.as_mut()
+            && ctx.focus.is_none()
+        {
+            let focus = cx.focus_handle();
+            window.focus(&focus, cx);
+            ctx.focus = Some(focus);
         }
         if let Some(ctx) = self.ctx.clone() {
             out.push(self.render_ctx_menu(&ctx, p, cx));
@@ -168,6 +251,11 @@ impl Workspace {
             Some(Overlay::Components) => Some(self.render_components(p, cx)),
             Some(Overlay::History(input)) => Some(self.render_history(input.clone(), p, cx)),
             Some(Overlay::SshImport(preview)) => Some(self.render_ssh_import(preview, p, cx)),
+            Some(Overlay::ConfirmDisconnect {
+                profile,
+                name,
+                reasons,
+            }) => Some(self.render_confirm_disconnect(profile.clone(), name, reasons, p, cx)),
         };
         out.extend(overlay);
         out.extend(self.render_ssh_prompt(p, cx));
@@ -421,6 +509,7 @@ impl Workspace {
                     false,
                     ui::keys("⌘C", "Ctrl+C"),
                 ),
+                ("script", "Script as", false, "▸".into()),
                 ("-", "", false, "".into()),
                 ("truncate", "Truncate…", true, "".into()),
                 ("drop", "Drop…", true, "".into()),
@@ -433,6 +522,7 @@ impl Workspace {
                     false,
                     ui::keys("⌘C", "Ctrl+C"),
                 ),
+                ("script", "Script as", false, "▸".into()),
                 ("-", "", false, "".into()),
                 ("drop", "Drop…", true, "".into()),
             ],
@@ -444,6 +534,16 @@ impl Workspace {
                 ("-", "", false, "".into()),
                 ("close_all", "Close all", false, "".into()),
             ],
+            CtxTarget::Profile(id) if self.profiles.db(id).is_some() => vec![
+                ("open", "Open", false, "↵".into()),
+                ("new_query", "New query here", false, "".into()),
+                ("edit", "Edit…", false, "".into()),
+                ("-", "", false, "".into()),
+                ("refresh_schema", "Refresh schema", false, "".into()),
+                ("disconnect", "Disconnect", false, "".into()),
+                ("-", "", false, "".into()),
+                ("delete", "Delete", true, "".into()),
+            ],
             CtxTarget::Profile(_) => vec![
                 ("open", "Open", false, "↵".into()),
                 ("edit", "Edit…", false, "".into()),
@@ -452,11 +552,106 @@ impl Workspace {
             ],
         };
         let target = ctx.target.clone();
+        let actions: Vec<&'static str> = items.iter().map(|i| i.0).collect();
+        // The open submenu, beside its item.
+        let sub = ctx.sub.and_then(|i| {
+            let items = submenu(&target, actions.get(i)?)?;
+            let top: f32 = actions[..i]
+                .iter()
+                .map(|a| if *a == "-" { SEPARATOR_H } else { ITEM_H })
+                .sum();
+            Some((items, top))
+        });
+        let (a1, a2, a3, a4) = (
+            actions.clone(),
+            actions.clone(),
+            actions.clone(),
+            actions.clone(),
+        );
+        let menu_item = |id: (&'static str, usize),
+                         label: &'static str,
+                         danger: bool,
+                         key: SharedString,
+                         highlighted: bool| {
+            div()
+                .id(id)
+                .h(px(ITEM_H))
+                .flex()
+                .items_center()
+                .justify_between()
+                .px(px(8.))
+                .rounded(px(4.))
+                .text_color(if danger { p.prod } else { p.fg })
+                .when(highlighted, |d| d.bg(p.sel))
+                .hover(|s| s.bg(p.sel))
+                .child(label)
+                .child(
+                    div()
+                        .font_family(MONO)
+                        .text_size(px(10.5))
+                        .text_color(p.fg3)
+                        .child(key),
+                )
+        };
+        let panel = |id: &'static str| {
+            div()
+                .id(id)
+                .absolute()
+                .w(px(MENU_W))
+                .p(px(4.))
+                .bg(p.elev)
+                .rounded(px(7.))
+                .shadow(ui::shadow(p))
+                .text_size(px(12.5))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        };
+        let sub_panel = sub.map(|(sub_items, top)| {
+            panel("ctx-submenu")
+                .left(ctx.at.x + px(MENU_W - 2.))
+                .top(ctx.at.y + px(top))
+                .children(sub_items.into_iter().enumerate().map(
+                    |(j, (action, label, danger, key))| {
+                        if action == "-" {
+                            return div().h(px(1.)).bg(p.bd).my(px(4.)).into_any_element();
+                        }
+                        let target = target.clone();
+                        menu_item(
+                            ("ctx-sub", j),
+                            label,
+                            danger,
+                            key,
+                            ctx.sub_cursor == Some(j),
+                        )
+                        .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                            if *hovered && let Some(c) = this.ctx.as_mut() {
+                                c.sub_cursor = Some(j);
+                                cx.notify();
+                            }
+                        }))
+                        .on_click(cx.listener(move |this, _, w, cx| {
+                            this.ctx = None;
+                            this.ctx_action(action, &target, w, cx);
+                        }))
+                        .into_any_element()
+                    },
+                ))
+        });
         div()
             .id("ctx-layer")
             .absolute()
             .inset_0()
             .occlude()
+            .key_context("CtxMenu")
+            .when_some(ctx.focus.clone(), |d, f| d.track_focus(&f))
+            .on_action(cx.listener(move |this, _: &MenuUp, _, cx| this.ctx_move(-1, &a1, cx)))
+            .on_action(cx.listener(move |this, _: &MenuDown, _, cx| this.ctx_move(1, &a2, cx)))
+            .on_action(cx.listener(move |this, _: &MenuOpenSub, _, cx| {
+                this.ctx_open_sub(&a3, cx);
+            }))
+            .on_action(cx.listener(|this, _: &MenuCloseSub, _, cx| this.ctx_close_sub(cx)))
+            .on_action(
+                cx.listener(move |this, _: &MenuConfirm, w, cx| this.ctx_confirm(&a4, w, cx)),
+            )
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
@@ -472,51 +667,125 @@ impl Workspace {
                 }),
             )
             .child(
-                div()
-                    .id("ctx-menu")
-                    .absolute()
-                    .left(ctx.at.x)
-                    .top(ctx.at.y)
-                    .w(px(230.))
-                    .p(px(4.))
-                    .bg(p.elev)
-                    .rounded(px(7.))
-                    .shadow(ui::shadow(p))
-                    .text_size(px(12.5))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .children(items.into_iter().enumerate().map(
-                        |(i, (action, label, danger, key))| {
+                panel("ctx-menu").left(ctx.at.x).top(ctx.at.y).children(
+                    items
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, (action, label, danger, key))| {
                             if action == "-" {
                                 return div().h(px(1.)).bg(p.bd).my(px(4.)).into_any_element();
                             }
                             let target = target.clone();
-                            div()
-                                .id(("ctx", i))
-                                .h(px(26.))
-                                .flex()
-                                .items_center()
-                                .justify_between()
-                                .px(px(8.))
-                                .rounded(px(4.))
-                                .text_color(if danger { p.prod } else { p.fg })
-                                .hover(|s| s.bg(p.sel))
+                            let has_sub = submenu(&target, action).is_some();
+                            let highlighted = ctx.cursor == Some(i) || ctx.sub == Some(i);
+                            menu_item(("ctx", i), label, danger, key, highlighted)
+                                // Hovering an item with a submenu opens it; any other
+                                // item closes the open one.
+                                .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                                    if *hovered && let Some(c) = this.ctx.as_mut() {
+                                        c.cursor = Some(i);
+                                        if has_sub {
+                                            c.sub = Some(i);
+                                        } else {
+                                            c.sub = None;
+                                            c.sub_cursor = None;
+                                        }
+                                        cx.notify();
+                                    }
+                                }))
                                 .on_click(cx.listener(move |this, _, w, cx| {
+                                    if has_sub {
+                                        if let Some(c) = this.ctx.as_mut() {
+                                            c.cursor = Some(i);
+                                            c.sub = Some(i);
+                                        }
+                                        cx.notify();
+                                        return;
+                                    }
                                     this.ctx = None;
                                     this.ctx_action(action, &target, w, cx);
                                 }))
-                                .child(label)
-                                .child(
-                                    div()
-                                        .font_family(MONO)
-                                        .text_size(px(10.5))
-                                        .text_color(p.fg3)
-                                        .child(key),
-                                )
                                 .into_any_element()
-                        },
-                    )),
+                        }),
+                ),
             )
+            .children(sub_panel)
             .into_any_element()
+    }
+
+    /// Up / Down in the context menu: within the open submenu once it has the keyboard,
+    /// else among the menu's items (separators skipped, wrapping).
+    fn ctx_move(&mut self, delta: isize, actions: &[&'static str], cx: &mut Context<Self>) {
+        let Some(c) = self.ctx.as_mut() else { return };
+        let sub_items = c
+            .sub
+            .and_then(|i| submenu(&c.target, actions.get(i)?))
+            .filter(|_| c.sub_cursor.is_some());
+        if let Some(items) = sub_items {
+            let names: Vec<&str> = items.iter().map(|i| i.0).collect();
+            c.sub_cursor = menu_step(c.sub_cursor, delta, &names);
+        } else {
+            c.sub = None;
+            c.sub_cursor = None;
+            c.cursor = menu_step(c.cursor, delta, actions);
+        }
+        cx.notify();
+    }
+
+    /// Right: open the highlighted item's submenu and move into it. Returns whether it
+    /// opened one.
+    fn ctx_open_sub(&mut self, actions: &[&'static str], cx: &mut Context<Self>) -> bool {
+        let Some(c) = self.ctx.as_mut() else {
+            return false;
+        };
+        let Some(i) = c.cursor else { return false };
+        let Some(items) = actions.get(i).and_then(|a| submenu(&c.target, a)) else {
+            return false;
+        };
+        let names: Vec<&str> = items.iter().map(|i| i.0).collect();
+        c.sub = Some(i);
+        c.sub_cursor = menu_step(None, 1, &names);
+        cx.notify();
+        true
+    }
+
+    /// Left: close the open submenu, back to its item.
+    fn ctx_close_sub(&mut self, cx: &mut Context<Self>) {
+        if let Some(c) = self.ctx.as_mut() {
+            if let Some(i) = c.sub.take() {
+                c.cursor = Some(i);
+            }
+            c.sub_cursor = None;
+            cx.notify();
+        }
+    }
+
+    /// Enter: run the highlighted (sub)menu item, or open its submenu.
+    fn ctx_confirm(
+        &mut self,
+        actions: &[&'static str],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(c) = self.ctx.clone() else { return };
+        let chosen = match (c.sub, c.sub_cursor) {
+            (Some(i), Some(j)) => actions
+                .get(i)
+                .and_then(|a| submenu(&c.target, a))
+                .and_then(|items| items.get(j).map(|it| it.0)),
+            _ => {
+                if self.ctx_open_sub(actions, cx) {
+                    return;
+                }
+                c.cursor.and_then(|i| actions.get(i).copied())
+            }
+        };
+        let Some(action) = chosen.filter(|a| *a != "-") else {
+            return;
+        };
+        self.ctx = None;
+        self.ctx_action(action, &c.target, window, cx);
+        cx.notify();
     }
 
     fn ctx_action(
@@ -541,10 +810,85 @@ impl Workspace {
                 "delete" => self
                     .core
                     .send(switchyard_core::Command::DeleteProfile { id: id.clone() }),
+                "new_query" => self.new_query_here(id, window, cx),
+                "refresh_schema" => self.refresh_connection_schema(id, window, cx),
+                "disconnect" => self.disconnect_connection(id, false, window, cx),
                 _ => {}
             },
         }
         cx.notify();
+    }
+
+    /// Asks before disconnecting a connection with open transactions or staged edits.
+    fn render_confirm_disconnect(
+        &self,
+        profile: ProfileId,
+        name: &str,
+        reasons: &[String],
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        scrim(p, true)
+            .key_context("Overlay")
+            .track_focus(&self.overlay_focus)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, w, cx| this.dismiss(w, cx)),
+            )
+            .child(
+                dialog(p, 440.)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
+                            .px(px(20.))
+                            .pt(px(16.))
+                            .pb(px(12.))
+                            .child(
+                                div()
+                                    .text_size(px(15.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(format!("Disconnect {name}?")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.5))
+                                    .text_color(p.fg2)
+                                    .child("Closing its sessions loses:"),
+                            )
+                            .children(reasons.iter().map(|r| {
+                                div()
+                                    .font_family(MONO)
+                                    .text_size(px(12.))
+                                    .text_color(p.fg)
+                                    .child(format!("· {r}"))
+                            })),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap(px(8.))
+                            .px(px(20.))
+                            .py(px(12.))
+                            .border_t_1()
+                            .border_color(p.bd)
+                            .child(
+                                ui::button("disconnect-cancel", "Cancel", Kind::Ghost, p)
+                                    .on_click(cx.listener(|this, _, w, cx| this.dismiss(w, cx))),
+                            )
+                            .child(
+                                ui::button("disconnect-ok", "Disconnect", Kind::Destructive, p)
+                                    .on_click(cx.listener(move |this, _, w, cx| {
+                                        this.overlay = None;
+                                        this.disconnect_connection(&profile, true, w, cx);
+                                        this.dismiss(w, cx);
+                                    })),
+                            ),
+                    ),
+            )
+            .into_any_element()
     }
 
     fn render_safety(
@@ -1925,4 +2269,62 @@ fn theme_card(id: ThemeId, current: bool, p: &Palette) -> gpui_kit::Stateful<gpu
                 .when(current, |d| d.child(ui::dot(p.acc, 6.)))
                 .child(id.label()),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn menu_keys_skip_separators_and_wrap() {
+        let items = ["open", "-", "copy", "script"];
+        assert_eq!(menu_step(None, 1, &items), Some(0));
+        assert_eq!(menu_step(None, -1, &items), Some(3));
+        assert_eq!(menu_step(Some(0), 1, &items), Some(2));
+        assert_eq!(menu_step(Some(2), -1, &items), Some(0));
+        assert_eq!(menu_step(Some(3), 1, &items), Some(0));
+        assert_eq!(menu_step(Some(0), -1, &items), Some(3));
+        assert_eq!(menu_step(None, 1, &["-"]), None);
+        assert_eq!(menu_step(None, 1, &[]), None);
+    }
+
+    #[test]
+    fn script_as_items_per_kind() {
+        let actions = |k| {
+            script_items(k)
+                .into_iter()
+                .map(|i| i.0)
+                .filter(|a| *a != "-")
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            actions(ObjectKind::Table),
+            [
+                "script_create",
+                "script_drop",
+                "script_drop_create",
+                "script_select",
+                "script_insert",
+                "script_update",
+                "script_delete"
+            ]
+        );
+        assert_eq!(
+            actions(ObjectKind::Procedure),
+            [
+                "script_create",
+                "script_drop",
+                "script_drop_create",
+                "script_exec"
+            ]
+        );
+        assert_eq!(
+            actions(ObjectKind::Sequence),
+            ["script_create", "script_drop", "script_drop_create"]
+        );
+        let target = CtxTarget::Object("s".into(), "t".into(), ObjectKind::View);
+        assert!(submenu(&target, "script").is_some());
+        assert!(submenu(&target, "copy").is_none());
+        assert!(submenu(&CtxTarget::Tab(0), "script").is_none());
+    }
 }

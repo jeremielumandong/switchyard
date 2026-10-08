@@ -307,6 +307,89 @@ async fn introspection_snapshots() {
     );
 }
 
+/// `RoutineDefinition` of a routine: (ddl, [(param, type)]).
+async fn routine(
+    s: &mut Box<dyn DbSession>,
+    name: &str,
+    kind: ObjectKind,
+    signature: Option<&str>,
+) -> (String, Vec<(String, String)>) {
+    let chunk = s
+        .introspect(IntrospectScope::RoutineDefinition {
+            schema: "public".into(),
+            name: name.into(),
+            kind,
+            signature: signature.map(str::to_owned),
+        })
+        .await
+        .expect("routine definition");
+    let CatalogChunk::Detail(d) = chunk else {
+        panic!("routine definition answers with a Detail");
+    };
+    let params = d
+        .columns
+        .iter()
+        .map(|c| (c.name.clone(), c.data_type.clone()))
+        .collect();
+    (d.ddl, params)
+}
+
+#[tokio::test]
+#[ignore = "needs docker postgres"]
+async fn routine_definitions() {
+    let mut s = session().await;
+    let (ddl, params) = routine(
+        &mut s,
+        "customer_revenue",
+        ObjectKind::Function,
+        Some("(cid bigint)"),
+    )
+    .await;
+    assert!(
+        ddl.starts_with("CREATE OR REPLACE FUNCTION public.customer_revenue(cid bigint)"),
+        "{ddl}"
+    );
+    assert_eq!(params, [("cid".to_owned(), "bigint".to_owned())]);
+    // Overloads, OUT parameters and a procedure, inside a transaction rolled back.
+    s.begin().await.unwrap();
+    for sql in [
+        "CREATE FUNCTION swy_over(a int) RETURNS int LANGUAGE sql AS 'SELECT a'",
+        "CREATE FUNCTION swy_over(a text, OUT n int, b numeric(10,2)) LANGUAGE sql \
+         AS 'SELECT 1'",
+        "CREATE PROCEDURE swy_proc() LANGUAGE sql AS 'SELECT 1'",
+    ] {
+        run(&mut s, sql, &[]).await.unwrap();
+    }
+    let (_, params) = routine(
+        &mut s,
+        "swy_over",
+        ObjectKind::Function,
+        // As the tree lists it (`pg_get_function_identity_arguments`).
+        Some("(a text, OUT n integer, b numeric)"),
+    )
+    .await;
+    assert_eq!(
+        params,
+        [
+            ("a".to_owned(), "text".to_owned()),
+            ("b".to_owned(), "numeric".to_owned())
+        ]
+    );
+    let (ddl, params) = routine(&mut s, "swy_proc", ObjectKind::Procedure, None).await;
+    assert!(ddl.contains("PROCEDURE public.swy_proc()"), "{ddl}");
+    assert!(params.is_empty());
+    let missing = s
+        .introspect(IntrospectScope::RoutineDefinition {
+            schema: "public".into(),
+            name: "swy_none".into(),
+            kind: ObjectKind::Function,
+            signature: None,
+        })
+        .await;
+    assert!(missing.is_err());
+    s.rollback().await.unwrap();
+}
+
 /// `schema.name Kind` of every hit of a global object search.
 async fn search(s: &mut dyn DbSession, pattern: &str) -> Vec<String> {
     let chunk = s

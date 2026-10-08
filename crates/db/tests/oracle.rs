@@ -248,6 +248,61 @@ async fn dml_transactions_and_plsql_output() {
 
 #[tokio::test]
 #[ignore]
+async fn routine_definitions() {
+    use switchyard_db::dialect::{Dialect, oracle::OracleDialect};
+    let mut s = connect().await;
+    for sql in [
+        "create or replace procedure swy_p(p_id in number, p_name in varchar2, p_out out number) \
+         as begin p_out := p_id; end;",
+        "create or replace function swy_f(x number) return number as begin return x * 2; end;",
+    ] {
+        run(s.as_mut(), sql, &[]).await.expect("create routine");
+    }
+    let mut routine = async |name: &str, kind| {
+        let chunk = s
+            .introspect(IntrospectScope::RoutineDefinition {
+                schema: "APP".into(),
+                name: name.into(),
+                kind,
+                signature: None,
+            })
+            .await;
+        chunk.map(|c| match c {
+            CatalogChunk::Detail(d) => (
+                d.ddl,
+                d.columns
+                    .iter()
+                    .map(|c| format!("{} {}", c.name, c.data_type))
+                    .collect::<Vec<_>>(),
+            ),
+            other => panic!("{other:?}"),
+        })
+    };
+    let (ddl, params) = routine("SWY_P", ObjectKind::Procedure)
+        .await
+        .expect("procedure");
+    assert!(ddl.contains("PROCEDURE"), "{ddl}");
+    // OUT parameters are left out of the EXEC template.
+    assert_eq!(params, ["P_ID NUMBER", "P_NAME VARCHAR2"]);
+    assert!(
+        OracleDialect
+            .script_create(ObjectKind::Procedure, &ddl)
+            .ends_with("\n/"),
+        "PL/SQL runs to a / line"
+    );
+    let (ddl, params) = routine("SWY_F", ObjectKind::Function)
+        .await
+        .expect("function");
+    assert!(ddl.contains("return x * 2"), "{ddl}");
+    assert_eq!(params, ["X NUMBER"]);
+    assert!(routine("SWY_NONE", ObjectKind::Function).await.is_err());
+    for sql in ["drop procedure swy_p", "drop function swy_f"] {
+        run(s.as_mut(), sql, &[]).await.expect("drop routine");
+    }
+}
+
+#[tokio::test]
+#[ignore]
 async fn errors_carry_code_and_position() {
     let mut s = connect().await;
     let err = run(s.as_mut(), "select nope from dual", &[])

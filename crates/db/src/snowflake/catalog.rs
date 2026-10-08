@@ -101,6 +101,97 @@ fn quoted(schema: &str, name: &str) -> String {
     )
 }
 
+/// Script as CREATE / EXEC: the argument signature `(A NUMBER, B VARCHAR)` of a function
+/// or procedure (bound to `?` schema, `?` name; first overload).
+fn routine_signature_sql(kind: ObjectKind) -> &'static str {
+    match kind {
+        ObjectKind::Procedure => {
+            "SELECT ARGUMENT_SIGNATURE FROM INFORMATION_SCHEMA.PROCEDURES \
+             WHERE PROCEDURE_SCHEMA = ? AND PROCEDURE_NAME = ? ORDER BY ARGUMENT_SIGNATURE LIMIT 1"
+        }
+        _ => {
+            "SELECT ARGUMENT_SIGNATURE FROM INFORMATION_SCHEMA.FUNCTIONS \
+             WHERE FUNCTION_SCHEMA = ? AND FUNCTION_NAME = ? ORDER BY ARGUMENT_SIGNATURE LIMIT 1"
+        }
+    }
+}
+
+/// `(A NUMBER, B VARCHAR)` as `[("A", "NUMBER"), ("B", "VARCHAR")]`; commas inside a
+/// type's parentheses (`NUMBER(38,0)`) do not split.
+fn parse_signature(signature: &str) -> Vec<(String, String)> {
+    let inner = signature
+        .trim()
+        .strip_prefix('(')
+        .and_then(|s| s.strip_suffix(')'))
+        .unwrap_or("");
+    let mut parts = Vec::new();
+    let (mut depth, mut start) = (0i32, 0usize);
+    for (i, c) in inner.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(&inner[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&inner[start..]);
+    parts
+        .into_iter()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(|p| match p.split_once(char::is_whitespace) {
+            Some((name, ty)) => (name.to_owned(), ty.trim().to_owned()),
+            None => (String::new(), p.to_owned()),
+        })
+        .collect()
+}
+
+/// [`IntrospectScope::RoutineDefinition`]: the signature, then `GET_DDL` of
+/// `"schema"."name"(types)`.
+async fn routine_definition(
+    s: &SnowflakeSession,
+    schema: &str,
+    name: &str,
+    kind: ObjectKind,
+) -> Result<CatalogChunk> {
+    let sig = Rows::of(
+        s,
+        routine_signature_sql(kind),
+        &[Value::Text(schema.into()), Value::Text(name.into())],
+    )
+    .await?;
+    let Some(row) = sig.rows.first() else {
+        return Err(DbError::Unsupported(format!("{name} no longer exists")));
+    };
+    let params = parse_signature(&sig.text(row, "ARGUMENT_SIGNATURE"));
+    let types: Vec<&str> = params.iter().map(|(_, t)| t.as_str()).collect();
+    let object_type = if kind == ObjectKind::Procedure {
+        "PROCEDURE"
+    } else {
+        "FUNCTION"
+    };
+    let d = Rows::of(
+        s,
+        "SELECT GET_DDL(?, ?) AS DDL",
+        &[
+            Value::Text(object_type.into()),
+            Value::Text(format!("{}({})", quoted(schema, name), types.join(", "))),
+        ],
+    )
+    .await?;
+    let ddl = d
+        .rows
+        .first()
+        .map(|row| d.text(row, "DDL"))
+        .unwrap_or_default();
+    Ok(CatalogChunk::Detail(Box::new(ObjectDetail::routine(
+        schema, name, kind, ddl, params,
+    ))))
+}
+
 pub(super) async fn introspect(
     s: &SnowflakeSession,
     scope: IntrospectScope,
@@ -175,6 +266,9 @@ pub(super) async fn introspect(
                     .collect(),
             ))
         }
+        IntrospectScope::RoutineDefinition {
+            schema, name, kind, ..
+        } => routine_definition(s, &schema, &name, kind).await,
         IntrospectScope::AllColumns => {
             let sql = format!(
                 "{COLUMNS} WHERE TABLE_SCHEMA <> 'INFORMATION_SCHEMA' \
@@ -256,5 +350,29 @@ mod tests {
     #[test]
     fn search_sql_snapshot() {
         insta::assert_snapshot!("snowflake_search_sql", search_sql(200, false));
+    }
+
+    #[test]
+    fn routine_signature_sql_snapshot() {
+        insta::assert_snapshot!(
+            "snowflake_routine_signature_sql",
+            format!(
+                "{}\n{}",
+                routine_signature_sql(ObjectKind::Function),
+                routine_signature_sql(ObjectKind::Procedure)
+            )
+        );
+    }
+
+    #[test]
+    fn signatures_split_on_top_level_commas() {
+        assert_eq!(
+            parse_signature("(A NUMBER(38,0), B VARCHAR)"),
+            [
+                ("A".to_owned(), "NUMBER(38,0)".to_owned()),
+                ("B".to_owned(), "VARCHAR".to_owned())
+            ]
+        );
+        assert!(parse_signature("()").is_empty());
     }
 }
