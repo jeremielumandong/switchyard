@@ -16,8 +16,7 @@ use mongodb::bson::{Bson, Document};
 use crate::batch::{ColumnMeta, RowBatch, RowBatchBuilder};
 use crate::value::DataType;
 
-/// Name of the column holding the whole document.
-pub const DOCUMENT_COLUMN: &str = "(document)";
+pub use crate::batch::DOCUMENT_COLUMN;
 
 /// Nested documents deeper than this stay whole (as JSON) in one column.
 pub const MAX_DEPTH: usize = 3;
@@ -169,12 +168,13 @@ impl Layout {
             paths.insert(0, p);
             kinds.insert(0, k);
         }
-        let mut columns: Vec<ColumnMeta> = paths
-            .iter()
-            .zip(&kinds)
-            .map(|(p, k)| meta(p, *k))
-            .collect();
-        columns.push(ColumnMeta::new(DOCUMENT_COLUMN, crate::batch::DOCUMENT_TYPE, DataType::Json));
+        let mut columns: Vec<ColumnMeta> =
+            paths.iter().zip(&kinds).map(|(p, k)| meta(p, *k)).collect();
+        columns.push(ColumnMeta::new(
+            DOCUMENT_COLUMN,
+            crate::batch::DOCUMENT_TYPE,
+            DataType::Json,
+        ));
         Self {
             paths,
             kinds,
@@ -286,7 +286,17 @@ mod tests {
         let types: Vec<&str> = cols.iter().map(|c| c.type_name.as_str()).collect();
         assert_eq!(
             types,
-            ["mixed", "string", "double", "string", "double", "array/object", "date", "null", "document"]
+            [
+                "mixed",
+                "string",
+                "double",
+                "string",
+                "double",
+                "array/object",
+                "date",
+                "null",
+                "document"
+            ]
         );
         let mut list = BatchList::default();
         list.push(layout.batch(&docs));
@@ -306,7 +316,10 @@ mod tests {
         let Value::Json(whole) = v(0, 8) else {
             panic!("document column")
         };
-        assert!(whole.contains(r#""$oid":"507f1f77bcf86cd799439011""#), "{whole}");
+        assert!(
+            whole.contains(r#""$oid":"507f1f77bcf86cd799439011""#),
+            "{whole}"
+        );
     }
 
     #[test]

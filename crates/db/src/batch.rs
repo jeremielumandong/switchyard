@@ -14,6 +14,9 @@ use crate::value::{self, DataType, Value};
 /// from the other columns.
 pub const DOCUMENT_TYPE: &str = "document";
 
+/// Name of the [`DOCUMENT_TYPE`] column.
+pub const DOCUMENT_COLUMN: &str = "(document)";
+
 /// Metadata for one result column.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ColumnMeta {

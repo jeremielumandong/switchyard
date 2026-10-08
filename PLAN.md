@@ -709,6 +709,9 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   exercise the driver against a real account; OAuth (external browser) sign-in.
 - API workspace: port AgentOps's Workbench UI tests; persist workbench preferences (they live
   in session memory for now); per-project collections (`current_project()` returns None).
+- MongoDB: transactions on replica sets, `explain` → `PlanNode`, agent `run_query` with the
+  shell parser's read-only check, document edits from the grid (by `_id`), `$currentOp`
+  activity monitor, X.509 / AWS / OIDC sign-in.
 - Release workflow for macOS (`build-macos.sh` + notarization) next to the Linux and Windows ones.
 - Log file for release builds (Windows GUI subsystem hides stdout).
 - Real app icon to replace the generated placeholder in `packaging/icons/`.

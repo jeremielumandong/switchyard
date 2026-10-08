@@ -21,12 +21,13 @@ use crate::theme::{MONO, Palette, palette};
 use crate::ui::{self, Kind};
 
 /// Engines in the order the editor offers them.
-const ENGINES: [Engine; 5] = [
+const ENGINES: [Engine; 6] = [
     Engine::Postgres,
     Engine::SqlServer,
     Engine::Oracle,
     Engine::Snowflake,
     Engine::D1,
+    Engine::MongoDb,
 ];
 
 /// The user's snippets (built-ins excluded), as last loaded from the store.

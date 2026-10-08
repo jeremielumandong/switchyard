@@ -28,7 +28,12 @@ fn is_system_db(name: &str) -> bool {
     matches!(name, "admin" | "local" | "config")
 }
 
-async fn cursor_docs(s: &MongoSession, db: &str, command: Document, max: usize) -> Result<Vec<Document>> {
+async fn cursor_docs(
+    s: &MongoSession,
+    db: &str,
+    command: Document,
+    max: usize,
+) -> Result<Vec<Document>> {
     let mut cursor = s
         .client
         .database(db)
@@ -67,7 +72,11 @@ async fn databases(s: &MongoSession) -> Result<Vec<String>> {
 }
 
 /// `(name, type)` of every collection in `db` (`collection`, `view`, `timeseries`).
-async fn collections(s: &MongoSession, db: &str, filter: Document) -> Result<Vec<(String, String)>> {
+async fn collections(
+    s: &MongoSession,
+    db: &str,
+    filter: Document,
+) -> Result<Vec<(String, String)>> {
     let docs = cursor_docs(
         s,
         db,
@@ -82,7 +91,10 @@ async fn collections(s: &MongoSession, db: &str, filter: Document) -> Result<Vec
             if name.starts_with("system.") {
                 return None;
             }
-            Some((name.to_owned(), d.get_str("type").unwrap_or("collection").to_owned()))
+            Some((
+                name.to_owned(),
+                d.get_str("type").unwrap_or("collection").to_owned(),
+            ))
         })
         .collect();
     out.sort();
@@ -161,7 +173,10 @@ fn ddl(db: &str, name: &str, info: Option<&Document>, indexes: &[Document]) -> S
             d.quote_ident(name),
             json_text(&Bson::Document(o.clone()))
         )),
-        None => out.push_str(&format!("{site}.createCollection({})\n", d.quote_ident(name))),
+        None => out.push_str(&format!(
+            "{site}.createCollection({})\n",
+            d.quote_ident(name)
+        )),
     }
     for ix in indexes {
         let n = ix.get_str("name").unwrap_or_default();
@@ -232,12 +247,8 @@ async fn detail(s: &MongoSession, db: &str, name: &str, kind: ObjectKind) -> Res
         indexes: indexes.iter().map(index_info).collect(),
         ddl: ddl(db, name, info.as_ref(), &indexes),
         size_bytes: num("totalSize").or_else(|| num("storageSize")),
-        comment: comment.or_else(|| {
-            Some(format!(
-                "Fields from a sample of {} documents",
-                docs.len()
-            ))
-        }),
+        comment: comment
+            .or_else(|| Some(format!("Fields from a sample of {} documents", docs.len()))),
         ..Default::default()
     })
 }
@@ -296,7 +307,9 @@ pub(super) async fn introspect(s: &MongoSession, scope: IntrospectScope) -> Resu
                 .into_iter()
                 .take(COMPLETION_COLLECTIONS)
             {
-                let docs = sample(s, &db, &name, COMPLETION_SAMPLE).await.unwrap_or_default();
+                let docs = sample(s, &db, &name, COMPLETION_SAMPLE)
+                    .await
+                    .unwrap_or_default();
                 out.extend(columns(&db, &name, &docs));
             }
             Ok(CatalogChunk::AllColumns(out))

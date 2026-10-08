@@ -63,6 +63,18 @@ services:
       timeout: 5s
       retries: 60
 
+  mongo:
+    image: mongo:7
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: switchyard
+      MONGO_INITDB_ROOT_PASSWORD: switchyard
+    ports: ["27017:27017"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+
   ssh:
     image: lscr.io/linuxserver/openssh-server:latest
     environment:

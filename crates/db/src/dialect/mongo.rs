@@ -261,7 +261,10 @@ impl Dialect for MongoDialect {
         limit: u64,
         offset: u64,
     ) -> String {
-        let filter = where_.map(str::trim).filter(|w| !w.is_empty()).unwrap_or("{}");
+        let filter = where_
+            .map(str::trim)
+            .filter(|w| !w.is_empty())
+            .unwrap_or("{}");
         let mut out = match projection(cols) {
             Some(p) => format!("{qualified}.find({filter}, {p})"),
             None => format!("{qualified}.find({filter})"),
@@ -329,11 +332,12 @@ impl Dialect for MongoDialect {
     }
 
     fn check_filter(&self, cond: &str) -> Option<Result<(), String>> {
-        Some(
-            shell::parse_document(cond)
-                .map(|_| ())
-                .map_err(|e| format!("{} (a filter document such as {{ status: \"A\" }})", e.message)),
-        )
+        Some(shell::parse_document(cond).map(|_| ()).map_err(|e| {
+            format!(
+                "{} (a filter document such as {{ status: \"A\" }})",
+                e.message
+            )
+        }))
     }
 }
 
@@ -384,10 +388,15 @@ mod tests {
             d.classify("db.a.find({})\ndb.b.countDocuments()"),
             Some(Classification::ReadOnly)
         );
-        let c = d.classify("db.a.find({})\ndb.b.deleteMany({})").expect("classified");
+        let c = d
+            .classify("db.a.find({})\ndb.b.deleteMany({})")
+            .expect("classified");
         assert_eq!(c.destructive().len(), 1);
         assert_eq!(c.destructive()[0].headline(), "Delete every row in b?");
-        assert!(matches!(d.classify("db.a.nope()"), Some(Classification::Unparsed(_))));
+        assert!(matches!(
+            d.classify("db.a.nope()"),
+            Some(Classification::Unparsed(_))
+        ));
         assert_eq!(d.check_filter("{ a: 1 }"), Some(Ok(())));
         assert!(matches!(d.check_filter("a = 1"), Some(Err(_))));
     }
