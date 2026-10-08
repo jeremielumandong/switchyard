@@ -1,0 +1,5 @@
+---
+source: crates/db/src/d1/catalog.rs
+expression: DETAIL_FOREIGN_KEYS
+---
+SELECT id, "table" AS ref, "from" AS col, "to" AS refcol, on_update, on_delete FROM pragma_foreign_key_list(?1) ORDER BY id, seq

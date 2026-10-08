@@ -1,0 +1,5 @@
+---
+source: crates/db/src/mssql/catalog.rs
+expression: detail_foreign_keys_sql(id)
+---
+SELECT fk.name, pc.name, SCHEMA_NAME(rt.schema_id) + '.' + rt.name, rc.name, fk.delete_referential_action_desc, fk.update_referential_action_desc FROM sys.foreign_keys fk JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id JOIN sys.columns pc ON pc.object_id = fkc.parent_object_id AND pc.column_id = fkc.parent_column_id JOIN sys.tables rt ON rt.object_id = fkc.referenced_object_id JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id WHERE fk.parent_object_id = OBJECT_ID(N'[dbo].[t]') ORDER BY fk.name, fkc.constraint_column_id

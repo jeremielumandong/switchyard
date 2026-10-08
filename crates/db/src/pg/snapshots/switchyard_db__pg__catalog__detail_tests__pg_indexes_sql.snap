@@ -1,0 +1,15 @@
+---
+source: crates/db/src/pg/catalog.rs
+expression: INDEXES_SQL
+---
+SELECT ic.relname::text, i.indisunique, i.indisprimary, pg_catalog.pg_get_indexdef(i.indexrelid),
+       ARRAY(SELECT pg_catalog.pg_get_indexdef(i.indexrelid, k, true)
+             FROM generate_subscripts(i.indkey, 1) AS k ORDER BY k)::text[],
+       am.amname::text
+FROM pg_catalog.pg_index i
+JOIN pg_catalog.pg_class ic ON ic.oid = i.indexrelid
+LEFT JOIN pg_catalog.pg_am am ON am.oid = ic.relam
+JOIN pg_catalog.pg_class c ON c.oid = i.indrelid
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = $1 AND c.relname = $2
+ORDER BY i.indisprimary DESC, ic.relname

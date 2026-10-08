@@ -7,7 +7,7 @@ use super::wire::{RawResult, Statement};
 use super::{D1Session, json_text};
 use crate::catalog::{
     CatalogChunk, ColumnInfo, ForeignKeyInfo, IndexInfo, IntrospectScope, ObjectDetail, ObjectInfo,
-    ObjectKind, SchemaInfo, like_contains, search_hit,
+    ObjectKind, SchemaInfo, TriggerInfo, like_contains, search_hit,
 };
 use crate::error::{DbError, Result};
 
@@ -33,6 +33,51 @@ fn search_sql(include_system: bool) -> String {
 
 /// Script as CREATE for [`IntrospectScope::RoutineDefinition`]: the stored `CREATE` text.
 const ROUTINE_DEFINITION_SQL: &str = "SELECT sql FROM sqlite_master WHERE name = ?1";
+
+/// Foreign keys of `?1`, one row per column pair, with their actions.
+const DETAIL_FOREIGN_KEYS: &str = "SELECT id, \"table\" AS ref, \"from\" AS col, \"to\" AS refcol, \
+     on_update, on_delete FROM pragma_foreign_key_list(?1) ORDER BY id, seq";
+
+/// Triggers on `?1` with their `CREATE TRIGGER` text.
+const DETAIL_TRIGGERS: &str =
+    "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?1 ORDER BY name";
+
+/// Timing and event of a SQLite trigger from its `CREATE TRIGGER` text (D1 keeps no
+/// separate columns for them). Defaults to SQLite's own default, `BEFORE`.
+fn trigger_timing(sql: &str) -> (String, String) {
+    let words: Vec<String> = sql
+        .split(|c: char| c.is_whitespace() || c == '(' || c == ';')
+        .filter(|w| !w.is_empty())
+        .map(str::to_ascii_uppercase)
+        .collect();
+    let mut timing = "BEFORE";
+    let mut event = String::new();
+    for (i, w) in words.iter().enumerate() {
+        match w.as_str() {
+            "BEFORE" => timing = "BEFORE",
+            "AFTER" => timing = "AFTER",
+            "INSTEAD" => timing = "INSTEAD OF",
+            "INSERT" | "UPDATE" | "DELETE" => {
+                event = w.clone();
+                break;
+            }
+            "ON" if i > 0 => break,
+            _ => {}
+        }
+    }
+    let row = words.windows(3).any(|w| w == ["FOR", "EACH", "ROW"]);
+    let timing = if row {
+        format!("{timing} FOR EACH ROW")
+    } else {
+        timing.to_owned()
+    };
+    (timing, event)
+}
+
+/// A pragma referential action (`NO ACTION`, `CASCADE`, …); `None` when empty.
+fn fk_action(action: String) -> Option<String> {
+    (!action.is_empty()).then_some(action)
+}
 
 /// Column lookup by name in one result set.
 struct Table<'a> {
@@ -87,6 +132,7 @@ fn column_info(t: &Table<'_>, row: &[Json], table: &str) -> ColumnInfo {
         default: (!default.is_null()).then(|| json_text(default)),
         ordinal: t.int(row, "cid") as i32 + 1,
         is_primary_key: t.int(row, "pk") > 0,
+        comment: None,
     }
 }
 
@@ -200,12 +246,11 @@ pub(super) async fn introspect(s: &D1Session, scope: IntrospectScope) -> Result<
                         params: p(),
                     },
                     Statement {
-                        sql: "SELECT id, \"table\" AS ref, \"from\" AS col, \"to\" AS refcol \
-                              FROM pragma_foreign_key_list(?1) ORDER BY id, seq",
+                        sql: DETAIL_FOREIGN_KEYS,
                         params: p(),
                     },
                     Statement {
-                        sql: "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?1 ORDER BY name",
+                        sql: DETAIL_TRIGGERS,
                         params: p(),
                     },
                 ])
@@ -244,6 +289,7 @@ pub(super) async fn introspect(s: &D1Session, scope: IntrospectScope) -> Result<
                             } else {
                                 def
                             },
+                            method: None,
                             name: iname,
                             columns: vec![col],
                         });
@@ -267,6 +313,8 @@ pub(super) async fn introspect(s: &D1Session, scope: IntrospectScope) -> Result<
                             columns: vec![fk.text(row, "col")],
                             references: format!("{SCHEMA}.{}", fk.text(row, "ref")),
                             referenced_columns: vec![fk.text(row, "refcol")],
+                            on_delete: fk_action(fk.text(row, "on_delete")),
+                            on_update: fk_action(fk.text(row, "on_update")),
                         },
                     )),
                 }
@@ -274,10 +322,19 @@ pub(super) async fn introspect(s: &D1Session, scope: IntrospectScope) -> Result<
 
             let trig = Table::of(results.get(4));
             let mut triggers = Vec::new();
+            let mut trigger_details = Vec::new();
             for row in trig.rows {
+                let sql = trig.text(row, "sql");
+                let (timing, event) = trigger_timing(&sql);
                 triggers.push(trig.text(row, "name"));
+                trigger_details.push(TriggerInfo {
+                    name: trig.text(row, "name"),
+                    timing,
+                    event,
+                    definition: sql.clone(),
+                });
                 ddl.push_str(";\n");
-                ddl.push_str(&trig.text(row, "sql"));
+                ddl.push_str(&sql);
             }
             if !ddl.is_empty() {
                 ddl.push(';');
@@ -297,6 +354,10 @@ pub(super) async fn introspect(s: &D1Session, scope: IntrospectScope) -> Result<
                 foreign_keys: foreign_keys.into_iter().map(|(_, f)| f).collect(),
                 triggers,
                 ddl,
+                // D1 reports no sizes or comments.
+                size_bytes: None,
+                comment: None,
+                trigger_details,
             })))
         }
     }
@@ -314,5 +375,34 @@ mod tests {
     #[test]
     fn routine_definition_sql_snapshot() {
         insta::assert_snapshot!("d1_routine_definition_sql", ROUTINE_DEFINITION_SQL);
+    }
+}
+
+#[cfg(test)]
+mod detail_tests {
+    use super::*;
+
+    #[test]
+    fn detail_sql_snapshots() {
+        insta::assert_snapshot!("d1_foreign_keys_sql", DETAIL_FOREIGN_KEYS);
+        insta::assert_snapshot!("d1_triggers_sql", DETAIL_TRIGGERS);
+    }
+
+    #[test]
+    fn trigger_timing_reads_the_header() {
+        assert_eq!(
+            trigger_timing("CREATE TRIGGER t_ai AFTER INSERT ON t BEGIN SELECT 1; END"),
+            ("AFTER".into(), "INSERT".into())
+        );
+        assert_eq!(
+            trigger_timing(
+                "CREATE TRIGGER v_io INSTEAD OF UPDATE OF a ON v FOR EACH ROW BEGIN SELECT 1; END"
+            ),
+            ("INSTEAD OF FOR EACH ROW".into(), "UPDATE".into())
+        );
+        assert_eq!(
+            trigger_timing("create trigger x delete on t begin select 1; end").0,
+            "BEFORE"
+        );
     }
 }

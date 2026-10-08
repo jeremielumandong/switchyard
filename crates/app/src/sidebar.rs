@@ -1403,6 +1403,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if action == "properties" {
+            return self.open_tree_object_properties(schema, name, kind, window, cx);
+        }
         if NEEDS_DETAIL.contains(&action) {
             let routine = needs_routine(action, kind);
             // An expanded relation's detail is already here.
@@ -2715,6 +2718,7 @@ mod tests {
             default: None,
             ordinal,
             is_primary_key: pk,
+            ..ColumnInfo::default()
         }
     }
 
@@ -2733,6 +2737,7 @@ mod tests {
             foreign_keys: Vec::new(),
             triggers: Vec::new(),
             ddl: String::new(),
+            ..ObjectDetail::default()
         }
     }
 
@@ -2758,6 +2763,7 @@ mod tests {
                 is_unique: true,
                 is_primary: true,
                 definition: String::new(),
+                ..IndexInfo::default()
             }],
         );
         assert_eq!(columns_and_key(&d).1, ["a"]);
@@ -2824,6 +2830,7 @@ mod tests {
                 is_unique: false,
                 is_primary: false,
                 definition: String::new(),
+                ..Default::default()
             }],
         );
         d.constraints.push(switchyard_core::db::ConstraintInfo {
@@ -2841,6 +2848,7 @@ mod tests {
             columns: vec!["customer_id".into()],
             references: "public.customers".into(),
             referenced_columns: vec!["id".into()],
+            ..Default::default()
         });
         d.triggers.push("orders_audit".into());
         assert_eq!(
@@ -2879,6 +2887,7 @@ mod tests {
                 is_unique: true,
                 is_primary: true,
                 definition: String::new(),
+                ..Default::default()
             }],
         );
         let s = summary(&child_groups(&d));

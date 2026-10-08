@@ -1,0 +1,5 @@
+---
+source: crates/db/src/oracle/catalog.rs
+expression: detail_size_sql(true)
+---
+SELECT SUM(BYTES) FROM DBA_SEGMENTS WHERE OWNER = :1 AND (SEGMENT_NAME = :2 OR SEGMENT_NAME IN (SELECT INDEX_NAME FROM ALL_INDEXES WHERE TABLE_OWNER = :3 AND TABLE_NAME = :4))

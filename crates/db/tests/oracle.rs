@@ -226,6 +226,16 @@ async fn dml_transactions_and_plsql_output() {
     .expect("plsql");
     assert_eq!(r.notices, ["line 1", "line 2"]);
 
+    // DBX-2b extras: comments, statistics, segment size (own table) and a trigger.
+    for sql in [
+        "comment on table swy_t is 'Things we sell'",
+        "comment on column swy_t.id is 'Key'",
+        "create or replace trigger swy_t_bi before insert on swy_t for each row begin null; end;",
+        "begin dbms_stats.gather_table_stats(user, 'SWY_T'); end;",
+    ] {
+        run(s.as_mut(), sql, &[]).await.expect(sql);
+    }
+
     let chunk = s
         .introspect(IntrospectScope::Detail {
             schema: "APP".into(),
@@ -241,6 +251,26 @@ async fn dml_transactions_and_plsql_output() {
     assert!(d.columns[0].is_primary_key);
     assert!(d.ddl.contains("CREATE TABLE"), "{}", d.ddl);
     insta::assert_snapshot!("oracle_swy_t_ddl", redact_sys_names(&d.ddl));
+    assert_eq!(d.comment.as_deref(), Some("Things we sell"));
+    assert_eq!(d.columns[0].comment.as_deref(), Some("Key"));
+    assert_eq!(d.object.estimated_rows, Some(3));
+    assert!(d.size_bytes.is_some_and(|b| b > 0));
+    assert_eq!(d.triggers, ["SWY_T_BI"]);
+    let t = &d.trigger_details[0];
+    assert_eq!(
+        (t.timing.as_str(), t.event.as_str()),
+        ("BEFORE EACH ROW", "INSERT")
+    );
+    assert!(
+        t.definition.contains("begin null; end;"),
+        "{}",
+        t.definition
+    );
+    assert!(
+        d.indexes
+            .iter()
+            .all(|i| i.method.as_deref() == Some("normal"))
+    );
     run(s.as_mut(), "drop table swy_t purge", &[])
         .await
         .expect("drop");

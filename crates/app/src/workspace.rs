@@ -57,6 +57,8 @@ pub enum Tab {
     Workload(Entity<crate::workload_tab::WorkloadTab>),
     /// Read-only DDL of a schema object.
     Ddl(Entity<crate::ddl_tab::DdlTab>),
+    /// Properties of a table, view or materialized view (DBX-2b).
+    Object(Entity<crate::object_tab::ObjectTab>),
 }
 
 /// The root view.
@@ -502,6 +504,10 @@ impl Workspace {
                 if self.schema.session == Some(session) {
                     self.schema.on_open(server_version.clone(), &self.core);
                 }
+                if let Some(o) = self.object_tab_for_session(session, cx) {
+                    let version = server_version.clone();
+                    o.update(cx, |o, cx| o.on_session(SessionState::Open { version }, cx));
+                }
                 self.for_sql_session(session, cx, |t, cx| {
                     t.on_session(
                         SessionState::Open {
@@ -515,19 +521,27 @@ impl Workspace {
                 if self.schema.session == Some(session) {
                     self.schema.on_failed(message.clone());
                 }
+                if let Some(o) = self.object_tab_for_session(session, cx) {
+                    let failed = SessionState::Failed(message.clone());
+                    o.update(cx, |o, cx| o.on_session(failed, cx));
+                }
                 self.for_sql_session(session, cx, |t, cx| {
                     t.on_session(SessionState::Failed(message.clone()), cx)
                 });
                 self.toast(format!("Connection failed: {message}"), cx);
             }
             Event::Query { query, event } => {
-                for t in &self.tabs {
-                    if let Tab::Sql(tab) = t
-                        && tab.read(cx).owns_query(query)
-                    {
-                        let tab = tab.clone();
-                        tab.update(cx, |t, cx| t.on_query(event, window, cx));
-                        break;
+                if let Some(o) = self.object_tab_for_query(query, cx) {
+                    o.update(cx, |o, cx| o.on_query(event, window, cx));
+                } else {
+                    for t in &self.tabs {
+                        if let Tab::Sql(tab) = t
+                            && tab.read(cx).owns_query(query)
+                        {
+                            let tab = tab.clone();
+                            tab.update(cx, |t, cx| t.on_query(event, window, cx));
+                            break;
+                        }
                     }
                 }
             }
@@ -563,6 +577,8 @@ impl Workspace {
                     } else {
                         self.schema.on_catalog(scope, result, cached_at);
                     }
+                } else if let Some(o) = self.object_tab_for_session(session, cx) {
+                    o.update(cx, |o, cx| o.on_catalog(scope, result, window, cx));
                 } else {
                     match result {
                         Ok(chunk) => {
@@ -981,6 +997,7 @@ impl Workspace {
             Some(Tab::Editor(e)) => e.clone().into_any_element(),
             Some(Tab::Workload(w)) => w.clone().into_any_element(),
             Some(Tab::Ddl(d)) => d.clone().into_any_element(),
+            Some(Tab::Object(o)) => o.clone().into_any_element(),
             _ => self.render_welcome(p, cx),
         }
     }
@@ -1298,6 +1315,9 @@ impl Workspace {
         }
         if let Tab::Terminal(t) = &self.tabs[ix] {
             t.update(cx, |t, _| t.shutdown());
+        }
+        if let Tab::Object(o) = &self.tabs[ix] {
+            o.update(cx, |o, _| o.shutdown());
         }
         if let Tab::Editor(e) = &self.tabs[ix] {
             let e = e.entity_id();
@@ -2213,6 +2233,15 @@ impl Workspace {
             Tab::Ddl(d) => {
                 let d = d.read(cx);
                 (d.badge.into(), d.title.clone(), None, false)
+            }
+            Tab::Object(o) => {
+                let o = o.read(cx);
+                (
+                    o.badge().into(),
+                    o.title.clone(),
+                    Some(o.connection.environment),
+                    false,
+                )
             }
         }
     }

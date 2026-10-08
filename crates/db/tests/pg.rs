@@ -305,6 +305,63 @@ async fn introspection_snapshots() {
             .iter()
             .any(|c| c.name == "id" && c.is_primary_key)
     );
+    // DBX-2b extras: size, FK actions and index methods.
+    assert!(detail.size_bytes.is_some_and(|b| b > 0));
+    assert!(detail.foreign_keys[0].on_delete.is_some());
+    assert!(detail.foreign_keys[0].on_update.is_some());
+    assert!(
+        detail
+            .indexes
+            .iter()
+            .all(|i| i.method.as_deref() == Some("btree"))
+    );
+}
+
+/// DBX-2b: comments, row estimate and trigger definitions, on a scratch schema so the
+/// seed objects (and their snapshots) stay as they are.
+#[tokio::test]
+#[ignore = "needs docker postgres"]
+async fn object_properties_detail() {
+    let mut s = session().await;
+    for sql in [
+        "DROP SCHEMA IF EXISTS dbx2b CASCADE",
+        "CREATE SCHEMA dbx2b",
+        "CREATE TABLE dbx2b.items (id int PRIMARY KEY, label text DEFAULT 'x')",
+        "COMMENT ON TABLE dbx2b.items IS 'Things we sell'",
+        "COMMENT ON COLUMN dbx2b.items.label IS 'Shown to customers'",
+        "INSERT INTO dbx2b.items SELECT g, 'n' || g FROM generate_series(1, 50) g",
+        "ANALYZE dbx2b.items",
+        "CREATE FUNCTION dbx2b.touch() RETURNS trigger LANGUAGE plpgsql AS          'BEGIN RETURN NEW; END'",
+        "CREATE TRIGGER items_touch BEFORE INSERT OR UPDATE ON dbx2b.items          FOR EACH ROW EXECUTE FUNCTION dbx2b.touch()",
+    ] {
+        run(&mut s, sql, &[]).await.unwrap();
+    }
+    let CatalogChunk::Detail(d) = s
+        .introspect(IntrospectScope::Detail {
+            schema: "dbx2b".into(),
+            name: "items".into(),
+            kind: ObjectKind::Table,
+        })
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    run(&mut s, "DROP SCHEMA dbx2b CASCADE", &[]).await.unwrap();
+    assert_eq!(d.comment.as_deref(), Some("Things we sell"));
+    assert_eq!(d.object.estimated_rows, Some(50));
+    assert!(d.size_bytes.is_some_and(|b| b > 0));
+    let label = d.columns.iter().find(|c| c.name == "label").unwrap();
+    assert_eq!(label.comment.as_deref(), Some("Shown to customers"));
+    assert_eq!(label.default.as_deref(), Some("'x'::text"));
+    assert_eq!(d.triggers, ["items_touch"]);
+    let t = &d.trigger_details[0];
+    assert_eq!(t.timing, "BEFORE FOR EACH ROW");
+    assert_eq!(t.event, "INSERT OR UPDATE");
+    assert!(
+        t.definition
+            .starts_with("CREATE TRIGGER items_touch BEFORE INSERT OR UPDATE")
+    );
 }
 
 /// `RoutineDefinition` of a routine: (ddl, [(param, type)]).
