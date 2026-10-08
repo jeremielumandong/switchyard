@@ -1169,6 +1169,12 @@ impl WorkbenchPanel {
                 ))
         });
         div()
+            .id("workbench-collection-rail")
+            .track_focus(&self.rail_focus)
+            .key_context(RAIL_KEY_CONTEXT)
+            .on_action(cx.listener(|this, _: &RenameRailItem, window, cx| {
+                this.rename_rail_selection(window, cx)
+            }))
             .w_full()
             .flex_none()
             .flex()
@@ -1208,9 +1214,6 @@ impl WorkbenchPanel {
                     )
                     .child(add_menu),
             )
-            .when(self.rename_target.is_some(), |el| {
-                el.child(self.render_rename_row(window, cx))
-            })
             .child(
                 div().flex_1().min_h(px(0.)).overflow_y_scrollbar().child(
                     div()
@@ -1219,56 +1222,20 @@ impl WorkbenchPanel {
                         .pt(px(6.))
                         .px(px(6.))
                         .pb(space::SP_3)
-                        .children(self.render_rail_groups(&filter, cx)),
+                        .children(self.render_rail_groups(&filter, window, cx)),
                 ),
             )
             .into_any_element()
     }
 
-    /// The inline rename field a row kebab's "Rename…" item opens.
-    fn render_rename_row(&self, window: &Window, cx: &mut Context<Self>) -> Div {
-        let colors = cx.theme().colors;
-        div()
-            .flex()
-            .items_center()
-            .gap(px(6.))
-            .px(space::SP_2)
-            .py(px(6.))
-            .border_b_1()
-            .border_color(colors.sidebar_border)
-            .child(
-                mono_field(&self.container_name, window, cx)
-                    .flex_1()
-                    .min_w(px(0.))
-                    .h(px(26.))
-                    .text_size(text::S11),
-            )
-            .child(
-                icon_button(
-                    "workbench-rename-container".into(),
-                    "check",
-                    Some(colors.primary),
-                    cx,
-                )
-                .size(px(26.))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.rename_selected_container(cx);
-                    cx.notify();
-                })),
-            )
-            .child(
-                icon_button("workbench-rename-cancel".into(), "close", None, cx)
-                    .size(px(26.))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.rename_target = None;
-                        cx.notify();
-                    })),
-            )
-    }
-
     /// `COLLECTION · name` headings, one per collection, with the selected
     /// collection's tree ([`rail_rows`]) under its heading.
-    fn render_rail_groups(&self, filter: &str, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn render_rail_groups(
+        &self,
+        filter: &str,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
         let colors = cx.theme().colors;
         let Some(data) = self.workspace_data.as_ref() else {
             return vec![
@@ -1351,7 +1318,11 @@ impl WorkbenchPanel {
                         "Rename collection…",
                         &handle,
                         move |this, window, cx| {
-                            this.open_collection_rename(rename.clone(), window, cx)
+                            this.open_rail_rename(
+                                RenameTarget::Collection(rename.clone()),
+                                window,
+                                cx,
+                            )
                         },
                     ))
                     .separator()
@@ -1405,6 +1376,9 @@ impl WorkbenchPanel {
                     ))
                 }
             };
+            let rename_field = self
+                .rail_rename_for(&RenameTarget::Collection(collection.id.clone()))
+                .map(|rename| self.render_rail_rename(rename, 0., window, cx));
             let menu = rail_item_menu(
                 format!("workbench-collection-{}-menu", collection.id.as_str()),
                 format!("workbench-collection-{index}-menu"),
@@ -1455,8 +1429,11 @@ impl WorkbenchPanel {
                                             );
                                         },
                                     ))
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.toggle_collection_tree(id.clone(), window, cx)
+                                    .on_click(cx.listener(move |this, event, window, cx| {
+                                        let target = RenameTarget::Collection(id.clone());
+                                        if !this.rail_row_clicked(target, event, window, cx) {
+                                            this.toggle_collection_tree(id.clone(), window, cx)
+                                        }
                                     }))
                                     .child(icon(
                                         if expanded {
@@ -1476,6 +1453,10 @@ impl WorkbenchPanel {
                     )
                     .into_any_element(),
             );
+            // The rename field takes the heading's place while it is open.
+            if let (Some(field), Some(heading)) = (rename_field, out.last_mut()) {
+                *heading = field;
+            }
             if !expanded {
                 continue;
             }
@@ -1496,7 +1477,7 @@ impl WorkbenchPanel {
                         .into_any_element(),
                 );
             }
-            out.extend(self.render_rail_rows(rows, filter, cx));
+            out.extend(self.render_rail_rows(rows, filter, window, cx));
         }
         out
     }
@@ -1508,6 +1489,7 @@ impl WorkbenchPanel {
         &self,
         rows: Vec<RailRow<'_>>,
         filter: &str,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let colors = cx.theme().colors;
@@ -1527,6 +1509,10 @@ impl WorkbenchPanel {
                     let index = folder_index;
                     folder_index += 1;
                     let id = folder.id.clone();
+                    if let Some(rename) = self.rail_rename_for(&RenameTarget::Folder(id.clone())) {
+                        let indent = 12. * (depth as f32 + 1.);
+                        return Some(self.render_rail_rename(rename, indent, window, cx));
+                    }
                     let toggle_id = id.clone();
                     let expanded = !filter.is_empty() || !self.collapsed_folder_ids.contains(&id);
                     let toggle_selector = format!("workbench-folder-toggle-{}", id.as_str());
@@ -1576,7 +1562,11 @@ impl WorkbenchPanel {
                                 "Rename folder…",
                                 &handle,
                                 move |this, window, cx| {
-                                    this.open_folder_rename(rename.clone(), window, cx)
+                                    this.open_rail_rename(
+                                        RenameTarget::Folder(rename.clone()),
+                                        window,
+                                        cx,
+                                    )
                                 },
                             ))
                             .separator()
@@ -1703,9 +1693,16 @@ impl WorkbenchPanel {
                                                     );
                                                 },
                                             ))
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.select_folder(id.clone(), window, cx)
-                                            }))
+                                            .on_click(cx.listener(
+                                                move |this, event, window, cx| {
+                                                    let target = RenameTarget::Folder(id.clone());
+                                                    if !this
+                                                        .rail_row_clicked(target, event, window, cx)
+                                                    {
+                                                        this.select_folder(id.clone(), window, cx)
+                                                    }
+                                                },
+                                            ))
                                             .child(icon("folder", 12., colors.muted_foreground))
                                             .child(
                                                 heading(
@@ -1737,6 +1734,12 @@ impl WorkbenchPanel {
                         return None;
                     }
                     request_index += 1;
+                    if let Some(rename) =
+                        self.rail_rename_for(&RenameTarget::Request(request.id.clone()))
+                    {
+                        let indent = 12. * (depth as f32 + 1.);
+                        return Some(self.render_rail_rename(rename, indent, window, cx));
+                    }
                     // Row callbacks retain identity, not the potentially large
                     // body, scripts and credentials of every saved request.
                     let request_for_click = request.id.clone();
@@ -1786,7 +1789,11 @@ impl WorkbenchPanel {
                                     "Rename request…",
                                     &handle,
                                     move |this, window, cx| {
-                                        this.open_rename_request(rename.clone(), window, cx)
+                                        this.open_rail_rename(
+                                            RenameTarget::Request(rename.clone()),
+                                            window,
+                                            cx,
+                                        )
                                     },
                                 ));
                             let destinations = handle
@@ -1857,13 +1864,22 @@ impl WorkbenchPanel {
                                             } else {
                                                 palette::text_secondary(cx)
                                             })
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.open_saved_request(
-                                                    &request_for_click,
-                                                    window,
-                                                    cx,
-                                                );
-                                            }))
+                                            .on_click(cx.listener(
+                                                move |this, event, window, cx| {
+                                                    let target = RenameTarget::Request(
+                                                        request_for_click.clone(),
+                                                    );
+                                                    if !this
+                                                        .rail_row_clicked(target, event, window, cx)
+                                                    {
+                                                        this.open_saved_request(
+                                                            &request_for_click,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    }
+                                                },
+                                            ))
                                             .child(verb(
                                                 method.clone(),
                                                 self.method_tint_label(&method, cx),

@@ -90,7 +90,7 @@ gpui_kit::actions!(api_compat, [Save]);
 pub fn bind_keys(cx: &mut App) {
     use super::workbench::{
         CancelRequest, CloseRequest, KEY_CONTEXT, NewRequest, NextRequest, PreviousRequest,
-        SendRequest,
+        RAIL_KEY_CONTEXT, RenameRailItem, SendRequest,
     };
     use gpui_kit::KeyBinding;
     let ctx = Some(KEY_CONTEXT);
@@ -102,6 +102,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-w", CloseRequest, ctx),
         KeyBinding::new("ctrl-pagedown", NextRequest, ctx),
         KeyBinding::new("ctrl-pageup", PreviousRequest, ctx),
+        KeyBinding::new("f2", RenameRailItem, Some(RAIL_KEY_CONTEXT)),
     ]);
 }
 
