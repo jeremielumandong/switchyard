@@ -227,7 +227,7 @@ impl UrlReplacement {
                 if panel.bound_workspace != self.workspace
                     || current_workspace_id() != self.workspace
                 {
-                    return Some("Reopen Replace request URLs in the current workspace.".into());
+                    return Some("Reopen Replace request URLs in the current project.".into());
                 }
                 if panel.storage_loading {
                     return Some("Wait for the current save to finish.".into());
@@ -300,7 +300,7 @@ impl UrlReplacement {
         if owner.bound_workspace != self.workspace || owner.storage_generation != generation {
             self.saving_generation = None;
             self.error =
-                Some("The workspace changed. Reopen Replace request URLs to continue.".into());
+                Some("The project changed. Reopen Replace request URLs to continue.".into());
         } else if !owner.storage_loading {
             self.saving_generation = None;
             if let Some(error) = &owner.storage_error {
