@@ -28,7 +28,7 @@ pub mod value;
 pub use batch::{BatchList, CellRef, Column, ColumnData, ColumnMeta, RowBatch, RowBatchBuilder};
 pub use catalog::{
     CatalogChunk, ColumnInfo, ConstraintInfo, ForeignKeyInfo, IndexInfo, IntrospectScope,
-    ObjectDetail, ObjectInfo, ObjectKind, SchemaInfo,
+    ObjectDetail, ObjectInfo, ObjectKind, SchemaInfo, TriggerInfo,
 };
 pub use dialect::{Dialect, ParamRef, ParamStyle, StatementSpan, dialect_for};
 pub use driver::{

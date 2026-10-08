@@ -1,0 +1,5 @@
+---
+source: crates/db/src/mssql/catalog.rs
+expression: detail_size_sql(id)
+---
+SELECT SUM(ps.reserved_page_count) * 8192, SUM(CASE WHEN ps.index_id IN (0, 1) THEN ps.row_count ELSE 0 END) FROM sys.dm_db_partition_stats ps WHERE ps.object_id = OBJECT_ID(N'[dbo].[t]')

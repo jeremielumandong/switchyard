@@ -7,7 +7,7 @@ use oracle::sql_type::ToSql;
 use super::ora_error;
 use crate::catalog::{
     CatalogChunk, ColumnInfo, ForeignKeyInfo, IndexInfo, IntrospectScope, ObjectDetail, ObjectInfo,
-    ObjectKind, SchemaInfo, like_contains, search_hit,
+    ObjectKind, SchemaInfo, TriggerInfo, like_contains, search_hit,
 };
 use crate::error::{DbError, Result};
 
@@ -84,7 +84,75 @@ fn column(row: &[Option<String>], pk: &[String]) -> ColumnInfo {
             .map(|d| d.trim().to_owned())
             .filter(|d| !d.is_empty()),
         ordinal: text(row, 6).parse().unwrap_or_default(),
+        comment: None,
     }
+}
+
+/// Indexes of `:1.:2`, one row per column: name, uniqueness, column, backs-the-PK
+/// count and index type.
+const DETAIL_INDEXES: &str = "SELECT i.INDEX_NAME, i.UNIQUENESS, ic.COLUMN_NAME, \
+       (SELECT COUNT(*) FROM ALL_CONSTRAINTS c WHERE c.OWNER = i.TABLE_OWNER \
+          AND c.INDEX_NAME = i.INDEX_NAME AND c.CONSTRAINT_TYPE = 'P'), \
+       i.INDEX_TYPE \
+     FROM ALL_INDEXES i JOIN ALL_IND_COLUMNS ic \
+       ON ic.INDEX_OWNER = i.OWNER AND ic.INDEX_NAME = i.INDEX_NAME \
+     WHERE i.TABLE_OWNER = :1 AND i.TABLE_NAME = :2 \
+     ORDER BY i.INDEX_NAME, ic.COLUMN_POSITION";
+
+/// Foreign keys of `:1.:2`, one row per column pair, with the delete rule (Oracle has
+/// no update rule).
+const DETAIL_FOREIGN_KEYS: &str = "SELECT c.CONSTRAINT_NAME, cc.COLUMN_NAME, \
+       r.OWNER || '.' || r.TABLE_NAME, rc.COLUMN_NAME, c.DELETE_RULE \
+     FROM ALL_CONSTRAINTS c \
+     JOIN ALL_CONS_COLUMNS cc ON cc.OWNER = c.OWNER AND cc.CONSTRAINT_NAME = c.CONSTRAINT_NAME \
+     JOIN ALL_CONSTRAINTS r ON r.OWNER = c.R_OWNER AND r.CONSTRAINT_NAME = c.R_CONSTRAINT_NAME \
+     JOIN ALL_CONS_COLUMNS rc ON rc.OWNER = r.OWNER AND rc.CONSTRAINT_NAME = r.CONSTRAINT_NAME \
+       AND rc.POSITION = cc.POSITION \
+     WHERE c.OWNER = :1 AND c.TABLE_NAME = :2 AND c.CONSTRAINT_TYPE = 'R' \
+     ORDER BY c.CONSTRAINT_NAME, cc.POSITION";
+
+/// Triggers of `:1.:2` with type, events and source (`TRIGGER_BODY` is a LONG).
+const DETAIL_TRIGGERS: &str = "SELECT TRIGGER_NAME, TRIGGER_TYPE, TRIGGERING_EVENT, \
+       DESCRIPTION, TRIGGER_BODY \
+     FROM ALL_TRIGGERS WHERE TABLE_OWNER = :1 AND TABLE_NAME = :2 ORDER BY 1";
+
+/// Table (or view) comment of `:1.:2`.
+const DETAIL_COMMENT: &str =
+    "SELECT COMMENTS FROM ALL_TAB_COMMENTS WHERE OWNER = :1 AND TABLE_NAME = :2";
+
+/// Column comments of `:1.:2`.
+const DETAIL_COLUMN_COMMENTS: &str = "SELECT COLUMN_NAME, COMMENTS FROM ALL_COL_COMMENTS \
+     WHERE OWNER = :1 AND TABLE_NAME = :2 AND COMMENTS IS NOT NULL";
+
+/// Statistics row count of `:1.:2` (NULL until statistics are gathered).
+const DETAIL_NUM_ROWS: &str =
+    "SELECT NUM_ROWS FROM ALL_TABLES WHERE OWNER = :1 AND TABLE_NAME = :2";
+
+/// Bytes of the table and its index segments (bind owner, table, owner, table: SQL
+/// binds by position, so a repeated `:1` would need its own value). `DBA_SEGMENTS` needs a DBA grant; the
+/// `USER_SEGMENTS` form only works for the session user's own tables. Oracle has no
+/// `ALL_SEGMENTS`.
+fn detail_size_sql(dba: bool) -> String {
+    let (view, owner) = if dba {
+        ("DBA_SEGMENTS", "OWNER = :1 AND ")
+    } else {
+        ("USER_SEGMENTS", "USER = :1 AND ")
+    };
+    format!(
+        "SELECT SUM(BYTES) FROM {view} WHERE {owner}(SEGMENT_NAME = :2 \
+           OR SEGMENT_NAME IN (SELECT INDEX_NAME FROM ALL_INDEXES \
+                               WHERE TABLE_OWNER = :3 AND TABLE_NAME = :4))"
+    )
+}
+
+/// `CREATE OR REPLACE TRIGGER` text from `ALL_TRIGGERS.DESCRIPTION` (the header after
+/// the keyword) and `TRIGGER_BODY`.
+fn trigger_source(description: &str, body: &str) -> String {
+    let head = description.trim_end();
+    if head.is_empty() {
+        return body.trim_end().to_owned();
+    }
+    format!("CREATE OR REPLACE TRIGGER {head}\n{}", body.trim_end())
 }
 
 /// Global object search over `ALL_OBJECTS`: `:1` is an escaped LIKE pattern, `:2` = 1
@@ -287,17 +355,7 @@ pub(super) fn introspect(conn: &Connection, scope: IntrospectScope) -> Result<Ca
             .map(|row| column(row, &pk))
             .collect();
             let mut indexes: Vec<IndexInfo> = Vec::new();
-            for row in rows(
-                conn,
-                "SELECT i.INDEX_NAME, i.UNIQUENESS, ic.COLUMN_NAME, \
-                   (SELECT COUNT(*) FROM ALL_CONSTRAINTS c WHERE c.OWNER = i.TABLE_OWNER \
-                      AND c.INDEX_NAME = i.INDEX_NAME AND c.CONSTRAINT_TYPE = 'P') \
-                 FROM ALL_INDEXES i JOIN ALL_IND_COLUMNS ic \
-                   ON ic.INDEX_OWNER = i.OWNER AND ic.INDEX_NAME = i.INDEX_NAME \
-                 WHERE i.TABLE_OWNER = :1 AND i.TABLE_NAME = :2 \
-                 ORDER BY i.INDEX_NAME, ic.COLUMN_POSITION",
-                &[&schema, &name],
-            )? {
+            for row in rows(conn, DETAIL_INDEXES, &[&schema, &name])? {
                 let iname = text(&row, 0);
                 let col = text(&row, 2);
                 match indexes.iter_mut().find(|i| i.name == iname) {
@@ -306,6 +364,11 @@ pub(super) fn introspect(conn: &Connection, scope: IntrospectScope) -> Result<Ca
                         is_unique: text(&row, 1) == "UNIQUE",
                         is_primary: text(&row, 3) != "0",
                         definition: String::new(),
+                        method: row
+                            .get(4)
+                            .cloned()
+                            .flatten()
+                            .map(|m| m.to_ascii_lowercase()),
                         name: iname,
                         columns: vec![col],
                     }),
@@ -321,18 +384,7 @@ pub(super) fn introspect(conn: &Connection, scope: IntrospectScope) -> Result<Ca
                 );
             }
             let mut foreign_keys: Vec<ForeignKeyInfo> = Vec::new();
-            for row in rows(
-                conn,
-                "SELECT c.CONSTRAINT_NAME, cc.COLUMN_NAME, r.OWNER || '.' || r.TABLE_NAME, rc.COLUMN_NAME \
-                 FROM ALL_CONSTRAINTS c \
-                 JOIN ALL_CONS_COLUMNS cc ON cc.OWNER = c.OWNER AND cc.CONSTRAINT_NAME = c.CONSTRAINT_NAME \
-                 JOIN ALL_CONSTRAINTS r ON r.OWNER = c.R_OWNER AND r.CONSTRAINT_NAME = c.R_CONSTRAINT_NAME \
-                 JOIN ALL_CONS_COLUMNS rc ON rc.OWNER = r.OWNER AND rc.CONSTRAINT_NAME = r.CONSTRAINT_NAME \
-                   AND rc.POSITION = cc.POSITION \
-                 WHERE c.OWNER = :1 AND c.TABLE_NAME = :2 AND c.CONSTRAINT_TYPE = 'R' \
-                 ORDER BY c.CONSTRAINT_NAME, cc.POSITION",
-                &[&schema, &name],
-            )? {
+            for row in rows(conn, DETAIL_FOREIGN_KEYS, &[&schema, &name])? {
                 let fname = text(&row, 0);
                 match foreign_keys.iter_mut().find(|f| f.name == fname) {
                     Some(f) => {
@@ -344,17 +396,50 @@ pub(super) fn introspect(conn: &Connection, scope: IntrospectScope) -> Result<Ca
                         columns: vec![text(&row, 1)],
                         references: text(&row, 2),
                         referenced_columns: vec![text(&row, 3)],
+                        on_delete: row.get(4).cloned().flatten(),
+                        on_update: None,
                     }),
                 }
             }
-            let triggers: Vec<String> = rows(
-                conn,
-                "SELECT TRIGGER_NAME FROM ALL_TRIGGERS WHERE TABLE_OWNER = :1 AND TABLE_NAME = :2 ORDER BY 1",
-                &[&schema, &name],
-            )?
-            .iter()
-            .map(|r| text(r, 0))
-            .collect();
+            let trigger_details: Vec<TriggerInfo> = rows(conn, DETAIL_TRIGGERS, &[&schema, &name])?
+                .iter()
+                .map(|r| TriggerInfo {
+                    name: text(r, 0),
+                    timing: text(r, 1),
+                    event: text(r, 2),
+                    definition: trigger_source(&text(r, 3), &text(r, 4)),
+                })
+                .collect();
+            let triggers: Vec<String> = trigger_details.iter().map(|t| t.name.clone()).collect();
+            // Comments, statistics and segment sizes are extras: any error leaves them unknown.
+            let mut columns = columns;
+            if let Ok(r) = rows(conn, DETAIL_COLUMN_COMMENTS, &[&schema, &name]) {
+                for row in r {
+                    let col = text(&row, 0);
+                    if let Some(c) = columns.iter_mut().find(|c| c.name == col) {
+                        c.comment = row.get(1).cloned().flatten();
+                    }
+                }
+            }
+            let first = |sql: &str, params: &[&dyn ToSql]| {
+                rows(conn, sql, params)
+                    .ok()
+                    .and_then(|r| r.first().and_then(|row| row.first().cloned().flatten()))
+            };
+            let key: [&dyn ToSql; 2] = [&schema, &name];
+            let key2: [&dyn ToSql; 4] = [&schema, &name, &schema, &name];
+            let comment = first(DETAIL_COMMENT, &key).filter(|c| !c.is_empty());
+            let (estimated_rows, size_bytes) =
+                if matches!(kind, ObjectKind::Table | ObjectKind::MaterializedView) {
+                    (
+                        first(DETAIL_NUM_ROWS, &key).and_then(|n| n.parse().ok()),
+                        first(&detail_size_sql(true), &key2)
+                            .or_else(|| first(&detail_size_sql(false), &key2))
+                            .and_then(|n| n.parse().ok()),
+                    )
+                } else {
+                    (None, None)
+                };
             let ddl_kind = ddl_type(kind);
             let ddl = rows(
                 conn,
@@ -372,7 +457,7 @@ pub(super) fn introspect(conn: &Connection, scope: IntrospectScope) -> Result<Ca
                     schema,
                     name,
                     kind,
-                    estimated_rows: None,
+                    estimated_rows,
                     detail: None,
                 },
                 columns,
@@ -381,6 +466,9 @@ pub(super) fn introspect(conn: &Connection, scope: IntrospectScope) -> Result<Ca
                 foreign_keys,
                 triggers,
                 ddl,
+                size_bytes,
+                comment,
+                trigger_details,
             })))
         }
     }
@@ -402,5 +490,34 @@ mod tests {
             "oracle_routine_sql",
             [ROUTINE_DDL_SQL, ROUTINE_SOURCE_SQL, ROUTINE_PARAMS_SQL].join("\n")
         );
+    }
+}
+
+#[cfg(test)]
+mod detail_tests {
+    use super::*;
+
+    #[test]
+    fn detail_sql_snapshots() {
+        insta::assert_snapshot!("oracle_indexes_sql", DETAIL_INDEXES);
+        insta::assert_snapshot!("oracle_foreign_keys_sql", DETAIL_FOREIGN_KEYS);
+        insta::assert_snapshot!("oracle_triggers_sql", DETAIL_TRIGGERS);
+        insta::assert_snapshot!("oracle_comment_sql", DETAIL_COMMENT);
+        insta::assert_snapshot!("oracle_column_comments_sql", DETAIL_COLUMN_COMMENTS);
+        insta::assert_snapshot!("oracle_num_rows_sql", DETAIL_NUM_ROWS);
+        insta::assert_snapshot!("oracle_size_sql_dba", detail_size_sql(true));
+        insta::assert_snapshot!("oracle_size_sql_user", detail_size_sql(false));
+    }
+
+    #[test]
+    fn trigger_source_joins_header_and_body() {
+        assert_eq!(
+            trigger_source(
+                "t_bi\nBEFORE INSERT ON t\nFOR EACH ROW\n",
+                "BEGIN NULL; END;\n"
+            ),
+            "CREATE OR REPLACE TRIGGER t_bi\nBEFORE INSERT ON t\nFOR EACH ROW\nBEGIN NULL; END;"
+        );
+        assert_eq!(trigger_source("", "BEGIN NULL; END;"), "BEGIN NULL; END;");
     }
 }

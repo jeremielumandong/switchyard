@@ -565,12 +565,23 @@ are shared hotspots: one owner at a time.
   drop-point-to-offset API).
 
 ### Phase 2 — object properties and script-as
-- [ ] DBX-2a Columns / Keys / Indexes / FKs / Triggers children under each relation.
-- [ ] DBX-2b Object properties tab (Columns, Indexes, Constraints, FKs, Triggers, DDL,
+- [x] DBX-2a Columns / Keys / Indexes / FKs / Triggers children under each relation.
+  Note: children from cached `Detail` (`SchemaState::details`, `child_groups`); empty groups
+  hidden; F5/copy/drag on child rows; templates reuse a loaded detail.
+- [x] DBX-2b Object properties tab (Columns, Indexes, Constraints, FKs, Triggers, DDL,
   Data); `ObjectDetail` gains size, comment, trigger definitions per engine.
-- [ ] DBX-2c Script-as submenu (CREATE, DROP, DROP+CREATE, SELECT, INSERT, UPDATE, DELETE,
+  Note: `ObjectDetail` gains `size_bytes`, `comment`, `trigger_details`, column comments, index
+  method, FK actions (optional on missing privileges); `object_tab.rs` (`Tab::Object`, own
+  session, Data via `GridDelegate`) from Properties…; FK click opens the referenced table.
+  Deferred: Shift+Enter, Oracle CHECK/UNIQUE constraints.
+- [x] DBX-2c Script-as submenu (CREATE, DROP, DROP+CREATE, SELECT, INSERT, UPDATE, DELETE,
   EXEC) with routine definitions per engine.
-- [ ] DBX-2d Connection menu: New query here, Refresh schema, Disconnect.
+  Note: `IntrospectScope::RoutineDefinition` per engine (Oracle `ALL_SOURCE` fallback);
+  `Dialect::{script_create, script_drop_create, script_exec}`; keyboard submenus. Deferred:
+  overload-aware PG DROP, TVF EXEC, submenu flip at window edge.
+- [x] DBX-2d Connection menu: New query here, Refresh schema, Disconnect.
+  Note: Disconnect uses `CloseSession`, confirms on open transactions or staged edits; tabs
+  reconnect on the next run.
 
 ### Phase 3 — table data editor
 - [ ] DBX-3a Server-side filter / sort / paging bar (`Dialect::select_page`; MSSQL and

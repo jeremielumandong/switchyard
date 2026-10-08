@@ -1,0 +1,5 @@
+---
+source: crates/db/src/d1/catalog.rs
+expression: DETAIL_TRIGGERS
+---
+SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?1 ORDER BY name

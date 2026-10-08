@@ -1,0 +1,22 @@
+---
+source: crates/db/src/pg/catalog.rs
+expression: COLUMNS_SQL
+---
+SELECT n.nspname::text, c.relname::text, a.attname::text,
+       pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type,
+       NOT a.attnotnull AS nullable,
+       pg_catalog.pg_get_expr(d.adbin, d.adrelid) AS default_expr,
+       a.attnum::int4,
+       EXISTS (SELECT 1 FROM pg_catalog.pg_index i
+               WHERE i.indrelid = c.oid AND i.indisprimary AND a.attnum = ANY(i.indkey)) AS is_pk,
+       pg_catalog.col_description(c.oid, a.attnum) AS comment
+FROM pg_catalog.pg_attribute a
+JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+WHERE a.attnum > 0 AND NOT a.attisdropped
+  AND ($1::text IS NULL OR n.nspname = $1)
+  AND ($2::text IS NULL OR c.relname = $2)
+  AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY n.nspname, c.relname, a.attnum

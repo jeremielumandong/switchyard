@@ -1,0 +1,9 @@
+---
+source: crates/db/src/pg/catalog.rs
+expression: RELATION_PROPS_SQL
+---
+SELECT pg_catalog.pg_total_relation_size(c.oid),
+       pg_catalog.obj_description(c.oid, 'pg_class'),
+       CASE WHEN c.reltuples < 0 THEN NULL ELSE c.reltuples::int8 END
+FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = $1 AND c.relname = $2
