@@ -371,10 +371,7 @@ impl WorkbenchPanel {
                             })
                         })
                     {
-                        Err(
-                            "The project or request changed. Press Escape and rename again."
-                                .into(),
-                        )
+                        Err("The project or request changed. Press Escape and rename again.".into())
                     } else {
                         Ok(request)
                     }
