@@ -510,3 +510,75 @@ async fn object_search_round_trips_through_core() {
     .await;
     assert_eq!(names, ["tables_2"]);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn switches_database_and_schema_in_place() {
+    use switchyard_core::SessionContext;
+    let (core, mut rx) = setup(EnvironmentLabel::Development, false).await;
+    let h = core.handle();
+    // PostgreSQL reconnects the same session id to the other database, then sets the
+    // search path on the new connection.
+    h.send(Command::SetSessionContext {
+        session: 7,
+        request: 40,
+        database: Some("analytics".into()),
+        schema: Some("sales".into()),
+    });
+    let ctx = next_matching(&mut rx, |e| match e {
+        Event::SessionContext {
+            session: 7,
+            request: 40,
+            result,
+        } => Some(result),
+        _ => None,
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        ctx,
+        SessionContext {
+            database: Some("analytics".into()),
+            schema: Some("sales".into()),
+        }
+    );
+    // The session still runs queries.
+    h.send(Command::Execute {
+        session: 7,
+        query: 41,
+        statements: vec![stmt("rows 3")],
+        tags: vec![],
+        confirmed_destructive: false,
+        fetch_limit: FetchLimit::All,
+    });
+    let cancelled = next_matching(&mut rx, |e| match e {
+        Event::Query {
+            query: 41,
+            event: QueryEvent::Finished { cancelled, .. },
+        } => Some(cancelled),
+        _ => None,
+    })
+    .await;
+    assert!(!cancelled);
+    // Switching inside a manual transaction is refused.
+    h.send(Command::Begin { session: 7 });
+    next_matching(&mut rx, |e| {
+        matches!(e, Event::Transaction { session: 7, .. }).then_some(())
+    })
+    .await;
+    h.send(Command::SetSessionContext {
+        session: 7,
+        request: 42,
+        database: Some("shop".into()),
+        schema: None,
+    });
+    let r = next_matching(&mut rx, |e| match e {
+        Event::SessionContext {
+            request: 42,
+            result,
+            ..
+        } => Some(result),
+        _ => None,
+    })
+    .await;
+    assert!(r.is_err());
+}

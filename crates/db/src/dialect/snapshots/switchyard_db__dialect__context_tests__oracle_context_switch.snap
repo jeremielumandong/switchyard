@@ -1,0 +1,7 @@
+---
+source: crates/db/src/dialect/context_tests.rs
+expression: "render(Engine::Oracle, \"ORCLPDB1\", \"HR\")"
+---
+switches_context: true
+use_database("ORCLPDB1"): <reconnect / unsupported>
+use_schema("HR"): ALTER SESSION SET CURRENT_SCHEMA = HR

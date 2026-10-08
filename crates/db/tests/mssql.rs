@@ -565,3 +565,15 @@ async fn global_object_search() {
     // sys objects are left out by default.
     assert!(search(s.as_mut(), "sysobjects").await.is_empty());
 }
+
+#[tokio::test]
+#[ignore = "needs sql server"]
+async fn use_database_switches_the_session() {
+    let mut s = session("master").await;
+    let sql = TSqlDialect.use_database("tempdb").expect("USE statement");
+    drain(s.as_mut(), &sql, &[]).await.expect("use");
+    let c = drain(s.as_mut(), "SELECT DB_NAME()", &[]).await.unwrap();
+    assert_eq!(c.sets[0].1.cell(0, 0).unwrap().to_display(), "tempdb");
+    // SQL Server has no per-session default schema to switch.
+    assert_eq!(TSqlDialect.use_schema("sales"), None);
+}

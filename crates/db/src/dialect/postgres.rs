@@ -287,6 +287,20 @@ impl Dialect for PostgresDialect {
     fn default_schema(&self) -> &'static str {
         "public"
     }
+
+    fn use_database(&self, _database: &str) -> Option<String> {
+        // A PostgreSQL connection is bound to one database: switching reconnects.
+        None
+    }
+
+    fn use_schema(&self, schema: &str) -> Option<String> {
+        let s = self.quote_ident(schema);
+        Some(if schema == "public" {
+            format!("SET search_path TO {s}")
+        } else {
+            format!("SET search_path TO {s}, public")
+        })
+    }
 }
 
 #[cfg(test)]
