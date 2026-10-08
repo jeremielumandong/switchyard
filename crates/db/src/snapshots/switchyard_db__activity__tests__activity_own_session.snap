@@ -1,0 +1,8 @@
+---
+source: crates/db/src/activity.rs
+expression: "own.join(\"\\n\")"
+---
+Postgres: SELECT pg_backend_pid()::text AS id
+SqlServer: SELECT CAST(@@SPID AS varchar(11)) AS id
+Oracle: SELECT SYS_CONTEXT('USERENV', 'SID') AS id FROM dual
+Snowflake: SELECT CURRENT_SESSION() AS id

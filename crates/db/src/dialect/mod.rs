@@ -220,6 +220,104 @@ pub trait Dialect: Send + Sync {
     fn use_schema(&self, _schema: &str) -> Option<String> {
         None
     }
+
+    /// One page of `qualified` for the table data view (DBX-3a): `cols` (all when empty),
+    /// filtered by `where_` (a condition already validated as one expression), sorted by
+    /// `order`, `limit` rows after skipping `offset`. `LIMIT … OFFSET` by default.
+    fn select_page(
+        &self,
+        qualified: &str,
+        cols: &[String],
+        where_: Option<&str>,
+        order: &[SortKey],
+        limit: u64,
+        offset: u64,
+    ) -> String {
+        format!(
+            "{}\nLIMIT {limit} OFFSET {offset}",
+            page_head(self, qualified, cols, where_, order)
+        )
+    }
+
+    /// `INSERT` of one row (DBX-3b): each column with its literal, or `None` for the column
+    /// default (written `DEFAULT`). With no columns, `DEFAULT VALUES`.
+    fn insert_row(&self, qualified: &str, values: &[(String, Option<String>)]) -> String {
+        if values.is_empty() {
+            return format!("INSERT INTO {qualified} DEFAULT VALUES;");
+        }
+        let names: Vec<String> = values.iter().map(|(c, _)| self.quote_ident(c)).collect();
+        let vals: Vec<&str> = values
+            .iter()
+            .map(|(_, v)| v.as_deref().unwrap_or("DEFAULT"))
+            .collect();
+        format!(
+            "INSERT INTO {qualified} ({}) VALUES ({});",
+            names.join(", "),
+            vals.join(", ")
+        )
+    }
+}
+
+/// A column of a server-side `ORDER BY`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SortKey {
+    /// Column name (unquoted).
+    pub column: String,
+    /// Descending instead of ascending.
+    pub descending: bool,
+}
+
+impl SortKey {
+    /// Ascending on `column`.
+    pub fn asc(column: impl Into<String>) -> Self {
+        Self {
+            column: column.into(),
+            descending: false,
+        }
+    }
+}
+
+/// `SELECT … FROM … [WHERE …] [ORDER BY …]` of [`Dialect::select_page`], one clause per line.
+pub(crate) fn page_head<D: Dialect + ?Sized>(
+    d: &D,
+    qualified: &str,
+    cols: &[String],
+    where_: Option<&str>,
+    order: &[SortKey],
+) -> String {
+    let list = if cols.is_empty() {
+        "*".to_owned()
+    } else {
+        cols.iter()
+            .map(|c| d.quote_ident(c))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut sql = format!("SELECT {list}\nFROM {qualified}");
+    if let Some(w) = where_.map(str::trim).filter(|w| !w.is_empty()) {
+        sql.push_str("\nWHERE ");
+        sql.push_str(w);
+    }
+    if !order.is_empty() {
+        sql.push_str("\nORDER BY ");
+        sql.push_str(&order_list(d, order));
+    }
+    sql
+}
+
+/// `"a" ASC, "b" DESC`.
+pub(crate) fn order_list<D: Dialect + ?Sized>(d: &D, order: &[SortKey]) -> String {
+    order
+        .iter()
+        .map(|k| {
+            format!(
+                "{} {}",
+                d.quote_ident(&k.column),
+                if k.descending { "DESC" } else { "ASC" }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The dialect for `engine`.
@@ -618,6 +716,70 @@ mod tests {
                     d.script_exec(ObjectKind::Function, &p, &[String::new()]),
                 ]
                 .join("\n\n")
+            );
+        }
+    }
+
+    /// One page with every option, and the bare first page, per dialect (DBX-3a).
+    #[test]
+    fn pages() {
+        for engine in [
+            Engine::Postgres,
+            Engine::SqlServer,
+            Engine::Oracle,
+            Engine::Snowflake,
+            Engine::D1,
+        ] {
+            let d = dialect_for(engine);
+            let q = d.qualified("sales", "order");
+            let order = [
+                SortKey {
+                    column: "Order Date".into(),
+                    descending: true,
+                },
+                SortKey::asc("id"),
+            ];
+            let name = format!("{engine:?}").to_lowercase();
+            insta::assert_snapshot!(
+                format!("{name}_select_page"),
+                [
+                    d.select_page(
+                        &q,
+                        &names(&["id", "Order Date"]),
+                        Some("total > 100 AND status = 'open'"),
+                        &order,
+                        500,
+                        1000
+                    ),
+                    d.select_page(&q, &[], None, &[], 100, 0),
+                    d.select_page(&q, &[], Some("  "), &[SortKey::asc("id")], 100, 100),
+                ]
+                .join("\n\n")
+            );
+        }
+    }
+
+    /// One row with a value, a default and a NULL, and a row of defaults only (DBX-3b).
+    #[test]
+    fn insert_rows() {
+        for engine in [
+            Engine::Postgres,
+            Engine::SqlServer,
+            Engine::Oracle,
+            Engine::Snowflake,
+            Engine::D1,
+        ] {
+            let d = dialect_for(engine);
+            let q = d.qualified("sales", "order");
+            let name = format!("{engine:?}").to_lowercase();
+            let row = [
+                ("Order Date".to_owned(), Some("'2026-10-08'".to_owned())),
+                ("status".to_owned(), None),
+                ("note".to_owned(), Some("NULL".to_owned())),
+            ];
+            insta::assert_snapshot!(
+                format!("{name}_insert_row"),
+                [d.insert_row(&q, &row), d.insert_row(&q, &[])].join("\n\n")
             );
         }
     }

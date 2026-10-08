@@ -903,3 +903,14 @@ From a user-requested UX review (see the "Extra — UX pass" section in PLAN.md)
   sequence guard so the latest write wins.
 - Rail rename is inline for collections, folders and requests (kebab, double-click, F2);
   Enter and clicking away commit, Escape cancels. The request-rename dialog was removed.
+
+## 2026-10-08 — ER diagram layout crate (`dagre`)
+
+The user approved adding a graph-layout crate for the DBX-5d ER diagram (not on the original
+approved list). Chose `dagre` =0.1.1 (Apache-2.0, a port of dagre.js's layered layout): it
+returns node centres and edge bend points and keeps insertion order, so layouts are
+deterministic. Its required default `json` feature only adds serde/serde_json; transitive deps
+are MIT/Apache-2.0 (memchr Unlicense OR MIT, unicode-ident adds Unicode-3.0), no GPL.
+Rejected `layout-rs` (renders through its own backend, no per-node positions) and
+`rust-sugiyama` (pulls in petgraph). Used from `switchyard-app` only; layout runs on the
+background executor (a dense 150-table graph takes ~1.4 s in release).

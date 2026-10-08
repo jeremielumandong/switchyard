@@ -1,0 +1,18 @@
+---
+source: crates/db/src/dialect/mod.rs
+expression: "[d.select_page(&q, &names(&[\"id\", \"Order Date\"]),\nSome(\"total > 100 AND status = 'open'\"), &order, 500, 1000),\nd.select_page(&q, &[], None, &[], 100, 0),\nd.select_page(&q, &[], Some(\"  \"), &[SortKey::asc(\"id\")], 100,\n100),].join(\"\\n\\n\")"
+---
+SELECT "id", "Order Date"
+FROM "sales"."order"
+WHERE total > 100 AND status = 'open'
+ORDER BY "Order Date" DESC, "id" ASC
+OFFSET 1000 ROWS FETCH NEXT 500 ROWS ONLY
+
+SELECT *
+FROM "sales"."order"
+OFFSET 0 ROWS FETCH NEXT 100 ROWS ONLY
+
+SELECT *
+FROM "sales"."order"
+ORDER BY "id" ASC
+OFFSET 100 ROWS FETCH NEXT 100 ROWS ONLY

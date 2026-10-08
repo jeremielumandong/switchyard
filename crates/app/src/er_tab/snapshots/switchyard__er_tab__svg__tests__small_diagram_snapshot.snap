@@ -1,0 +1,77 @@
+---
+source: crates/app/src/er_tab/svg.rs
+expression: "to_svg(&g, &l)"
+---
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="160" viewBox="0 0 980 160" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11">
+<rect width="100%" height="100%" fill="#ffffff"/>
+<g fill="none" stroke="#5b6675" stroke-width="1.2" stroke-linejoin="round">
+<polyline points="220,58 238,58 242,98 260,98"><title>orders (customer_id) → cust&lt;omers&gt; (id)</title></polyline>
+<line x1="226" y1="53" x2="226" y2="63"/>
+<line x1="230" y1="53" x2="230" y2="63"/>
+<line x1="249" y1="98" x2="260" y2="93"/>
+<line x1="249" y1="98" x2="260" y2="98"/>
+<line x1="249" y1="98" x2="260" y2="103"/>
+<polyline points="940,58 958,58 242,118 260,118"><title>orders (region_code) → regions (code)</title></polyline>
+<line x1="946" y1="53" x2="946" y2="63"/>
+<line x1="950" y1="53" x2="950" y2="63"/>
+<line x1="249" y1="118" x2="260" y2="113"/>
+<line x1="249" y1="118" x2="260" y2="118"/>
+<line x1="249" y1="118" x2="260" y2="123"/>
+<polyline points="460,58 478,58 482,58 500,58"><title>order_lines (order_id, order_no) → orders (id, no)</title></polyline>
+<line x1="466" y1="53" x2="466" y2="63"/>
+<line x1="470" y1="53" x2="470" y2="63"/>
+<line x1="489" y1="58" x2="500" y2="53"/>
+<line x1="489" y1="58" x2="500" y2="58"/>
+<line x1="489" y1="58" x2="500" y2="63"/>
+</g>
+<g>
+<rect x="20" y="20" width="200" height="72" rx="5" fill="#ffffff" stroke="#8a94a3"/>
+<path d="M25 20.5h190a4.5 4.5 0 0 1 4.5 4.5v23h-199v-23a4.5 4.5 0 0 1 4.5 -4.5z" fill="#eef1f5" stroke="none"/>
+<line x1="20" y1="48" x2="220" y2="48" stroke="#8a94a3"/>
+<text x="28" y="38" fill="#1d232b" font-weight="600" font-size="12">cust&lt;omers&gt;</text>
+<text x="26" y="62" fill="#a36a00" font-size="9" font-weight="600">PK</text>
+<text x="44" y="62" fill="#1d232b">id</text>
+<text x="212" y="62" fill="#6b7480" text-anchor="end">int</text>
+<text x="44" y="82" fill="#1d232b">name</text>
+<text x="212" y="82" fill="#6b7480" text-anchor="end">text</text>
+</g>
+<g>
+<rect x="260" y="20" width="200" height="112" rx="5" fill="#ffffff" stroke="#8a94a3"/>
+<path d="M265 20.5h190a4.5 4.5 0 0 1 4.5 4.5v23h-199v-23a4.5 4.5 0 0 1 4.5 -4.5z" fill="#eef1f5" stroke="none"/>
+<line x1="260" y1="48" x2="460" y2="48" stroke="#8a94a3"/>
+<text x="268" y="38" fill="#1d232b" font-weight="600" font-size="12">orders</text>
+<text x="266" y="62" fill="#a36a00" font-size="9" font-weight="600">PK</text>
+<text x="284" y="62" fill="#1d232b">id</text>
+<text x="452" y="62" fill="#6b7480" text-anchor="end">int</text>
+<text x="266" y="82" fill="#a36a00" font-size="9" font-weight="600">PK</text>
+<text x="284" y="82" fill="#1d232b">no</text>
+<text x="452" y="82" fill="#6b7480" text-anchor="end">int</text>
+<text x="266" y="102" fill="#a36a00" font-size="9" font-weight="600">FK</text>
+<text x="284" y="102" fill="#1d232b">customer_id</text>
+<text x="452" y="102" fill="#6b7480" text-anchor="end">int</text>
+<text x="284" y="122" fill="#6b7480">+1 more</text>
+</g>
+<g>
+<rect x="500" y="20" width="200" height="92" rx="5" fill="#ffffff" stroke="#8a94a3"/>
+<path d="M505 20.5h190a4.5 4.5 0 0 1 4.5 4.5v23h-199v-23a4.5 4.5 0 0 1 4.5 -4.5z" fill="#eef1f5" stroke="none"/>
+<line x1="500" y1="48" x2="700" y2="48" stroke="#8a94a3"/>
+<text x="508" y="38" fill="#1d232b" font-weight="600" font-size="12">order_lines</text>
+<text x="506" y="62" fill="#a36a00" font-size="9" font-weight="600">PF</text>
+<text x="524" y="62" fill="#1d232b">order_id</text>
+<text x="692" y="62" fill="#6b7480" text-anchor="end">int</text>
+<text x="506" y="82" fill="#a36a00" font-size="9" font-weight="600">PF</text>
+<text x="524" y="82" fill="#1d232b">order_no</text>
+<text x="692" y="82" fill="#6b7480" text-anchor="end">int</text>
+<text x="506" y="102" fill="#a36a00" font-size="9" font-weight="600">PK</text>
+<text x="524" y="102" fill="#1d232b">line</text>
+<text x="692" y="102" fill="#6b7480" text-anchor="end">int</text>
+</g>
+<g>
+<rect x="740" y="20" width="200" height="52" rx="5" fill="#ffffff" stroke="#8a94a3" stroke-dasharray="4 3"/>
+<path d="M745 20.5h190a4.5 4.5 0 0 1 4.5 4.5v23h-199v-23a4.5 4.5 0 0 1 4.5 -4.5z" fill="#eef1f5" stroke="none"/>
+<line x1="740" y1="48" x2="940" y2="48" stroke="#8a94a3"/>
+<text x="748" y="38" fill="#1d232b" font-weight="600" font-size="12">regions</text>
+<text x="746" y="62" fill="#a36a00" font-size="9" font-weight="600">PK</text>
+<text x="764" y="62" fill="#1d232b">code</text>
+</g>
+</svg>

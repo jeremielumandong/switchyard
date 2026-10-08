@@ -584,10 +584,20 @@ are shared hotspots: one owner at a time.
   reconnect on the next run.
 
 ### Phase 3 — table data editor
-- [ ] DBX-3a Server-side filter / sort / paging bar (`Dialect::select_page`; MSSQL and
+- [x] DBX-3a Server-side filter / sort / paging bar (`Dialect::select_page`; MSSQL and
   Oracle `OFFSET … FETCH`, ORDER BY defaults to the PK).
-- [ ] DBX-3b Insert / delete / duplicate rows in the staged-edit flow (`db/edit.rs`).
-- [ ] DBX-3c Foreign-key navigation from a cell to the referenced row.
+  Note: `Dialect::select_page` (MSSQL `(SELECT NULL)` fallback), PK as default order
+  (`edit::page_order`), WHERE checked with sqlparser `parse_expr`; shared `grid::Pager` on the
+  Data sub-tab and tree Open data (SQL tab data-view mode); Shift for multi-column sort.
+  Deferred: total row count, MSSQL/Oracle docker paging tests.
+- [x] DBX-3b Insert / delete / duplicate rows in the staged-edit flow (`db/edit.rs`).
+  Note: `RowInsert`/`RowDelete` + duplicate (DEFAULT, SQLite omits; identity/serial skipped by
+  heuristic); placeholder and struck-through rows; Delete/Insert/Ctrl+I/Ctrl+D in the grid; one
+  `ApplyEdits` transaction; Production deletes through the Safety overlay. Deferred: PG
+  `GENERATED AS IDENTITY` detection (harmless, DEFAULT is used).
+- [x] DBX-3c Foreign-key navigation from a cell to the referenced row.
+  Note: Open referenced row (row menu, Ctrl/⌘+click) with all FK columns as dialect literals
+  in the editable WHERE bar.
 
 ### Phase 4 — editor and run polish
 - [x] DBX-4a Per-tab database / schema switcher (`Dialect::use_database`; PG reconnects).
@@ -608,10 +618,21 @@ are shared hotspots: one owner at a time.
 
 ### Phase 5 — advanced
 - [ ] DBX-5a Dependencies (uses / used by) per engine.
-- [ ] DBX-5b Activity monitor with kill session (never over MCP; Production double confirm).
+- [x] DBX-5b Activity monitor with kill session (never over MCP; Production double confirm).
+  Note: `db::activity` (per-engine list/action SQL, typed `SessionTarget`, own-session refusal),
+  core `Command::{Activity, SessionAction}` on a monitor-owned session (Production needs the typed
+  id or KILL; every action in history tagged `activity`), `activity_tab.rs` (2/5/10 s, pause,
+  virtualized, read-only SQL); never in MCP/`swy` (cli test). Oracle CANCEL SQL gated on 18c+.
+  Deferred: Oracle/Snowflake not run live; the SQL Server docker test needs
+  `SWITCHYARD_MSSQL_CA`; CI wiring for `--test activity`; a list filter.
 - [ ] DBX-5c Users/roles, SQL Agent jobs, Oracle packages, Snowflake stages/tasks
   (new `ObjectKind`s; bump the schema cache key).
-- [ ] DBX-5d ER diagram from foreign keys (hand-rolled layout; no new crate without asking).
+- [x] DBX-5d ER diagram from foreign keys (`dagre` layout, user-approved; see DECISIONS).
+  Note: `er_tab.rs` (`Tab::Er`, own session, Detail per table 6 in flight, cap 150 with a filter
+  and "Only related"); layout on the background executor, cached per selection; crow's-foot
+  ends, stubs for outside tables, "+k more"; pan/zoom/Fit; double-click opens Properties;
+  Copy/Save as SVG. Deferred: incoming refs from unloaded tables in large schemas, draggable
+  boxes, saved layouts, views.
 - [ ] DBX-5e Favorites and a multi-connection tree (large `sidebar.rs` refactor; alone).
 
 ## M6 — Packaging and beta

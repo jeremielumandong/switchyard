@@ -647,6 +647,43 @@ mod tests {
         );
     }
 
+    /// The activity monitor's cancel / kill (DBX-5b) is app-only: no MCP tool exposes it
+    /// and `swy` never sends its commands.
+    #[test]
+    fn no_session_kill_over_mcp() {
+        let sources = [
+            include_str!("mod.rs"),
+            include_str!("server.rs"),
+            include_str!("../client.rs"),
+            include_str!("../main.rs"),
+        ];
+        // Split so this test's own text does not match.
+        let forbidden = [
+            ["Session", "Action"].concat(),
+            ["Command::", "Activity"].concat(),
+            ["activity::", "act("].concat(),
+        ];
+        for src in sources {
+            // Tool names declared as `name: "…"`.
+            for name in src
+                .split("name: \"")
+                .skip(1)
+                .filter_map(|r| r.split('"').next())
+            {
+                let n = name.to_ascii_lowercase();
+                assert!(
+                    !["kill", "terminate", "cancel", "activity", "session"]
+                        .iter()
+                        .any(|w| n.contains(w)),
+                    "MCP tool {name} looks like a session action"
+                );
+            }
+            for f in &forbidden {
+                assert!(!src.contains(f.as_str()), "{f} is referenced from the CLI");
+            }
+        }
+    }
+
     #[test]
     fn agent_tag_defaults_to_custom() {
         // SAFETY of the env read: only this test touches SWITCHYARD_AGENT.

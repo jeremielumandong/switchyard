@@ -1,0 +1,18 @@
+---
+source: crates/db/src/activity.rs
+expression: SNOWFLAKE_LIST
+---
+SELECT query_id AS id,
+       TO_VARCHAR(session_id) AS session_id,
+       user_name AS username,
+       database_name,
+       warehouse_name AS program,
+       execution_status AS state,
+       DATEDIFF('millisecond', start_time, CURRENT_TIMESTAMP()) AS age_ms,
+       1 AS running,
+       query_text AS sql_text,
+       CASE WHEN TO_VARCHAR(session_id) = CURRENT_SESSION() THEN 1 ELSE 0 END AS is_self
+FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY(RESULT_LIMIT => 10000))
+WHERE execution_status IN ('RUNNING', 'QUEUED', 'RESUMING_WAREHOUSE', 'BLOCKED')
+ORDER BY start_time
+LIMIT 500

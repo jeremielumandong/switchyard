@@ -1,0 +1,12 @@
+---
+source: crates/db/src/activity.rs
+expression: "out.join(\"\\n\")"
+---
+Postgres CancelQuery: SELECT pg_cancel_backend(4242) AS done
+Postgres Terminate: SELECT pg_terminate_backend(4242) AS done
+SqlServer CancelQuery: <Cancel query is not available here>
+SqlServer Terminate: KILL 4242
+Oracle CancelQuery: ALTER SYSTEM CANCEL SQL '12,345'
+Oracle Terminate: ALTER SYSTEM KILL SESSION '12,345' IMMEDIATE
+Snowflake CancelQuery: SELECT SYSTEM$CANCEL_QUERY('01a2b3c4-0000-1234-0000-00000000abcd') AS done
+Snowflake Terminate: <Terminate session is not available here>

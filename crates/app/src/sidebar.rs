@@ -903,6 +903,20 @@ pub enum CtxTarget {
     Profile(ProfileId),
     /// A tab in the tab strip (by index).
     Tab(usize),
+    /// A schema (its row or one of its folders).
+    Schema(String),
+}
+
+/// The schema of a tree row key: a schema row (`s:<schema>`) or a folder
+/// (`f:<schema>:<Kind>`).
+pub(crate) fn schema_of_row_key(key: &str) -> Option<String> {
+    match key.strip_prefix("s:") {
+        Some(s) => Some(s.to_owned()),
+        None => key
+            .strip_prefix("f:")
+            .and_then(|f| f.rsplit_once(':'))
+            .map(|(s, _)| s.to_owned()),
+    }
 }
 
 /// An open context menu.
@@ -1485,11 +1499,16 @@ impl Workspace {
         let Some(conn) = self.schema.connection.clone() else {
             return;
         };
+        if action == "open" {
+            // Table data view: server-side filter, sort and paging (DBX-3a).
+            let (s, n) = (schema.to_owned(), name.to_owned());
+            self.open_table_data(conn, s, n, kind, None, window, cx);
+            return;
+        }
         let d = dialect_for(conn.engine);
         let q = d.qualified(schema, name);
         let (cols, pk) = detail.map(columns_and_key).unwrap_or_default();
         let text = match action {
-            "open" => d.select_template(&q, &[], 100),
             "select" => d.select_template(&q, &cols, 100),
             "insert" => d.insert_template(&q, &cols),
             "update" => d.update_template(&q, &cols, &pk),
@@ -1550,7 +1569,7 @@ impl Workspace {
         if let Some(tab) = tab {
             tab.update(cx, |t, cx| match action {
                 // Runs once the new tab's session has opened.
-                "open" | "truncate" | "drop" => t.set_text_and_run(&text, window, cx),
+                "truncate" | "drop" => t.set_text_and_run(&text, window, cx),
                 _ => t.insert_text(&text, window, cx),
             });
         }
@@ -2169,6 +2188,9 @@ impl Workspace {
                             ev.position,
                             CtxTarget::Object(s.clone(), n.clone(), *k),
                         ));
+                        cx.notify();
+                    } else if let Some(schema) = schema_of_row_key(&row_key) {
+                        this.ctx = Some(CtxMenu::new(ev.position, CtxTarget::Schema(schema)));
                         cx.notify();
                     }
                 }),

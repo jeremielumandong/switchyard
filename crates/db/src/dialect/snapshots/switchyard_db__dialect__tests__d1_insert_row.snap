@@ -1,0 +1,7 @@
+---
+source: crates/db/src/dialect/mod.rs
+expression: "[d.insert_row(&q, &row), d.insert_row(&q, &[])].join(\"\\n\\n\")"
+---
+INSERT INTO sales."order" ("Order Date", note) VALUES ('2026-10-08', NULL);
+
+INSERT INTO sales."order" DEFAULT VALUES;

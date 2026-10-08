@@ -59,6 +59,10 @@ pub enum Tab {
     Ddl(Entity<crate::ddl_tab::DdlTab>),
     /// Properties of a table, view or materialized view (DBX-2b).
     Object(Entity<crate::object_tab::ObjectTab>),
+    /// Sessions and running queries of a connection (DBX-5b).
+    Activity(Entity<crate::activity_tab::ActivityTab>),
+    /// ER diagram of a schema (DBX-5d).
+    Er(Entity<crate::er_tab::ErTab>),
 }
 
 /// The root view.
@@ -508,6 +512,10 @@ impl Workspace {
                     let version = server_version.clone();
                     o.update(cx, |o, cx| o.on_session(SessionState::Open { version }, cx));
                 }
+                if let Some(e) = self.er_tab_for_session(session, cx) {
+                    let version = server_version.clone();
+                    e.update(cx, |e, cx| e.on_session(SessionState::Open { version }, cx));
+                }
                 self.for_sql_session(session, cx, |t, cx| {
                     t.on_session(
                         SessionState::Open {
@@ -524,6 +532,10 @@ impl Workspace {
                 if let Some(o) = self.object_tab_for_session(session, cx) {
                     let failed = SessionState::Failed(message.clone());
                     o.update(cx, |o, cx| o.on_session(failed, cx));
+                }
+                if let Some(e) = self.er_tab_for_session(session, cx) {
+                    let failed = SessionState::Failed(message.clone());
+                    e.update(cx, |e, cx| e.on_session(failed, cx));
                 }
                 self.for_sql_session(session, cx, |t, cx| {
                     t.on_session(SessionState::Failed(message.clone()), cx)
@@ -579,12 +591,19 @@ impl Workspace {
                     }
                 } else if let Some(o) = self.object_tab_for_session(session, cx) {
                     o.update(cx, |o, cx| o.on_catalog(scope, result, window, cx));
+                } else if let Some(e) = self.er_tab_for_session(session, cx) {
+                    e.update(cx, |e, cx| e.on_catalog(scope, result, cx));
                 } else {
                     match result {
                         Ok(chunk) => {
                             self.for_sql_session(session, cx, |t, cx| t.on_catalog(chunk, cx))
                         }
-                        Err(e) => tracing::warn!(error = %e, "catalog load failed"),
+                        Err(e) => {
+                            tracing::warn!(error = %e, "catalog load failed");
+                            self.for_sql_session(session, cx, |t, cx| {
+                                t.on_catalog_failed(&scope, cx)
+                            })
+                        }
                     }
                 }
             }
@@ -620,6 +639,8 @@ impl Workspace {
                     tab.update(cx, |t, cx| t.on_result(result, cx));
                 }
             }
+            Event::Activity { request, result } => self.on_activity(request, result, window, cx),
+            Event::SessionAction { request, result } => self.on_session_action(request, result, cx),
             Event::WhatIf { request, result } => {
                 if let Some(tab) = self.plan_tab(cx, |v| v.owns(request)) {
                     tab.update(cx, |t, cx| {
@@ -841,6 +862,17 @@ impl Workspace {
                 self.sync_schema(cx);
                 self.sync_assistant(cx);
             }
+            SqlTabEvent::OpenData {
+                schema,
+                name,
+                filter,
+            } => {
+                if let Some(conn) = tab.read(cx).connection.clone() {
+                    let (s, n, f) = (schema.clone(), name.clone(), Some(filter.clone()));
+                    let table = switchyard_core::db::ObjectKind::Table;
+                    self.open_table_data(conn, s, n, table, f, window, cx);
+                }
+            }
             SqlTabEvent::Optimize { sql, findings } => {
                 self.assistant_open = true;
                 self.sync_assistant(cx);
@@ -998,6 +1030,8 @@ impl Workspace {
             Some(Tab::Workload(w)) => w.clone().into_any_element(),
             Some(Tab::Ddl(d)) => d.clone().into_any_element(),
             Some(Tab::Object(o)) => o.clone().into_any_element(),
+            Some(Tab::Activity(a)) => a.clone().into_any_element(),
+            Some(Tab::Er(e)) => e.clone().into_any_element(),
             _ => self.render_welcome(p, cx),
         }
     }
@@ -1318,6 +1352,12 @@ impl Workspace {
         }
         if let Tab::Object(o) = &self.tabs[ix] {
             o.update(cx, |o, _| o.shutdown());
+        }
+        if let Tab::Activity(a) = &self.tabs[ix] {
+            a.update(cx, |a, _| a.shutdown());
+        }
+        if let Tab::Er(e) = &self.tabs[ix] {
+            e.update(cx, |e, _| e.shutdown());
         }
         if let Tab::Editor(e) = &self.tabs[ix] {
             let e = e.entity_id();
@@ -1881,6 +1921,8 @@ impl Workspace {
             }
             CommandId::ShowHistory => self.open_history(window, cx),
             CommandId::ShowWorkload => self.open_workload(cx),
+            CommandId::ShowActivity => self.open_activity_palette(window, cx),
+            CommandId::ErDiagram => self.open_er_for_current_schema(window, cx),
             CommandId::SplitRight => self.split_view(crate::split::SplitDir::Right, window, cx),
             CommandId::SplitDown => self.split_view(crate::split::SplitDir::Down, window, cx),
             CommandId::Unsplit => self.split = None,
@@ -2234,12 +2276,31 @@ impl Workspace {
                 let d = d.read(cx);
                 (d.badge.into(), d.title.clone(), None, false)
             }
+            Tab::Activity(a) => {
+                let a = a.read(cx);
+                let title = format!("Activity · {}", a.connection.name);
+                (
+                    "AM".into(),
+                    title.into(),
+                    Some(a.connection.environment),
+                    false,
+                )
+            }
             Tab::Object(o) => {
                 let o = o.read(cx);
                 (
                     o.badge().into(),
                     o.title.clone(),
                     Some(o.connection.environment),
+                    false,
+                )
+            }
+            Tab::Er(e) => {
+                let e = e.read(cx);
+                (
+                    e.badge().into(),
+                    e.title.clone(),
+                    Some(e.connection.environment),
                     false,
                 )
             }

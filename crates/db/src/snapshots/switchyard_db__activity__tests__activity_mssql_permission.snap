@@ -1,0 +1,5 @@
+---
+source: crates/db/src/activity.rs
+expression: MSSQL_PERMISSION
+---
+SELECT HAS_PERMS_BY_NAME(NULL, NULL, 'VIEW SERVER STATE') AS allowed, SUSER_SNAME() AS login_name

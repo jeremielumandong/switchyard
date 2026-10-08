@@ -6,6 +6,7 @@
 extern crate gpui_kit as gpui;
 
 mod actions;
+mod activity_tab;
 mod api;
 mod app_state;
 mod assistant_panel;
@@ -15,6 +16,7 @@ mod conn_editor;
 mod ddl_tab;
 mod drivers_page;
 mod editor_tab;
+mod er_tab;
 mod files_tab;
 mod folds;
 mod forwards_editor;

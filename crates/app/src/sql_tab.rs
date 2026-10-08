@@ -30,13 +30,22 @@ use switchyard_core::{
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use switchyard_core::db::complete::{CatalogIndex, PeekTarget, peek_target};
-use switchyard_core::db::edit::{EditTable, RowEdit, editable_table, update_statements};
-use switchyard_core::db::{BatchList, CatalogChunk, CellRef, IntrospectScope, ObjectKind};
+use switchyard_core::db::edit::{
+    EditTable, RowDelete, RowEdit, RowInsert, delete_statements, delete_targets, duplicate_values,
+    editable_table, generated_columns, insert_statements, update_statements,
+};
+use switchyard_core::db::{
+    BatchList, CatalogChunk, CellRef, ForeignKeyInfo, IntrospectScope, ObjectKind,
+};
 
 use crate::app_state::{SessionState, next_id};
 use crate::completion::{CompletionState, SqlCompletion};
-use crate::grid::GridDelegate;
+use crate::grid::{
+    GridDelegate, MenuBuilder, NEW_ROW, PagedView, Pager, PagerAction, pager_action,
+    reference_filter, render_pager,
+};
 use crate::plan_view::{ExplainRequest, PlanView, PlanViewEvent};
 use crate::result_diff::{ResultDiff, RowChange, diff as diff_results, same_cell};
 use crate::theme::{MONO, Palette, SANS, palette};
@@ -66,6 +75,16 @@ pub enum SqlTabEvent {
         sql: String,
         /// The plan's findings, one line each.
         findings: Vec<String>,
+    },
+    /// Open the data view of a table on this tab's connection, filtered (DBX-3c: a
+    /// foreign key's referenced row).
+    OpenData {
+        /// Schema.
+        schema: String,
+        /// Table.
+        name: String,
+        /// WHERE condition.
+        filter: String,
     },
 }
 
@@ -270,6 +289,12 @@ pub struct SqlTab {
     compare: Option<CompareView>,
     /// The Diff result tab is showing.
     show_compare: bool,
+    /// Table data view: server-side filter, sort and paging (DBX-3a).
+    pager: Option<Pager>,
+    _pager_sub: Option<Subscription>,
+    /// Statement text to show in the editor at the next render (paging runs without a
+    /// window at hand).
+    pending_text: Option<String>,
     _subs: Vec<Subscription>,
 }
 
@@ -380,6 +405,9 @@ impl SqlTab {
             compare_menu: false,
             compare: None,
             show_compare: false,
+            pager: None,
+            _pager_sub: None,
+            pending_text: None,
             _subs: vec![sub, filter_sub, plan_sub],
         };
         if let Some(c) = connection {
@@ -462,7 +490,7 @@ impl SqlTab {
 
     /// Grid edits staged but not applied yet.
     pub fn has_staged_edits(&self) -> bool {
-        self.edit.as_ref().is_some_and(|e| !e.staged.is_empty())
+        self.edit.as_ref().is_some_and(|e| e.change_count() > 0)
     }
 
     /// Close the tab's session but keep its connection (connection menu "Disconnect").
@@ -516,6 +544,7 @@ impl SqlTab {
             }
         }
         self.session_state = state;
+        self.request_pager_detail(cx);
         cx.emit(SqlTabEvent::Changed);
         cx.notify();
     }
@@ -525,6 +554,7 @@ impl SqlTab {
         match chunk {
             CatalogChunk::Detail(d) => {
                 self.on_peek_detail(&d, cx);
+                self.on_pager_detail(&d, cx);
                 self.on_table_detail(&d, cx);
             }
             CatalogChunk::AllColumns(cols) => {
@@ -922,6 +952,30 @@ impl SqlTab {
 
     /// Send statements to the runtime.
     pub fn execute(&mut self, pending: PendingRun, confirmed: bool, cx: &mut Context<Self>) {
+        // Staged deletes confirmed on Production: commit them instead of running.
+        if confirmed
+            && let Some(statements) = self.edit.as_mut().and_then(|e| e.confirm.take())
+            && statements.len() == pending.statements.len()
+            && statements
+                .iter()
+                .zip(&pending.statements)
+                .all(|(a, b)| *a == b.sql)
+        {
+            self.send_edits(statements, cx);
+            return;
+        }
+        // Running anything but the current page leaves the data view.
+        let page = match (&mut self.pager, pending.statements.as_slice()) {
+            (Some(pg), [one]) if one.sql.trim() == pg.last_sql.trim() => {
+                pg.rows = 0;
+                true
+            }
+            _ => false,
+        };
+        if !page {
+            self.pager = None;
+            self._pager_sub = None;
+        }
         // The runtime handles commands concurrently: a run sent before the session has
         // opened would find no session ("session closed"). Wait for it, and reconnect a
         // failed one first.
@@ -1179,12 +1233,53 @@ impl SqlTab {
                 .col_resizable(true)
                 .sortable(true)
         });
+        let first_of_page = self.pager.is_some() && self.results.len() == self.run_base;
+        if first_of_page && let Some(pg) = &self.pager {
+            let order = pg.sort_indexes(&cols);
+            let fks = pg.fk_indexes(&cols);
+            let weak = cx.entity().downgrade();
+            table.update(cx, |t, _| {
+                let d = t.delegate_mut();
+                d.set_server_sort(
+                    order,
+                    Rc::new(move |order, _window, cx| {
+                        let _ = weak.update(cx, |this, cx| this.on_server_sort(order, cx));
+                    }),
+                );
+                d.set_fk_cols(fks);
+            });
+        }
+        let menu = self.row_menu(cx);
+        table.update(cx, |t, _| t.delegate_mut().set_menu(menu));
         let sub = cx.subscribe_in(
             &table,
             window,
             |this, table, ev: &TableEvent, window, cx| {
                 let shift = window.modifiers().shift || std::mem::take(&mut this.extending);
                 match ev {
+                    TableEvent::SelectCell(r, c) if window.modifiers().secondary() && !shift => {
+                        // Ctrl/Cmd+click follows a foreign key (DBX-3c).
+                        let (row, col) = {
+                            let d = table.read(cx).delegate();
+                            (d.data_row(*r), d.data_col(*c))
+                        };
+                        this.selected = Some((*r, col.unwrap_or(0)));
+                        if let Some(col) = col {
+                            this.open_reference(row, col, cx);
+                        }
+                    }
+                    TableEvent::RightClickedCell(r, c) => {
+                        // The row menu acts on the selected range when the click is in
+                        // it, else on the clicked row.
+                        let col = table.update(cx, |t, _| {
+                            let d = t.delegate_mut();
+                            if d.range().is_none_or(|(rows, _)| !rows.contains(r)) {
+                                d.set_range(None);
+                            }
+                            d.data_col(*c).unwrap_or(0)
+                        });
+                        this.selected = Some((*r, col));
+                    }
                     TableEvent::SelectCell(r, c) => {
                         // Shift+click or Shift+arrows extend a rectangle from the anchor.
                         let range = match this.anchor {
@@ -1259,8 +1354,14 @@ impl SqlTab {
     }
 
     fn add_rows(&mut self, batch: RowBatch, cx: &mut Context<Self>) {
+        let first_result = self.results.len() == self.run_base + 1;
         if let Some(r) = self.results.last_mut() {
             r.rows += batch.len();
+            if let Some(pg) = self.pager.as_mut()
+                && first_result
+            {
+                pg.rows = r.rows;
+            }
             let first = r.rows == batch.len();
             r.table.update(cx, |t, cx| {
                 t.delegate_mut().push(batch);
@@ -1368,7 +1469,7 @@ impl SqlTab {
     /// Status line text: (label, color, meta).
     pub fn status(&self, p: &Palette) -> (SharedString, Hsla, String, bool) {
         let rows = self.loaded_rows();
-        if let Some(e) = self.edit.as_ref().filter(|e| !e.staged.is_empty()) {
+        if let Some(e) = self.edit.as_ref().filter(|e| e.change_count() > 0) {
             let target = match &e.table.schema {
                 Some(s) => format!("{s}.{}", e.table.table),
                 None => e.table.table.clone(),
@@ -1376,7 +1477,7 @@ impl SqlTab {
             return (
                 "Editing".into(),
                 p.stg,
-                format!("{} staged · {target}", e.staged.len()),
+                format!("{} staged · {target}", e.change_count()),
                 false,
             );
         }
@@ -2036,6 +2137,24 @@ impl SqlTab {
                             )
                         },
                     )
+                    .when(
+                        !self.results.is_empty() && !self.show_plan && !self.show_compare,
+                        |d| {
+                            let row_button =
+                                |id: &'static str, label: &'static str, action: RowAction| {
+                                    ui::button(id, label, Kind::Ghost, p)
+                                        .h(px(22.))
+                                        .px(px(6.))
+                                        .text_size(px(11.5))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.row_action(action, cx)
+                                        }))
+                                };
+                            d.child(row_button("row-add", "+ Row", RowAction::Add))
+                                .child(row_button("row-dup", "Duplicate", RowAction::Duplicate))
+                                .child(row_button("row-del", "Delete", RowAction::Delete))
+                        },
+                    )
                     .when(!self.show_plan && !self.show_compare, |d| {
                         d.child(
                             ui::button("fetch-all", "Fetch all", Kind::Ghost, p)
@@ -2177,13 +2296,19 @@ impl SqlTab {
                     )
                 })
                 .child(
-                    div().flex_1().min_h_0().child(
-                        DataTable::new(&r.table)
-                            .bordered(false)
-                            .stripe(false)
-                            .scrollbar_visible(true, false)
-                            .with_size(Size::XSmall),
-                    ),
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .on_key_down(
+                            cx.listener(|this, ev, window, cx| this.on_grid_key(ev, window, cx)),
+                        )
+                        .child(
+                            DataTable::new(&r.table)
+                                .bordered(false)
+                                .stripe(false)
+                                .scrollbar_visible(true, false)
+                                .with_size(Size::XSmall),
+                        ),
                 )
                 .children(h_scrollbar)
                 .children(edit_bar)
@@ -2276,6 +2401,14 @@ impl SqlTab {
                         .child(format!("limit {}", thousands(self.fetch_limit as u64))),
                 );
 
+        let pager_bar = self
+            .pager
+            .as_ref()
+            .filter(|_| !self.show_plan && !self.show_compare)
+            .map(|pg| {
+                let busy = !pg.ready || matches!(self.run, RunState::Running { .. });
+                render_pager(pg, busy, p, cx)
+            });
         div()
             .flex_1()
             .min_h_0()
@@ -2283,6 +2416,7 @@ impl SqlTab {
             .flex_col()
             .bg(p.surface)
             .child(header)
+            .children(pager_bar)
             .child(body)
             .child(footer)
             .into_any_element()
@@ -3214,6 +3348,11 @@ fn empty_state(title: &str, sub: &str, p: &Palette) -> AnyElement {
 
 impl Render for SqlTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(text) = self.pending_text.take() {
+            // The data view's statement for the page being loaded.
+            self.editor
+                .update(cx, |e, cx| e.replace_all(text, window, cx));
+        }
         let p = palette(cx);
         let env = self.environment();
         let bar = match (&self.connection, self.accent) {
@@ -3351,14 +3490,92 @@ pub struct EditState {
     table: EditTable,
     /// Indexes of primary-key columns in the result; `None` while the detail loads.
     key_cols: Option<Vec<usize>>,
-    /// Staged values by (data row, column).
+    /// Staged values by (data row, column); new rows are `NEW_ROW + i`.
     staged: Vec<((usize, usize), Value)>,
+    /// Staged new rows (DBX-3b).
+    inserted: usize,
+    /// Data rows staged for deletion (new rows too: those are just dropped).
+    deleted: Vec<usize>,
+    /// Columns the server fills in (identity, serial): left out of new rows.
+    generated: Vec<String>,
+    /// The table's foreign keys.
+    foreign_keys: Vec<ForeignKeyInfo>,
     /// The cell being edited.
     cell: Option<(usize, usize)>,
-    pending_cell: Option<(usize, usize)>,
+    /// What to do once the table detail (key) is known.
+    pending: Option<PendingEdit>,
     input: Entity<InputState>,
     request: Option<RequestId>,
+    /// Statements waiting for the Production delete confirmation.
+    confirm: Option<Vec<String>>,
     _sub: Subscription,
+}
+
+/// An edit asked for before the table's key was known.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PendingEdit {
+    /// Edit (data row, column).
+    Cell(usize, usize),
+    /// Add a row.
+    Insert,
+    /// Duplicate a data row.
+    Duplicate(usize),
+    /// Delete (or restore) data rows.
+    Delete(Vec<usize>),
+    /// Follow the foreign key of (data row, column).
+    Reference(usize, usize),
+}
+
+/// A row action from the toolbar, the row menu or a key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RowAction {
+    Add,
+    Duplicate,
+    Delete,
+    Reference,
+}
+
+impl EditState {
+    /// Statements a commit would run: updated rows, live new rows and deletes.
+    fn change_count(&self) -> usize {
+        let mut rows: Vec<usize> = self
+            .staged
+            .iter()
+            .map(|((r, _), _)| *r)
+            .filter(|r| *r < NEW_ROW && !self.deleted.contains(r))
+            .collect();
+        rows.sort_unstable();
+        rows.dedup();
+        let inserts = (0..self.inserted)
+            .filter(|i| !self.deleted.contains(&(NEW_ROW + i)))
+            .count();
+        let deletes = self.deleted.iter().filter(|r| **r < NEW_ROW).count();
+        rows.len() + inserts + deletes
+    }
+}
+
+/// Values of data row `row` (staged values first) as (column, value).
+fn row_values(r: &ResultSet, e: &EditState, row: usize, cx: &App) -> Vec<(String, Value)> {
+    let t = r.table.read(cx);
+    let data = t.delegate().data();
+    r.columns
+        .iter()
+        .enumerate()
+        .map(|(c, m)| {
+            let v = e
+                .staged
+                .iter()
+                .find(|(k, _)| *k == (row, c))
+                .map(|(_, v)| v.clone())
+                .or_else(|| {
+                    (row < NEW_ROW)
+                        .then(|| data.cell(row, c).map(|x| x.to_value(m.data_type)))
+                        .flatten()
+                })
+                .unwrap_or(Value::Null);
+            (m.name.clone(), v)
+        })
+        .collect()
 }
 
 impl SqlTab {
@@ -3375,10 +3592,23 @@ impl SqlTab {
             return;
         };
         let data_row = r.table.read(cx).delegate().data_row(view_row);
+        self.start_edit(PendingEdit::Cell(data_row, col), cx);
+    }
+
+    /// Make the active result editable (once), then run `pending` when its key is known.
+    fn start_edit(&mut self, pending: PendingEdit, cx: &mut Context<Self>) {
+        let Some(r) = self.results.get(self.active_result) else {
+            return;
+        };
         if self.edit.as_ref().map(|e| e.result_ix) != Some(self.active_result) {
             let Some(table) = editable_table(self.dialect(), &r.sql, &r.columns) else {
                 cx.emit(SqlTabEvent::Toast(
-                    "Only results from a single table can be edited in place".into(),
+                    if matches!(pending, PendingEdit::Reference(..)) {
+                        "Foreign keys can be followed from results of a single table"
+                    } else {
+                        "Only results from a single table can be edited in place"
+                    }
+                    .into(),
                 ));
                 return;
             };
@@ -3415,15 +3645,20 @@ impl SqlTab {
                 table,
                 key_cols: None,
                 staged: Vec::new(),
+                inserted: 0,
+                deleted: Vec::new(),
+                generated: Vec::new(),
+                foreign_keys: Vec::new(),
                 cell: None,
-                pending_cell: None,
+                pending: None,
                 input,
                 request: None,
+                confirm: None,
                 _sub: sub,
             });
         }
         if let Some(e) = self.edit.as_mut() {
-            e.pending_cell = Some((data_row, col));
+            e.pending = Some(pending);
         }
         self.begin_pending(cx);
     }
@@ -3450,16 +3685,37 @@ impl SqlTab {
                     .position(|c| c.name.eq_ignore_ascii_case(k))
             })
             .collect();
+        let fk_cols: Vec<usize> = r
+            .columns
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| d.foreign_keys.iter().any(|f| f.columns.contains(&c.name)))
+            .map(|(i, _)| i)
+            .collect();
+        r.table.update(cx, |t, cx| {
+            t.delegate_mut().set_fk_cols(fk_cols);
+            cx.notify();
+        });
         if pk.is_empty() || idx.len() != pk.len() {
+            // Following a foreign key needs no primary key.
+            let reference = match e.pending {
+                Some(PendingEdit::Reference(row, col)) => Some((row, col)),
+                _ => None,
+            };
+            let schema = d.object.schema.clone();
             self.edit = None;
-            cx.emit(SqlTabEvent::Toast(if pk.is_empty() {
-                "This table has no primary key, so rows cannot be edited safely".into()
+            if let Some((row, col)) = reference {
+                self.follow_reference(&d.foreign_keys, &schema, row, col, cx);
             } else {
-                format!(
-                    "Include the primary key ({}) in the result to edit rows",
-                    pk.join(", ")
-                )
-            }));
+                cx.emit(SqlTabEvent::Toast(if pk.is_empty() {
+                    "This table has no primary key, so rows cannot be edited safely".into()
+                } else {
+                    format!(
+                        "Include the primary key ({}) in the result to edit rows",
+                        pk.join(", ")
+                    )
+                }));
+            }
             cx.notify();
             return;
         }
@@ -3467,6 +3723,8 @@ impl SqlTab {
             e.table.schema = Some(d.object.schema.clone());
         }
         e.key_cols = Some(idx);
+        e.generated = generated_columns(d);
+        e.foreign_keys = d.foreign_keys.clone();
         self.begin_pending(cx);
     }
 
@@ -3475,12 +3733,30 @@ impl SqlTab {
         if e.key_cols.is_none() {
             return;
         }
-        let Some((row, col)) = e.pending_cell.take() else {
+        let Some(pending) = e.pending.take() else {
             return;
         };
-        if e.key_cols.as_ref().is_some_and(|k| k.contains(&col)) {
+        match pending {
+            PendingEdit::Cell(row, col) => self.begin_cell(row, col, cx),
+            PendingEdit::Insert => self.insert_row(cx),
+            PendingEdit::Duplicate(row) => self.duplicate_row(row, cx),
+            PendingEdit::Delete(rows) => self.toggle_delete(rows, cx),
+            PendingEdit::Reference(row, col) => self.open_reference(row, col, cx),
+        }
+    }
+
+    fn begin_cell(&mut self, row: usize, col: usize, cx: &mut Context<Self>) {
+        let Some(e) = self.edit.as_mut() else { return };
+        // Key columns of new rows are filled in like any other.
+        if row < NEW_ROW && e.key_cols.as_ref().is_some_and(|k| k.contains(&col)) {
             cx.emit(SqlTabEvent::Toast(
                 "Primary-key columns are not edited in place".into(),
+            ));
+            return;
+        }
+        if e.deleted.contains(&row) {
+            cx.emit(SqlTabEvent::Toast(
+                "This row is staged for deletion; restore it to edit".into(),
             ));
             return;
         }
@@ -3495,6 +3771,7 @@ impl SqlTab {
                 t.delegate()
                     .data()
                     .cell(row, col)
+                    .filter(|_| row < NEW_ROW)
                     .map(|c| c.to_value(r.columns[col].data_type))
             })
             .unwrap_or(Value::Null);
@@ -3515,6 +3792,235 @@ impl SqlTab {
             });
         }
         cx.notify();
+    }
+
+    /// Show the staged new rows and deletes in the grid.
+    fn sync_edit_grid(&self, cx: &mut Context<Self>) {
+        let Some(e) = &self.edit else { return };
+        let Some(r) = self.results.get(e.result_ix) else {
+            return;
+        };
+        let (n, deleted) = (e.inserted, e.deleted.clone());
+        r.table.update(cx, |t, cx| {
+            let d = t.delegate_mut();
+            d.set_inserted(n);
+            d.set_deleted(deleted);
+            cx.notify();
+        });
+        cx.notify();
+    }
+
+    /// Append a new row and start editing its first column the server does not fill in.
+    fn insert_row(&mut self, cx: &mut Context<Self>) {
+        let Some(e) = self.edit.as_mut() else { return };
+        e.inserted += 1;
+        let row = NEW_ROW + e.inserted - 1;
+        let first = self.results.get(e.result_ix).and_then(|r| {
+            r.columns
+                .iter()
+                .position(|c| !e.generated.contains(&c.name))
+        });
+        self.sync_edit_grid(cx);
+        self.reveal_new_row(row, cx);
+        if let Some(col) = first {
+            self.begin_cell(row, col, cx);
+        }
+    }
+
+    /// Scroll to and select a staged new row.
+    fn reveal_new_row(&mut self, row: usize, cx: &mut Context<Self>) {
+        let Some(r) = self
+            .edit
+            .as_ref()
+            .and_then(|e| self.results.get(e.result_ix))
+        else {
+            return;
+        };
+        let view_row = r.table.read(cx).delegate().visible_rows() + (row - NEW_ROW);
+        r.table.update(cx, |t, cx| t.scroll_to_row(view_row, cx));
+        self.selected = Some((view_row, 0));
+    }
+
+    /// Stage a copy of `row` as a new row, minus its key and generated columns.
+    fn duplicate_row(&mut self, row: usize, cx: &mut Context<Self>) {
+        let Some(e) = &self.edit else { return };
+        let Some(r) = self.results.get(e.result_ix) else {
+            return;
+        };
+        let pk: Vec<String> = e
+            .key_cols
+            .iter()
+            .flatten()
+            .filter_map(|&k| r.columns.get(k).map(|c| c.name.clone()))
+            .collect();
+        let values = duplicate_values(&row_values(r, e, row, cx), &pk, &e.generated);
+        let cols: Vec<(usize, Value)> = values
+            .into_iter()
+            .filter_map(|(name, v)| {
+                r.columns
+                    .iter()
+                    .position(|c| c.name == name)
+                    .map(|c| (c, v))
+            })
+            .collect();
+        let table = r.table.clone();
+        let Some(e) = self.edit.as_mut() else { return };
+        e.inserted += 1;
+        let new = NEW_ROW + e.inserted - 1;
+        for (c, v) in &cols {
+            e.staged.push(((new, *c), v.clone()));
+        }
+        table.update(cx, |t, _| {
+            let d = t.delegate_mut();
+            for (c, v) in cols {
+                let shown = (!v.is_null()).then(|| SharedString::from(v.to_display()));
+                d.stage(new, c, shown);
+            }
+        });
+        self.sync_edit_grid(cx);
+        self.reveal_new_row(new, cx);
+    }
+
+    /// Stage `rows` for deletion, or restore the ones already staged.
+    fn toggle_delete(&mut self, rows: Vec<usize>, cx: &mut Context<Self>) {
+        let Some(e) = self.edit.as_mut() else { return };
+        for row in rows {
+            if let Some(i) = e.deleted.iter().position(|r| *r == row) {
+                e.deleted.remove(i);
+            } else {
+                e.deleted.push(row);
+            }
+        }
+        if e.cell.is_some_and(|(r, _)| e.deleted.contains(&r)) {
+            e.cell = None;
+        }
+        self.sync_edit_grid(cx);
+    }
+
+    /// Data rows the row actions apply to: the selected range's rows, else the selected
+    /// row.
+    fn target_rows(&self, cx: &App) -> Vec<usize> {
+        let Some(r) = self.results.get(self.active_result) else {
+            return Vec::new();
+        };
+        let d = r.table.read(cx).delegate();
+        let rows = match d.range() {
+            Some((rows, _)) => rows.collect(),
+            None => self.selected.map(|(r, _)| vec![r]).unwrap_or_default(),
+        };
+        rows.into_iter().map(|v| d.data_row(v)).collect()
+    }
+
+    /// Add, duplicate, delete or follow a foreign key from the toolbar, menu or keys.
+    fn row_action(&mut self, action: RowAction, cx: &mut Context<Self>) {
+        let rows = self.target_rows(cx);
+        let pending = match action {
+            RowAction::Add => PendingEdit::Insert,
+            RowAction::Duplicate | RowAction::Delete | RowAction::Reference if rows.is_empty() => {
+                cx.emit(SqlTabEvent::Toast("Select a row first".into()));
+                return;
+            }
+            RowAction::Duplicate => PendingEdit::Duplicate(rows[0]),
+            RowAction::Delete => PendingEdit::Delete(rows),
+            RowAction::Reference => {
+                let col = self.selected.map_or(0, |(_, c)| c);
+                self.open_reference(rows[0], col, cx);
+                return;
+            }
+        };
+        self.start_edit(pending, cx);
+    }
+
+    /// The row menu of the grid (right click).
+    fn row_menu(&self, cx: &mut Context<Self>) -> MenuBuilder {
+        let weak = cx.entity().downgrade();
+        Rc::new(move |_row, menu: PopupMenu, _window, _cx| {
+            let item = |label: &'static str, action: RowAction| {
+                let weak = weak.clone();
+                PopupMenuItem::new(label).on_click(move |_, _, cx| {
+                    let _ = weak.update(cx, |this, cx| this.row_action(action, cx));
+                })
+            };
+            menu.item(item("Open referenced row", RowAction::Reference))
+                .separator()
+                .item(item("Add row", RowAction::Add))
+                .item(item("Duplicate row", RowAction::Duplicate))
+                .item(item("Delete / restore row(s)", RowAction::Delete))
+        })
+    }
+
+    /// Follow the foreign key of (data row, data column): open the referenced table's
+    /// data view filtered by the key (DBX-3c).
+    fn open_reference(&mut self, row: usize, col: usize, cx: &mut Context<Self>) {
+        let Some(r) = self.results.get(self.active_result) else {
+            return;
+        };
+        let known = match (&self.pager, &self.edit) {
+            (Some(pg), _) if pg.ready && self.active_result == self.run_base => {
+                Some((pg.foreign_keys.clone(), pg.schema.clone()))
+            }
+            (_, Some(e)) if e.result_ix == self.active_result && e.key_cols.is_some() => Some((
+                e.foreign_keys.clone(),
+                e.table
+                    .schema
+                    .clone()
+                    .unwrap_or_else(|| self.default_schema().into()),
+            )),
+            _ => None,
+        };
+        let _ = r;
+        match known {
+            Some((fks, schema)) => self.follow_reference(&fks, &schema, row, col, cx),
+            // Read the table's detail first (it brings the foreign keys).
+            None => self.start_edit(PendingEdit::Reference(row, col), cx),
+        }
+    }
+
+    fn follow_reference(
+        &mut self,
+        fks: &[ForeignKeyInfo],
+        schema: &str,
+        row: usize,
+        col: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(r) = self.results.get(self.active_result) else {
+            return;
+        };
+        let Some(column) = r.columns.get(col).map(|c| c.name.clone()) else {
+            return;
+        };
+        let values: Vec<(String, Value)> = {
+            let t = r.table.read(cx);
+            let data = t.delegate().data();
+            r.columns
+                .iter()
+                .enumerate()
+                .map(|(c, m)| {
+                    let staged = self.edit.as_ref().and_then(|e| {
+                        e.staged
+                            .iter()
+                            .find(|(k, _)| *k == (row, c))
+                            .map(|(_, v)| v.clone())
+                    });
+                    let v = staged
+                        .or_else(|| data.cell(row, c).map(|x| x.to_value(m.data_type)))
+                        .unwrap_or(Value::Null);
+                    (m.name.clone(), v)
+                })
+                .collect()
+        };
+        let found = reference_filter(self.dialect(), fks, &column, schema, |c| {
+            values.iter().find(|(n, _)| n == c).map(|(_, v)| v.clone())
+        });
+        match found {
+            Ok((schema, name, filter)) => cx.emit(SqlTabEvent::OpenData {
+                schema,
+                name,
+                filter,
+            }),
+            Err(e) => cx.emit(SqlTabEvent::Toast(e)),
+        }
     }
 
     fn stage_current(&mut self, null: bool, cx: &mut Context<Self>) {
@@ -3571,22 +4077,35 @@ impl SqlTab {
         };
         let t = r.table.read(cx);
         let data = t.delegate().data();
-        let mut rows: Vec<usize> = e.staged.iter().map(|((row, _), _)| *row).collect();
+        let key_of = |row: usize| -> Vec<(String, Value)> {
+            keys.iter()
+                .map(|&k| {
+                    let v = data
+                        .cell(row, k)
+                        .map(|c| c.to_value(r.columns[k].data_type))
+                        .unwrap_or(Value::Null);
+                    (r.columns[k].name.clone(), v)
+                })
+                .collect()
+        };
+        let deletes: Vec<RowDelete> = e
+            .deleted
+            .iter()
+            .filter(|row| **row < NEW_ROW)
+            .map(|&row| RowDelete { key: key_of(row) })
+            .collect();
+        let mut rows: Vec<usize> = e
+            .staged
+            .iter()
+            .map(|((row, _), _)| *row)
+            .filter(|row| *row < NEW_ROW && !e.deleted.contains(row))
+            .collect();
         rows.sort_unstable();
         rows.dedup();
         let edits: Vec<RowEdit> = rows
             .into_iter()
             .map(|row| RowEdit {
-                key: keys
-                    .iter()
-                    .map(|&k| {
-                        let v = data
-                            .cell(row, k)
-                            .map(|c| c.to_value(r.columns[k].data_type))
-                            .unwrap_or(Value::Null);
-                        (r.columns[k].name.clone(), v)
-                    })
-                    .collect(),
+                key: key_of(row),
                 set: e
                     .staged
                     .iter()
@@ -3595,11 +4114,102 @@ impl SqlTab {
                     .collect(),
             })
             .collect();
-        update_statements(self.dialect(), &e.table, &edits)
+        let inserts: Vec<RowInsert> = (0..e.inserted)
+            .map(|i| NEW_ROW + i)
+            .filter(|row| !e.deleted.contains(row))
+            .map(|row| {
+                let mut values: Vec<(usize, Value)> = e
+                    .staged
+                    .iter()
+                    .filter(|((rr, _), _)| *rr == row)
+                    .map(|((_, c), v)| (*c, v.clone()))
+                    .collect();
+                values.sort_by_key(|(c, _)| *c);
+                RowInsert {
+                    values: values
+                        .into_iter()
+                        .map(|(c, v)| (r.columns[c].name.clone(), v))
+                        .collect(),
+                }
+            })
+            .collect();
+        let columns: Vec<String> = r.columns.iter().map(|c| c.name.clone()).collect();
+        let dialect = self.dialect();
+        // Deletes first, so a new row may reuse a deleted row's unique values.
+        let mut out = delete_statements(dialect, &e.table, &deletes);
+        out.extend(update_statements(dialect, &e.table, &edits));
+        out.extend(insert_statements(
+            dialect,
+            &e.table,
+            &columns,
+            &e.generated,
+            &inserts,
+        ));
+        out
     }
 
     fn commit_edits(&mut self, cx: &mut Context<Self>) {
         let statements = self.edit_statements(cx);
+        if statements.is_empty() || self.edit.as_ref().is_none_or(|e| e.request.is_some()) {
+            return;
+        }
+        let dialect = self.dialect();
+        let production = self
+            .connection
+            .as_ref()
+            .is_some_and(|c| c.environment.is_production());
+        let deletes: Vec<(&String, String)> = statements
+            .iter()
+            .filter_map(|s| {
+                delete_targets(dialect, std::slice::from_ref(s))
+                    .into_iter()
+                    .next()
+                    .map(|t| (s, t))
+            })
+            .collect();
+        if production && !deletes.is_empty() {
+            // Deletes on Production go through the destructive-statement confirmation.
+            let n = deletes.len();
+            let destructive = deletes
+                .iter()
+                .map(|(sql, target)| {
+                    let short = target.rsplit('.').next().unwrap_or(target);
+                    DestructiveInfo {
+                        line: 1,
+                        sql: (*sql).clone(),
+                        headline: format!(
+                            "Delete {n} row{} from {short}?",
+                            if n == 1 { "" } else { "s" }
+                        ),
+                        explanation: "The staged changes delete rows by primary key.".into(),
+                        object: target.clone(),
+                        label: "Delete rows".into(),
+                    }
+                })
+                .collect();
+            let pending = PendingRun {
+                params: statements.iter().map(|_| Vec::new()).collect(),
+                statements: statements
+                    .iter()
+                    .map(|sql| StatementRequest {
+                        sql: sql.clone(),
+                        params: vec![],
+                        offset: 0,
+                    })
+                    .collect(),
+                destructive,
+            };
+            if let Some(e) = self.edit.as_mut() {
+                e.confirm = Some(statements);
+            }
+            cx.emit(SqlTabEvent::ConfirmDestructive(pending));
+            return;
+        }
+        self.send_edits(statements, cx);
+    }
+
+    /// Apply `statements` in one transaction.
+    fn send_edits(&mut self, statements: Vec<String>, cx: &mut Context<Self>) {
         let (Some(session), Some(e)) = (self.session, self.edit.as_mut()) else {
             return;
         };
@@ -3615,7 +4225,6 @@ impl SqlTab {
         });
         cx.notify();
     }
-
     /// Whether this tab is waiting for `request`.
     pub fn owns_edit_request(&self, request: RequestId) -> bool {
         self.edit.as_ref().and_then(|e| e.request) == Some(request)
@@ -3686,7 +4295,11 @@ impl SqlTab {
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(format!("Edit {name}")),
                 )
-                .child(div().text_color(p.fg3).child(format!("row {}", row + 1)))
+                .child(div().text_color(p.fg3).child(if row >= NEW_ROW {
+                    format!("new row {}", row - NEW_ROW + 1)
+                } else {
+                    format!("row {}", row + 1)
+                }))
                 .child(
                     div()
                         .flex_1()
@@ -3719,11 +4332,11 @@ impl SqlTab {
 
     fn render_staged_panel(&self, p: &Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
         let e = self.edit.as_ref()?;
-        if e.staged.is_empty() {
+        if e.change_count() == 0 {
             return None;
         }
         let statements = self.edit_statements(cx);
-        let n = e.staged.len();
+        let n = statements.len();
         let busy = e.request.is_some();
         let target = match &e.table.schema {
             Some(s) => format!("{s}.{}", e.table.table),
@@ -3810,6 +4423,174 @@ impl SqlTab {
                 )
                 .into_any_element(),
         )
+    }
+}
+
+/// The table data view (DBX-3a): one table, paged on the server.
+impl SqlTab {
+    /// Show `schema.name` as a table data view: server-side WHERE, ORDER BY (header
+    /// clicks) and paging, `filter` applied from the start. The first page runs once the
+    /// table's detail (key, foreign keys) is known.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_data(
+        &mut self,
+        schema: String,
+        name: String,
+        kind: ObjectKind,
+        filter: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let pager = Pager::new(schema, name, kind, filter, window, cx);
+        let sub = cx.subscribe_in(
+            &pager.where_input,
+            window,
+            |this, _, ev: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = ev {
+                    pager_action(this, PagerAction::Apply, window, cx);
+                }
+            },
+        );
+        self._pager_sub = Some(sub);
+        self.pager = Some(pager);
+        self.request_pager_detail(cx);
+        cx.notify();
+    }
+
+    /// Ask for the data view's table detail once the session is open.
+    fn request_pager_detail(&mut self, cx: &mut Context<Self>) {
+        let (Some(session), SessionState::Open { .. }) = (self.session, &self.session_state) else {
+            return;
+        };
+        let Some(pg) = self.pager.as_ref().filter(|p| !p.ready) else {
+            return;
+        };
+        self.core.send(Command::Introspect {
+            session,
+            scope: IntrospectScope::Detail {
+                schema: pg.schema.clone(),
+                name: pg.name.clone(),
+                kind: pg.kind,
+            },
+            refresh: false,
+        });
+        cx.notify();
+    }
+
+    fn on_pager_detail(&mut self, d: &switchyard_core::db::ObjectDetail, cx: &mut Context<Self>) {
+        let Some(pg) = self.pager.as_mut() else {
+            return;
+        };
+        if pg.ready || !pg.is_for(d) {
+            return;
+        }
+        pg.set_detail(d);
+        self.run_page(cx);
+    }
+
+    /// A catalog request of this tab failed: a data view waiting for its detail pages
+    /// without a key.
+    pub fn on_catalog_failed(&mut self, scope: &IntrospectScope, cx: &mut Context<Self>) {
+        let Some(pg) = self.pager.as_mut() else {
+            return;
+        };
+        if let IntrospectScope::Detail { schema, name, .. } = scope
+            && !pg.ready
+            && *schema == pg.schema
+            && *name == pg.name
+        {
+            pg.ready = true;
+            self.run_page(cx);
+        }
+    }
+
+    /// Run the data view's current page.
+    fn run_page(&mut self, cx: &mut Context<Self>) {
+        if self.has_staged_edits() {
+            cx.emit(SqlTabEvent::Toast(
+                "Commit or discard the staged changes first".into(),
+            ));
+            return;
+        }
+        let dialect = self.dialect();
+        let Some(pg) = self.pager.as_mut() else {
+            return;
+        };
+        let sql = pg.sql(dialect);
+        pg.last_sql = sql.clone();
+        pg.rows = 0;
+        self.pending_text = Some(sql.clone());
+        if matches!(self.run, RunState::Running { .. } | RunState::Paused { .. }) {
+            self.stop(cx);
+        }
+        let pending = PendingRun {
+            statements: vec![StatementRequest {
+                sql,
+                params: vec![],
+                offset: 0,
+            }],
+            params: vec![Vec::new()],
+            destructive: Vec::new(),
+        };
+        self.execute(pending, false, cx);
+    }
+
+    /// A header sort click on the data view's grid.
+    fn on_server_sort(&mut self, order: Vec<(usize, bool)>, cx: &mut Context<Self>) {
+        if self.has_staged_edits() {
+            cx.emit(SqlTabEvent::Toast(
+                "Commit or discard the staged changes first".into(),
+            ));
+            return;
+        }
+        let Some(cols) = self.results.get(self.run_base).map(|r| r.columns.clone()) else {
+            return;
+        };
+        if let Some(pg) = self.pager.as_mut() {
+            pg.set_sort(&cols, &order);
+            self.run_page(cx);
+        }
+    }
+
+    /// Delete, Insert, Ctrl/Cmd+I and Ctrl/Cmd+D on a focused results grid.
+    fn on_grid_key(
+        &mut self,
+        ev: &gpui_kit::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(r) = self.results.get(self.active_result) else {
+            return;
+        };
+        if !r.table.read(cx).focus_handle(cx).is_focused(window) {
+            return;
+        }
+        let k = &ev.keystroke;
+        let m = k.modifiers;
+        let action = match k.key.as_str() {
+            "delete" if !m.modified() => RowAction::Delete,
+            "backspace" if m.secondary() && !m.shift => RowAction::Delete,
+            "insert" if !m.modified() || (m.alt && m.number_of_modifiers() == 1) => RowAction::Add,
+            "i" if m.secondary() && !m.shift && !m.alt => RowAction::Add,
+            "d" if m.secondary() && !m.shift && !m.alt => RowAction::Duplicate,
+            _ => return,
+        };
+        cx.stop_propagation();
+        self.row_action(action, cx);
+    }
+}
+
+impl PagedView for SqlTab {
+    fn pager_mut(&mut self) -> Option<&mut Pager> {
+        self.pager.as_mut()
+    }
+
+    fn pager_dialect(&self) -> &'static dyn Dialect {
+        self.dialect()
+    }
+
+    fn reload_page(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.run_page(cx);
     }
 }
 
