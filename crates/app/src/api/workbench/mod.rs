@@ -16,7 +16,7 @@ mod login;
 mod move_request;
 mod persistence;
 mod pretty;
-mod rename_request;
+mod rail_rename;
 mod rename_workspace;
 mod request_creation;
 mod response_controls;
@@ -71,6 +71,8 @@ use crate::api::compat::{AnyInput, TextValue};
 
 /// Key scope for request-draft commands such as Save.
 pub const KEY_CONTEXT: &str = "Workbench";
+/// Key scope of the collection rail; F2 renames its selected row there.
+pub const RAIL_KEY_CONTEXT: &str = "WorkbenchRail";
 gpui_kit::actions!(
     workbench,
     [
@@ -79,7 +81,8 @@ gpui_kit::actions!(
         NewRequest,
         CloseRequest,
         NextRequest,
-        PreviousRequest
+        PreviousRequest,
+        RenameRailItem
     ]
 );
 
@@ -382,8 +385,12 @@ pub struct WorkbenchPanel {
     data_prompt: Entity<TextareaState>,
     /// The Data tab's seed readout, carried into the generate-data prompt.
     runner_seed: Entity<InputState>,
-    /// The collection or folder the rail's inline rename row is open for.
-    rename_target: Option<RenameTarget>,
+    /// The rail's inline rename field, drawn in place of the row it renames.
+    rail_rename: Option<rail_rename::RailRename>,
+    /// The rail row last clicked: what F2 renames.
+    rail_selection: Option<RenameTarget>,
+    /// Key focus of the collection rail, so F2 reaches it.
+    rail_focus: FocusHandle,
     url_replacement: Option<Entity<collection_urls::UrlReplacement>>,
     /// History shows only the last 24 hours.
     history_last_24h: bool,
@@ -624,8 +631,7 @@ impl WorkbenchPanel {
     ) -> Self {
         let request_name = cx.new(|cx| InputState::new(window, cx).placeholder("Untitled request"));
         let custom_method = cx.new(|cx| InputState::new(window, cx).placeholder("CUSTOM"));
-        let container_name =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Collection or folder name"));
+        let container_name = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
         let url =
             cx.new(|cx| InputState::new(window, cx).placeholder("https://api.example.com/v1"));
         let headers = cx.new(|cx| {
@@ -791,6 +797,7 @@ impl WorkbenchPanel {
             })
             .detach();
         }
+        Self::subscribe_rail_rename(&container_name, window, cx);
         cx.subscribe(&data_source, |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 this.data_preview.borrow_mut().take();
@@ -858,7 +865,9 @@ impl WorkbenchPanel {
             rail_filter,
             data_prompt,
             runner_seed,
-            rename_target: None,
+            rail_rename: None,
+            rail_selection: None,
+            rail_focus: cx.focus_handle(),
             url_replacement: None,
             history_last_24h: false,
             data_presets: HashSet::new(),
@@ -2002,96 +2011,6 @@ impl WorkbenchPanel {
                 self.storage_error =
                     Some("Create or select a request before assigning a folder.".into());
             }
-        }
-        cx.notify();
-    }
-
-    /// A collection row's "Rename…": select it and open the rename row
-    /// seeded with its name.
-    fn open_collection_rename(
-        &mut self,
-        id: CollectionId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.focus_collection(id.clone(), window, cx) {
-            return;
-        }
-        let name = self
-            .workspace_data
-            .as_ref()
-            .and_then(|data| {
-                data.collections
-                    .iter()
-                    .find(|collection| collection.id == id)
-            })
-            .map(|collection| collection.name.clone())
-            .unwrap_or_default();
-        set_input(&self.container_name, &name, window, cx);
-        self.rename_target = Some(RenameTarget::Collection(id));
-        cx.notify();
-    }
-
-    /// A folder row's "Rename…": select it and open the rename row seeded
-    /// with its name.
-    fn open_folder_rename(&mut self, id: FolderId, window: &mut Window, cx: &mut Context<Self>) {
-        self.select_folder(id.clone(), window, cx);
-        self.rename_target = Some(RenameTarget::Folder(id));
-        cx.notify();
-    }
-
-    /// Apply the rename row: to its target, else (when opened another way)
-    /// to the selected folder or, failing that, the current collection.
-    fn rename_selected_container(&mut self, cx: &mut Context<Self>) {
-        let name = self.container_name.read(cx).value().trim().to_string();
-        if name.is_empty() {
-            self.storage_error = Some("Collection and folder names cannot be empty.".into());
-            cx.notify();
-            return;
-        }
-        let Some(data) = self.workspace_data.as_ref() else {
-            return;
-        };
-        let target = self.rename_target.take().or_else(|| {
-            self.selected_folder()
-                .map(RenameTarget::Folder)
-                .or_else(|| {
-                    self.current_collection_id
-                        .clone()
-                        .map(RenameTarget::Collection)
-                })
-        });
-        let command = match target {
-            Some(RenameTarget::Folder(folder_id)) => data
-                .folders
-                .iter()
-                .find(|folder| folder.id == folder_id)
-                .cloned()
-                .ok_or_else(|| "Selected folder no longer exists.".to_string())
-                .map(|mut folder| {
-                    folder.name = name;
-                    coordinator::StorageCommand::UpsertFolder {
-                        collection: None,
-                        folder,
-                    }
-                }),
-            Some(RenameTarget::Collection(collection_id)) => data
-                .collections
-                .iter()
-                .find(|collection| collection.id == collection_id)
-                .cloned()
-                .ok_or_else(|| "Selected collection no longer exists.".to_string())
-                .map(|mut collection| {
-                    collection.name = name;
-                    coordinator::StorageCommand::UpsertCollection(collection)
-                }),
-            None => Err("Select a collection or folder to rename.".into()),
-        };
-        match command {
-            Ok(command) => {
-                self.run_storage_command(command, cx);
-            }
-            Err(error) => self.storage_error = Some(error),
         }
         cx.notify();
     }
@@ -5810,12 +5729,13 @@ fn auth_mode(auth: &switchyard_api::AuthConfig) -> draft::AuthMode {
     }
 }
 
-/// What the rail's rename row renames — chosen from the row's kebab, so it
-/// never depends on which folder happens to be selected.
+/// A rail row the inline rename field can open on — chosen from the row
+/// itself, so it never depends on which folder happens to be selected.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum RenameTarget {
     Collection(CollectionId),
     Folder(FolderId),
+    Request(RequestId),
 }
 
 /// One row of the collection rail's request tree.
