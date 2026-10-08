@@ -757,7 +757,27 @@ impl Workspace {
         };
         let second = if ssh.is_some() { "Files" } else { "Schema" };
         div()
-            .w(px(264.))
+            .w(px(self.sidebar_width))
+            .relative()
+            .child(
+                // Drag the right edge to resize.
+                div()
+                    .id("side-resize")
+                    .absolute()
+                    .right(px(-3.))
+                    .top_0()
+                    .bottom_0()
+                    .w(px(6.))
+                    .cursor_col_resize()
+                    .hover(|s| s.bg(p.acc.opacity(0.35)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                            this.sidebar_drag = Some((ev.position.x.into(), this.sidebar_width));
+                            cx.stop_propagation();
+                        }),
+                    ),
+            )
             .flex_none()
             .flex()
             .flex_col()
@@ -1164,6 +1184,10 @@ impl Workspace {
             .into_any_element()
     }
 }
+
+/// Default and smallest width of the left sidebar.
+pub(crate) const SIDEBAR_WIDTH: f32 = 264.;
+pub(crate) const SIDEBAR_MIN: f32 = 200.;
 
 /// Default and smallest width of the right panel.
 pub(crate) const INSPECTOR_WIDTH: f32 = 300.;

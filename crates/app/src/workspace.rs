@@ -88,6 +88,10 @@ pub struct Workspace {
     pub(crate) inspector_width: f32,
     /// Dragging the right panel's edge: (mouse x, width) when it started.
     pub(crate) inspector_drag: Option<(f32, f32)>,
+    /// Width of the left sidebar (drag its right edge; saved as `sidebar.width`).
+    pub(crate) sidebar_width: f32,
+    /// Dragging the left sidebar's edge: (mouse x, width) when it started.
+    pub(crate) sidebar_drag: Option<(f32, f32)>,
     pub(crate) overlay: Option<Overlay>,
     pub(crate) toast: Option<SharedString>,
     toast_task: Option<Task<()>>,
@@ -169,6 +173,9 @@ impl Workspace {
             key: "inspector.width".into(),
         });
         core.send(Command::LoadSetting {
+            key: "sidebar.width".into(),
+        });
+        core.send(Command::LoadSetting {
             key: switchyard_core::agent_run::ASSISTANT_SETTINGS_KEY.into(),
         });
         core.send(Command::DetectComponents);
@@ -219,6 +226,8 @@ impl Workspace {
             inspector_open: window.bounds().size.width > px(1280.),
             inspector_width: crate::sidebar::INSPECTOR_WIDTH,
             inspector_drag: None,
+            sidebar_width: crate::sidebar::SIDEBAR_WIDTH,
+            sidebar_drag: None,
             overlay: None,
             toast: None,
             toast_task: None,
@@ -436,6 +445,11 @@ impl Workspace {
             Event::Setting { key, value } if key == "inspector.width" => {
                 if let Some(w) = value.as_ref().and_then(|v| v.as_f64()) {
                     self.inspector_width = (w as f32).max(crate::sidebar::INSPECTOR_MIN);
+                }
+            }
+            Event::Setting { key, value } if key == "sidebar.width" => {
+                if let Some(w) = value.as_ref().and_then(|v| v.as_f64()) {
+                    self.sidebar_width = (w as f32).max(crate::sidebar::SIDEBAR_MIN);
                 }
             }
             Event::Setting { key, value }
@@ -1677,6 +1691,20 @@ impl Workspace {
         }
     }
 
+    /// Finish resizing the left sidebar and remember its width.
+    fn end_sidebar_drag(&mut self) {
+        if self.sidebar_drag.take().is_some() {
+            self.save_sidebar_width();
+        }
+    }
+
+    pub(crate) fn save_sidebar_width(&self) {
+        self.core.send(Command::SetSetting {
+            key: "sidebar.width".into(),
+            value: (self.sidebar_width.round() as i64).into(),
+        });
+    }
+
     pub(crate) fn save_inspector_width(&self) {
         self.core.send(Command::SetSetting {
             key: "inspector.width".into(),
@@ -2781,10 +2809,25 @@ impl Render for Workspace {
                         this.end_inspector_drag();
                     }
                 }
+                if let Some((x0, w0)) = this.sidebar_drag {
+                    if ev.pressed_button == Some(gpui_kit::MouseButton::Left) {
+                        let x: f32 = ev.position.x.into();
+                        let max = (f32::from(w.bounds().size.width) - 420.)
+                            .max(crate::sidebar::SIDEBAR_MIN);
+                        this.sidebar_width =
+                            (w0 + (x - x0)).clamp(crate::sidebar::SIDEBAR_MIN, max);
+                        cx.notify();
+                    } else {
+                        this.end_sidebar_drag();
+                    }
+                }
             }))
             .on_mouse_up(
                 gpui_kit::MouseButton::Left,
-                cx.listener(|this, _, _, _| this.end_inspector_drag()),
+                cx.listener(|this, _, _, _| {
+                    this.end_inspector_drag();
+                    this.end_sidebar_drag();
+                }),
             )
             .on_action(cx.listener(|this, _: &actions::SplitRight, w, cx| {
                 this.run_command(CommandId::SplitRight, w, cx)
