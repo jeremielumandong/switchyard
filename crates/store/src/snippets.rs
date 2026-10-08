@@ -110,10 +110,13 @@ fn builtin(engine: Engine, prefix: &str, name: &str, body: &str) -> Snippet {
 
 /// Snippets shipped with the app for `engine`, in display order.
 pub fn builtin_snippets(engine: Engine) -> Vec<Snippet> {
+    if !engine.is_sql() {
+        return Vec::new();
+    }
     let select = match engine {
         Engine::SqlServer => "SELECT TOP (${3:100}) ${2:*}\nFROM ${1:table_name};",
         Engine::Oracle => "SELECT ${2:*}\nFROM ${1:table_name}\nFETCH FIRST ${3:100} ROWS ONLY;",
-        Engine::Postgres | Engine::D1 | Engine::Snowflake => {
+        Engine::Postgres | Engine::D1 | Engine::Snowflake | Engine::Redis => {
             "SELECT ${2:*}\nFROM ${1:table_name}\nLIMIT ${3:100};"
         }
     };
@@ -155,7 +158,7 @@ pub fn builtin_snippets(engine: Engine) -> Vec<Snippet> {
         // Oracle starts a transaction implicitly with the first DML.
         Engine::Oracle => Some("SET TRANSACTION READ WRITE;\n\n${1:-- statements}\n\nCOMMIT;"),
         // Not supported over these engines' HTTP APIs (`Engine::supports_transactions`).
-        Engine::D1 | Engine::Snowflake => None,
+        Engine::D1 | Engine::Snowflake | Engine::Redis => None,
     };
     if let Some(body) = tran {
         out.push(builtin(engine, "tran", "Transaction", body));

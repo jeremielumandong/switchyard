@@ -215,7 +215,7 @@ pub struct Activity {
 
 /// Whether the activity monitor works for `engine` at all.
 pub fn supported(engine: Engine) -> bool {
-    !matches!(engine, Engine::D1)
+    !matches!(engine, Engine::D1 | Engine::Redis)
 }
 
 /// Whether `action` exists on `engine` at `server_version`.
@@ -230,7 +230,7 @@ pub fn supports(engine: Engine, action: ActivityAction, server_version: &str) ->
         (Engine::Oracle, ActivityAction::Terminate) => true,
         (Engine::Snowflake, ActivityAction::CancelQuery) => true,
         (Engine::Snowflake, ActivityAction::Terminate) => false,
-        (Engine::D1, _) => false,
+        (Engine::D1 | Engine::Redis, _) => false,
     }
 }
 
@@ -338,7 +338,7 @@ pub fn list_sql(engine: Engine) -> Option<&'static str> {
         Engine::SqlServer => Some(MSSQL_LIST),
         Engine::Oracle => Some(ORACLE_LIST),
         Engine::Snowflake => Some(SNOWFLAKE_LIST),
-        Engine::D1 => None,
+        Engine::D1 | Engine::Redis => None,
     }
 }
 
@@ -349,7 +349,7 @@ pub fn own_session_sql(engine: Engine) -> Option<&'static str> {
         Engine::SqlServer => Some("SELECT CAST(@@SPID AS varchar(11)) AS id"),
         Engine::Oracle => Some("SELECT SYS_CONTEXT('USERENV', 'SID') AS id FROM dual"),
         Engine::Snowflake => Some("SELECT CURRENT_SESSION() AS id"),
-        Engine::D1 => None,
+        Engine::D1 | Engine::Redis => None,
     }
 }
 
@@ -446,9 +446,10 @@ pub fn parse_target(engine: Engine, id: &str, session: Option<&str>) -> Result<S
             query_id: validate_query_id(id.trim())?.to_owned(),
             session: parse_int(session.unwrap_or_default())?,
         }),
-        Engine::D1 => Err(ActivityError::Unsupported(
-            "the activity monitor is not available for Cloudflare D1".into(),
-        )),
+        Engine::D1 | Engine::Redis => Err(ActivityError::Unsupported(format!(
+            "the activity monitor is not available for {}",
+            engine.display_name()
+        ))),
     }
 }
 
@@ -668,7 +669,7 @@ fn denied_hint(engine: Engine, e: &DbError) -> ActivityHint {
              with MONITOR on the warehouse).",
             None,
         ),
-        Engine::D1 => ("Not available.", None),
+        Engine::D1 | Engine::Redis => ("Not available.", None),
     };
     ActivityHint {
         message: format!("{message} ({e})"),

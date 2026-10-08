@@ -35,9 +35,10 @@ pub async fn capture(
     match engine {
         Engine::Postgres => postgres(session, sql, mode).await,
         Engine::SqlServer => sql_server(session, sql, mode).await,
-        Engine::D1 => Err(PlanError::Unsupported(
-            "query plans are not available for Cloudflare D1".into(),
-        )),
+        Engine::D1 | Engine::Redis => Err(PlanError::Unsupported(format!(
+            "query plans are not available for {}",
+            engine.display_name()
+        ))),
         Engine::Snowflake => Err(PlanError::Unsupported(
             "query plans are not available for Snowflake yet".into(),
         )),

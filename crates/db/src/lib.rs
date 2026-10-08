@@ -21,6 +21,7 @@ pub mod mock;
 pub mod mssql;
 pub mod oracle;
 pub mod pg;
+pub mod redis;
 pub mod snowflake;
 pub mod stream;
 pub mod tls;
