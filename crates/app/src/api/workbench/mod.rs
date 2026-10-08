@@ -9,17 +9,21 @@ mod body_editor;
 mod collection_urls;
 mod coordinator;
 mod draft;
+mod empty_state;
 mod entries;
+mod environment_label;
 mod globals;
+mod keys;
 mod layout;
 mod login;
 mod move_request;
 mod persistence;
 mod pretty;
-mod rename_request;
+mod rail_rename;
 mod rename_workspace;
 mod request_creation;
 mod response_controls;
+mod response_copy;
 mod response_editor;
 mod response_inspector;
 mod response_preview;
@@ -69,8 +73,12 @@ use crate::api::compat::theme::tokens::{radius, space};
 use crate::api::compat::theme::{palette, text};
 use crate::api::compat::{AnyInput, TextValue};
 
+pub use keys::{FocusUrl, ShowCompose, ShowDiff, ShowEnvs, ShowHistory, ShowImport, ShowRunner};
+
 /// Key scope for request-draft commands such as Save.
 pub const KEY_CONTEXT: &str = "Workbench";
+/// Key scope of the collection rail; F2 renames its selected row there.
+pub const RAIL_KEY_CONTEXT: &str = "WorkbenchRail";
 gpui_kit::actions!(
     workbench,
     [
@@ -79,7 +87,8 @@ gpui_kit::actions!(
         NewRequest,
         CloseRequest,
         NextRequest,
-        PreviousRequest
+        PreviousRequest,
+        RenameRailItem
     ]
 );
 
@@ -382,8 +391,12 @@ pub struct WorkbenchPanel {
     data_prompt: Entity<TextareaState>,
     /// The Data tab's seed readout, carried into the generate-data prompt.
     runner_seed: Entity<InputState>,
-    /// The collection or folder the rail's inline rename row is open for.
-    rename_target: Option<RenameTarget>,
+    /// The rail's inline rename field, drawn in place of the row it renames.
+    rail_rename: Option<rail_rename::RailRename>,
+    /// The rail row last clicked: what F2 renames.
+    rail_selection: Option<RenameTarget>,
+    /// Key focus of the collection rail, so F2 reaches it.
+    rail_focus: FocusHandle,
     url_replacement: Option<Entity<collection_urls::UrlReplacement>>,
     /// History shows only the last 24 hours.
     history_last_24h: bool,
@@ -404,6 +417,8 @@ pub struct WorkbenchPanel {
     /// chip and the `key=value` text the typed form serializes into.
     environment_auth_mode: draft::AuthMode,
     environment_auth: Entity<TextareaState>,
+    /// The Envs editor's Production / Staging / Development / Local picker.
+    environment_label: switchyard_api::EnvironmentLabel,
     /// Outcome of the last "Sign in now" for the Envs status line.
     environment_login_status: Option<String>,
     _login_work: Option<gpui_kit::Task<()>>,
@@ -428,7 +443,7 @@ pub struct WorkbenchPanel {
     pending_workspace: Option<WorkspaceId>,
     workspace_data: Option<persistence::WorkspaceData>,
     /// The named workspaces; `None` until listed. Empty shows only the
-    /// "Add workspace" page.
+    /// "Add project" page.
     workspaces: Option<Vec<switchyard_api::WorkspaceEntry>>,
     _workspace_work: Option<gpui_kit::Task<()>>,
     request_tabs: Vec<RequestTabState>,
@@ -624,8 +639,7 @@ impl WorkbenchPanel {
     ) -> Self {
         let request_name = cx.new(|cx| InputState::new(window, cx).placeholder("Untitled request"));
         let custom_method = cx.new(|cx| InputState::new(window, cx).placeholder("CUSTOM"));
-        let container_name =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Collection or folder name"));
+        let container_name = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
         let url =
             cx.new(|cx| InputState::new(window, cx).placeholder("https://api.example.com/v1"));
         let headers = cx.new(|cx| {
@@ -791,6 +805,7 @@ impl WorkbenchPanel {
             })
             .detach();
         }
+        Self::subscribe_rail_rename(&container_name, window, cx);
         cx.subscribe(&data_source, |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 this.data_preview.borrow_mut().take();
@@ -852,13 +867,16 @@ impl WorkbenchPanel {
             environment_base_url,
             environment_auth_mode: draft::AuthMode::None,
             environment_auth,
+            environment_label: Default::default(),
             environment_login_status: None,
             _login_work: None,
             environment_variables,
             rail_filter,
             data_prompt,
             runner_seed,
-            rename_target: None,
+            rail_rename: None,
+            rail_selection: None,
+            rail_focus: cx.focus_handle(),
             url_replacement: None,
             history_last_24h: false,
             data_presets: HashSet::new(),
@@ -884,7 +902,8 @@ impl WorkbenchPanel {
             workspace_data,
             workspaces: None,
             _workspace_work: None,
-            request_tabs: vec![RequestTabState::blank(0, current_collection_id.clone())],
+            // A tab opens only when a request is opened or created.
+            request_tabs: Vec::new(),
             active_request_tab: 0,
             next_request_tab_id: 1,
             right_clicked_request_tab: None,
@@ -1126,12 +1145,9 @@ impl WorkbenchPanel {
                 self.workspace_data = Some(data);
                 self.ux.request_settings.clear();
                 self.ux.creation = Default::default();
+                // No blank tab: `load_saved_request` opens one for the
+                // first request, and an empty project shows the empty state.
                 self.request_tabs.clear();
-                self.request_tabs.push(RequestTabState::blank(
-                    self.next_request_tab_id,
-                    self.current_collection_id.clone(),
-                ));
-                self.next_request_tab_id = self.next_request_tab_id.wrapping_add(1);
                 self.active_request_tab = 0;
                 self.current_request_id = None;
                 self.current_definition = None;
@@ -1163,9 +1179,9 @@ impl WorkbenchPanel {
     }
 
     fn clear_request_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.ux
-            .request_settings
-            .remove(&self.request_tabs[self.active_request_tab].id);
+        if let Some(id) = self.active_request_tab_id() {
+            self.ux.request_settings.remove(&id);
+        }
         self.current_request_id = None;
         self.current_definition = None;
         self.method = transport::Method::Get;
@@ -1185,7 +1201,9 @@ impl WorkbenchPanel {
             .iter()
             .map(|input| input.as_text().text(cx).to_string())
             .collect();
-        let tab = &mut self.request_tabs[self.active_request_tab];
+        let Some(tab) = self.request_tabs.get_mut(self.active_request_tab) else {
+            return;
+        };
         tab.current_definition = self.current_definition.clone();
         tab.current_request_id = self.current_request_id.clone();
         tab.current_collection_id = self.current_collection_id.clone();
@@ -1204,7 +1222,14 @@ impl WorkbenchPanel {
     }
 
     fn restore_active_request_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let tab = self.request_tabs[self.active_request_tab].clone();
+        // With no tab open, a blank template resets the hidden editor.
+        let tab = self
+            .request_tabs
+            .get(self.active_request_tab)
+            .cloned()
+            .unwrap_or_else(|| {
+                RequestTabState::blank(self.next_request_tab_id, self.current_collection_id.clone())
+            });
         self.current_definition = tab.current_definition;
         self.current_request_id = tab.current_request_id;
         self.current_collection_id = tab.current_collection_id;
@@ -1295,25 +1320,22 @@ impl WorkbenchPanel {
             return;
         }
         self.capture_active_request_tab(cx);
-        let active_id = self.request_tabs[self.active_request_tab].id;
+        let active_id = self.active_request_tab_id();
         self.request_tabs.retain(|tab| !ids.contains(&tab.id));
         self.ux.request_settings.retain(|id, _| !ids.contains(id));
-        if self.request_tabs.is_empty() {
-            let id = self.next_request_tab_id;
-            self.next_request_tab_id = self.next_request_tab_id.wrapping_add(1);
-            self.request_tabs.push(RequestTabState::blank(
-                id,
-                self.current_collection_id.clone(),
-            ));
-        }
-        self.active_request_tab = preferred_active
-            .or(Some(active_id))
-            .and_then(|id| self.request_tabs.iter().position(|tab| tab.id == id))
-            .unwrap_or_else(|| {
-                first_closed_index
-                    .saturating_sub(1)
-                    .min(self.request_tabs.len() - 1)
-            });
+        // Closing the last tab leaves none; the Compose area then shows the
+        // empty state instead of a fresh blank tab.
+        let remaining = self
+            .request_tabs
+            .iter()
+            .map(|tab| tab.id)
+            .collect::<Vec<_>>();
+        self.active_request_tab = empty_state::active_after_close(
+            &remaining,
+            preferred_active.or(active_id),
+            first_closed_index,
+        )
+        .unwrap_or(0);
         self.restore_active_request_tab(window, cx);
         self.navigation_notice = None;
         cx.notify();
@@ -1462,7 +1484,8 @@ impl WorkbenchPanel {
             self.current_collection_id = Some(collection.id);
             self.clear_request_editor(window, cx);
             set_input(&self.container_name, &collection.name, window, cx);
-            self.dirty = true;
+            // With no request tab open there is no draft to mark unsaved.
+            self.dirty = self.has_request_tab();
         }
         cx.notify();
     }
@@ -2006,96 +2029,6 @@ impl WorkbenchPanel {
         cx.notify();
     }
 
-    /// A collection row's "Rename…": select it and open the rename row
-    /// seeded with its name.
-    fn open_collection_rename(
-        &mut self,
-        id: CollectionId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.focus_collection(id.clone(), window, cx) {
-            return;
-        }
-        let name = self
-            .workspace_data
-            .as_ref()
-            .and_then(|data| {
-                data.collections
-                    .iter()
-                    .find(|collection| collection.id == id)
-            })
-            .map(|collection| collection.name.clone())
-            .unwrap_or_default();
-        set_input(&self.container_name, &name, window, cx);
-        self.rename_target = Some(RenameTarget::Collection(id));
-        cx.notify();
-    }
-
-    /// A folder row's "Rename…": select it and open the rename row seeded
-    /// with its name.
-    fn open_folder_rename(&mut self, id: FolderId, window: &mut Window, cx: &mut Context<Self>) {
-        self.select_folder(id.clone(), window, cx);
-        self.rename_target = Some(RenameTarget::Folder(id));
-        cx.notify();
-    }
-
-    /// Apply the rename row: to its target, else (when opened another way)
-    /// to the selected folder or, failing that, the current collection.
-    fn rename_selected_container(&mut self, cx: &mut Context<Self>) {
-        let name = self.container_name.read(cx).value().trim().to_string();
-        if name.is_empty() {
-            self.storage_error = Some("Collection and folder names cannot be empty.".into());
-            cx.notify();
-            return;
-        }
-        let Some(data) = self.workspace_data.as_ref() else {
-            return;
-        };
-        let target = self.rename_target.take().or_else(|| {
-            self.selected_folder()
-                .map(RenameTarget::Folder)
-                .or_else(|| {
-                    self.current_collection_id
-                        .clone()
-                        .map(RenameTarget::Collection)
-                })
-        });
-        let command = match target {
-            Some(RenameTarget::Folder(folder_id)) => data
-                .folders
-                .iter()
-                .find(|folder| folder.id == folder_id)
-                .cloned()
-                .ok_or_else(|| "Selected folder no longer exists.".to_string())
-                .map(|mut folder| {
-                    folder.name = name;
-                    coordinator::StorageCommand::UpsertFolder {
-                        collection: None,
-                        folder,
-                    }
-                }),
-            Some(RenameTarget::Collection(collection_id)) => data
-                .collections
-                .iter()
-                .find(|collection| collection.id == collection_id)
-                .cloned()
-                .ok_or_else(|| "Selected collection no longer exists.".to_string())
-                .map(|mut collection| {
-                    collection.name = name;
-                    coordinator::StorageCommand::UpsertCollection(collection)
-                }),
-            None => Err("Select a collection or folder to rename.".into()),
-        };
-        match command {
-            Ok(command) => {
-                self.run_storage_command(command, cx);
-            }
-            Err(error) => self.storage_error = Some(error),
-        }
-        cx.notify();
-    }
-
     fn delete_current_folder(&mut self, cx: &mut Context<Self>) {
         let Some(folder_id) = self.selected_folder() else {
             return;
@@ -2168,9 +2101,9 @@ impl WorkbenchPanel {
     }
 
     fn discard_changes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.ux
-            .request_settings
-            .remove(&self.request_tabs[self.active_request_tab].id);
+        if let Some(id) = self.active_request_tab_id() {
+            self.ux.request_settings.remove(&id);
+        }
         if let Some(request) = self.current_definition.clone() {
             self.load_saved_request(&request, window, cx);
         } else {
@@ -2290,9 +2223,8 @@ impl WorkbenchPanel {
             }
         }
         if let Some(settings) = self
-            .ux
-            .request_settings
-            .get(&self.request_tabs[self.active_request_tab].id)
+            .active_request_tab_id()
+            .and_then(|id| self.ux.request_settings.get(&id))
         {
             request.settings = settings.clone();
             request.settings.allow_private_network = self.allow_private_network;
@@ -2302,6 +2234,9 @@ impl WorkbenchPanel {
     }
 
     fn save_clicked(&mut self, cx: &mut Context<Self>) {
+        if !self.has_request_tab() {
+            return;
+        }
         if self.storage_loading {
             self.storage_error = Some("A Workbench storage operation is already running.".into());
             cx.notify();
@@ -2519,9 +2454,9 @@ impl WorkbenchPanel {
                 self.active_request_tab = self.request_tabs.len() - 1;
             }
         }
-        self.ux
-            .request_settings
-            .remove(&self.request_tabs[self.active_request_tab].id);
+        if let Some(id) = self.active_request_tab_id() {
+            self.ux.request_settings.remove(&id);
+        }
         self.current_request_id = Some(request.id.clone());
         self.current_collection_id = Some(request.collection_id.clone());
         self.current_definition = Some(request.clone());
@@ -2593,11 +2528,16 @@ impl WorkbenchPanel {
         }
     }
 
-    fn send(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Send without the Production confirmation; see `send`.
+    fn send_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // No open request tab: nothing to send, whatever triggered it.
+        if !self.has_request_tab() {
+            return;
+        }
         self.ux.console_cleared_error = None;
         if self.bound_workspace != current_workspace_id() {
             self.error =
-                Some("Save or discard changes before finishing the workspace switch.".into());
+                Some("Save or discard changes before finishing the project switch.".into());
             cx.notify();
             return;
         }
@@ -3680,7 +3620,7 @@ impl WorkbenchPanel {
     fn sync_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.dirty {
             self.navigation_notice =
-                Some("Save or discard the open request before syncing the workspace.".into());
+                Some("Save or discard the open request before syncing the project.".into());
             cx.notify();
             return;
         }
@@ -3783,7 +3723,7 @@ impl WorkbenchPanel {
         self._export_work = None;
         if self.bound_workspace != current_workspace_id() {
             self.export_output =
-                Some("Save or discard changes before exporting after the workspace switch.".into());
+                Some("Save or discard changes before exporting after the project switch.".into());
             cx.notify();
             return;
         }
@@ -3800,7 +3740,7 @@ impl WorkbenchPanel {
         };
         if data.workspace != self.bound_workspace {
             self.export_output =
-                Some("Workbench storage has not finished loading for this workspace.".into());
+                Some("Workbench storage has not finished loading for this project.".into());
             cx.notify();
             return;
         }
@@ -4188,9 +4128,11 @@ impl WorkbenchPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.ux
-            .request_settings
-            .remove(&self.request_tabs[self.active_request_tab].id);
+        // A replay needs a tab to land in when none is open.
+        self.ensure_request_tab();
+        if let Some(id) = self.active_request_tab_id() {
+            self.ux.request_settings.remove(&id);
+        }
         if let Some(replay) = snapshot.replay.as_ref() {
             let id = RequestId::new();
             let definition = SavedRequest {
@@ -4423,8 +4365,7 @@ impl WorkbenchPanel {
         if !self.owns_export(&workspace, generation, &current_workspace_id()) {
             self.prepared_export = None;
             self.export_output = Some(
-                "This export belongs to a previous workspace. Prepare it again before saving."
-                    .into(),
+                "This export belongs to a previous project. Prepare it again before saving.".into(),
             );
             cx.notify();
             return;
@@ -4790,6 +4731,7 @@ impl WorkbenchPanel {
             variables,
             active: true,
             extensions: Default::default(),
+            label: self.environment_label,
         };
         self.active_environment_id = Some(environment.id.clone());
         self.run_storage_command(
@@ -4840,6 +4782,7 @@ impl WorkbenchPanel {
         self.environment_auth_mode = environment
             .map(|value| auth_mode(&value.auth))
             .unwrap_or(draft::AuthMode::None);
+        self.environment_label = environment.map(|value| value.label).unwrap_or_default();
         set_input(
             &self.environment_auth,
             &environment
@@ -4971,7 +4914,7 @@ impl WorkbenchPanel {
         self.runner_request_ids.clear();
         self.runner_request_selection_active = false;
         self.tab = Tab::Data;
-        self.run_collection(cx);
+        self.run_collection_confirmed(window, cx);
     }
 
     fn run_collection(&mut self, cx: &mut Context<Self>) {
@@ -5810,12 +5753,13 @@ fn auth_mode(auth: &switchyard_api::AuthConfig) -> draft::AuthMode {
     }
 }
 
-/// What the rail's rename row renames — chosen from the row's kebab, so it
-/// never depends on which folder happens to be selected.
+/// A rail row the inline rename field can open on — chosen from the row
+/// itself, so it never depends on which folder happens to be selected.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum RenameTarget {
     Collection(CollectionId),
     Folder(FolderId),
+    Request(RequestId),
 }
 
 /// One row of the collection rail's request tree.
@@ -7382,6 +7326,7 @@ mod tests {
                 id: environment_id,
                 workspace_id: workspace.clone(),
                 name: "Staging".into(),
+                label: Default::default(),
                 base_url: "https://api.test/".into(),
                 auth,
                 variables: vec![Variable {

@@ -89,8 +89,9 @@ gpui_kit::actions!(api_compat, [Save]);
 /// Bind the workbench's keys (AgentOps's shell table for its panel).
 pub fn bind_keys(cx: &mut App) {
     use super::workbench::{
-        CancelRequest, CloseRequest, KEY_CONTEXT, NewRequest, NextRequest, PreviousRequest,
-        SendRequest,
+        CancelRequest, CloseRequest, FocusUrl, KEY_CONTEXT, NewRequest, NextRequest,
+        PreviousRequest, RAIL_KEY_CONTEXT, RenameRailItem, SendRequest, ShowCompose, ShowDiff,
+        ShowEnvs, ShowHistory, ShowImport, ShowRunner,
     };
     use gpui_kit::KeyBinding;
     let ctx = Some(KEY_CONTEXT);
@@ -102,6 +103,14 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-w", CloseRequest, ctx),
         KeyBinding::new("ctrl-pagedown", NextRequest, ctx),
         KeyBinding::new("ctrl-pageup", PreviousRequest, ctx),
+        KeyBinding::new("secondary-l", FocusUrl, ctx),
+        KeyBinding::new("secondary-1", ShowCompose, ctx),
+        KeyBinding::new("secondary-2", ShowImport, ctx),
+        KeyBinding::new("secondary-3", ShowRunner, ctx),
+        KeyBinding::new("secondary-4", ShowEnvs, ctx),
+        KeyBinding::new("secondary-5", ShowHistory, ctx),
+        KeyBinding::new("secondary-6", ShowDiff, ctx),
+        KeyBinding::new("f2", RenameRailItem, Some(RAIL_KEY_CONTEXT)),
     ]);
 }
 
@@ -331,12 +340,8 @@ pub mod notify {
         cx.update_default_global::<Toasts, _>(|toasts, _| toasts.0.push(message.to_string()));
     }
 
-    /// A success toast.
-    pub fn success(cx: &mut App, message: impl Into<SharedString>) {
-        push(cx, message);
-    }
-
-    /// A warning toast.
+    /// A warning toast. Only the non-test build persists layout, its sole caller.
+    #[cfg_attr(test, allow(dead_code))]
     pub fn warning(cx: &mut App, message: impl Into<SharedString>) {
         push(cx, message);
     }

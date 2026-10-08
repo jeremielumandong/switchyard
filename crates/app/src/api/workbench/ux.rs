@@ -3,13 +3,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use gpui_kit::component::input::TextareaState;
 use gpui_kit::component::{
-    Disableable, Sizable,
+    Sizable,
     button::{Button, ButtonVariants},
     dialog::DialogButtonProps,
     input::Input,
     resizable::ResizableState,
 };
-use gpui_kit::{Div, Subscription, div};
+use gpui_kit::{Div, Subscription, div, px};
 
 use super::*;
 use crate::api::compat::dialogs::{self, Dismiss};
@@ -18,6 +18,8 @@ pub(super) struct WorkbenchUx {
     pub request_tabs_scroll: gpui_kit::ScrollHandle,
     pub revealed_request_tab: std::cell::Cell<Option<u64>>,
     pub creation: request_creation::CreationState,
+    /// A first-run quick action waiting for its new project to finish opening.
+    pub pending_start: Option<empty_state::StartAction>,
     pub request_settings: BTreeMap<u64, switchyard_api::RequestSettings>,
     pub body_editor: Entity<body_editor::BodyEditor>,
     pub rail_split: Entity<ResizableState>,
@@ -27,6 +29,7 @@ pub(super) struct WorkbenchUx {
     pub filter: Entity<InputState>,
     pub console_cleared: usize,
     pub console_cleared_error: Option<String>,
+    pub copy_feedback: response_copy::CopyFeedback,
     _filter_subscription: Subscription,
 }
 
@@ -43,6 +46,7 @@ impl WorkbenchUx {
             request_tabs_scroll: Default::default(),
             revealed_request_tab: Default::default(),
             creation: Default::default(),
+            pending_start: None,
             request_settings: BTreeMap::new(),
             body_editor: cx.new(|cx| body_editor::BodyEditor::new(body, window, cx)),
             rail_split: cx.new(|_| ResizableState::default()),
@@ -52,6 +56,7 @@ impl WorkbenchUx {
             filter,
             console_cleared: 0,
             console_cleared_error: None,
+            copy_feedback: Default::default(),
             _filter_subscription: subscription,
         }
     }
@@ -114,34 +119,15 @@ impl WorkbenchPanel {
 
     pub(super) fn render_console(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let filter = self.ux.filter.read(cx).value().to_lowercase();
-        let mut lines: Vec<String> = self
-            .response
-            .as_ref()
-            .into_iter()
-            .flat_map(|response| response.console.iter())
-            .skip(self.ux.console_cleared)
-            .filter(|entry| {
-                format!("{} {} {}", entry.phase, entry.level, entry.message)
-                    .to_lowercase()
-                    .contains(&filter)
-            })
-            .map(|entry| format!("[{}] {}: {}", entry.phase, entry.level, entry.message))
-            .collect();
-        if let Some(error) = self.error.as_ref().filter(|error| !error.is_empty()) {
-            let already_logged = self.response.as_ref().is_some_and(|response| {
-                response
-                    .console
-                    .iter()
-                    .any(|entry| entry.message.contains(error))
-            });
-            let line = format!("[execution] error: {error}");
-            if !already_logged
-                && self.ux.console_cleared_error.as_ref() != Some(error)
-                && line.to_lowercase().contains(&filter)
-            {
-                lines.push(line);
-            }
-        }
+        let lines = response_copy::console_lines(
+            self.response
+                .as_ref()
+                .map_or(&[][..], |response| &response.console[..]),
+            self.ux.console_cleared,
+            &filter,
+            self.error.as_deref(),
+            self.ux.console_cleared_error.as_deref(),
+        );
         let copy = lines.join("\n");
         div()
             .flex()
@@ -152,19 +138,13 @@ impl WorkbenchPanel {
                     .flex()
                     .gap_2()
                     .child(Input::new(&self.ux.filter).flex_1())
-                    .child(
-                        Button::new("workbench-console-copy")
-                            .debug_selector(|| "workbench-console-copy".into())
-                            .small()
-                            .outline()
-                            .label("Copy logs")
-                            .disabled(copy.is_empty())
-                            .on_click(move |_, _, cx| {
-                                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
-                                    copy.clone(),
-                                ));
-                            }),
-                    )
+                    .child(self.copy_chip(
+                        "workbench-console-copy",
+                        "Copy all",
+                        !copy.is_empty(),
+                        move |_, _| copy.clone(),
+                        cx,
+                    ))
                     .child(
                         Button::new("workbench-console-clear")
                             .debug_selector(|| "workbench-console-clear".into())
@@ -182,11 +162,15 @@ impl WorkbenchPanel {
             .when(lines.is_empty(), |el| {
                 el.child("No matching console messages. Use console.log in a script, then send.")
             })
-            .children(lines.into_iter().map(|line| {
+            .children(lines.into_iter().enumerate().map(|(index, line)| {
                 div()
+                    .flex()
+                    .items_start()
+                    .gap_2()
                     .font_family(crate::api::compat::fonts::mono(cx))
                     .text_sm()
-                    .child(line)
+                    .child(div().flex_1().min_w(px(0.)).child(line.clone()))
+                    .child(self.copy_row_icon(format!("workbench-console-copy-{index}"), line, cx))
             }))
             .into_any_element()
     }
@@ -227,7 +211,9 @@ impl WorkbenchPanel {
         let follow = cx.new(|_| settings.follow_redirects);
         let error = cx.new(|_| String::new());
         let panel = cx.entity().downgrade();
-        let tab_id = self.request_tabs[self.active_request_tab].id;
+        let Some(tab_id) = self.active_request_tab_id() else {
+            return;
+        };
         let workspace = self.bound_workspace.clone();
         let timeout_save = timeout.clone();
         let redirects_save = redirects.clone();
@@ -311,9 +297,10 @@ impl WorkbenchPanel {
         settings.timeout_ms = timeout_ms;
         settings.max_redirects = max_redirects;
         settings.follow_redirects = follow_redirects;
-        self.ux
-            .request_settings
-            .insert(self.request_tabs[self.active_request_tab].id, settings);
+        let Some(tab_id) = self.active_request_tab_id() else {
+            return;
+        };
+        self.ux.request_settings.insert(tab_id, settings);
         self.dirty = true;
         cx.notify();
     }

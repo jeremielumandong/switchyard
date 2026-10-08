@@ -48,20 +48,20 @@ pub fn list_workspaces(app_data: &Path) -> Result<WorkspaceList, String> {
     })
 }
 
-/// Create the next empty workspace, `Workspace N`, numbered past every
-/// name of that form already taken.
+/// Create the next empty workspace, shown in the Workbench as a project:
+/// `Project N`, numbered past every name of that form already taken.
 pub fn create_workspace(app_data: &Path) -> Result<WorkspaceEntry, String> {
     let store = WorkbenchStore::open(app_data).map_err(|error| error.to_string())?;
     let existing = store.list_workspaces().map_err(|error| error.to_string())?;
     let next = existing
         .iter()
-        .filter_map(|workspace| workspace.name.strip_prefix("Workspace "))
+        .filter_map(|workspace| workspace.name.strip_prefix("Project "))
         .filter_map(|number| number.parse::<u32>().ok())
         .max()
         .unwrap_or(0)
         .saturating_add(1);
     store
-        .create_workspace(&format!("Workspace {next}"))
+        .create_workspace(&format!("Project {next}"))
         .map_err(|error| error.to_string())
 }
 
@@ -737,6 +737,7 @@ mod tests {
         let mut data = WorkspaceData::open(&path, workspace.clone()).unwrap();
         let collection_id = data.ensure_collection().unwrap();
         let first_environment = Environment {
+            label: Default::default(),
             id: EnvironmentId::new(),
             workspace_id: workspace.clone(),
             name: "Staging".into(),
@@ -748,6 +749,7 @@ mod tests {
         };
         data.save_environment(first_environment.clone()).unwrap();
         let second_environment = Environment {
+            label: Default::default(),
             id: EnvironmentId::new(),
             workspace_id: workspace.clone(),
             name: "Production".into(),
@@ -850,8 +852,8 @@ mod tests {
 
         let first = create_workspace(&path).unwrap();
         let second = create_workspace(&path).unwrap();
-        assert_eq!(first.name, "Workspace 1");
-        assert_eq!(second.name, "Workspace 2");
+        assert_eq!(first.name, "Project 1");
+        assert_eq!(second.name, "Project 2");
 
         mark_workspace_opened(&path, &first.id).unwrap();
         let listed = list_workspaces(&path).unwrap();

@@ -69,6 +69,8 @@ pub struct SchemaState {
     scroll: UniformListScrollHandle,
     /// Focus of the tree, for its key bindings (`SchemaTree` context).
     focus: Option<FocusHandle>,
+    /// Server-side object search for the filter (DBX-1d).
+    pub search: crate::object_search::ObjectSearch,
 }
 
 /// Session state of the schema explorer (wrapper so `Default` is `None`).
@@ -178,7 +180,7 @@ impl SchemaState {
     }
 
     /// Reload one tree node from the server (F5): a folder, every loaded folder of a
-    /// schema, an object's folder, or everything for the database row.
+    /// schema, an object's folder (tree or search row), or everything for the database row.
     fn refresh_node(&mut self, key: &str, core: &RuntimeHandle) {
         let folders: Vec<(String, ObjectKind)> = if let Some(f) = self.folder_of(key) {
             vec![f]
@@ -188,7 +190,7 @@ impl SchemaState {
                 .filter(|(s, _)| s == schema)
                 .cloned()
                 .collect()
-        } else if let Some(rest) = key.strip_prefix("o:") {
+        } else if let Some(rest) = key.strip_prefix("o:").or_else(|| key.strip_prefix("q:")) {
             self.objects
                 .keys()
                 .filter(|(s, k)| rest.starts_with(&format!("{s}:{k:?}:")))
@@ -238,6 +240,28 @@ impl SchemaState {
                 .map_or(Engine::Postgres, |c| c.engine),
         )
         .object_folders()
+    }
+
+    /// The filter text changed: returns a ticket for [`Self::search_due`] when a debounced
+    /// server search should follow.
+    pub fn filter_changed(&mut self, filter: String, core: &RuntimeHandle) -> Option<u64> {
+        self.filter = filter;
+        if !self.filter.is_empty() {
+            self.load_all_folders(core);
+        }
+        self.search.changed(&self.filter)
+    }
+
+    /// The search debounce elapsed: send the search unless the filter changed meanwhile.
+    pub fn search_due(&mut self, ticket: u64, core: &RuntimeHandle) {
+        let Some(session) = self.session else { return };
+        if let Some(scope) = self.search.due(ticket) {
+            core.send(Command::Introspect {
+                session,
+                scope,
+                refresh: true,
+            });
+        }
     }
 
     /// Load every object folder of every user schema (for search).
@@ -294,6 +318,13 @@ impl SchemaState {
         result: Result<CatalogChunk, String>,
         cached_at: i64,
     ) {
+        if let IntrospectScope::Search { pattern, .. } = &scope {
+            let hits = result.map(|c| match c {
+                CatalogChunk::Objects(o) => o,
+                _ => Vec::new(),
+            });
+            return self.search.on_result(pattern, hits);
+        }
         self.cached_at = Some(self.cached_at.map_or(cached_at, |c| c.min(cached_at)));
         match (scope, result) {
             (IntrospectScope::Schemas, Ok(CatalogChunk::Schemas(s))) => {
@@ -370,6 +401,68 @@ struct TreeRow {
     key: String,
     object: Option<(String, String, ObjectKind)>,
     dim: bool,
+}
+
+/// Flat object-search results: local fuzzy matches from loaded folders merged with the
+/// server's hits. While the search runs, or if it failed, only the local matches show.
+fn search_rows(s: &SchemaState, filter: &str, rows: &mut Vec<TreeRow>) {
+    use crate::object_search::{SearchState, kind_label, merge};
+    let local = s.objects.values().flat_map(|l| match l {
+        Loadable::Loaded(o) => o.as_slice(),
+        _ => &[],
+    });
+    let local = local.filter(|o| crate::actions::fuzzy(filter, &o.name));
+    let status = match &s.search.state {
+        SearchState::Loading => Some(("", "Searching all schemas…".to_owned(), true)),
+        SearchState::Failed(e) => Some(("!", format!("Search failed: {e}"), false)),
+        SearchState::Idle | SearchState::Done(_) => None,
+    };
+    if let Some((icon, label, loading)) = status {
+        rows.push(TreeRow {
+            depth: 1,
+            caret: "",
+            icon: icon.into(),
+            label: label.into(),
+            sub: "".into(),
+            loading,
+            key: "search-status".into(),
+            object: None,
+            dim: true,
+        });
+    }
+    let hits = merge(filter, local, s.search.hits());
+    if hits.is_empty() && matches!(s.search.state, SearchState::Done(_)) {
+        rows.push(TreeRow {
+            depth: 1,
+            caret: "",
+            icon: "".into(),
+            label: "No matching objects".into(),
+            sub: "".into(),
+            loading: false,
+            key: "search-empty".into(),
+            object: None,
+            dim: true,
+        });
+    }
+    for o in hits {
+        rows.push(TreeRow {
+            depth: 1,
+            caret: "",
+            icon: o.kind.icon().into(),
+            label: format!(
+                "{}.{}{}",
+                o.schema,
+                o.name,
+                o.detail.as_deref().unwrap_or("")
+            )
+            .into(),
+            sub: kind_label(o.kind).into(),
+            loading: false,
+            key: format!("q:{}:{:?}:{}", o.schema, o.kind, o.name),
+            object: Some((o.schema.clone(), o.name.clone(), o.kind)),
+            dim: false,
+        });
+    }
 }
 
 /// A connections-tree row.
@@ -653,6 +746,10 @@ impl Workspace {
             return rows;
         }
         let filter = s.filter.to_lowercase();
+        if crate::object_search::ObjectSearch::applies(&filter) {
+            search_rows(s, &filter, &mut rows);
+            return rows;
+        }
         match &s.schemas {
             Loadable::Loaded(schemas) => {
                 for sc in schemas {

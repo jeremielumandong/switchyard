@@ -5,7 +5,7 @@ use tokio_postgres::Client;
 use super::map_error;
 use crate::catalog::{
     CatalogChunk, ColumnInfo, ConstraintInfo, ForeignKeyInfo, IndexInfo, IntrospectScope,
-    ObjectDetail, ObjectInfo, ObjectKind, SchemaInfo,
+    ObjectDetail, ObjectInfo, ObjectKind, SchemaInfo, like_contains, search_hit,
 };
 use crate::dialect::{Dialect, postgres::PostgresDialect};
 use crate::error::Result;
@@ -129,6 +129,29 @@ SELECT pg_catalog.pg_get_functiondef(p.oid)
 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
 WHERE n.nspname = $1 AND p.proname = $2
 ORDER BY p.oid LIMIT 1";
+
+/// Global object search: relations, sequences and routines whose name contains `$1`
+/// (an escaped LIKE pattern), shortest names first. `$3` includes system schemas.
+pub const SEARCH_SQL: &str = "\
+SELECT s.schema_name, s.object_name, s.kind FROM (
+  SELECT n.nspname::text AS schema_name, c.relname::text AS object_name,
+         CASE c.relkind WHEN 'v' THEN 'view' WHEN 'm' THEN 'mview' WHEN 'S' THEN 'sequence'
+                        ELSE 'table' END AS kind
+  FROM pg_catalog.pg_class c
+  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+  WHERE c.relkind IN ('r', 'p', 'f', 'v', 'm', 'S') AND c.relname ILIKE $1 ESCAPE '!'
+  UNION ALL
+  SELECT n.nspname::text, p.proname::text,
+         CASE p.prokind WHEN 'p' THEN 'procedure' ELSE 'function' END
+  FROM pg_catalog.pg_proc p
+  JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+  WHERE p.prokind IN ('f', 'p') AND p.proname ILIKE $1 ESCAPE '!'
+) s
+WHERE s.schema_name NOT LIKE 'pg\\_toast%' AND s.schema_name NOT LIKE 'pg\\_temp%'
+  AND ($3::bool OR s.schema_name NOT IN ('pg_catalog', 'information_schema'))
+GROUP BY s.schema_name, s.object_name, s.kind
+ORDER BY length(s.object_name), s.object_name, s.schema_name
+LIMIT $2::int8";
 
 fn relkinds(kind: ObjectKind) -> &'static str {
     match kind {
@@ -390,6 +413,22 @@ pub async fn introspect(client: &Client, scope: IntrospectScope) -> Result<Catal
         IntrospectScope::AllColumns => Ok(CatalogChunk::AllColumns(
             load_columns(client, None, None).await?,
         )),
+        IntrospectScope::Search {
+            pattern,
+            limit,
+            include_system,
+        } => {
+            let like = like_contains(&pattern, false);
+            let rows = client
+                .query(SEARCH_SQL, &[&like, &i64::from(limit), &include_system])
+                .await
+                .map_err(err)?;
+            Ok(CatalogChunk::Objects(
+                rows.iter()
+                    .filter_map(|r| search_hit(r.get(0), r.get(1), r.get::<_, &str>(2)))
+                    .collect(),
+            ))
+        }
     }
 }
 
@@ -415,4 +454,14 @@ async fn load_columns(
             is_primary_key: r.get(7),
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_sql_snapshot() {
+        insta::assert_snapshot!("pg_search_sql", SEARCH_SQL);
+    }
 }

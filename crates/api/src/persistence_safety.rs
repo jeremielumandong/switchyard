@@ -584,6 +584,7 @@ mod tests {
             extensions: extensions.clone(),
         });
         let environment = persistence_safe_environment(&Environment {
+            label: Default::default(),
             id: EnvironmentId::new(),
             workspace_id: workspace,
             name: "Environment".into(),
@@ -661,6 +662,7 @@ mod tests {
             .unwrap()
         };
         let literal = persistence_safe_environment(&Environment {
+            label: Default::default(),
             id: EnvironmentId::new(),
             workspace_id: workspace.clone(),
             name: "Environment".into(),
@@ -676,6 +678,7 @@ mod tests {
         assert_eq!(literal.base_url, "https://api.example.test");
 
         let templated = persistence_safe_environment(&Environment {
+            label: Default::default(),
             id: EnvironmentId::new(),
             workspace_id: workspace,
             name: "Environment".into(),

@@ -1,0 +1,23 @@
+---
+source: crates/db/src/pg/catalog.rs
+expression: SEARCH_SQL
+---
+SELECT s.schema_name, s.object_name, s.kind FROM (
+  SELECT n.nspname::text AS schema_name, c.relname::text AS object_name,
+         CASE c.relkind WHEN 'v' THEN 'view' WHEN 'm' THEN 'mview' WHEN 'S' THEN 'sequence'
+                        ELSE 'table' END AS kind
+  FROM pg_catalog.pg_class c
+  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+  WHERE c.relkind IN ('r', 'p', 'f', 'v', 'm', 'S') AND c.relname ILIKE $1 ESCAPE '!'
+  UNION ALL
+  SELECT n.nspname::text, p.proname::text,
+         CASE p.prokind WHEN 'p' THEN 'procedure' ELSE 'function' END
+  FROM pg_catalog.pg_proc p
+  JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+  WHERE p.prokind IN ('f', 'p') AND p.proname ILIKE $1 ESCAPE '!'
+) s
+WHERE s.schema_name NOT LIKE 'pg\_toast%' AND s.schema_name NOT LIKE 'pg\_temp%'
+  AND ($3::bool OR s.schema_name NOT IN ('pg_catalog', 'information_schema'))
+GROUP BY s.schema_name, s.object_name, s.kind
+ORDER BY length(s.object_name), s.object_name, s.schema_name
+LIMIT $2::int8
