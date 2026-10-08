@@ -512,6 +512,55 @@ server or bundled Unix tools on Windows (Tier 3).
   WSL distributions on Windows.
 - Also counted for parity: M2-5 (SSH agent) and M4-2 (FTP/FTPS) above.
 
+## DBX — Database explorer and editors at DBeaver / SSMS level (user request)
+
+Gap analysis (2026-10-08): the explorer is a lazy, virtualized, single-connection tree
+with object folders only; SQL editor and run experience are mostly there. Catalog reads
+are new `IntrospectScope` variants + per-engine `*/catalog.rs` SQL; generated SQL
+(templates, script-as, paging) goes on `Dialect`. Insta snapshots for every new SQL
+string; `#[ignore]` docker tests for PG, MSSQL, Oracle. `sidebar.rs` and `overlays.rs`
+are shared hotspots: one owner at a time.
+
+### Phase 1 — fix and finish the explorer
+- [ ] DBX-1a Dialect-aware templates: `Dialect::{select_template, insert_template,
+  update_template, delete_template, script_drop}`; sidebar fetches `Detail` first so
+  templates use real columns and the PK (fixes hardcoded `LIMIT 100` and empty columns).
+- [ ] DBX-1b View DDL: the "ddl" action opens a read-only DDL tab from `Detail.ddl`
+  (replaces the toast stub).
+- [ ] DBX-1c Snowflake materialized views get their own folder.
+- [ ] DBX-1d Global object search: `IntrospectScope::Search { pattern }` per engine, wired
+  to the tree filter (debounced), local fuzzy filter as fallback.
+- [ ] DBX-1e Tree keyboard navigation (arrows, Enter, Ctrl+C, F5) and drag an object
+  into the SQL editor to insert its qualified name.
+
+### Phase 2 — object properties and script-as
+- [ ] DBX-2a Columns / Keys / Indexes / FKs / Triggers children under each relation.
+- [ ] DBX-2b Object properties tab (Columns, Indexes, Constraints, FKs, Triggers, DDL,
+  Data); `ObjectDetail` gains size, comment, trigger definitions per engine.
+- [ ] DBX-2c Script-as submenu (CREATE, DROP, DROP+CREATE, SELECT, INSERT, UPDATE, DELETE,
+  EXEC) with routine definitions per engine.
+- [ ] DBX-2d Connection menu: New query here, Refresh schema, Disconnect.
+
+### Phase 3 — table data editor
+- [ ] DBX-3a Server-side filter / sort / paging bar (`Dialect::select_page`; MSSQL and
+  Oracle `OFFSET … FETCH`, ORDER BY defaults to the PK).
+- [ ] DBX-3b Insert / delete / duplicate rows in the staged-edit flow (`db/edit.rs`).
+- [ ] DBX-3c Foreign-key navigation from a cell to the referenced row.
+
+### Phase 4 — editor and run polish
+- [ ] DBX-4a Per-tab database / schema switcher (`Dialect::use_database`; PG reconnects).
+- [ ] DBX-4b Snippets (store table + completion items).
+- [ ] DBX-4c Peek table: hover / F12 on an identifier shows its columns.
+- [ ] DBX-4d Pin a result tab; compare two results.
+
+### Phase 5 — advanced
+- [ ] DBX-5a Dependencies (uses / used by) per engine.
+- [ ] DBX-5b Activity monitor with kill session (never over MCP; Production double confirm).
+- [ ] DBX-5c Users/roles, SQL Agent jobs, Oracle packages, Snowflake stages/tasks
+  (new `ObjectKind`s; bump the schema cache key).
+- [ ] DBX-5d ER diagram from foreign keys (hand-rolled layout; no new crate without asking).
+- [ ] DBX-5e Favorites and a multi-connection tree (large `sidebar.rs` refactor; alone).
+
 ## M6 — Packaging and beta
 
 Exit: every performance budget passes on all three platforms; signed builds published.
