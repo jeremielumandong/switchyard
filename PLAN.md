@@ -543,16 +543,26 @@ string; `#[ignore]` docker tests for PG, MSSQL, Oracle. `sidebar.rs` and `overla
 are shared hotspots: one owner at a time.
 
 ### Phase 1 — fix and finish the explorer
-- [ ] DBX-1a Dialect-aware templates: `Dialect::{select_template, insert_template,
+- [x] DBX-1a Dialect-aware templates: `Dialect::{select_template, insert_template,
   update_template, delete_template, script_drop}`; sidebar fetches `Detail` first so
   templates use real columns and the PK (fixes hardcoded `LIMIT 100` and empty columns).
-- [ ] DBX-1b View DDL: the "ddl" action opens a read-only DDL tab from `Detail.ddl`
+  Note: `Dialect::{select,insert,update,delete}_template` + `script_drop` (LIMIT/TOP/FETCH
+  FIRST), 25 insta snapshots; sidebar actions fetch `Detail` first (`on_schema_detail`);
+  Generate DELETE added; truncate is `TRUNCATE TABLE`.
+- [x] DBX-1b View DDL: the "ddl" action opens a read-only DDL tab from `Detail.ddl`
   (replaces the toast stub).
-- [ ] DBX-1c Snowflake materialized views get their own folder.
-- [ ] DBX-1d Global object search: `IntrospectScope::Search { pattern }` per engine, wired
+  Note: read-only `Tab::Ddl` (`ddl_tab.rs`) with Copy; Oracle DDL snapshot in the docker
+  Detail test still to be accepted on its first run.
+- [x] DBX-1c Snowflake materialized views get their own folder.
+  Note: `objects_sql` split by TABLE_TYPE; cached View lists stay until refresh.
+- [x] DBX-1d Global object search: `IntrospectScope::Search { pattern }` per engine, wired
   to the tree filter (debounced), local fuzzy filter as fallback.
-- [ ] DBX-1e Tree keyboard navigation (arrows, Enter, Ctrl+C, F5) and drag an object
+  Note: bound LIKE with `!` escape, cap 200, never cached; 250 ms debounce; flat merged list
+  with local fuzzy fallback (`object_search.rs`). No "include system objects" toggle yet.
+- [x] DBX-1e Tree keyboard navigation (arrows, Enter, Ctrl+C, F5) and drag an object
   into the SQL editor to insert its qualified name.
+  Note: `SchemaTree` key context; drop inserts at the cursor (gpui-component has no public
+  drop-point-to-offset API).
 
 ### Phase 2 — object properties and script-as
 - [ ] DBX-2a Columns / Keys / Indexes / FKs / Triggers children under each relation.
@@ -569,10 +579,17 @@ are shared hotspots: one owner at a time.
 - [ ] DBX-3c Foreign-key navigation from a cell to the referenced row.
 
 ### Phase 4 — editor and run polish
-- [ ] DBX-4a Per-tab database / schema switcher (`Dialect::use_database`; PG reconnects).
-- [ ] DBX-4b Snippets (store table + completion items).
-- [ ] DBX-4c Peek table: hover / F12 on an identifier shows its columns.
-- [ ] DBX-4d Pin a result tab; compare two results.
+- [x] DBX-4a Per-tab database / schema switcher (`Dialect::use_database`; PG reconnects).
+  Note: `Dialect::{switches_context,use_database,use_schema}`; core `SetSessionContext` runs
+  `USE` or reconnects PG on the same tunnel; schema cache keyed per database. Deferred:
+  re-applying `USE` after the SQL Server driver's cancel-reconnect.
+- [ ] DBX-4b Snippets (store table + completion items). Not started: needs a store migration.
+- [x] DBX-4c Peek table: hover / F12 on an identifier shows its columns.
+  Note: `complete::peek_target` (schema.table, aliases, quoted); falls back to `Detail`;
+  popover sits top-right of the editor.
+- [x] DBX-4d Pin a result tab; compare two results.
+  Note: `result_diff.rs` hashes rows from the batches; changed rows pair on the first
+  common column.
 
 ### Phase 5 — advanced
 - [ ] DBX-5a Dependencies (uses / used by) per engine.
