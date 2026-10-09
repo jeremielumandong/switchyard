@@ -77,5 +77,32 @@ fn grid_lookup(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, decode_rows, grid_lookup);
+fn grid_sort(c: &mut Criterion) {
+    // A NUMERIC column arrives as text: the sort compares it as numbers.
+    let cols = vec![ColumnMeta::new("amount", "numeric", DataType::Numeric)];
+    let mut list = BatchList::default();
+    let mut s = String::new();
+    for b in 0..100u64 {
+        let mut builder = RowBatchBuilder::for_columns(&cols, 1000);
+        for r in 0..1000u64 {
+            s.clear();
+            let v = (b * 1000 + r).wrapping_mul(2_654_435_761) % 1_000_000;
+            s.push_str(&format!("{}.{:02}", v, v % 100));
+            builder.push_str(&s);
+        }
+        list.push(builder.finish());
+    }
+    c.bench_function("sort 100k numeric-text rows", |b| {
+        b.iter(|| {
+            let mut rows: Vec<u32> = (0..list.len() as u32).collect();
+            list.sort_rows(&mut rows, 0, false);
+            rows
+        })
+    });
+    c.bench_function("filter 100k rows", |b| {
+        b.iter(|| list.rows_containing("12.3"))
+    });
+}
+
+criterion_group!(benches, decode_rows, grid_lookup, grid_sort);
 criterion_main!(benches);
