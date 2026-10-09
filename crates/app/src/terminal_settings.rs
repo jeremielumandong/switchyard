@@ -15,6 +15,7 @@ use switchyard_core::term_settings::{
 };
 use switchyard_core::{Command, RuntimeHandle};
 
+use crate::appearance::{rpx, ts};
 use crate::theme::{MONO, Palette, palette};
 use crate::ui::{self, Kind};
 
@@ -197,33 +198,33 @@ pub(crate) fn field(
     div()
         .flex()
         .flex_col()
-        .gap(px(4.))
-        .w(px(width))
+        .gap(rpx(4.))
+        .w(rpx(width))
         .child(
             div()
-                .text_size(px(11.))
+                .text_size(ts::SMALL)
                 .text_color(p.fg3)
                 .child(label.to_owned()),
         )
         .child(
             div()
-                .h(px(28.))
+                .h(rpx(28.))
                 .flex()
                 .items_center()
-                .px(px(8.))
+                .px(rpx(8.))
                 .border_1()
                 .border_color(p.bd2)
                 .rounded(px(6.))
                 .bg(p.bg)
                 .font_family(MONO)
-                .text_size(px(12.))
-                .child(Input::new(e).appearance(false).text_size(px(12.))),
+                .text_size(ts::BODY)
+                .child(Input::new(e).appearance(false).text_size(ts::BODY)),
         )
 }
 
 pub(crate) fn heading(text: &str, p: &Palette) -> impl IntoElement {
     div()
-        .text_size(px(12.))
+        .text_size(ts::BODY)
         .font_weight(FontWeight::MEDIUM)
         .text_color(p.fg2)
         .child(text.to_owned())
@@ -231,7 +232,7 @@ pub(crate) fn heading(text: &str, p: &Palette) -> impl IntoElement {
 
 fn hint(text: &str, p: &Palette) -> impl IntoElement {
     div()
-        .text_size(px(11.))
+        .text_size(ts::SMALL)
         .text_color(p.fg3)
         .child(text.to_owned())
 }
@@ -247,18 +248,18 @@ fn choice<T: Copy + PartialEq + 'static>(
 ) -> impl IntoElement {
     div()
         .flex()
-        .gap(px(6.))
+        .gap(rpx(6.))
         .children(options.iter().enumerate().map(|(i, &(value, label))| {
             let active = value == current;
             div()
                 .id(SharedString::from(format!("{id}-{i}")))
-                .px(px(10.))
-                .py(px(5.))
+                .px(rpx(10.))
+                .py(rpx(5.))
                 .border_1()
                 .border_color(if active { p.acc } else { p.bd2 })
                 .rounded(px(6.))
                 .bg(if active { p.sel } else { p.bg })
-                .text_size(px(12.))
+                .text_size(ts::BODY)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     set(this, value);
                     this.changed(cx);
@@ -273,7 +274,7 @@ impl Render for TerminalSettingsView {
         let logging = div()
             .flex()
             .flex_col()
-            .gap(px(8.))
+            .gap(rpx(8.))
             .child(heading("Session logs", &p))
             .child(hint(
                 "Copy each terminal's output to a file. Start or stop it per tab with the Log button.",
@@ -319,7 +320,7 @@ impl Render for TerminalSettingsView {
             .child(
                 div()
                     .flex()
-                    .gap(px(10.))
+                    .gap(rpx(10.))
                     .child(field("Folder", &self.folder, 300., &p))
                     .child(field("File name", &self.template, 220., &p)),
             )
@@ -330,7 +331,7 @@ impl Render for TerminalSettingsView {
         let mouse = div()
             .flex()
             .flex_col()
-            .gap(px(8.))
+            .gap(rpx(8.))
             .child(heading("Mouse and clipboard", &p))
             .child(
                 ui::checkbox("ts-copy-sel", self.copy_on_select, "Copy on select", &p).on_click(
@@ -367,7 +368,7 @@ impl Render for TerminalSettingsView {
         let highlight = div()
             .flex()
             .flex_col()
-            .gap(px(8.))
+            .gap(rpx(8.))
             .child(heading("Keyword highlighting", &p))
             .child(
                 ui::checkbox(
@@ -383,7 +384,7 @@ impl Render for TerminalSettingsView {
             )
             .when(self.highlight, |d| {
                 d.child(
-                    div().flex().flex_wrap().gap(px(10.)).children(
+                    div().flex().flex_wrap().gap(rpx(10.)).children(
                         self.words
                             .iter()
                             .map(|(c, e)| field(c.label(), e, 260., &p)),
@@ -394,8 +395,8 @@ impl Render for TerminalSettingsView {
         div()
             .flex()
             .flex_col()
-            .gap(px(16.))
-            .p(px(18.))
+            .gap(rpx(16.))
+            .p(rpx(18.))
             .child(logging)
             .child(mouse)
             .child(highlight)
@@ -403,13 +404,13 @@ impl Render for TerminalSettingsView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
+                    .gap(rpx(10.))
                     .child(
                         ui::button("ts-save", "Save", Kind::Primary, &p)
                             .on_click(cx.listener(|this, _, _, cx| this.save(cx))),
                     )
                     .when(self.saved, |d| {
-                        d.child(div().text_size(px(12.)).text_color(p.dev).child("Saved"))
+                        d.child(div().text_size(ts::BODY).text_color(p.dev).child("Saved"))
                     }),
             )
     }

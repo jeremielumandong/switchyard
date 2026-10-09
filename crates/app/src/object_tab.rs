@@ -24,7 +24,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FontWeight,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px, relative,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, relative,
     uniform_list,
 };
 use switchyard_core::db::{
@@ -37,6 +37,7 @@ use switchyard_core::{
 };
 
 use crate::app_state::{SessionState, next_id};
+use crate::appearance::{rpx, ts};
 use crate::grid::{
     GridDelegate, PagedView, Pager, PagerAction, pager_action, reference_filter, render_pager,
 };
@@ -813,9 +814,9 @@ impl ObjectTab {
             .flex_none()
             .flex()
             .flex_col()
-            .gap(px(4.))
-            .px(px(14.))
-            .py(px(10.))
+            .gap(rpx(4.))
+            .px(rpx(14.))
+            .py(rpx(10.))
             .border_b_1()
             .border_color(p.bd)
             .bg(p.panel)
@@ -823,14 +824,14 @@ impl ObjectTab {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(rpx(8.))
                     .child(ui::monogram(self.kind.icon(), 20., p))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .font_family(MONO)
-                            .text_size(px(13.5))
+                            .text_size(ts::BASE_PLUS)
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(p.fg)
                             .truncate()
@@ -838,7 +839,7 @@ impl ObjectTab {
                     )
                     .children(status.map(|s| {
                         div()
-                            .text_size(px(12.))
+                            .text_size(ts::BODY)
                             .text_color(if self.error.is_some() { p.prod } else { p.fg3 })
                             .child(s)
                     }))
@@ -860,8 +861,8 @@ impl ObjectTab {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
-                    .text_size(px(12.))
+                    .gap(rpx(6.))
+                    .text_size(ts::BODY)
                     .text_color(p.fg2)
                     .child(facts.join(" · "))
                     .children(comment.map(|c| {
@@ -879,11 +880,11 @@ impl ObjectTab {
     fn render_pages(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         div()
             .flex_none()
-            .h(px(32.))
+            .h(rpx(32.))
             .flex()
             .items_end()
-            .gap(px(2.))
-            .px(px(10.))
+            .gap(rpx(2.))
+            .px(rpx(10.))
             .border_b_1()
             .border_color(p.bd)
             .bg(p.panel)
@@ -895,11 +896,11 @@ impl ObjectTab {
                 };
                 div()
                     .id(("obj-page", i))
-                    .h(px(28.))
-                    .px(px(10.))
+                    .h(rpx(28.))
+                    .px(rpx(10.))
                     .flex()
                     .items_center()
-                    .text_size(px(12.))
+                    .text_size(ts::BODY)
                     .cursor_pointer()
                     .border_b_2()
                     .border_color(if on {
@@ -925,14 +926,14 @@ impl ObjectTab {
         }
         let header = div()
             .flex_none()
-            .h(px(ROW_H))
+            .h(rpx(ROW_H))
             .flex()
             .items_center()
-            .px(px(12.))
-            .gap(px(10.))
+            .px(rpx(12.))
+            .gap(rpx(10.))
             .border_b_1()
             .border_color(p.bd)
-            .text_size(px(11.5))
+            .text_size(ts::LABEL)
             .font_weight(FontWeight::MEDIUM)
             .text_color(p.fg3)
             .children(
@@ -941,7 +942,7 @@ impl ObjectTab {
                     .enumerate()
                     .map(|(c, h)| cell_box(g.widths, c).child(*h)),
             )
-            .child(div().w(px(44.)).flex_none());
+            .child(div().w(rpx(44.)).flex_none());
         let rows = g.rows.clone();
         let (id, widths, link, double) = (g.id, g.widths, g.link, g.open_on_double);
         let p2 = *p;
@@ -961,14 +962,14 @@ impl ObjectTab {
                                 let p = &p2;
                                 div()
                                     .id(r)
-                                    .h(px(ROW_H))
+                                    .h(rpx(ROW_H))
                                     .flex()
                                     .items_center()
-                                    .px(px(12.))
-                                    .gap(px(10.))
+                                    .px(rpx(12.))
+                                    .gap(rpx(10.))
                                     .border_b_1()
                                     .border_color(p.line)
-                                    .text_size(px(12.))
+                                    .text_size(ts::BODY)
                                     .text_color(p.fg)
                                     .hover(|s| s.bg(p.hover))
                                     .when(double, |d| {
@@ -1000,9 +1001,9 @@ impl ObjectTab {
                                     .child(
                                         div()
                                             .id(("obj-copy", r))
-                                            .w(px(44.))
+                                            .w(rpx(44.))
                                             .flex_none()
-                                            .text_size(px(11.))
+                                            .text_size(ts::SMALL)
                                             .text_color(p.fg3)
                                             .cursor_pointer()
                                             .hover(|s| s.text_color(p.acc))
@@ -1033,16 +1034,16 @@ impl ObjectTab {
                 .flex_col()
                 .child(
                     div()
-                        .h(px(28.))
+                        .h(rpx(28.))
                         .flex_none()
                         .flex()
                         .items_center()
-                        .px(px(12.))
-                        .gap(px(6.))
+                        .px(rpx(12.))
+                        .gap(rpx(6.))
                         .border_b_1()
                         .border_color(p.bd)
                         .bg(p.panel)
-                        .text_size(px(12.))
+                        .text_size(ts::BODY)
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(p.fg)
                         .child(format!("{label} {n}"))
@@ -1063,11 +1064,11 @@ impl ObjectTab {
             .children(deps.hint.clone().map(|h| {
                 div()
                     .flex_none()
-                    .px(px(12.))
-                    .py(px(6.))
+                    .px(rpx(12.))
+                    .py(rpx(6.))
                     .border_b_1()
                     .border_color(p.bd)
-                    .text_size(px(12.))
+                    .text_size(ts::BODY)
                     .text_color(p.fg2)
                     .child(h)
             }))
@@ -1079,8 +1080,8 @@ impl ObjectTab {
     fn render_empty(&self, text: &'static str, p: &Palette) -> AnyElement {
         div()
             .flex_1()
-            .p(px(16.))
-            .text_size(px(12.))
+            .p(rpx(16.))
+            .text_size(ts::BODY)
             .text_color(p.fg3)
             .child(text)
             .into_any_element()
@@ -1101,15 +1102,15 @@ impl ObjectTab {
             .flex_col()
             .child(
                 div()
-                    .h(px(30.))
+                    .h(rpx(30.))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .px(px(12.))
+                    .gap(rpx(8.))
+                    .px(rpx(12.))
                     .border_b_1()
                     .border_color(p.bd)
-                    .text_size(px(12.))
+                    .text_size(ts::BODY)
                     .child(div().flex_1().text_color(p.fg3).child("Read-only"))
                     .child(
                         ui::button(id, "Copy", Kind::Secondary, p).on_click(cx.listener(
@@ -1129,7 +1130,7 @@ impl ObjectTab {
                         .appearance(false)
                         .h(relative(1.))
                         .font_family(MONO)
-                        .text_size(px(12.5)),
+                        .text_size(ts::UI),
                 ),
             )
             .into_any_element()
@@ -1154,7 +1155,7 @@ impl ObjectTab {
             .child(
                 div()
                     .id("obj-trigger-list")
-                    .w(px(260.))
+                    .w(rpx(260.))
                     .flex_none()
                     .overflow_y_scroll()
                     .border_r_1()
@@ -1163,8 +1164,8 @@ impl ObjectTab {
                         let on = i == self.trigger;
                         div()
                             .id(("obj-trigger", i))
-                            .px(px(12.))
-                            .py(px(6.))
+                            .px(rpx(12.))
+                            .py(rpx(6.))
                             .flex()
                             .flex_col()
                             .cursor_pointer()
@@ -1178,14 +1179,14 @@ impl ObjectTab {
                             .child(
                                 div()
                                     .font_family(MONO)
-                                    .text_size(px(12.))
+                                    .text_size(ts::BODY)
                                     .text_color(p.fg)
                                     .truncate()
                                     .child(t.name.clone()),
                             )
                             .child(
                                 div()
-                                    .text_size(px(11.))
+                                    .text_size(ts::SMALL)
                                     .text_color(p.fg3)
                                     .truncate()
                                     .child(trigger_summary(t)),
@@ -1222,15 +1223,15 @@ impl ObjectTab {
             .child(render_pager(&self.pager, busy, p, cx))
             .child(
                 div()
-                    .h(px(30.))
+                    .h(rpx(30.))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .px(px(12.))
+                    .gap(rpx(8.))
+                    .px(rpx(12.))
                     .border_b_1()
                     .border_color(p.bd)
-                    .text_size(px(12.))
+                    .text_size(ts::BODY)
                     .child(
                         div()
                             .flex_1()
@@ -1318,7 +1319,7 @@ impl Render for ObjectTab {
 /// A fixed-width cell, or the stretching last one.
 fn cell_box(widths: &[f32], c: usize) -> gpui_kit::Div {
     match widths.get(c) {
-        Some(w) if c + 1 < widths.len() => div().w(px(*w)).flex_none().min_w_0(),
+        Some(w) if c + 1 < widths.len() => div().w(rpx(*w)).flex_none().min_w_0(),
         _ => div().flex_1().min_w_0(),
     }
 }

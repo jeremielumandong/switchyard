@@ -21,6 +21,7 @@ use crate::actions::{
     TreeCollapse, TreeCopy, TreeDown, TreeExpand, TreeOpen, TreePin, TreeRefresh, TreeUp,
 };
 use crate::app_state::{SessionState, badge_of, next_id};
+use crate::appearance::{rpx, ts};
 use crate::conn_editor::ConnKind;
 use crate::ddl_tab::DdlTab;
 pub(crate) use crate::explorer::CoreSink;
@@ -2005,17 +2006,17 @@ impl Workspace {
         };
         let second = if ssh.is_some() { "Files" } else { "Schema" };
         div()
-            .w(px(self.sidebar_width))
+            .w(rpx(self.sidebar_width))
             .relative()
             .child(
                 // Drag the right edge to resize.
                 div()
                     .id("side-resize")
                     .absolute()
-                    .right(px(-3.))
+                    .right(rpx(-3.))
                     .top_0()
                     .bottom_0()
-                    .w(px(6.))
+                    .w(rpx(6.))
                     .cursor_col_resize()
                     .hover(|s| s.bg(p.acc.opacity(0.35)))
                     .on_mouse_down(
@@ -2035,9 +2036,9 @@ impl Workspace {
             .min_h_0()
             .child(
                 div()
-                    .px(px(8.))
-                    .pt(px(8.))
-                    .pb(px(6.))
+                    .px(rpx(8.))
+                    .pt(rpx(8.))
+                    .pb(rpx(6.))
                     .flex_none()
                     .child(ui::segmented(
                         "side-tabs",
@@ -2067,11 +2068,11 @@ impl Workspace {
             .child(
                 div()
                     .flex_none()
-                    .p(px(8.))
+                    .p(rpx(8.))
                     .border_t_1()
                     .border_color(p.bd)
                     .flex()
-                    .gap(px(6.))
+                    .gap(rpx(6.))
                     .child(
                         ui::button("new-conn", "New connection", ui::Kind::Secondary, p)
                             .flex_1()
@@ -2109,9 +2110,9 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .px(px(12.))
-                    .pt(px(6.))
-                    .pb(px(4.))
+                    .px(rpx(12.))
+                    .pt(rpx(6.))
+                    .pb(rpx(4.))
                     .child(ui::caption("HOSTS", &p))
                     .child(ui::caption("by host", &p).font_family(MONO)),
             )
@@ -2126,7 +2127,7 @@ impl Workspace {
                     }),
                 )
                 .flex_1()
-                .pb(px(8.)),
+                .pb(rpx(8.)),
             )
             .into_any_element()
     }
@@ -2174,13 +2175,13 @@ impl Workspace {
                 }
             }))
             .w_full()
-            .h(px(26.))
+            .h(rpx(26.))
             .flex()
             .items_center()
-            .gap(px(7.))
-            .pl(px(r.indent + if r.is_group { 8. } else { 26. }))
-            .pr(px(10.))
-            .text_size(px(12.5))
+            .gap(rpx(7.))
+            .pl(rpx(r.indent + if r.is_group { 8. } else { 26. }))
+            .pr(rpx(10.))
+            .text_size(ts::UI)
             .when(active, |d| d.bg(p.sel))
             .hover(|s| s.bg(p.hover))
             .on_click(cx.listener(move |this, _, w, cx| {
@@ -2218,10 +2219,10 @@ impl Workspace {
             )
             .child(
                 div()
-                    .w(px(10.))
+                    .w(rpx(10.))
                     .flex_none()
                     .text_color(p.fg3)
-                    .text_size(px(9.))
+                    .text_size(ts::TINY)
                     .child(if r.is_group {
                         if collapsed { "▸" } else { "▾" }
                     } else {
@@ -2246,7 +2247,7 @@ impl Workspace {
             .child(
                 div()
                     .font_family(MONO)
-                    .text_size(px(11.))
+                    .text_size(ts::SMALL)
                     .text_color(p.fg3)
                     .whitespace_nowrap()
                     .child(r.sub.clone()),
@@ -2294,34 +2295,34 @@ impl Workspace {
             .child(
                 div()
                     .flex_none()
-                    .px(px(8.))
-                    .pt(px(2.))
-                    .pb(px(6.))
+                    .px(rpx(8.))
+                    .pt(rpx(2.))
+                    .pb(rpx(6.))
                     .child(
                         div()
                             .id("schema-search")
-                            .h(px(26.))
+                            .h(rpx(26.))
                             .flex()
                             .items_center()
-                            .gap(px(8.))
-                            .px(px(8.))
+                            .gap(rpx(8.))
+                            .px(rpx(8.))
                             .border_1()
                             .border_color(p.bd)
                             .rounded(px(6.))
                             .bg(p.bg)
                             .text_color(p.fg3)
-                            .text_size(px(12.))
+                            .text_size(ts::BODY)
                             .child(
                                 div().flex_1().child(
                                     Input::new(&self.schema_search)
                                         .appearance(false)
-                                        .text_size(px(12.)),
+                                        .text_size(ts::BODY),
                                 ),
                             )
                             .child(
                                 div()
                                     .font_family(MONO)
-                                    .text_size(px(10.5))
+                                    .text_size(ts::CAPTION_PLUS)
                                     .child(ui::keys("⌘P", "Ctrl+P")),
                             ),
                     )
@@ -2329,10 +2330,10 @@ impl Workspace {
                         div()
                             .flex()
                             .justify_between()
-                            .gap(px(8.))
-                            .px(px(2.))
-                            .pt(px(6.))
-                            .text_size(px(11.))
+                            .gap(rpx(8.))
+                            .px(rpx(2.))
+                            .pt(rpx(6.))
+                            .text_size(ts::SMALL)
                             .text_color(p.fg3)
                             .child(
                                 div()
@@ -2357,8 +2358,8 @@ impl Workspace {
                 d.child(
                     div()
                         .flex_1()
-                        .p(px(16.))
-                        .text_size(px(12.5))
+                        .p(rpx(16.))
+                        .text_size(ts::UI)
                         .text_color(p.fg3)
                         .child(
                             "Open a SQL tab, or choose Show in explorer on a database \
@@ -2401,7 +2402,7 @@ impl Workspace {
                             )
                             .track_scroll(&scroll)
                             .flex_1()
-                            .pb(px(8.)),
+                            .pb(rpx(8.)),
                         ),
                 )
             })
@@ -2688,13 +2689,13 @@ impl Workspace {
                 })
             })
             .w_full()
-            .h(px(26.))
+            .h(rpx(26.))
             .flex()
             .items_center()
-            .gap(px(7.))
-            .pl(px(8. + r.depth as f32 * 14.))
-            .pr(px(10.))
-            .text_size(px(12.5))
+            .gap(rpx(7.))
+            .pl(rpx(8. + r.depth as f32 * 14.))
+            .pr(rpx(10.))
+            .text_size(ts::UI)
             .text_color(if r.dim { p.fg2 } else { p.fg })
             .when(r.depth == 0, |d| d.font_weight(FontWeight::SEMIBOLD))
             .when(active_node, |d| d.border_l_2().border_color(p.acc))
@@ -2749,10 +2750,10 @@ impl Workspace {
             )
             .child(
                 div()
-                    .w(px(10.))
+                    .w(rpx(10.))
                     .flex_none()
                     .text_color(p.fg3)
-                    .text_size(px(9.))
+                    .text_size(ts::TINY)
                     // An object row's caret expands its children; the rest of the row
                     // selects it (double-click opens the data).
                     .when(has_caret && caret_object, |d| {
@@ -2772,11 +2773,11 @@ impl Workspace {
             )
             .child(
                 div()
-                    .w(px(14.))
+                    .w(rpx(14.))
                     .flex_none()
                     .font_family(MONO)
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_size(px(10.))
+                    .text_size(ts::CAPTION)
                     .text_color(p.fg3)
                     .child(r.icon.clone()),
             )
@@ -2788,7 +2789,7 @@ impl Workspace {
                     div()
                         .font_family(MONO)
                         .font_weight(FontWeight::NORMAL)
-                        .text_size(px(11.))
+                        .text_size(ts::SMALL)
                         .text_color(p.fg3)
                         // Long descriptions (job status, role attributes) give way to the name.
                         .flex_shrink(1.)
@@ -2926,17 +2927,17 @@ impl Workspace {
             }
         };
         div()
-            .w(px(self.inspector_width))
+            .w(rpx(self.inspector_width))
             .relative()
             .child(
                 // Drag the left edge to resize.
                 div()
                     .id("insp-resize")
                     .absolute()
-                    .left(px(-3.))
+                    .left(rpx(-3.))
                     .top_0()
                     .bottom_0()
-                    .w(px(6.))
+                    .w(rpx(6.))
                     .cursor_col_resize()
                     .hover(|s| s.bg(p.acc.opacity(0.35)))
                     .on_mouse_down(
@@ -2957,18 +2958,18 @@ impl Workspace {
             .min_h_0()
             .child(
                 div()
-                    .h(px(34.))
+                    .h(rpx(34.))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .pl(px(12.))
-                    .pr(px(10.))
+                    .gap(rpx(8.))
+                    .pl(rpx(12.))
+                    .pr(rpx(10.))
                     .border_b_1()
                     .border_color(p.bd)
                     .child(
                         div()
-                            .text_size(px(12.))
+                            .text_size(ts::BODY)
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("Value viewer"),
                     )
@@ -2976,7 +2977,7 @@ impl Workspace {
                         d.child(
                             div()
                                 .font_family(MONO)
-                                .text_size(px(11.))
+                                .text_size(ts::SMALL)
                                 .text_color(p.fg3)
                                 .child(format!("row {r}")),
                         )
@@ -2986,8 +2987,8 @@ impl Workspace {
                         let wide = self.inspector_width > INSPECTOR_WIDTH + 1.;
                         div()
                             .id("insp-expand")
-                            .px(px(6.))
-                            .py(px(2.))
+                            .px(rpx(6.))
+                            .py(rpx(2.))
                             .rounded(px(4.))
                             .text_color(p.fg3)
                             .hover(|s| s.bg(p.hover).text_color(p.fg))
@@ -3014,8 +3015,8 @@ impl Workspace {
                     .child(
                         div()
                             .id("insp-close")
-                            .px(px(6.))
-                            .py(px(2.))
+                            .px(rpx(6.))
+                            .py(rpx(2.))
                             .rounded(px(4.))
                             .text_color(p.fg3)
                             .hover(|s| s.bg(p.hover))
@@ -3028,8 +3029,8 @@ impl Workspace {
             )
             .child(
                 div()
-                    .px(px(10.))
-                    .py(px(8.))
+                    .px(rpx(10.))
+                    .py(rpx(8.))
                     .flex_none()
                     .child(ui::segmented(
                         "viewer-fmt",
@@ -3071,12 +3072,12 @@ impl Workspace {
                     .min_h_0()
                     // Long XML or text lines scroll sideways instead of being cut.
                     .overflow_scroll()
-                    .px(px(12.))
-                    .pt(px(4.))
-                    .pb(px(12.))
+                    .px(rpx(12.))
+                    .pt(rpx(4.))
+                    .pb(rpx(12.))
                     .font_family(MONO)
-                    .text_size(px(12.))
-                    .line_height(px(19.))
+                    .text_size(ts::BODY)
+                    .line_height(rpx(19.))
                     .children(image)
                     .children(lines.into_iter().map(|segs| {
                         div().flex().whitespace_nowrap().children(
@@ -3090,11 +3091,11 @@ impl Workspace {
                     .flex_none()
                     .flex()
                     .justify_between()
-                    .px(px(12.))
-                    .py(px(8.))
+                    .px(rpx(12.))
+                    .py(rpx(8.))
                     .border_t_1()
                     .border_color(p.bd)
-                    .text_size(px(11.))
+                    .text_size(ts::SMALL)
                     .text_color(p.fg3)
                     .child(size_label)
                     .child(
@@ -3219,13 +3220,13 @@ impl Workspace {
                     };
                     *image = Some(
                         div()
-                            .pt(px(6.))
+                            .pt(rpx(6.))
                             .flex()
                             .justify_center()
                             .child(
                                 gpui_kit::img(img)
-                                    .max_w(px(self.inspector_width - 24.))
-                                    .max_h(px(420.)),
+                                    .max_w(rpx(self.inspector_width - 24.))
+                                    .max_h(rpx(420.)),
                             )
                             .into_any_element(),
                     );

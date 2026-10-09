@@ -18,7 +18,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     AnyElement, Context, Entity, Focusable, Render, SharedString, Subscription, Window, div,
-    prelude::*, px,
+    prelude::*,
 };
 
 use crate::api::compat::field;
@@ -29,6 +29,7 @@ use super::draft::{self, AuthFieldKind, AuthFieldSpec, AuthMode};
 use super::view::{
     Col, chip, code_box, header_cells, heading, icon, mono_field, outline_chip, table, table_row,
 };
+use crate::appearance::rpx;
 
 /// The `secret:` key prefix the Vars and Envs editors use for vault rows.
 const SECRET_PREFIX: &str = "secret:";
@@ -340,7 +341,7 @@ impl Render for KvGrid {
         div()
             .flex()
             .flex_col()
-            .gap(px(10.))
+            .gap(rpx(10.))
             .child(
                 div()
                     .flex()
@@ -349,7 +350,7 @@ impl Render for KvGrid {
                     .child(
                         div()
                             .flex_1()
-                            .min_w(px(0.))
+                            .min_w(rpx(0.))
                             .truncate()
                             .text_size(text::S11)
                             .text_color(colors.muted_foreground)
@@ -399,7 +400,7 @@ impl Render for KvGrid {
                 if self.bulk {
                     return el.child(
                         code_box(cx)
-                            .min_h(px(72.))
+                            .min_h(rpx(72.))
                             .when(editor_focused, |el| el.border_color(colors.ring))
                             .child(field::bare(&self.editor).w_full()),
                     );
@@ -494,7 +495,7 @@ impl Render for KvGrid {
                                 .ghost()
                                 .debug_selector(move || format!("{prefix}-add"))
                                 .px(space::SP_2)
-                                .py(px(6.))
+                                .py(rpx(6.))
                                 .bg(colors.sidebar)
                                 .text_color(tertiary)
                                 .on_click(cx.listener(|this, _, window, cx| this.add(window, cx)))
@@ -760,13 +761,13 @@ impl AuthForm {
             (FieldValue::Choice(current), AuthFieldKind::Choice(options)) => div()
                 .flex()
                 .flex_col()
-                .gap(px(6.))
+                .gap(rpx(6.))
                 .child(label)
                 .child(
                     div()
                         .flex()
                         .flex_wrap()
-                        .gap(px(2.))
+                        .gap(rpx(2.))
                         .children(options.iter().map(|option| {
                             let value: &'static str = option;
                             let key = spec.key;
@@ -787,11 +788,11 @@ impl AuthForm {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(6.))
+                    .gap(rpx(6.))
                     .child(label)
                     .child(
                         code_box(cx)
-                            .min_h(px(72.))
+                            .min_h(rpx(72.))
                             .when(focused, |el| el.border_color(colors.ring))
                             .child(field::bare(state).w_full()),
                     )
@@ -800,7 +801,7 @@ impl AuthForm {
             (FieldValue::Input { state, .. }, _) => div()
                 .flex()
                 .flex_col()
-                .gap(px(6.))
+                .gap(rpx(6.))
                 .child(label)
                 .child(mono_field(state, window, cx).text_color(palette::lavender(cx)))
                 .when(self.mode == AuthMode::Basic && spec.key == "auth_url", |el| {
@@ -861,7 +862,7 @@ impl Render for AuthForm {
         div()
             .flex()
             .flex_col()
-            .gap(px(10.))
+            .gap(rpx(10.))
             .when(has_secret, |el| {
                 el.child(
                     div().flex().justify_end().child(

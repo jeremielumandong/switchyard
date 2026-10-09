@@ -3,7 +3,7 @@
 //! that the theme, editors, result grids and terminals read when they lay out.
 
 use gpui_kit::component::Size;
-use gpui_kit::{App, Global, Pixels, SharedString, px};
+use gpui_kit::{App, Global, Pixels, Rems, SharedString, px};
 use serde::{Deserialize, Serialize};
 
 use crate::theme::MONO;
@@ -114,6 +114,14 @@ pub struct ActiveAppearance(pub AppearanceSettings);
 
 impl Global for ActiveAppearance {}
 
+/// `SWITCHYARD_ZOOM` (tests, screenshots), clamped; it overrides the saved zoom.
+pub fn env_zoom() -> Option<f32> {
+    std::env::var("SWITCHYARD_ZOOM")
+        .ok()
+        .and_then(|v| v.trim().parse::<f32>().ok())
+        .map(clamp_zoom)
+}
+
 /// The active settings (defaults before any are set).
 pub fn current(cx: &App) -> AppearanceSettings {
     cx.try_global::<ActiveAppearance>()
@@ -149,7 +157,58 @@ pub fn editor_font_size(cx: &App) -> Pixels {
     px(s.editor_font_size * s.zoom)
 }
 
-/// A px value from the 100 % design, scaled by the active zoom.
+/// A length from the 100 % design that follows the zoom without a context: gpui-component
+/// sets the window's rem size to the UI font size (13 px × zoom), so `rpx(12.)` is 12 px at
+/// 100 % and 18 px at 150 %. Use it for every fixed size in element styles (text, row
+/// heights, paddings, gaps, fixed widths); keep `px` for positions measured in window
+/// coordinates (drag offsets, user-resized panes, canvas painting).
+pub const fn rpx(v: f32) -> Rems {
+    Rems(v / UI_FONT)
+}
+
+/// Text sizes, as named steps of the 100 % design (all zoom with [`rpx`]).
+pub mod ts {
+    use super::rpx;
+    use gpui_kit::Rems;
+
+    /// 8.5 px: badges inside tabs and chips.
+    pub const MICRO: Rems = rpx(8.5);
+    /// 9 px.
+    pub const TINY: Rems = rpx(9.);
+    /// 9.5 px.
+    pub const TINY_PLUS: Rems = rpx(9.5);
+    /// 10 px: type names, counters.
+    pub const CAPTION: Rems = rpx(10.);
+    /// 10.5 px.
+    pub const CAPTION_PLUS: Rems = rpx(10.5);
+    /// 11 px: secondary labels.
+    pub const SMALL: Rems = rpx(11.);
+    /// 11.5 px: section headers, status bar.
+    pub const LABEL: Rems = rpx(11.5);
+    /// 12 px: dense body text (lists, grids, forms).
+    pub const BODY: Rems = rpx(12.);
+    /// 12.5 px: tabs, menus, settings rows.
+    pub const UI: Rems = rpx(12.5);
+    /// 13 px: the UI base size.
+    pub const BASE: Rems = rpx(13.);
+    /// 13.5 px.
+    pub const BASE_PLUS: Rems = rpx(13.5);
+    /// 14 px: dialog and panel titles.
+    pub const TITLE: Rems = rpx(14.);
+    /// 15 px.
+    pub const TITLE_PLUS: Rems = rpx(15.);
+    /// 16 px.
+    pub const HEADING: Rems = rpx(16.);
+    /// 20 px.
+    pub const DISPLAY_S: Rems = rpx(20.);
+    /// 22 px.
+    pub const DISPLAY_M: Rems = rpx(22.);
+    /// 24 px: the welcome greeting.
+    pub const DISPLAY_L: Rems = rpx(24.);
+}
+
+/// A px value from the 100 % design, scaled by the active zoom (for code that needs
+/// `Pixels`, such as position arithmetic; element styles use [`rpx`]).
 pub fn scaled(v: f32, cx: &App) -> Pixels {
     px(v * zoom(cx))
 }
@@ -322,6 +381,13 @@ mod tests {
         assert_eq!(grid_row_height(1.0), 26.0);
         assert_eq!(grid_row_height(1.5), 39.0);
         assert_eq!(grid_row_height(0.7), 18.0);
+    }
+
+    #[test]
+    fn rpx_is_relative_to_the_ui_font() {
+        assert_eq!(rpx(13.).0, 1.0);
+        assert_eq!(rpx(6.5).0, 0.5);
+        assert_eq!(ts::BODY.0 * UI_FONT, 12.0);
     }
 
     #[test]

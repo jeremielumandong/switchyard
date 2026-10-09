@@ -9,10 +9,11 @@ use gpui_kit::component::{
     input::Input,
     resizable::ResizableState,
 };
-use gpui_kit::{Div, Subscription, div, px};
+use gpui_kit::{Div, Subscription, div};
 
 use super::*;
 use crate::api::compat::dialogs::{self, Dismiss};
+use crate::appearance::rpx;
 
 pub(super) struct WorkbenchUx {
     pub request_tabs_scroll: gpui_kit::ScrollHandle,
@@ -175,7 +176,7 @@ impl WorkbenchPanel {
                     .gap_2()
                     .font_family(crate::api::compat::fonts::mono(cx))
                     .text_sm()
-                    .child(div().flex_1().min_w(px(0.)).child(line.clone()))
+                    .child(div().flex_1().min_w(rpx(0.)).child(line.clone()))
                     .child(self.copy_row_icon(format!("workbench-console-copy-{index}"), line, cx))
             }))
             .into_any_element()

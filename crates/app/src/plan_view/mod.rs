@@ -29,6 +29,7 @@ use switchyard_core::store::{HistoryEntry, ProfileId};
 use switchyard_core::{Command, QueryId, RequestId, RuntimeHandle, SessionId};
 
 use crate::app_state::next_id;
+use crate::appearance::{rpx, ts};
 use crate::theme::{MONO, Palette, SANS, palette};
 use crate::ui::{self, Kind, thousands};
 use layout::{FlameBar, GraphLayout, Heat, NODE_H, NODE_W};
@@ -980,12 +981,12 @@ impl PlanView {
         let kind = entry.map(|e| e.plan.kind);
         let graph = self.mode == Mode::Graph;
         div()
-            .h(px(34.))
+            .h(rpx(34.))
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(8.))
-            .px(px(10.))
+            .gap(rpx(8.))
+            .px(rpx(10.))
             .border_b_1()
             .border_color(p.bd)
             .whitespace_nowrap()
@@ -1000,9 +1001,9 @@ impl PlanView {
                         if open { Kind::Secondary } else { Kind::Ghost },
                         p,
                     )
-                    .h(px(22.))
-                    .px(px(8.))
-                    .text_size(px(11.5))
+                    .h(rpx(22.))
+                    .px(rpx(8.))
+                    .text_size(ts::LABEL)
                     .when(n > 0 && !open, |d| d.text_color(p.stg))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.hotspots = Some(!open);
@@ -1040,14 +1041,14 @@ impl PlanView {
                 };
                 d.child(
                     div()
-                        .px(px(6.))
-                        .py(px(1.))
+                        .px(rpx(6.))
+                        .py(rpx(1.))
                         .rounded(px(4.))
                         .border_1()
                         .border_color(color.opacity(0.5))
                         .font_family(MONO)
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_size(px(9.5))
+                        .text_size(ts::TINY_PLUS)
                         .text_color(color)
                         .child(label),
                 )
@@ -1065,9 +1066,9 @@ impl PlanView {
                         Kind::Ghost,
                         p,
                     )
-                    .h(px(22.))
-                    .px(px(6.))
-                    .text_size(px(11.5))
+                    .h(rpx(22.))
+                    .px(rpx(6.))
+                    .text_size(ts::LABEL)
                     .on_click(cx.listener(|this, _, _, cx| this.open_menu(Menu::Plans, cx))),
                 )
             })
@@ -1076,7 +1077,7 @@ impl PlanView {
                     .min_w_0()
                     .truncate()
                     .font_family(MONO)
-                    .text_size(px(11.))
+                    .text_size(ts::SMALL)
                     .text_color(p.fg2)
                     .child(summary.join(" · ")),
             )
@@ -1084,35 +1085,35 @@ impl PlanView {
             .when(graph && entry.is_some(), |d| {
                 d.child(
                     ui::button("zoom-out", "−", Kind::Ghost, p)
-                        .h(px(22.))
-                        .px(px(7.))
+                        .h(rpx(22.))
+                        .px(rpx(7.))
                         .on_click(
                             cx.listener(|this, _, _, cx| this.set_zoom(this.zoom / 1.25, None, cx)),
                         ),
                 )
                 .child(
                     div()
-                        .w(px(36.))
+                        .w(rpx(36.))
                         .flex()
                         .justify_center()
                         .font_family(MONO)
-                        .text_size(px(10.5))
+                        .text_size(ts::CAPTION_PLUS)
                         .text_color(p.fg3)
                         .child(format!("{:.0}%", self.zoom * 100.0)),
                 )
                 .child(
                     ui::button("zoom-in", "+", Kind::Ghost, p)
-                        .h(px(22.))
-                        .px(px(7.))
+                        .h(rpx(22.))
+                        .px(rpx(7.))
                         .on_click(
                             cx.listener(|this, _, _, cx| this.set_zoom(this.zoom * 1.25, None, cx)),
                         ),
                 )
                 .child(
                     ui::button("zoom-fit", "Fit", Kind::Ghost, p)
-                        .h(px(22.))
-                        .px(px(7.))
-                        .text_size(px(11.5))
+                        .h(rpx(22.))
+                        .px(rpx(7.))
+                        .text_size(ts::LABEL)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.fit(cx);
                         })),
@@ -1125,9 +1126,9 @@ impl PlanView {
                 |d| {
                     d.child(
                         ui::button("what-if", "What if…", Kind::Ghost, p)
-                            .h(px(22.))
-                            .px(px(8.))
-                            .text_size(px(11.5))
+                            .h(rpx(22.))
+                            .px(rpx(8.))
+                            .text_size(ts::LABEL)
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.open_what_if(window, cx)),
                             ),
@@ -1150,9 +1151,9 @@ impl PlanView {
                 let d = d.when_some(optimize, |d, (sql, findings)| {
                     d.child(
                         ui::button("plan-optimize", "Optimize ✦", Kind::Secondary, p)
-                            .h(px(22.))
-                            .px(px(8.))
-                            .text_size(px(11.5))
+                            .h(rpx(22.))
+                            .px(rpx(8.))
+                            .text_size(ts::LABEL)
                             .on_click(cx.listener(move |_, _, _, cx| {
                                 cx.emit(PlanViewEvent::Optimize {
                                     sql: sql.clone(),
@@ -1164,9 +1165,9 @@ impl PlanView {
                 if self.compare.is_some() {
                     d.child(
                         ui::button("compare-exit", "Exit compare", Kind::Secondary, p)
-                            .h(px(22.))
-                            .px(px(8.))
-                            .text_size(px(11.5))
+                            .h(rpx(22.))
+                            .px(rpx(8.))
+                            .text_size(ts::LABEL)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.compare = None;
                                 this.refit();
@@ -1176,9 +1177,9 @@ impl PlanView {
                 } else {
                     d.child(
                         ui::button("compare", "Compare ▾", Kind::Secondary, p)
-                            .h(px(22.))
-                            .px(px(8.))
-                            .text_size(px(11.5))
+                            .h(rpx(22.))
+                            .px(rpx(8.))
+                            .text_size(ts::LABEL)
                             .on_click(
                                 cx.listener(|this, _, _, cx| this.open_menu(Menu::Compare, cx)),
                             ),
@@ -1199,16 +1200,16 @@ impl PlanView {
             .id(id.into())
             .flex()
             .flex_col()
-            .px(px(8.))
-            .py(px(4.))
+            .px(rpx(8.))
+            .py(rpx(4.))
             .rounded(px(4.))
             .hover(|s| s.bg(p.sel))
             .when(active, |d| d.bg(p.hover))
-            .child(div().text_size(px(12.)).truncate().child(title))
+            .child(div().text_size(ts::BODY).truncate().child(title))
             .child(
                 div()
                     .font_family(MONO)
-                    .text_size(px(10.5))
+                    .text_size(ts::CAPTION_PLUS)
                     .text_color(p.fg3)
                     .truncate()
                     .child(sub),
@@ -1219,11 +1220,11 @@ impl PlanView {
         let mut body = div()
             .id("plan-menu")
             .absolute()
-            .top(px(30.))
-            .w(px(380.))
-            .max_h(px(360.))
+            .top(rpx(30.))
+            .w(rpx(380.))
+            .max_h(rpx(360.))
             .overflow_y_scroll()
-            .p(px(4.))
+            .p(rpx(4.))
             .bg(p.elev)
             .rounded(px(7.))
             .shadow(ui::shadow(p))
@@ -1234,9 +1235,9 @@ impl PlanView {
             }));
         let caption = |t: &str| {
             div()
-                .px(px(8.))
-                .py(px(4.))
-                .text_size(px(11.))
+                .px(rpx(8.))
+                .py(rpx(4.))
+                .text_size(ts::SMALL)
                 .text_color(p.fg3)
                 .child(t.to_owned())
         };
@@ -1254,8 +1255,8 @@ impl PlanView {
         match menu {
             Menu::WhatIf => {
                 body = body
-                    .right(px(10.))
-                    .w(px(460.))
+                    .right(rpx(10.))
+                    .w(rpx(460.))
                     .child(caption(
                         "Hypothetical indexes (HypoPG): plan this statement as if they existed. \
                          Nothing is created.",
@@ -1263,24 +1264,24 @@ impl PlanView {
                     .when_some(self.what_if_input.clone(), |d, input| {
                         d.child(
                             div()
-                                .mx(px(8.))
-                                .my(px(4.))
+                                .mx(rpx(8.))
+                                .my(rpx(4.))
                                 .font_family(MONO)
-                                .text_size(px(11.5))
+                                .text_size(ts::LABEL)
                                 .child(Textarea::new(&input)),
                         )
                     })
                     .child(caption("One CREATE INDEX per line."))
                     .child(
-                        div().flex().justify_end().px(px(8.)).py(px(4.)).child(
+                        div().flex().justify_end().px(rpx(8.)).py(rpx(4.)).child(
                             ui::button("what-if-run", "Plan with these indexes", Kind::Primary, p)
-                                .h(px(24.))
+                                .h(rpx(24.))
                                 .on_click(cx.listener(|this, _, _, cx| this.run_what_if(cx))),
                         ),
                     );
             }
             Menu::Plans => {
-                body = body.left(px(160.)).child(caption("Plans in this tab"));
+                body = body.left(rpx(160.)).child(caption("Plans in this tab"));
                 for (i, e) in self.entries.iter().enumerate().rev() {
                     body = body.child(
                         Self::menu_item(
@@ -1295,7 +1296,9 @@ impl PlanView {
                 }
             }
             Menu::Compare => {
-                body = body.right(px(10.)).child(caption("Compare this plan with"));
+                body = body
+                    .right(rpx(10.))
+                    .child(caption("Compare this plan with"));
                 let cur = self.current;
                 let mut any = false;
                 for (i, e) in self.entries.iter().enumerate().rev() {
@@ -1321,15 +1324,15 @@ impl PlanView {
                 if !any {
                     body = body.child(
                         div()
-                            .px(px(8.))
-                            .py(px(4.))
-                            .text_size(px(11.5))
+                            .px(rpx(8.))
+                            .py(rpx(4.))
+                            .text_size(ts::LABEL)
                             .text_color(p.fg3)
                             .child("No other plan in this tab yet: change the query and explain it again."),
                     );
                 }
                 body = body
-                    .child(div().h(px(1.)).bg(p.bd).my(px(4.)))
+                    .child(div().h(rpx(1.)).bg(p.bd).my(rpx(4.)))
                     .child(caption("Saved with history (this connection)"));
                 let in_tab: Vec<i64> = self.entries.iter().filter_map(|e| e.history_id).collect();
                 let saved: Vec<&HistoryEntry> = self
@@ -1338,13 +1341,13 @@ impl PlanView {
                     .filter(|h| Some(h.id) != cur.and_then(|c| self.entries[c].history_id))
                     .collect();
                 if self.saved_request.is_some() {
-                    body = body.child(div().px(px(8.)).py(px(4.)).child(ui::shimmer(160., p)));
+                    body = body.child(div().px(rpx(8.)).py(rpx(4.)).child(ui::shimmer(160., p)));
                 } else if saved.is_empty() {
                     body = body.child(
                         div()
-                            .px(px(8.))
-                            .py(px(4.))
-                            .text_size(px(11.5))
+                            .px(rpx(8.))
+                            .py(rpx(4.))
+                            .text_size(ts::LABEL)
                             .text_color(p.fg3)
                             .child("No saved plans. Plans are saved with query history when it is on for the connection."),
                     );
@@ -1394,13 +1397,13 @@ impl PlanView {
                 .flex_none()
                 .flex()
                 .items_center()
-                .gap(px(10.))
-                .px(px(12.))
-                .py(px(7.))
+                .gap(rpx(10.))
+                .px(rpx(12.))
+                .py(rpx(7.))
                 .bg(bg)
                 .border_b_1()
                 .border_color(p.bd)
-                .text_size(px(12.))
+                .text_size(ts::BODY)
         };
         match &self.status {
             Status::Idle => None,
@@ -1430,7 +1433,7 @@ impl PlanView {
                     .child(div().flex_1())
                     .child(
                         ui::button("plan-stop", "Stop", Kind::Secondary, p)
-                            .h(px(22.))
+                            .h(rpx(22.))
                             .text_color(p.prod)
                             .on_click(cx.listener(|this, _, _, cx| this.stop(cx))),
                     )
@@ -1453,7 +1456,7 @@ impl PlanView {
                     .child(div().flex_1())
                     .child(
                         ui::button("what-if-stop", "Stop", Kind::Secondary, p)
-                            .h(px(22.))
+                            .h(rpx(22.))
                             .text_color(p.prod)
                             .on_click(cx.listener(|this, _, _, cx| this.stop(cx))),
                     )
@@ -1482,13 +1485,13 @@ impl PlanView {
                                 .flex_1()
                                 .min_w_0()
                                 .font_family(MONO)
-                                .text_size(px(11.5))
+                                .text_size(ts::LABEL)
                                 .child(message.clone()),
                         )
                         .when_some(retry, |d, req| {
                             d.child(
                                 ui::button("plan-retry", "Retry", Kind::Secondary, p)
-                                    .h(px(22.))
+                                    .h(rpx(22.))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.status = Status::Idle;
                                         cx.emit(PlanViewEvent::Rerun(req.clone()));
@@ -1497,7 +1500,7 @@ impl PlanView {
                         })
                         .child(
                             ui::button("plan-dismiss", "Dismiss", Kind::Ghost, p)
-                                .h(px(22.))
+                                .h(rpx(22.))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.status = Status::Idle;
                                     cx.notify();
@@ -1513,13 +1516,13 @@ impl PlanView {
                     bar(p.prod_bg)
                         .flex_col()
                         .items_start()
-                        .gap(px(6.))
-                        .py(px(10.))
+                        .gap(rpx(6.))
+                        .py(rpx(10.))
                         .child(
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(8.))
+                                .gap(rpx(8.))
                                 .child(ui::env_badge_solid(
                                     switchyard_core::store::EnvironmentLabel::Production,
                                     p,
@@ -1540,18 +1543,18 @@ impl PlanView {
                         .child(
                             div()
                                 .w_full()
-                                .px(px(8.))
-                                .py(px(6.))
+                                .px(rpx(8.))
+                                .py(rpx(6.))
                                 .rounded(px(5.))
                                 .bg(p.bg)
                                 .font_family(MONO)
-                                .text_size(px(11.5))
+                                .text_size(ts::LABEL)
                                 .child(first_line(&req.sql)),
                         )
                         .child(
                             div()
                                 .flex()
-                                .gap(px(8.))
+                                .gap(rpx(8.))
                                 .child(
                                     ui::button("plan-confirm", "Run actual plan", Kind::Destructive, p)
                                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -1879,10 +1882,10 @@ impl PlanView {
                         .absolute()
                         .left(relative(b.x0 as f32))
                         .w(relative((b.x1 - b.x0) as f32))
-                        .top(px(b.depth as f32 * FLAME_ROW))
-                        .h(px(FLAME_ROW))
-                        .pr(px(1.))
-                        .pb(px(2.))
+                        .top(rpx(b.depth as f32 * FLAME_ROW))
+                        .h(rpx(FLAME_ROW))
+                        .pr(rpx(1.))
+                        .pb(rpx(2.))
                         .cursor_pointer()
                         .on_click(cx.listener(move |this, _, _, cx| {
                             let pick = (selected != Some(id)).then_some(id);
@@ -1893,7 +1896,7 @@ impl PlanView {
                                 .size_full()
                                 .flex()
                                 .items_center()
-                                .px(px(6.))
+                                .px(rpx(6.))
                                 .overflow_hidden()
                                 .rounded(px(3.))
                                 .bg(if heat == Heat::None {
@@ -1907,7 +1910,7 @@ impl PlanView {
                                     div()
                                         .truncate()
                                         .font_family(MONO)
-                                        .text_size(px(11.))
+                                        .text_size(ts::SMALL)
                                         .child(label),
                                 ),
                         )
@@ -1923,12 +1926,12 @@ impl PlanView {
             .min_h_0()
             .overflow_y_scroll()
             .bg(p.bg)
-            .p(px(10.))
+            .p(rpx(10.))
             .child(
                 div()
                     .relative()
                     .w_full()
-                    .h(px(depth as f32 * FLAME_ROW))
+                    .h(rpx(depth as f32 * FLAME_ROW))
                     .child(
                         canvas(move |b, _, _| viewport.set(b), |_, _, _, _| {})
                             .absolute()
@@ -1953,8 +1956,8 @@ impl PlanView {
                     .flex_none()
                     .flex()
                     .flex_col()
-                    .gap(px(3.))
-                    .p(px(8.))
+                    .gap(rpx(3.))
+                    .p(rpx(8.))
                     .rounded(px(6.))
                     .border_1()
                     .border_color(if active { p.acc } else { p.bd })
@@ -1970,20 +1973,20 @@ impl PlanView {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(6.))
+                            .gap(rpx(6.))
                             .child(ui::dot(Self::severity_color(f.severity, p), 7.))
                             .child(
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .text_size(px(12.))
+                                    .text_size(ts::BODY)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(f.title.clone()),
                             ),
                     )
                     .child(
                         div()
-                            .text_size(px(11.5))
+                            .text_size(ts::LABEL)
                             .text_color(p.fg2)
                             .child(f.detail.clone()),
                     )
@@ -1991,11 +1994,11 @@ impl PlanView {
                         let copy = s.clone();
                         d.child(
                             div()
-                                .mt(px(2.))
+                                .mt(rpx(2.))
                                 .flex()
                                 .items_start()
-                                .gap(px(6.))
-                                .p(px(6.))
+                                .gap(rpx(6.))
+                                .p(rpx(6.))
                                 .rounded(px(4.))
                                 .bg(p.bg)
                                 .child(
@@ -2003,14 +2006,14 @@ impl PlanView {
                                         .flex_1()
                                         .min_w_0()
                                         .font_family(MONO)
-                                        .text_size(px(11.))
+                                        .text_size(ts::SMALL)
                                         .child(s),
                                 )
                                 .child(
                                     div()
                                         .id(("hot-copy", i))
                                         .flex_none()
-                                        .text_size(px(11.))
+                                        .text_size(ts::SMALL)
                                         .text_color(p.acc)
                                         .cursor_pointer()
                                         .on_click(cx.listener(move |_, _, _, cx| {
@@ -2029,13 +2032,13 @@ impl PlanView {
         let empty = cards.is_empty();
         div()
             .id("hotspots")
-            .w(px(280.))
+            .w(rpx(280.))
             .flex_none()
             .h_full()
             .flex()
             .flex_col()
-            .gap(px(6.))
-            .p(px(8.))
+            .gap(rpx(6.))
+            .p(rpx(8.))
             .border_r_1()
             .border_color(p.bd)
             .bg(p.panel)
@@ -2044,12 +2047,12 @@ impl PlanView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(rpx(6.))
                     .child(ui::caption("HOTSPOTS", p))
                     .child(
                         div()
                             .font_family(MONO)
-                            .text_size(px(10.5))
+                            .text_size(ts::CAPTION_PLUS)
                             .text_color(p.fg3)
                             .child(e.findings.len().to_string()),
                     ),
@@ -2057,7 +2060,7 @@ impl PlanView {
             .children(e.plan.warnings.iter().map(|w| {
                 div()
                     .flex_none()
-                    .text_size(px(11.5))
+                    .text_size(ts::LABEL)
                     .text_color(p.stg)
                     .child(format!("⚠ {w}"))
             }))
@@ -2065,7 +2068,7 @@ impl PlanView {
             .when(empty, |d| {
                 d.child(
                     div()
-                        .text_size(px(12.))
+                        .text_size(ts::BODY)
                         .text_color(p.fg3)
                         .child("No hotspots: nothing in this plan crosses the finding thresholds."),
                 )
@@ -2130,24 +2133,24 @@ impl PlanView {
             .iter()
             .filter(|f| f.node_id == Some(id))
             .collect();
-        let section = |t: &str| div().mt(px(8.)).child(ui::caption(t.to_owned(), p));
+        let section = |t: &str| div().mt(rpx(8.)).child(ui::caption(t.to_owned(), p));
         let kv = |k: String, v: String| {
             div()
                 .flex()
-                .gap(px(8.))
-                .text_size(px(11.5))
-                .child(div().w(px(110.)).flex_none().text_color(p.fg3).child(k))
+                .gap(rpx(8.))
+                .text_size(ts::LABEL)
+                .child(div().w(rpx(110.)).flex_none().text_color(p.fg3).child(k))
                 .child(div().flex_1().min_w_0().font_family(MONO).child(v))
         };
         let mut col = div()
             .id("plan-detail")
-            .w(px(310.))
+            .w(rpx(310.))
             .flex_none()
             .h_full()
             .flex()
             .flex_col()
-            .gap(px(3.))
-            .p(px(10.))
+            .gap(rpx(3.))
+            .p(rpx(10.))
             .border_l_1()
             .border_color(p.bd)
             .bg(p.panel)
@@ -2156,19 +2159,19 @@ impl PlanView {
                 div()
                     .flex()
                     .items_start()
-                    .gap(px(6.))
+                    .gap(rpx(6.))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
-                            .text_size(px(13.))
+                            .text_size(ts::BASE)
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(n.operation.clone()),
                     )
                     .child(
                         div()
                             .id("detail-close")
-                            .px(px(4.))
+                            .px(rpx(4.))
                             .text_color(p.fg3)
                             .cursor_pointer()
                             .hover(|s| s.text_color(p.fg))
@@ -2184,7 +2187,7 @@ impl PlanView {
                 d.child(
                     div()
                         .font_family(MONO)
-                        .text_size(px(11.5))
+                        .text_size(ts::LABEL)
                         .text_color(p.fg2)
                         .child(o),
                 )
@@ -2198,11 +2201,11 @@ impl PlanView {
                     div()
                         .flex()
                         .flex_col()
-                        .text_size(px(11.5))
+                        .text_size(ts::LABEL)
                         .child(div().text_color(p.fg3).child(pr.kind.clone()))
                         .child(
                             div()
-                                .p(px(5.))
+                                .p(rpx(5.))
                                 .rounded(px(4.))
                                 .bg(p.bg)
                                 .font_family(MONO)
@@ -2216,7 +2219,7 @@ impl PlanView {
             for w in &n.warnings {
                 col = col.child(
                     div()
-                        .text_size(px(11.5))
+                        .text_size(ts::LABEL)
                         .text_color(p.stg)
                         .child(format!("⚠ {w}")),
                 );
@@ -2229,8 +2232,8 @@ impl PlanView {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
-                        .text_size(px(11.5))
+                        .gap(rpx(6.))
+                        .text_size(ts::LABEL)
                         .child(ui::dot(Self::severity_color(f.severity, p), 6.))
                         .child(div().flex_1().min_w_0().child(f.title.clone())),
                 );
@@ -2263,18 +2266,18 @@ impl PlanView {
             };
             div()
                 .flex_1()
-                .min_w(px(120.))
+                .min_w(rpx(120.))
                 .flex()
                 .flex_col()
-                .gap(px(2.))
-                .px(px(10.))
-                .py(px(6.))
+                .gap(rpx(2.))
+                .px(rpx(10.))
+                .py(rpx(6.))
                 .rounded(px(6.))
                 .border_1()
                 .border_color(p.bd)
                 .bg(p.elev)
                 .child(ui::caption(label.to_owned(), p))
-                .child(div().font_family(MONO).text_size(px(12.)).child(format!(
+                .child(div().font_family(MONO).text_size(ts::BODY).child(format!(
                     "{} → {}",
                     pair.a.map_or("–".into(), fmt),
                     pair.b.map_or("–".into(), fmt)
@@ -2282,7 +2285,7 @@ impl PlanView {
                 .child(
                     div()
                         .font_family(MONO)
-                        .text_size(px(11.5))
+                        .text_size(ts::LABEL)
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(color)
                         .child(pct.map_or("–".into(), |v| format!("{v:+.0}%"))),
@@ -2291,8 +2294,8 @@ impl PlanView {
         let summary = div()
             .flex_none()
             .flex()
-            .gap(px(8.))
-            .p(px(8.))
+            .gap(rpx(8.))
+            .p(rpx(8.))
             .border_b_1()
             .border_color(p.bd)
             .child(card("TIME", &cmp.time_ms, ms, true))
@@ -2302,18 +2305,18 @@ impl PlanView {
             .child(card("COST", &cmp.cost, count, true));
         let pane_header = |title: String, sub: String| {
             div()
-                .h(px(26.))
+                .h(rpx(26.))
                 .flex_none()
                 .flex()
                 .items_center()
-                .gap(px(8.))
-                .px(px(10.))
+                .gap(rpx(8.))
+                .px(rpx(10.))
                 .border_b_1()
                 .border_color(p.bd)
                 .bg(p.panel)
                 .child(
                     div()
-                        .text_size(px(11.5))
+                        .text_size(ts::LABEL)
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(title),
                 )
@@ -2322,7 +2325,7 @@ impl PlanView {
                         .min_w_0()
                         .truncate()
                         .font_family(MONO)
-                        .text_size(px(10.5))
+                        .text_size(ts::CAPTION_PLUS)
                         .text_color(p.fg3)
                         .child(sub),
                 )
@@ -2330,7 +2333,7 @@ impl PlanView {
         // The graphs keep a usable height; the delta table gives way first.
         let panes = div()
             .flex_1()
-            .min_h(px(170.))
+            .min_h(rpx(170.))
             .flex()
             .child(
                 div()
@@ -2366,11 +2369,11 @@ impl PlanView {
                 None => p.fg3,
             };
             div()
-                .w(px(170.))
+                .w(rpx(170.))
                 .flex_none()
                 .flex()
                 .justify_end()
-                .gap(px(6.))
+                .gap(rpx(6.))
                 .child(div().text_color(p.fg2).child(format!(
                     "{} → {}",
                     pair.a.map_or("–".into(), fmt),
@@ -2378,7 +2381,7 @@ impl PlanView {
                 )))
                 .child(
                     div()
-                        .w(px(46.))
+                        .w(rpx(46.))
                         .flex()
                         .justify_end()
                         .text_color(color)
@@ -2400,14 +2403,14 @@ impl PlanView {
                     || (ida.is_some() && ida == c.base_selected);
                 div()
                     .id(("delta", i))
-                    .h(px(24.))
+                    .h(rpx(24.))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .px(px(10.))
+                    .gap(rpx(10.))
+                    .px(rpx(10.))
                     .font_family(MONO)
-                    .text_size(px(11.))
+                    .text_size(ts::SMALL)
                     .when(active, |d| d.bg(p.sel))
                     .hover(|s| s.bg(p.hover))
                     .cursor_pointer()
@@ -2439,7 +2442,7 @@ impl PlanView {
             .collect();
         let head = |t: &str| {
             div()
-                .w(px(170.))
+                .w(rpx(170.))
                 .flex_none()
                 .flex()
                 .justify_end()
@@ -2447,22 +2450,22 @@ impl PlanView {
         };
         let table = div()
             .flex_shrink(1.)
-            .min_h(px(72.))
-            .max_h(px(200.))
+            .min_h(rpx(72.))
+            .max_h(rpx(200.))
             .flex()
             .flex_col()
             .border_t_1()
             .border_color(p.bd)
             .child(
                 div()
-                    .h(px(24.))
+                    .h(rpx(24.))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .px(px(10.))
+                    .gap(rpx(10.))
+                    .px(rpx(10.))
                     .bg(p.panel)
-                    .text_size(px(10.5))
+                    .text_size(ts::CAPTION_PLUS)
                     .text_color(p.fg3)
                     .child(div().flex_1().child("OPERATOR"))
                     .child(head("SELF TIME"))
@@ -2494,15 +2497,15 @@ impl PlanView {
             .flex()
             .flex_col()
             .items_center()
-            .pt(px(40.))
-            .gap(px(4.))
+            .pt(rpx(40.))
+            .gap(rpx(4.))
             .child(
                 div()
-                    .text_size(px(13.))
+                    .text_size(ts::BASE)
                     .text_color(p.fg2)
                     .child("No plan yet"),
             )
-            .child(div().text_size(px(12.)).text_color(p.fg3).child(format!(
+            .child(div().text_size(ts::BODY).text_color(p.fg3).child(format!(
                 "{} explains the statement at the cursor; {} runs it for an actual plan (writes are rolled back).",
                 ui::keys("⌘E", "Ctrl+E"),
                 ui::keys("⇧⌘E", "Ctrl+Shift+E")

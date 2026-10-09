@@ -6,11 +6,12 @@ use std::path::PathBuf;
 
 use gpui_kit::{
     AnyElement, Context, Global, InteractiveElement as _, IntoElement, ParentElement as _,
-    SharedString, StatefulInteractiveElement as _, Styled as _, div, px,
+    SharedString, StatefulInteractiveElement as _, Styled as _, div,
 };
 use switchyard_core::Command;
 use switchyard_core::update::{CHECK_SETTING, UpdateInfo, UpdateStatus};
 
+use crate::appearance::rpx;
 use crate::theme::Palette;
 use crate::workspace::Workspace;
 
@@ -137,13 +138,13 @@ impl Workspace {
             div()
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(rpx(6.))
                 .child(
                     div()
                         .id("sb-update")
                         .flex()
                         .items_center()
-                        .gap(px(5.))
+                        .gap(rpx(5.))
                         .text_color(p.acc)
                         .hover(|s| s.underline())
                         .on_click(cx.listener(|this, _, _, cx| this.open_update(cx)))

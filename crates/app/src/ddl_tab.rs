@@ -5,9 +5,10 @@ use gpui_kit::component::input::{Editor, EditorState};
 use gpui_kit::{
     AppContext as _, ClipboardItem, Context, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
-    div, px, relative,
+    div, relative,
 };
 
+use crate::appearance::{rpx, ts};
 use crate::theme::{MONO, palette};
 use crate::ui::{self, Kind};
 
@@ -66,22 +67,22 @@ impl Render for DdlTab {
             .bg(p.surface)
             .child(
                 div()
-                    .h(px(30.))
+                    .h(rpx(30.))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .px(px(12.))
+                    .gap(rpx(8.))
+                    .px(rpx(12.))
                     .border_b_1()
                     .border_color(p.bd)
                     .bg(p.panel)
-                    .text_size(px(12.))
+                    .text_size(ts::BODY)
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .font_family(MONO)
-                            .text_size(px(11.5))
+                            .text_size(ts::LABEL)
                             .text_color(p.fg2)
                             .truncate()
                             .child(self.qualified.clone()),

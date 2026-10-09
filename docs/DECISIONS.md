@@ -1049,12 +1049,15 @@ commands.
 
 ## Text size and zoom (2026-10-09)
 
-- **Not a whole-window zoom.** GPUI's display scale factor can't be overridden outside test
-  builds, and the app sizes most chrome text and layout in `px`. Zoom therefore scales what
-  reads text for a living: gpui-component's `font_size` (also the window rem size, so its
-  controls follow), the workspace's base text size, every code editor, the result grid (cell
-  and header text, row height via `Size::Size`, row-number and initial column widths) and the
-  terminal (font, cell width, line height; the PTY resizes from the new metrics). Steps 70,
+- **Zoom through rems, not the scale factor.** GPUI's display scale factor can't be
+  overridden outside test builds. gpui-component already sets the window rem size to the
+  theme's UI font size, so zoom sets that to 13 px × zoom and every fixed size in element
+  styles is written `rpx(v)` (`Rems(v / 13)`): text (named steps `appearance::ts::*`), row
+  heights, paddings, gaps and fixed widths all follow without a context. Values in window
+  coordinates stay `px`: user-resized panes (sidebar, inspector, splits), drag math, canvas
+  painting (terminal cells, plan graph, ER diagram, which have their own zoom), and
+  gpui-component APIs that take `Pixels` (popup menu widths, dialog widths). The result grid
+  and terminal compute their metrics from the zoom (`table_size`, `term_metrics`). Steps 70,
   80, 90, 100, 110, 125, 150, 175, 190, 200 %.
 - **Editor font family** applies to editors, grid cells and terminals; badges and other chrome
   keep the bundled Geist Mono.
