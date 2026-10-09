@@ -232,6 +232,9 @@ fn is_generated(c: &ColumnInfo, ddl: &str) -> bool {
 
 /// Check a data-view filter (DBX-3a): exactly one SQL expression, nothing after it.
 pub fn validate_where(dialect: &dyn Dialect, cond: &str) -> Result<(), String> {
+    if let Some(r) = dialect.check_filter(cond) {
+        return r;
+    }
     let pd = dialect.parser_dialect();
     let mut parser = Parser::new(pd.as_ref())
         .try_with_sql(cond)

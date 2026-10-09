@@ -180,6 +180,9 @@ fn destructive_of(stmt: &Statement) -> Option<Destructive> {
 /// Classify one statement or batch. Multiple statements are combined: read-only only if
 /// every statement is.
 pub fn classify(dialect: &dyn Dialect, sql: &str) -> Classification {
+    if let Some(c) = dialect.classify(sql) {
+        return c;
+    }
     let pd = dialect.parser_dialect();
     match Parser::parse_sql(pd.as_ref(), sql) {
         Ok(stmts) if stmts.is_empty() => Classification::ReadOnly,

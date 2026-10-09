@@ -19,6 +19,9 @@ pub enum Flavor {
     /// MySQL / MariaDB: `'..'` and `".."` strings with backslash escapes, `` `ident` ``,
     /// `#` comments, `-- ` comments only before whitespace, flat block comments.
     MySql,
+    /// JavaScript-like shell text (MongoDB): `'..'` and `".."` strings with backslash
+    /// escapes, `//` comments, flat block comments, no `--` comments.
+    JavaScript,
 }
 
 /// Kind of a lexical segment.
@@ -69,11 +72,14 @@ pub fn segments(sql: &str, flavor: Flavor) -> Vec<Segment> {
         // Start of a non-code segment?
         let (kind, end) = if (c == b'-'
             && next == b'-'
+            && flavor != Flavor::JavaScript
             && (flavor != Flavor::MySql
                 || i + 2 >= n
                 || b[i + 2].is_ascii_whitespace()
                 || b[i + 2].is_ascii_control()))
-            || (c == b'/' && next == b'/' && flavor == Flavor::Snowflake)
+            || (c == b'/'
+                && next == b'/'
+                && matches!(flavor, Flavor::Snowflake | Flavor::JavaScript))
             || (c == b'#' && flavor == Flavor::MySql)
         {
             let end = sql[i..].find('\n').map_or(n, |p| i + p);
@@ -89,7 +95,11 @@ pub fn segments(sql: &str, flavor: Flavor) -> Vec<Segment> {
                     && (depth == 0
                         || !matches!(
                             flavor,
-                            Flavor::Sqlite | Flavor::Snowflake | Flavor::Oracle | Flavor::MySql
+                            Flavor::Sqlite
+                                | Flavor::Snowflake
+                                | Flavor::Oracle
+                                | Flavor::MySql
+                                | Flavor::JavaScript
                         ))
                 {
                     depth += 1;
@@ -134,11 +144,13 @@ pub fn segments(sql: &str, flavor: Flavor) -> Vec<Segment> {
             }
             (SegKind::Str, end)
         } else if c == b'\'' || (c == b'"' && flavor == Flavor::MySql) {
-            let backslash = matches!(flavor, Flavor::Snowflake | Flavor::MySql)
-                || (flavor == Flavor::Postgres
-                    && i > 0
-                    && (b[i - 1] == b'E' || b[i - 1] == b'e')
-                    && (i < 2 || !is_ident_char(b[i - 2])));
+            let backslash = matches!(
+                flavor,
+                Flavor::Snowflake | Flavor::MySql | Flavor::JavaScript
+            ) || (flavor == Flavor::Postgres
+                && i > 0
+                && (b[i - 1] == b'E' || b[i - 1] == b'e')
+                && (i < 2 || !is_ident_char(b[i - 2])));
             let mut j = i + 1;
             let mut end = n;
             while j < n {
@@ -151,6 +163,20 @@ pub fn segments(sql: &str, flavor: Flavor) -> Vec<Segment> {
                         end = j + 1;
                         break;
                     }
+                } else {
+                    j += 1;
+                }
+            }
+            (SegKind::Str, end.min(n))
+        } else if c == b'"' && flavor == Flavor::JavaScript {
+            let mut j = i + 1;
+            let mut end = n;
+            while j < n {
+                if b[j] == b'\\' {
+                    j += 2;
+                } else if b[j] == b'"' {
+                    end = j + 1;
+                    break;
                 } else {
                     j += 1;
                 }
