@@ -322,3 +322,153 @@ pub trait DbSession: Send {
     /// Whether the underlying connection is closed.
     fn is_closed(&self) -> bool;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    const AUTH: [DbAuthMethod; 9] = [
+        DbAuthMethod::Password,
+        DbAuthMethod::Integrated,
+        DbAuthMethod::WindowsPassword,
+        DbAuthMethod::EntraInteractive,
+        DbAuthMethod::EntraDeviceCode,
+        DbAuthMethod::EntraPassword,
+        DbAuthMethod::EntraServicePrincipal,
+        DbAuthMethod::KeyPair,
+        DbAuthMethod::AccessToken,
+    ];
+
+    #[test]
+    fn debug_never_shows_host_user_or_secrets() {
+        let mut cfg = DbConfig::new(Engine::Postgres, "db.internal.example", "shop");
+        cfg.user = "alice".into();
+        cfg.password = Some(SecretString::from("hunter2-password"));
+        cfg.access_token = Some(SecretString::from("eyJ-token"));
+        cfg.trusted_ca_pem = Some("-----BEGIN CERTIFICATE-----".into());
+        cfg.options.insert("role".into(), "ANALYST".into());
+        let shown = format!("{cfg:?} {cfg:#?}");
+        for hidden in [
+            "db.internal.example",
+            "alice",
+            "hunter2",
+            "eyJ-token",
+            "CERTIFICATE",
+            "ANALYST",
+        ] {
+            assert!(!shown.contains(hidden), "{hidden} leaked: {shown}");
+        }
+        assert!(shown.contains("shop"), "{shown}");
+        assert!(shown.contains("Postgres"), "{shown}");
+    }
+
+    #[test]
+    fn new_uses_the_engine_port_and_safe_defaults() {
+        for (engine, port) in [
+            (Engine::Postgres, 5432),
+            (Engine::SqlServer, 1433),
+            (Engine::MySql, 3306),
+            (Engine::Redis, 6379),
+            (Engine::Sqlite, 0),
+        ] {
+            let cfg = DbConfig::new(engine, "h", "d");
+            assert_eq!(cfg.port, port, "{engine:?}");
+            assert_eq!(cfg.ssl_mode, SslMode::Prefer);
+            assert_eq!(cfg.auth, DbAuthMethod::Password);
+            assert!(!cfg.read_only);
+            assert!(cfg.password.is_none() && cfg.access_token.is_none());
+        }
+    }
+
+    #[test]
+    fn options_are_trimmed_and_blank_means_unset() {
+        let mut cfg = DbConfig::new(Engine::Snowflake, "acct", "db");
+        cfg.options
+            .insert("warehouse".into(), "  COMPUTE_WH \n".into());
+        cfg.options.insert("role".into(), "   ".into());
+        assert_eq!(cfg.option("warehouse"), Some("COMPUTE_WH"));
+        assert_eq!(cfg.option("role"), None);
+        assert_eq!(cfg.option("schema"), None);
+    }
+
+    #[test]
+    fn entra_methods_get_tokens_and_secret_methods_get_a_secret() {
+        for m in AUTH {
+            let entra = m.is_entra();
+            assert_eq!(
+                entra,
+                m.label().starts_with("Microsoft Entra"),
+                "{m:?}: label and is_entra disagree"
+            );
+            // Interactive sign-ins have nothing to store; everything else that is not
+            // integrated keeps a password, client secret, passphrase or token.
+            let expect_secret = !matches!(
+                m,
+                DbAuthMethod::Integrated
+                    | DbAuthMethod::EntraInteractive
+                    | DbAuthMethod::EntraDeviceCode
+            );
+            assert_eq!(m.uses_secret(), expect_secret, "{m:?}");
+        }
+    }
+
+    #[test]
+    fn stored_names_stay_stable() {
+        // Profiles persist these; renaming one would break saved connections.
+        let auth: Vec<String> = AUTH
+            .iter()
+            .map(|m| serde_json::to_string(m).unwrap_or_default())
+            .collect();
+        assert_eq!(
+            auth,
+            [
+                "\"password\"",
+                "\"integrated\"",
+                "\"windows-password\"",
+                "\"entra-interactive\"",
+                "\"entra-device-code\"",
+                "\"entra-password\"",
+                "\"entra-service-principal\"",
+                "\"key-pair\"",
+                "\"access-token\"",
+            ]
+        );
+        for m in AUTH {
+            let back: DbAuthMethod =
+                serde_json::from_str(&serde_json::to_string(&m).unwrap_or_default())
+                    .unwrap_or_default();
+            assert_eq!(back, m);
+        }
+        for mode in SslMode::ALL {
+            assert_eq!(
+                serde_json::to_string(&mode).unwrap_or_default(),
+                format!("\"{}\"", mode.label())
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_sets_the_flag_then_asks_the_server() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let requested = Arc::new(AtomicBool::new(false));
+        let seen = Arc::clone(&calls);
+        let flag = Arc::clone(&requested);
+        let handle = CancelHandle::new(Arc::clone(&requested), move || {
+            // The flag is already up when the server-side cancel runs.
+            assert!(flag.load(Ordering::SeqCst));
+            seen.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        });
+        let clone = handle.clone();
+        assert!(!handle.is_requested());
+        assert_eq!(format!("{handle:?}"), "CancelHandle { requested: false }");
+        assert!(clone.cancel().await.is_ok());
+        assert!(handle.is_requested());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let only = CancelHandle::flag_only(Arc::new(AtomicBool::new(false)));
+        assert!(only.cancel().await.is_ok());
+        assert!(only.is_requested());
+    }
+}
