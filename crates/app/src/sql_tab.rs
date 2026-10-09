@@ -697,6 +697,20 @@ impl SqlTab {
     /// Capture the plan of the statement at the cursor (or the first selected one):
     /// estimated, or actual when `analyze` (the statement runs; writes are rolled back).
     pub fn explain(&mut self, analyze: bool, _window: &mut Window, cx: &mut Context<Self>) {
+        let plans = self.dialect().plans();
+        if !(if analyze {
+            plans.actual
+        } else {
+            plans.estimated
+        }) {
+            let engine = self.dialect().engine().display_name();
+            cx.emit(SqlTabEvent::Toast(if analyze && plans.estimated {
+                format!("{engine} has no actual plans; use Explain")
+            } else {
+                format!("Query plans are not available for {engine}")
+            }));
+            return;
+        }
         let statements = self.statements_at_cursor(cx);
         let Some(first) = statements.first() else {
             cx.emit(SqlTabEvent::Toast("Nothing to explain".into()));
@@ -1716,6 +1730,8 @@ impl SqlTab {
             p.bd2
         };
         let context_pills = self.render_context_pills(p, cx);
+        // Explain / Analyze only where the engine has plans.
+        let plans = self.dialect().plans();
         div()
             .h(px(38.))
             .flex_none()
@@ -1747,26 +1763,30 @@ impl SqlTab {
                     .on_click(cx.listener(|this, _, _, cx| this.stop(cx))),
             )
             .child(ui::vdivider(p, 18.))
-            .child(
-                ui::button_with_key(
-                    "explain",
-                    "Explain",
-                    ui::keys("⌘E", "Ctrl+E"),
-                    Kind::Secondary,
-                    p,
+            .when(plans.estimated, |d| {
+                d.child(
+                    ui::button_with_key(
+                        "explain",
+                        "Explain",
+                        ui::keys("⌘E", "Ctrl+E"),
+                        Kind::Secondary,
+                        p,
+                    )
+                    .on_click(cx.listener(|this, _, w, cx| this.explain(false, w, cx))),
                 )
-                .on_click(cx.listener(|this, _, w, cx| this.explain(false, w, cx))),
-            )
-            .child(
-                ui::button_with_key(
-                    "explain-analyze",
-                    "Analyze",
-                    ui::keys("⇧⌘E", "Ctrl+Shift+E"),
-                    Kind::Secondary,
-                    p,
+            })
+            .when(plans.actual, |d| {
+                d.child(
+                    ui::button_with_key(
+                        "explain-analyze",
+                        "Analyze",
+                        ui::keys("⇧⌘E", "Ctrl+Shift+E"),
+                        Kind::Secondary,
+                        p,
+                    )
+                    .on_click(cx.listener(|this, _, w, cx| this.explain(true, w, cx))),
                 )
-                .on_click(cx.listener(|this, _, w, cx| this.explain(true, w, cx))),
-            )
+            })
             .child(
                 ui::button("optimize", "Optimize ✦", Kind::Secondary, p)
                     .on_click(cx.listener(|this, _, _, cx| this.optimize(cx))),

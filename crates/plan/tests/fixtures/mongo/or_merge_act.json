@@ -1,0 +1,208 @@
+{
+  "explainVersion": "1",
+  "queryPlanner": {
+    "namespace": "switchyard_plan.orders",
+    "indexFilterSet": false,
+    "parsedQuery": {
+      "$or": [
+        {
+          "customer": {
+            "$eq": 3
+          }
+        },
+        {
+          "status": {
+            "$eq": "A"
+          }
+        }
+      ]
+    },
+    "queryHash": "1D0151CD",
+    "planCacheKey": "B2E8E93A",
+    "optimizationTimeMillis": 0,
+    "maxIndexedOrSolutionsReached": false,
+    "maxIndexedAndSolutionsReached": false,
+    "maxScansToExplodeReached": false,
+    "winningPlan": {
+      "stage": "SUBPLAN",
+      "inputStage": {
+        "stage": "FETCH",
+        "inputStage": {
+          "stage": "OR",
+          "inputStages": [
+            {
+              "stage": "IXSCAN",
+              "keyPattern": {
+                "status": 1
+              },
+              "indexName": "status_1",
+              "isMultiKey": false,
+              "multiKeyPaths": {
+                "status": []
+              },
+              "isUnique": false,
+              "isSparse": false,
+              "isPartial": false,
+              "indexVersion": 2,
+              "direction": "forward",
+              "indexBounds": {
+                "status": [
+                  "[\"A\", \"A\"]"
+                ]
+              }
+            },
+            {
+              "stage": "IXSCAN",
+              "keyPattern": {
+                "customer": 1,
+                "total": -1
+              },
+              "indexName": "customer_1_total_-1",
+              "isMultiKey": false,
+              "multiKeyPaths": {
+                "customer": [],
+                "total": []
+              },
+              "isUnique": false,
+              "isSparse": false,
+              "isPartial": false,
+              "indexVersion": 2,
+              "direction": "forward",
+              "indexBounds": {
+                "customer": [
+                  "[3, 3]"
+                ],
+                "total": [
+                  "[MaxKey, MinKey]"
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    "rejectedPlans": []
+  },
+  "executionStats": {
+    "executionSuccess": true,
+    "nReturned": 5020,
+    "executionTimeMillis": 5,
+    "totalKeysExamined": 5020,
+    "totalDocsExamined": 5020,
+    "executionStages": {
+      "stage": "SUBPLAN",
+      "nReturned": 5020,
+      "executionTimeMillisEstimate": 1,
+      "works": 5022,
+      "advanced": 5020,
+      "needTime": 1,
+      "needYield": 0,
+      "saveState": 5,
+      "restoreState": 5,
+      "isEOF": 1,
+      "inputStage": {
+        "stage": "FETCH",
+        "nReturned": 5020,
+        "executionTimeMillisEstimate": 1,
+        "works": 5022,
+        "advanced": 5020,
+        "needTime": 1,
+        "needYield": 0,
+        "saveState": 5,
+        "restoreState": 5,
+        "isEOF": 1,
+        "docsExamined": 5020,
+        "alreadyHasObj": 0,
+        "inputStage": {
+          "stage": "OR",
+          "nReturned": 5020,
+          "executionTimeMillisEstimate": 0,
+          "works": 5022,
+          "advanced": 5020,
+          "needTime": 1,
+          "needYield": 0,
+          "saveState": 5,
+          "restoreState": 5,
+          "isEOF": 1,
+          "dupsTested": 5020,
+          "dupsDropped": 0,
+          "inputStages": [
+            {
+              "stage": "IXSCAN",
+              "nReturned": 5000,
+              "executionTimeMillisEstimate": 0,
+              "works": 5001,
+              "advanced": 5000,
+              "needTime": 0,
+              "needYield": 0,
+              "saveState": 5,
+              "restoreState": 5,
+              "isEOF": 1,
+              "keyPattern": {
+                "status": 1
+              },
+              "indexName": "status_1",
+              "isMultiKey": false,
+              "multiKeyPaths": {
+                "status": []
+              },
+              "isUnique": false,
+              "isSparse": false,
+              "isPartial": false,
+              "indexVersion": 2,
+              "direction": "forward",
+              "indexBounds": {
+                "status": [
+                  "[\"A\", \"A\"]"
+                ]
+              },
+              "keysExamined": 5000,
+              "seeks": 1,
+              "dupsTested": 0,
+              "dupsDropped": 0
+            },
+            {
+              "stage": "IXSCAN",
+              "nReturned": 20,
+              "executionTimeMillisEstimate": 0,
+              "works": 21,
+              "advanced": 20,
+              "needTime": 0,
+              "needYield": 0,
+              "saveState": 5,
+              "restoreState": 5,
+              "isEOF": 1,
+              "keyPattern": {
+                "customer": 1,
+                "total": -1
+              },
+              "indexName": "customer_1_total_-1",
+              "isMultiKey": false,
+              "multiKeyPaths": {
+                "customer": [],
+                "total": []
+              },
+              "isUnique": false,
+              "isSparse": false,
+              "isPartial": false,
+              "indexVersion": 2,
+              "direction": "forward",
+              "indexBounds": {
+                "customer": [
+                  "[3, 3]"
+                ],
+                "total": [
+                  "[MaxKey, MinKey]"
+                ]
+              },
+              "keysExamined": 20,
+              "seeks": 1,
+              "dupsTested": 0,
+              "dupsDropped": 0
+            }
+          ]
+        }
+      }
+    }
+  }
+}

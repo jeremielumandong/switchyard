@@ -154,6 +154,16 @@ fn merge_trigger_bodies(sql: &str, spans: Vec<StatementSpan>) -> Vec<StatementSp
 }
 
 impl Dialect for SqliteDialect {
+    /// `EXPLAIN QUERY PLAN` on local files (estimated only: SQLite measures nothing).
+    /// D1's HTTP API is not wired for plans.
+    fn plans(&self) -> super::PlanSupport {
+        if self.engine == Engine::Sqlite {
+            super::PlanSupport::ESTIMATED
+        } else {
+            super::PlanSupport::NONE
+        }
+    }
+
     fn engine(&self) -> Engine {
         self.engine
     }

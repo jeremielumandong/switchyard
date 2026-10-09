@@ -1,0 +1,61 @@
+{
+  "explainVersion": "1",
+  "stages": [
+    {
+      "$cursor": {
+        "queryPlanner": {
+          "namespace": "switchyard_plan.orders",
+          "indexFilterSet": false,
+          "parsedQuery": {
+            "total": {
+              "$gt": 480
+            }
+          },
+          "queryHash": "AB120C8F",
+          "planCacheKey": "2B79D813",
+          "optimizationTimeMillis": 0,
+          "maxIndexedOrSolutionsReached": false,
+          "maxIndexedAndSolutionsReached": false,
+          "maxScansToExplodeReached": false,
+          "winningPlan": {
+            "stage": "PROJECTION_SIMPLE",
+            "transformBy": {
+              "_id": 1,
+              "tags": 1,
+              "total": 1
+            },
+            "inputStage": {
+              "stage": "COLLSCAN",
+              "filter": {
+                "total": {
+                  "$gt": 480
+                }
+              },
+              "direction": "forward"
+            }
+          },
+          "rejectedPlans": []
+        }
+      }
+    },
+    {
+      "$unwind": {
+        "path": "$tags"
+      }
+    },
+    {
+      "$project": {
+        "_id": true,
+        "tags": true,
+        "total": true
+      }
+    },
+    {
+      "$sort": {
+        "sortKey": {
+          "total": 1
+        }
+      }
+    }
+  ]
+}

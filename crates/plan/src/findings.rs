@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Plan, PlanNode, PlanSource};
+use crate::model::{Plan, PlanNode, PlanSource, warn};
 
 /// The rules.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -29,11 +29,14 @@ pub enum Rule {
     ImplicitConversion,
     /// An index the engine reports (SQL Server) or a filter suggests (PostgreSQL).
     MissingIndex,
+    /// Rows go through a temporary table, or are sorted because no index supplies the
+    /// order (MySQL filesort, SQLite temp B-tree, MongoDB blocking sort).
+    TempStructure,
 }
 
 impl Rule {
     /// Every rule.
-    pub const ALL: [Rule; 8] = [
+    pub const ALL: [Rule; 9] = [
         Rule::FullScan,
         Rule::BadEstimate,
         Rule::RowsRemovedByFilter,
@@ -42,6 +45,7 @@ impl Rule {
         Rule::KeyLookup,
         Rule::ImplicitConversion,
         Rule::MissingIndex,
+        Rule::TempStructure,
     ];
 
     /// Short label.
@@ -55,6 +59,7 @@ impl Rule {
             Rule::KeyLookup => "Key lookup",
             Rule::ImplicitConversion => "Implicit conversion",
             Rule::MissingIndex => "Missing index",
+            Rule::TempStructure => "Temporary table or sort",
         }
     }
 
@@ -64,7 +69,7 @@ impl Rule {
             Rule::MissingIndex => 0.9,
             Rule::FullScan | Rule::Spill => 0.8,
             Rule::RowsRemovedByFilter | Rule::ExpensiveNestedLoop => 0.7,
-            Rule::BadEstimate | Rule::KeyLookup => 0.6,
+            Rule::BadEstimate | Rule::KeyLookup | Rule::TempStructure => 0.6,
             Rule::ImplicitConversion => 0.5,
         }
     }
@@ -104,6 +109,8 @@ pub struct Thresholds {
     pub key_lookup_executions: f64,
     /// Share of time/cost at which a finding becomes High severity (0–1).
     pub high_share: f64,
+    /// Rows a temporary table or index-less sort must take to count (when known).
+    pub temp_rows: f64,
 }
 
 impl Default for Thresholds {
@@ -118,6 +125,7 @@ impl Default for Thresholds {
             nested_loop_share: 0.3,
             key_lookup_executions: 100.0,
             high_share: 0.4,
+            temp_rows: 1_000.0,
         }
     }
 }
@@ -158,8 +166,11 @@ fn fmt_rows(n: f64) -> String {
 fn table_of(node: &PlanNode, source: PlanSource) -> Option<String> {
     let obj = node.object.as_deref()?;
     Some(match source {
-        // PostgreSQL objects are `table` or `table.index`.
-        PlanSource::Postgres => obj.split('.').next().unwrap_or(obj).to_owned(),
+        // PostgreSQL, MySQL and SQLite objects are `table` or `table.index`; MongoDB's
+        // `collection` or `collection.index`.
+        PlanSource::Postgres | PlanSource::MySql | PlanSource::Sqlite | PlanSource::MongoDb => {
+            obj.split('.').next().unwrap_or(obj).to_owned()
+        }
         // SQL Server objects are `schema.table` or `schema.table.index`.
         PlanSource::SqlServer => {
             let parts: Vec<&str> = obj.split('.').collect();
@@ -175,6 +186,13 @@ fn is_full_scan(node: &PlanNode, source: PlanSource) -> bool {
             node.operation.as_str(),
             "Table Scan" | "Clustered Index Scan" | "Index Scan"
         ),
+        // Internal tables (`<temporary>`, `<derived2>`) hold rows the plan made itself.
+        PlanSource::MySql => {
+            matches!(node.operation.as_str(), "Table scan" | "Index scan")
+                && !node.object.as_deref().is_some_and(|o| o.starts_with('<'))
+        }
+        PlanSource::Sqlite => node.operation == "Table Scan",
+        PlanSource::MongoDb => node.operation == "COLLSCAN",
     }
 }
 
@@ -226,6 +244,28 @@ fn compared_columns(cond: &str) -> Vec<String> {
     eq
 }
 
+/// `db.coll.createIndex({ a: 1, b: 1 })` for the comma-separated `fields`.
+fn mongo_index(coll: &str, fields: &str) -> String {
+    let plain = |s: &str| s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    let keys: Vec<String> = fields
+        .split(", ")
+        .filter(|f| !f.is_empty())
+        .map(|f| {
+            if plain(f) {
+                format!("{f}: 1")
+            } else {
+                format!("\"{f}\": 1")
+            }
+        })
+        .collect();
+    let target = if plain(coll) {
+        format!("db.{coll}")
+    } else {
+        format!("db.getCollection(\"{coll}\")")
+    };
+    format!("{target}.createIndex({{ {} }})", keys.join(", "))
+}
+
 struct Ctx<'a> {
     plan: &'a Plan,
     t: &'a Thresholds,
@@ -273,6 +313,8 @@ pub fn analyze(plan: &Plan, t: &Thresholds) -> Vec<Finding> {
         out: Vec::new(),
     };
     let source = plan.source;
+    // No node has a row count or estimate (SQLite, MongoDB estimated plans).
+    let no_rows = plan.nodes().iter().all(|n| n.rows().is_none());
     // Below a LIMIT / TOP a node stops early, so fewer rows than estimated is expected.
     let mut limited = std::collections::HashSet::new();
     for n in plan.nodes() {
@@ -287,9 +329,11 @@ pub fn analyze(plan: &Plan, t: &Thresholds) -> Vec<Finding> {
             .clone()
             .unwrap_or_else(|| node.operation.clone());
 
-        // Full scan.
+        // Full scan. Plans without any row counts (SQLite, MongoDB estimates) flag every
+        // full scan, at the lowest severity.
+        let read = rows_read(node);
         if is_full_scan(node, source)
-            && let Some(read) = rows_read(node).filter(|r| *r >= t.full_scan_rows)
+            && (read.is_some_and(|r| r >= t.full_scan_rows) || read.is_none() && no_rows)
         {
             let filter_cols: Vec<String> = node
                 .predicates
@@ -297,11 +341,15 @@ pub fn analyze(plan: &Plan, t: &Thresholds) -> Vec<Finding> {
                 .filter(|p| p.kind == "Filter")
                 .flat_map(|p| compared_columns(&p.text))
                 .collect();
+            let fields = node.details.get("Filter Fields");
             let suggestion = match (source, table_of(node, source)) {
                 (PlanSource::Postgres, Some(table)) if !filter_cols.is_empty() => Some(format!(
                     "CREATE INDEX ON {table} ({});",
                     filter_cols.join(", ")
                 )),
+                (PlanSource::MongoDb, Some(coll)) if fields.is_some() => {
+                    Some(mongo_index(&coll, fields.map(String::as_str).unwrap_or("")))
+                }
                 _ => Some(
                     "Add an index on the filtered or joined columns, or narrow the query.".into(),
                 ),
@@ -311,7 +359,10 @@ pub fn analyze(plan: &Plan, t: &Thresholds) -> Vec<Finding> {
                 Some(node),
                 share,
                 format!("{} on {what}", node.operation),
-                format!("Reads {} rows.", fmt_rows(read)),
+                match read {
+                    Some(read) => format!("Reads {} rows.", fmt_rows(read)),
+                    None => "Reads every row (the plan has no row counts).".into(),
+                },
                 suggestion,
             );
         }
@@ -331,6 +382,8 @@ pub fn analyze(plan: &Plan, t: &Thresholds) -> Vec<Finding> {
             let stats = match (source, table_of(node, source)) {
                 (PlanSource::Postgres, Some(tb)) => format!("ANALYZE {tb};"),
                 (PlanSource::SqlServer, Some(tb)) => format!("UPDATE STATISTICS {tb};"),
+                (PlanSource::MySql, Some(tb)) => format!("ANALYZE TABLE {tb};"),
+                (PlanSource::Sqlite, _) => "ANALYZE;".into(),
                 _ => "Refresh statistics on the tables involved.".into(),
             };
             cx.add(
@@ -407,6 +460,14 @@ pub fn analyze(plan: &Plan, t: &Thresholds) -> Vec<Finding> {
                         "Update statistics so the memory grant fits, or reduce the rows sorted or hashed."
                             .into()
                     }
+                    PlanSource::MySql => {
+                        "Raise sort_buffer_size or tmp_table_size for this session, or sort fewer rows."
+                            .into()
+                    }
+                    PlanSource::MongoDb => {
+                        "Add an index that supplies the sort order, or sort fewer documents.".into()
+                    }
+                    PlanSource::Sqlite => "Sort or group fewer rows.".into(),
                 }),
             );
         }
@@ -450,6 +511,42 @@ pub fn analyze(plan: &Plan, t: &Thresholds) -> Vec<Finding> {
                     node.loops.map(fmt_rows).unwrap_or_else(|| "many".into())
                 ),
                 Some("Add the looked-up columns to the index as INCLUDE columns.".into()),
+            );
+        }
+
+        // Temporary table or index-less sort.
+        let temp = node
+            .warnings
+            .iter()
+            .find(|w| w.starts_with(warn::TEMP_TABLE) || w.starts_with(warn::SORT));
+        // Rows going in (a sort under LIMIT returns few but sorts them all), else out.
+        let rows_in: Vec<f64> = node.children.iter().filter_map(PlanNode::rows).collect();
+        let input = (!rows_in.is_empty())
+            .then(|| rows_in.iter().sum())
+            .or(node.rows());
+        if let Some(w) = temp
+            && input.is_none_or(|r| r >= t.temp_rows)
+        {
+            let sort = w.starts_with(warn::SORT);
+            let rows = input
+                .map(|r| format!(" {} rows.", fmt_rows(r)))
+                .unwrap_or_default();
+            cx.add(
+                Rule::TempStructure,
+                Some(node),
+                share,
+                if sort {
+                    format!("{} sorts without an index", node.operation)
+                } else {
+                    format!("{} uses a temporary table", node.operation)
+                },
+                format!("{w}.{rows}"),
+                Some(if sort {
+                    "An index whose order matches the sort lets rows come out already sorted."
+                        .into()
+                } else {
+                    "An index on the grouped or distinct columns avoids the temporary table.".into()
+                }),
             );
         }
 

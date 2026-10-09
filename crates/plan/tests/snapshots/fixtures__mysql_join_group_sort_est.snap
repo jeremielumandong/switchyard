@@ -1,0 +1,15 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&mysql_json(&name))
+---
+MySql Estimated
+#0 Sort est=333 act=- loops=-
+  ! Sorts without an index (filesort)
+  #1 Aggregate est=333 act=- loops=-
+    ! Uses a temporary table
+    #2 Nested Loop est=333 act=- loops=-
+      #3 Table scan on o est=333 act=- loops=-
+        Filter: (`shop`.`o`.`total` > 100.00)
+      #4 Single-row index lookup on c.PRIMARY est=1 act=- loops=-
+        Index Cond: id = shop.o.customer_id
+findings:

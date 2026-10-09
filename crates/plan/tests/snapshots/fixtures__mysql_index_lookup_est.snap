@@ -1,0 +1,8 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&mysql_json(&name))
+---
+MySql Estimated
+#0 Index lookup on orders.fk_orders_customer est=1 act=- loops=-
+  Index Cond: customer_id = const
+findings:

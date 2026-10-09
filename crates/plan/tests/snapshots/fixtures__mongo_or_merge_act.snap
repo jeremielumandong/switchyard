@@ -1,0 +1,13 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&mongo(&name))
+---
+MongoDb Actual
+#0 SUBPLAN est=- act=5020 loops=- self=0.0ms (0%)
+  #1 FETCH on orders est=- act=5020 loops=- self=1.0ms (20%)
+    #2 OR est=- act=5020 loops=- self=0.0ms (0%)
+      #3 IXSCAN on orders.status_1 est=- act=5000 loops=- self=0.0ms (0%)
+        Index Bounds: {"status":["[\"A\", \"A\"]"]}
+      #4 IXSCAN on orders.customer_1_total_-1 est=- act=20 loops=- self=0.0ms (0%)
+        Index Bounds: {"customer":["[3, 3]"],"total":["[MaxKey, MinKey]"]}
+findings:

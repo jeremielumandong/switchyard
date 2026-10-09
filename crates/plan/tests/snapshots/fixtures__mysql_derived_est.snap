@@ -1,0 +1,17 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&mysql_json(&name))
+---
+MySql Estimated
+#0 Sort est=20290 act=- loops=-
+  ! Sorts without an index (filesort)
+  #1 Table scan on d est=20290 act=- loops=-
+    #2 Materialize est=- act=- loops=-
+      #3 Aggregate est=20290 act=- loops=-
+        ! Uses a temporary table
+        #4 Table scan on plan_big est=20290 act=- loops=-
+findings:
+  High TempStructure node=Some(0): Sort sorts without an index | Sorts without an index (filesort). 20,290 rows. | An index whose order matches the sort lets rows come out already sorted.
+  Low FullScan node=Some(4): Table scan on plan_big | Reads 20,290 rows. | Add an index on the filtered or joined columns, or narrow the query.
+  Low FullScan node=Some(1): Table scan on d | Reads 20,290 rows. | Add an index on the filtered or joined columns, or narrow the query.
+  Low TempStructure node=Some(3): Aggregate uses a temporary table | Uses a temporary table. 20,290 rows. | An index on the grouped or distinct columns avoids the temporary table.

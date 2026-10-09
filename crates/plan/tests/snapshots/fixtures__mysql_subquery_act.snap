@@ -1,0 +1,16 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&mysql_tree(&name))
+---
+MySql Actual
+#0 Remove duplicate customers rows using temporary table (weedout) est=167 act=67 loops=1 self=0.0ms (4%)
+  ! Uses a temporary table
+  #1 Nested Loop est=167 act=67 loops=1 self=0.0ms (4%)
+    #2 Filter est=333 act=198 loops=1 self=0.1ms (12%)
+      Filter: (orders.total > 400.00)
+      #3 Table scan on orders est=1000 act=1000 loops=1 self=0.2ms (28%)
+    #4 Filter est=0 act=0 loops=198 self=0.2ms (25%)
+      Filter: (customers.segment = 'vip')
+      #5 Single-row index lookup on customers.PRIMARY est=1 act=1 loops=198 self=0.2ms (27%)
+        Index Cond: (id=orders.customer_id)
+findings:

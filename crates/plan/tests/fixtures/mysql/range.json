@@ -1,0 +1,38 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "10.28"
+    },
+    "ordering_operation": {
+      "using_filesort": false,
+      "table": {
+        "table_name": "orders",
+        "access_type": "range",
+        "possible_keys": [
+          "ix_orders_placed"
+        ],
+        "key": "ix_orders_placed",
+        "used_key_parts": [
+          "placed_on"
+        ],
+        "key_length": "3",
+        "rows_examined_per_scan": 50,
+        "rows_produced_per_join": 50,
+        "filtered": "100.00",
+        "using_index": true,
+        "cost_info": {
+          "read_cost": "5.28",
+          "eval_cost": "5.00",
+          "prefix_cost": "10.28",
+          "data_read_per_join": "1K"
+        },
+        "used_columns": [
+          "id",
+          "placed_on"
+        ],
+        "attached_condition": "(`shop`.`orders`.`placed_on` between '2026-02-01' and '2026-02-10')"
+      }
+    }
+  }
+}

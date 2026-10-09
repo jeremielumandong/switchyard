@@ -1,0 +1,18 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&mysql_tree(&name))
+---
+MySql Actual
+#0 Limit est=- act=10 loops=1 self=0.0ms (0%)
+  #1 Sort est=- act=10 loops=1 self=0.2ms (9%)
+    ! Sorts without an index (filesort)
+    #2 Table scan on <temporary> est=- act=798 loops=1 self=0.1ms (4%)
+      #3 Aggregate est=- act=798 loops=1 self=0.6ms (22%)
+        ! Uses a temporary table
+        #4 Nested Loop est=333 act=798 loops=1 self=0.2ms (7%)
+          #5 Filter est=333 act=798 loops=1 self=0.1ms (5%)
+            Filter: (o.total > 100.00)
+            #6 Table scan on o est=1000 act=1000 loops=1 self=0.2ms (10%)
+          #7 Single-row index lookup on c.PRIMARY est=1 act=1 loops=798 self=1.0ms (42%)
+            Index Cond: (id=o.customer_id)
+findings:

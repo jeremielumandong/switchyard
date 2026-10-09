@@ -1,0 +1,116 @@
+{
+  "explainVersion": "1",
+  "queryPlanner": {
+    "namespace": "switchyard_plan.orders",
+    "indexFilterSet": false,
+    "parsedQuery": {
+      "customer": {
+        "$eq": 7
+      }
+    },
+    "queryHash": "F908F9CE",
+    "planCacheKey": "F9A91BB0",
+    "optimizationTimeMillis": 0,
+    "maxIndexedOrSolutionsReached": false,
+    "maxIndexedAndSolutionsReached": false,
+    "maxScansToExplodeReached": false,
+    "winningPlan": {
+      "stage": "PROJECTION_COVERED",
+      "transformBy": {
+        "_id": 0,
+        "customer": 1,
+        "total": 1
+      },
+      "inputStage": {
+        "stage": "IXSCAN",
+        "keyPattern": {
+          "customer": 1,
+          "total": -1
+        },
+        "indexName": "customer_1_total_-1",
+        "isMultiKey": false,
+        "multiKeyPaths": {
+          "customer": [],
+          "total": []
+        },
+        "isUnique": false,
+        "isSparse": false,
+        "isPartial": false,
+        "indexVersion": 2,
+        "direction": "forward",
+        "indexBounds": {
+          "customer": [
+            "[7, 7]"
+          ],
+          "total": [
+            "[MaxKey, MinKey]"
+          ]
+        }
+      }
+    },
+    "rejectedPlans": []
+  },
+  "executionStats": {
+    "executionSuccess": true,
+    "nReturned": 20,
+    "executionTimeMillis": 1,
+    "totalKeysExamined": 20,
+    "totalDocsExamined": 0,
+    "executionStages": {
+      "stage": "PROJECTION_COVERED",
+      "nReturned": 20,
+      "executionTimeMillisEstimate": 0,
+      "works": 21,
+      "advanced": 20,
+      "needTime": 0,
+      "needYield": 0,
+      "saveState": 0,
+      "restoreState": 0,
+      "isEOF": 1,
+      "transformBy": {
+        "_id": 0,
+        "customer": 1,
+        "total": 1
+      },
+      "inputStage": {
+        "stage": "IXSCAN",
+        "nReturned": 20,
+        "executionTimeMillisEstimate": 0,
+        "works": 21,
+        "advanced": 20,
+        "needTime": 0,
+        "needYield": 0,
+        "saveState": 0,
+        "restoreState": 0,
+        "isEOF": 1,
+        "keyPattern": {
+          "customer": 1,
+          "total": -1
+        },
+        "indexName": "customer_1_total_-1",
+        "isMultiKey": false,
+        "multiKeyPaths": {
+          "customer": [],
+          "total": []
+        },
+        "isUnique": false,
+        "isSparse": false,
+        "isPartial": false,
+        "indexVersion": 2,
+        "direction": "forward",
+        "indexBounds": {
+          "customer": [
+            "[7, 7]"
+          ],
+          "total": [
+            "[MaxKey, MinKey]"
+          ]
+        },
+        "keysExamined": 20,
+        "seeks": 1,
+        "dupsTested": 0,
+        "dupsDropped": 0
+      }
+    }
+  }
+}

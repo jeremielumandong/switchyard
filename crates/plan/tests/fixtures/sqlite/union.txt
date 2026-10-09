@@ -1,0 +1,6 @@
+-- SELECT id FROM customers WHERE segment = 'vip' UNION SELECT customer_id FROM orders WHERE total > 450
+1|0|COMPOUND QUERY
+2|1|LEFT-MOST SUBQUERY
+5|2|SCAN customers
+13|1|UNION USING TEMP B-TREE
+15|13|SCAN orders

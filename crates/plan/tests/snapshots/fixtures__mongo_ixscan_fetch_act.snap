@@ -1,0 +1,11 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&mongo(&name))
+---
+MongoDb Actual
+#0 FETCH on orders est=- act=80 loops=- self=0.0ms (0%)
+  Filter: {"total":{"$lt":10}}
+  #1 IXSCAN on orders.status_1 est=- act=5000 loops=- self=0.0ms (0%)
+    Index Bounds: {"status":["[\"B\", \"B\"]"]}
+findings:
+  Low RowsRemovedByFilter node=Some(0): Filter discards 98% of rows at orders | Read 5,000 rows to return 80. | An index on the filtered columns lets the scan skip those rows.

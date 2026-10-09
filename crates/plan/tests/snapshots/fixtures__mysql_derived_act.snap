@@ -1,0 +1,21 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&mysql_tree(&name))
+---
+MySql Actual
+#0 Sort est=0 act=500 loops=1 self=0.1ms (2%)
+  ! Sorts without an index (filesort)
+  #1 Table scan on d est=0 act=500 loops=1 self=0.1ms (1%)
+    #2 Materialize est=0 act=500 loops=1 self=0.0ms (1%)
+      #3 Filter est=- act=500 loops=1 self=0.1ms (1%)
+        Filter: (n > 10)
+        #4 Table scan on <temporary> est=- act=500 loops=1 self=0.0ms (1%)
+          #5 Aggregate est=- act=500 loops=1 self=3.3ms (53%)
+            ! Uses a temporary table
+            #6 Table scan on plan_big est=20290 act=20000 loops=1 self=2.6ms (42%)
+findings:
+  High FullScan node=Some(6): Table scan on plan_big | Reads 20,000 rows. | Add an index on the filtered or joined columns, or narrow the query.
+  High TempStructure node=Some(5): Aggregate uses a temporary table | Uses a temporary table. 20,000 rows. | An index on the grouped or distinct columns avoids the temporary table.
+  Low BadEstimate node=Some(0): Rows under-estimated 500× at Sort | Estimated 0 rows, got 500 per execution. | Refresh statistics on the tables involved.
+  Low BadEstimate node=Some(1): Rows under-estimated 500× at Table scan | Estimated 0 rows, got 500 per execution. | ANALYZE TABLE d;
+  Low BadEstimate node=Some(2): Rows under-estimated 500× at Materialize | Estimated 0 rows, got 500 per execution. | Refresh statistics on the tables involved.

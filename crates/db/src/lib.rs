@@ -35,7 +35,7 @@ pub use catalog::{
     CatalogChunk, ColumnInfo, ConstraintInfo, Dependencies, DependencyInfo, ForeignKeyInfo,
     IndexInfo, IntrospectScope, ObjectDetail, ObjectInfo, ObjectKind, SchemaInfo, TriggerInfo,
 };
-pub use dialect::{Dialect, ParamRef, ParamStyle, StatementSpan, dialect_for};
+pub use dialect::{Dialect, ParamRef, ParamStyle, PlanSupport, StatementSpan, dialect_for};
 pub use driver::{
     CancelHandle, ComponentId, DbAuthMethod, DbConfig, DbSession, Driver, SecurityContext,
     SecurityProvider, SslMode, TunnelEndpoint,

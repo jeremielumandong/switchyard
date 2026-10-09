@@ -1,0 +1,9 @@
+-> Limit: 10 row(s)  (actual time=2.47..2.47 rows=10 loops=1)
+    -> Sort: t DESC, limit input to 10 row(s) per chunk  (actual time=2.47..2.47 rows=10 loops=1)
+        -> Table scan on <temporary>  (actual time=2.16..2.26 rows=798 loops=1)
+            -> Aggregate using temporary table  (actual time=2.16..2.16 rows=798 loops=1)
+                -> Nested loop inner join  (cost=218 rows=333) (actual time=0.0817..1.61 rows=798 loops=1)
+                    -> Filter: (o.total > 100.00)  (cost=101 rows=333) (actual time=0.0663..0.382 rows=798 loops=1)
+                        -> Table scan on o  (cost=101 rows=1000) (actual time=0.0585..0.247 rows=1000 loops=1)
+                    -> Single-row index lookup on c using PRIMARY (id=o.customer_id)  (cost=0.25 rows=1) (actual time=0.00128..0.00131 rows=1 loops=798)
+

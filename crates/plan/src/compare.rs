@@ -89,7 +89,7 @@ fn total_pages(p: &Plan) -> Option<f64> {
     // Server's logical reads are per operator, so they add up.
     match p.source {
         crate::PlanSource::Postgres => p.root.io.pages(),
-        crate::PlanSource::SqlServer => (!pages.is_empty()).then(|| pages.iter().sum()),
+        _ => (!pages.is_empty()).then(|| pages.iter().sum()),
     }
 }
 
@@ -101,7 +101,7 @@ fn own_pages(p: &Plan, n: &PlanNode) -> Option<f64> {
             let kids: f64 = n.children.iter().filter_map(|c| c.io.pages()).sum();
             (pages - kids).max(0.0)
         }
-        crate::PlanSource::SqlServer => pages,
+        _ => pages,
     })
 }
 
