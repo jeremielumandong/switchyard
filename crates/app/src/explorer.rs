@@ -7,7 +7,9 @@
 //! top lists pinned objects grouped by connection. All rows of all connections are
 //! flattened into one list for the sidebar's single virtualized `uniform_list`.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use gpui_kit::{FocusHandle, ScrollStrategy, UniformListScrollHandle};
 use switchyard_core::db::ObjectKind;
@@ -95,9 +97,9 @@ pub enum PinStatus {
 pub struct Explorer {
     /// Connection nodes in display order (saved as [`SAVED_NODES_KEY`]). A restored id
     /// whose profile has not loaded yet has no state until it does.
-    pub order: Vec<ProfileId>,
+    order: Vec<ProfileId>,
     /// Per-connection tree state and catalog session.
-    pub conns: HashMap<ProfileId, SchemaState>,
+    conns: HashMap<ProfileId, SchemaState>,
     /// Database profiles, to name pins and create nodes.
     profiles: HashMap<ProfileId, DbConnection>,
     profiles_loaded: bool,
@@ -106,15 +108,15 @@ pub struct Explorer {
     /// Last selected object.
     pub selected: Option<ObjRef>,
     /// Tree filter text.
-    pub filter: String,
+    filter: String,
     /// The connection the filter searches (fixed while the filter is not empty).
-    pub search_conn: Option<ProfileId>,
+    search_conn: Option<ProfileId>,
     /// Connection of the active SQL tab (its node is highlighted).
     pub active: Option<ProfileId>,
     /// Pinned objects in order.
-    pub favorites: Vec<Favorite>,
+    favorites: Vec<Favorite>,
     /// The Favorites section is expanded.
-    pub favorites_open: bool,
+    favorites_open: bool,
     /// Until the saved node list arrives at startup: nodes added meanwhile do not
     /// connect, and nothing is saved.
     pub restoring: bool,
@@ -126,6 +128,10 @@ pub struct Explorer {
     pub scroll: UniformListScrollHandle,
     /// Focus of the tree, for its key bindings (`SchemaTree` context).
     pub focus: Option<FocusHandle>,
+    /// [`Self::rows`] as last built. Every `&mut` access that can change the tree (node
+    /// state, node list, profiles, pins, filter) clears it, so a render that follows an
+    /// unrelated core event reuses it instead of rebuilding and re-matching every row.
+    rows_cache: RefCell<Option<Rc<[TreeRow]>>>,
 }
 
 impl Default for Explorer {
@@ -147,6 +153,7 @@ impl Default for Explorer {
             reveal: None,
             scroll: UniformListScrollHandle::default(),
             focus: None,
+            rows_cache: RefCell::new(None),
         }
     }
 }
@@ -157,9 +164,36 @@ impl Explorer {
         self.conns.get(id)
     }
 
-    /// The state of connection `id`, if it is a node.
+    /// The state of connection `id`, if it is a node. Invalidates the cached rows.
     pub fn state_mut(&mut self, id: &ProfileId) -> Option<&mut SchemaState> {
+        self.invalidate();
         self.conns.get_mut(id)
+    }
+
+    /// Drop the cached [`Self::rows`]; the next call rebuilds them.
+    fn invalidate(&mut self) {
+        *self.rows_cache.get_mut() = None;
+    }
+
+    /// Pinned objects in order.
+    pub fn favorites(&self) -> &[Favorite] {
+        &self.favorites
+    }
+
+    /// Whether the Favorites section is expanded.
+    pub fn favorites_open(&self) -> bool {
+        self.favorites_open
+    }
+
+    /// Expand or collapse the Favorites section.
+    pub fn toggle_favorites(&mut self) {
+        self.invalidate();
+        self.favorites_open = !self.favorites_open;
+    }
+
+    /// The tree filter text.
+    pub fn filter(&self) -> &str {
+        &self.filter
     }
 
     /// Whether connection `id` is a node.
@@ -185,6 +219,7 @@ impl Explorer {
     /// Add a node for `conn` (collapsed, not connected) unless it has one. Returns
     /// whether it was added.
     pub fn ensure(&mut self, conn: DbConnection) -> bool {
+        self.invalidate();
         let id = conn.id.clone();
         if !self.order.contains(&id) {
             self.order.push(id.clone());
@@ -201,6 +236,7 @@ impl Explorer {
 
     /// Add a node for `conn` if needed and make sure it is expanded and connected.
     pub fn ensure_connected(&mut self, conn: DbConnection, core: &dyn CoreSink) {
+        self.invalidate();
         let id = conn.id.clone();
         self.ensure(conn);
         if let Some(s) = self.conns.get_mut(&id) {
@@ -213,6 +249,7 @@ impl Explorer {
 
     /// Remove the node of `id` and close its catalog session.
     pub fn remove(&mut self, id: &ProfileId, core: &dyn CoreSink) {
+        self.invalidate();
         self.order.retain(|o| o != id);
         if let Some(mut s) = self.conns.remove(id) {
             s.disconnect(core);
@@ -239,6 +276,7 @@ impl Explorer {
         dbs: impl IntoIterator<Item = DbConnection>,
         core: &dyn CoreSink,
     ) {
+        self.invalidate();
         self.profiles = dbs.into_iter().map(|d| (d.id.clone(), d)).collect();
         self.profiles_loaded = true;
         for id in self.order.clone() {
@@ -256,6 +294,7 @@ impl Explorer {
 
     /// The saved node list arrived at startup: add its nodes, not connected.
     pub fn restore(&mut self, ids: Vec<ProfileId>) {
+        self.invalidate();
         self.restoring = false;
         self.saved = ids.clone();
         for id in ids {
@@ -283,8 +322,19 @@ impl Explorer {
         Some(self.order.clone())
     }
 
-    /// Every row: the Favorites section (hidden while filtering), then each node.
-    pub fn rows(&self) -> Vec<TreeRow> {
+    /// Every row: the Favorites section (hidden while filtering), then each node. Built
+    /// once and shared until something that changes the tree invalidates it.
+    pub fn rows(&self) -> Rc<[TreeRow]> {
+        if let Some(rows) = self.rows_cache.borrow().as_ref() {
+            return rows.clone();
+        }
+        let rows: Rc<[TreeRow]> = self.build_rows().into();
+        *self.rows_cache.borrow_mut() = Some(rows.clone());
+        rows
+    }
+
+    /// Build [`Self::rows`] from scratch.
+    fn build_rows(&self) -> Vec<TreeRow> {
         let mut rows = Vec::new();
         if self.filter.is_empty() && !self.favorites.is_empty() {
             self.favorite_rows(&mut rows);
@@ -434,6 +484,7 @@ impl Explorer {
     /// The pins arrived (load, pin, unpin): load the folders they need on open nodes,
     /// so a pin of a dropped object shows as missing.
     pub fn set_favorites(&mut self, list: Vec<Favorite>, core: &dyn CoreSink) {
+        self.invalidate();
         self.favorites = list;
         let ids: Vec<ProfileId> = self.conns.keys().cloned().collect();
         for id in ids {
@@ -443,6 +494,7 @@ impl Explorer {
 
     /// Load the folders of the pins on node `id` once its session is open.
     fn load_pin_folders(&mut self, id: &ProfileId, core: &dyn CoreSink) {
+        self.invalidate();
         let Some(s) = self.conns.get_mut(id) else {
             return;
         };
@@ -468,6 +520,7 @@ impl Explorer {
         version: String,
         core: &dyn CoreSink,
     ) -> Option<ProfileId> {
+        self.invalidate();
         let id = self.conn_of_session(session)?;
         self.conns.get_mut(&id)?.on_open(version, core);
         self.load_pin_folders(&id, core);
@@ -501,6 +554,7 @@ impl Explorer {
         filter: String,
         core: &dyn CoreSink,
     ) -> Option<(ProfileId, u64)> {
+        self.invalidate();
         let scope = if filter.is_empty() {
             None
         } else {
@@ -524,6 +578,7 @@ impl Explorer {
 
     /// A search debounce elapsed on node `id`.
     pub fn search_due(&mut self, id: &ProfileId, ticket: u64, core: &dyn CoreSink) {
+        self.invalidate();
         if let Some(s) = self.conns.get_mut(id) {
             s.search_due(ticket, core);
         }
@@ -532,6 +587,7 @@ impl Explorer {
     /// Expand the tree down to what `f` pins (connecting its node when needed) and
     /// return the row to reveal once it loads. The node must exist ([`Self::ensure`]).
     pub fn expand_to(&mut self, f: &Favorite, core: &dyn CoreSink) -> Option<RowId> {
+        self.invalidate();
         let s = self.conns.get_mut(&f.connection_id)?;
         if s.session.is_none()
             || matches!(s.state.0, Some(crate::app_state::SessionState::Failed(_)))
@@ -606,6 +662,7 @@ impl Explorer {
         routine: bool,
         core: &dyn CoreSink,
     ) -> bool {
+        self.invalidate();
         let Some(conn) = self.connection(&o.conn).cloned() else {
             return false;
         };
@@ -819,6 +876,39 @@ mod tests {
     }
 
     #[test]
+    fn rows_are_cached_until_the_tree_changes() {
+        let sink = Sink::default();
+        let mut ex = Explorer::default();
+        let a = conn("a", EnvironmentLabel::Development);
+        open_with_tables(&mut ex, &a, &["orders"], &sink);
+        let first = ex.rows();
+        // Renders after unrelated events share the rows instead of rebuilding them.
+        assert!(Rc::ptr_eq(&first, &ex.rows()));
+        ex.cursor = Some(RowId::of(&first[1]));
+        ex.active = Some(a.id.clone());
+        assert!(Rc::ptr_eq(&first, &ex.rows()));
+        // Collapsing the node goes through `state_mut` and rebuilds.
+        if let Some(s) = ex.state_mut(&a.id) {
+            s.expanded.remove("db");
+        }
+        let collapsed = ex.rows();
+        assert!(!Rc::ptr_eq(&first, &collapsed));
+        assert_eq!(collapsed.len(), 1);
+        // So do the filter, pins and the node list.
+        ex.filter_changed("ord".into(), &sink);
+        assert!(!Rc::ptr_eq(&collapsed, &ex.rows()));
+        let filtered = ex.rows();
+        ex.filter_changed(String::new(), &sink);
+        assert!(!Rc::ptr_eq(&filtered, &ex.rows()));
+        let before = ex.rows();
+        ex.toggle_favorites();
+        assert!(!Rc::ptr_eq(&before, &ex.rows()));
+        let before = ex.rows();
+        ex.ensure(conn("b", EnvironmentLabel::Development));
+        assert_eq!(ex.rows().len(), before.len() + 1);
+    }
+
+    #[test]
     fn keyboard_moves_across_connection_boundaries() {
         let sink = Sink::default();
         let mut ex = Explorer::default();
@@ -1029,7 +1119,7 @@ mod tests {
             Some((String::new(), "app".into(), ObjectKind::Role))
         );
         // Filtering hides the section; collapsing it keeps only the header.
-        ex.favorites_open = false;
+        ex.toggle_favorites();
         assert_eq!(ex.rows().iter().filter(|r| r.fav.is_some()).count(), 0);
         // Same object, same pin; another kind is another pin.
         let o = ObjRef {

@@ -6,7 +6,7 @@
 //! longer than one parse chunk.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use alacritty_terminal::event::{Event as AlacEvent, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
@@ -238,6 +238,8 @@ struct Shared {
 pub struct Terminal {
     shared: Arc<Shared>,
     search: Arc<std::sync::Mutex<Option<Search>>>,
+    /// Generation of the latest search; a scan for an older one stops and drops its result.
+    search_gen: Arc<AtomicU64>,
 }
 
 /// The I/O-side handle that parses program output into the terminal. One per terminal.
@@ -278,6 +280,7 @@ pub fn new_terminal(size: TermSize, scrollback: usize, sink: EventSink) -> (Term
         Terminal {
             shared: shared.clone(),
             search: Arc::default(),
+            search_gen: Arc::default(),
         },
         Feeder {
             shared,
@@ -563,15 +566,32 @@ impl Terminal {
         term.bounds_to_string(p, end)
     }
 
-    /// Search the scrollback for `pattern` (a regular expression; plain text works too).
-    /// Returns the number of matches, newest first focused.
+    /// Search the scrollback for `pattern` (plain text, case-insensitive). Returns the
+    /// number of matches, newest first focused. Blocks while it scans: the UI uses
+    /// [`Self::begin_search`] and [`Self::search_as`] off its thread instead.
     pub fn search(&self, pattern: &str) -> usize {
-        let Ok(mut guard) = self.search.lock() else {
-            return 0;
-        };
+        let generation = self.begin_search();
+        self.search_as(pattern, generation).unwrap_or(0)
+    }
+
+    /// Start a new search and return its generation. A scan still running for an older
+    /// generation stops at its next match and its result is dropped.
+    pub fn begin_search(&self) -> u64 {
+        self.search_gen.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    /// Whether `generation` is still the latest search.
+    pub fn search_current(&self, generation: u64) -> bool {
+        self.search_gen.load(Ordering::Acquire) == generation
+    }
+
+    /// Scan the scrollback for `pattern` as search `generation` (from
+    /// [`Self::begin_search`]); safe to call from any thread. Installs the matches and
+    /// returns their count, or returns `None` without touching the current search when a
+    /// newer search started meanwhile.
+    pub fn search_as(&self, pattern: &str, generation: u64) -> Option<usize> {
         if pattern.is_empty() {
-            *guard = None;
-            return 0;
+            return self.install_search(None, generation).then_some(0);
         }
         let escaped: String = pattern
             .chars()
@@ -584,13 +604,15 @@ impl Terminal {
             })
             .collect();
         let Ok(mut regex) = RegexSearch::new(&format!("(?i){escaped}")) else {
-            *guard = None;
-            return 0;
+            return self.install_search(None, generation).then_some(0);
         };
         let term = self.shared.term.lock();
         let mut matches = Vec::new();
         let mut origin = Point::new(term.topmost_line(), Column(0));
         while matches.len() < MAX_MATCHES {
+            if !self.search_current(generation) {
+                return None;
+            }
             let Some(m) = term.search_next(&mut regex, origin, Direction::Right, Side::Left, None)
             else {
                 break;
@@ -611,10 +633,24 @@ impl Terminal {
         drop(term);
         let n = matches.len();
         let focused = n.saturating_sub(1);
-        *guard = Some(Search { matches, focused });
-        drop(guard);
+        if !self.install_search(Some(Search { matches, focused }), generation) {
+            return None;
+        }
         self.reveal_focused();
-        n
+        Some(n)
+    }
+
+    /// Replace the current search with `search` unless `generation` is stale.
+    fn install_search(&self, search: Option<Search>, generation: u64) -> bool {
+        let Ok(mut guard) = self.search.lock() else {
+            return false;
+        };
+        // Checked under the lock: a newer search installs after this one, never before.
+        if !self.search_current(generation) {
+            return false;
+        }
+        *guard = search;
+        true
     }
 
     /// Move to the next (`forward`) or previous match.
@@ -635,6 +671,7 @@ impl Terminal {
 
     /// Stop searching.
     pub fn clear_search(&self) {
+        self.begin_search();
         if let Ok(mut g) = self.search.lock() {
             *g = None;
         }
@@ -866,6 +903,31 @@ mod tests {
                 .any(|r| r.mark == Mark::FocusedMatch)
         );
         assert_eq!(t.search("a.b("), 0, "special characters are literal");
+    }
+
+    #[test]
+    fn a_stale_search_is_dropped() {
+        let (t, mut f, _) = term(20, 3);
+        for i in 0..20 {
+            f.feed(format!("line {i}\r\n").as_bytes());
+        }
+        let old = t.begin_search();
+        let new = t.begin_search();
+        assert_eq!(
+            t.search_as("line", old),
+            None,
+            "superseded scan installs nothing"
+        );
+        assert_eq!(t.snapshot().search, None);
+        assert_eq!(t.search_as("line 1", new), Some(11));
+        assert_eq!(t.snapshot().search, Some((10, 11)));
+        // A late result for the old generation does not overwrite the newer one.
+        assert_eq!(t.search_as("line", old), None);
+        assert_eq!(t.snapshot().search, Some((10, 11)));
+        // Clearing makes an in-flight scan stale too.
+        t.clear_search();
+        assert_eq!(t.search_as("line", new), None);
+        assert_eq!(t.snapshot().search, None);
     }
 
     #[test]
