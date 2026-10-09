@@ -1005,3 +1005,20 @@ The user asked for Redis next to SQLite and MongoDB.
   ask first. Console history masks passwords (AUTH, HELLO AUTH, ACL SETUSER, CONFIG SET).
   Values are read up to 1,000 elements (strings 64 KB) per key.
 
+
+## 2026-10-09 — AI in the API Workbench runs in the assistant panel, without databases
+
+The user asked for AI in the API Workbench. Its AI buttons (ported from AgentOps) built a
+redacted prompt for a Chat composer that Switchyard does not have.
+
+- **One assistant.** The prompts go to the existing assistant panel and the user's coding CLI,
+  not a new HTTP integration with a model API: no new dependency, no key to store, and the
+  same adapters and normalized events. A button press sends the question at once (the panel's
+  one-line input cannot hold the multi-line prompt); Stop cancels it.
+- **No database in scope.** `Command::RunAgent` gained `databases`; API runs set it false, so
+  the run's `swy mcp` token reaches no connection even when agent-enabled ones exist.
+- **Answers become requests, not actions.** The prompts ask for ```http blocks; the panel
+  parses them (`api::generated`) into cards that open a new saved request. Nothing is sent
+  and no existing request is changed by the assistant.
+- **Two conversations.** Switching Default ↔ API swaps the panel's transcript and session; a
+  run in the hidden one keeps streaming into it.

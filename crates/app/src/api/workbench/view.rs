@@ -2103,6 +2103,12 @@ impl WorkbenchPanel {
                         &handle,
                         |this, _, cx| this.ask_agent(assist::AssistIntent::ReviewRequest, cx),
                     ))
+                    .item(menu_item(
+                        "workbench-ask-ai-describe".into(),
+                        "Describe a new request with AI",
+                        &handle,
+                        |_, _, cx| cx.emit(DescribeRequestRequested),
+                    ))
                     .separator()
                     .item(menu_item(
                         "workbench-export-agentops".into(),

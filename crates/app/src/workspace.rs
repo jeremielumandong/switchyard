@@ -1699,13 +1699,53 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Point the assistant panel at the active SQL tab's connection.
+    /// Point the assistant panel at the active SQL tab's connection, and at the Workbench's
+    /// collection in the API workspace.
     pub(crate) fn sync_assistant(&mut self, cx: &mut Context<Self>) {
         let conn = self
             .active_sql()
             .and_then(|t| t.read(cx).connection.clone());
-        self.assistant_panel
-            .update(cx, |p, cx| p.set_connection(conn, cx));
+        let api_context = match (self.mode, &self.api) {
+            (AppMode::Api, Some(api)) => Some(api.read(cx).ai_context()),
+            _ => None,
+        };
+        self.assistant_panel.update(cx, |p, cx| {
+            p.set_connection(conn, cx);
+            if let Some(context) = api_context {
+                p.set_api_context(context);
+            }
+        });
+    }
+
+    /// The Workbench's AI buttons: questions go to the assistant panel beside it.
+    fn subscribe_workbench(
+        &mut self,
+        api: &Entity<crate::api::workbench::WorkbenchPanel>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::api::workbench::{AskAgentRequested, DescribeRequestRequested};
+        let ask = cx.subscribe_in(api, window, |this, _, ev: &AskAgentRequested, _, cx| {
+            this.assistant_open = true;
+            this.sync_assistant(cx);
+            let (label, prompt) = (ev.label.clone(), ev.prompt.clone());
+            this.assistant_panel
+                .update(cx, |p, cx| p.ask_api(label, prompt, cx));
+            cx.notify();
+        });
+        let describe = cx.subscribe_in(
+            api,
+            window,
+            |this, _, _: &DescribeRequestRequested, window, cx| {
+                this.assistant_open = true;
+                this.sync_assistant(cx);
+                this.assistant_panel
+                    .update(cx, |p, cx| p.describe_request(window, cx));
+                cx.notify();
+            },
+        );
+        self._subs.push(ask);
+        self._subs.push(describe);
     }
 
     /// The assistant panel asks for something.
@@ -1758,6 +1798,15 @@ impl Workspace {
                 self.tabs.push(Tab::Terminal(t));
                 self.active = self.tabs.len() - 1;
             }
+            E::OpenRequest(request) => match &self.api {
+                Some(api) => {
+                    api.update(cx, |w, cx| w.open_generated_request(request, window, cx));
+                    // The request lands in the Workbench's collection: refresh what the next
+                    // description sees.
+                    self.sync_assistant(cx);
+                }
+                None => self.toast("Open the API workspace first", cx),
+            },
             E::Close => self.assistant_open = false,
         }
         cx.notify();
@@ -2006,9 +2055,14 @@ impl Workspace {
     pub(crate) fn set_mode(&mut self, mode: AppMode, window: &mut Window, cx: &mut Context<Self>) {
         self.mode_menu = false;
         if mode == AppMode::Api && self.api.is_none() {
-            self.api = Some(cx.new(|cx| crate::api::workbench::WorkbenchPanel::new(window, cx)));
+            let api = cx.new(|cx| crate::api::workbench::WorkbenchPanel::new(window, cx));
+            self.subscribe_workbench(&api, window, cx);
+            self.api = Some(api);
         }
         self.mode = mode;
+        self.assistant_panel
+            .update(cx, |p, cx| p.set_api(mode == AppMode::Api, window, cx));
+        self.sync_assistant(cx);
         match (mode, &self.api) {
             (AppMode::Api, Some(api)) => {
                 let focus = api.read(cx).focus_handle(cx);

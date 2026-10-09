@@ -595,7 +595,18 @@ impl Service {
                 connection,
                 prompt,
                 resume,
-            } => self.run_agent(run, agent, connection, prompt, resume).await,
+                databases,
+            } => {
+                self.run_agent(
+                    run,
+                    agent,
+                    connection.filter(|_| databases),
+                    databases,
+                    prompt,
+                    resume,
+                )
+                .await
+            }
             Command::CancelAgent { run } => self.cancel_agent(run),
             Command::OpenAgentTerminal {
                 term,

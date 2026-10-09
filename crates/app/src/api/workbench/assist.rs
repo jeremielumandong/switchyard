@@ -1,5 +1,5 @@
-//! The Workbench → Chat handoff: a prompt built from what the panel already
-//! keeps in redacted form.
+//! The Workbench → Assistant handoff: a prompt built from what the panel
+//! already keeps in redacted form.
 //!
 //! Nothing here reads the editors. The request half is the
 //! [`RedactedRequestSnapshot`] the compiler produced for history and snippets
@@ -8,10 +8,11 @@
 //! That is what keeps the spec's security boundary intact: the prompt can only
 //! carry what the History tab could already show.
 //!
-//! The prompt lands in the Chat composer, it is not sent. The reader edits,
-//! attaches, picks a model, and presses Enter — the same rule the Library's
-//! Run follows, for the same reason: an unwanted turn is not one keystroke
-//! away.
+//! Each prompt is asked by an explicit button (Explain, Debug failure, …) and
+//! runs in the assistant panel beside the Workbench, with the reader's coding
+//! CLI and no database connection in scope. Requests the answer writes come
+//! back as ```http blocks ([`REQUEST_FORMAT`]) that the panel offers to open
+//! as new requests; nothing is sent or saved without the reader.
 
 use switchyard_api::RedactedRequestSnapshot;
 
@@ -71,50 +72,56 @@ impl AssistIntent {
     fn instruction(self) -> &'static str {
         match self {
             Self::ReviewRequest => {
-                "Review this HTTP request from my AgentOps API Workbench. Point out anything \
+                "Review this HTTP request from my Switchyard API Workbench. Point out anything \
                  wrong or missing (method, URL, headers, body shape, auth), and suggest \
                  concrete improvements."
             }
             Self::ExplainResponse => {
-                "Explain this HTTP exchange from my AgentOps API Workbench: what the response \
+                "Explain this HTTP exchange from my Switchyard API Workbench: what the response \
                  means, what the notable headers and fields are, and anything I should watch \
                  out for."
             }
             Self::DiagnoseFailure => {
-                "This HTTP request from my AgentOps API Workbench failed. Diagnose the most \
+                "This HTTP request from my Switchyard API Workbench failed. Diagnose the most \
                  likely cause from the request and response below and tell me exactly what \
                  to change to make it succeed."
             }
             Self::WriteTests => {
                 "Write Postman-style `pm.test(...)` assertions for this HTTP exchange from my \
-                 AgentOps API Workbench. Cover the status, the important headers, and the \
+                 Switchyard API Workbench. Cover the status, the important headers, and the \
                  shape of the body. Return only the script I can paste into the Tests tab."
             }
             Self::GenerateBody => {
-                "Generate a realistic request body for this HTTP request from my AgentOps API \
+                "Generate a realistic request body for this HTTP request from my Switchyard API \
                  Workbench. Match the content type in the headers and any schema the URL or \
                  headers imply; keep `{{variable}}` placeholders where a value should come \
                  from the environment. Return only the body I can paste into the Body tab."
             }
             Self::GenerateData => {
-                "Generate iteration data for the Data tab of my AgentOps API Workbench: a JSON \
+                "Generate iteration data for the Data tab of my Switchyard API Workbench: a JSON \
                  array of objects, one per row, whose keys are the `{{variables}}` this \
                  request reads. Follow the scenario and constraints below exactly and use the \
                  seed so the rows are reproducible. Return only the JSON array."
             }
             Self::FillEnvironment => {
-                "My AgentOps API Workbench environment is missing values for the variables \
+                "My Switchyard API Workbench environment is missing values for the variables \
                  listed below, which the selected collection references. Suggest a value for \
                  each as `KEY=value` lines I can paste into the environment editor; mark \
                  anything that is a credential as `secret:KEY=` with no value."
             }
             Self::ReviewImport => {
-                "Review this collection my AgentOps API Workbench parsed from an imported \
+                "Review this collection my Switchyard API Workbench parsed from an imported \
                  file before I commit it. Call out destructive operations, missing \
                  authentication, inconsistent naming, and anything the parser may have \
                  misread."
             }
         }
+    }
+
+    /// Whether the answer may carry a request to open: the intents that
+    /// end in "change this" ask for it in [`REQUEST_FORMAT`].
+    pub fn proposes_request(self) -> bool {
+        matches!(self, Self::ReviewRequest | Self::DiagnoseFailure)
     }
 
     /// Whether this intent needs a response to talk about.
@@ -131,6 +138,49 @@ impl AssistIntent {
     pub fn needs_request(self) -> bool {
         !matches!(self, Self::FillEnvironment | Self::ReviewImport)
     }
+}
+
+/// The line the assistant's transcript shows for a question: the action,
+/// then the request it is about.
+pub fn asked_label(intent: AssistIntent, request: Option<&RedactedRequestSnapshot>) -> String {
+    let action = match intent {
+        AssistIntent::ReviewRequest => "Review request",
+        other => other.label(),
+    };
+    match request {
+        Some(request) => format!("{action}: {} {}", request.method, request.url),
+        None => action.to_owned(),
+    }
+}
+
+/// How an answer writes a request the Workbench can open: what
+/// [`crate::api::generated::http_requests`] reads.
+pub const REQUEST_FORMAT: &str = "Write every request I should send as its own ```http block: \
+an optional `# name` line, then `METHOD URL`, then one `Name: value` header per line, a blank \
+line, and the body. Keep `{{variable}}` placeholders for base URLs, ids and credentials; never \
+invent a secret value. The Workbench offers each block as a new request.";
+
+/// The prompt for "Generate request": `description` is the reader's prose,
+/// `sections` the workspace metadata the panel collected (collection,
+/// environment keys, sibling requests) — names only, never a value.
+pub fn describe_prompt(description: &str, sections: &[(&'static str, String)]) -> String {
+    let mut out =
+        String::from("Write the HTTP request my Switchyard API Workbench should send to do this: ");
+    out.push_str(description.trim());
+    out.push_str(
+        "\n\nFollow the conventions of the workspace below (base URL variable, auth header, \
+         naming). If the API is public and well known, use its documented endpoint. Say in one \
+         or two sentences what the request does and anything I must fill in.\n\n",
+    );
+    out.push_str(REQUEST_FORMAT);
+    out.push('\n');
+    for (heading, body) in sections {
+        let body = body.trim();
+        if !body.is_empty() {
+            out.push_str(&format!("\n### {heading}\n{body}\n"));
+        }
+    }
+    out
 }
 
 /// What a prompt is built from. Every field is already redacted or is
@@ -305,6 +355,11 @@ pub fn compose(intent: AssistIntent, context: &AssistContext<'_>) -> String {
             continue;
         }
         out.push_str(&format!("\n### {heading}\n{body}\n"));
+    }
+    if intent.proposes_request() {
+        out.push('\n');
+        out.push_str(REQUEST_FORMAT);
+        out.push('\n');
     }
     out
 }
@@ -507,5 +562,56 @@ mod tests {
         let scenario_at = text.find("### Scenario").unwrap();
         assert!(request_at < scenario_at, "sections follow the exchange");
         assert!(text.contains("seed 4417"));
+    }
+
+    #[test]
+    fn fix_intents_ask_for_a_request_block_that_parses() {
+        for intent in [AssistIntent::ReviewRequest, AssistIntent::DiagnoseFailure] {
+            let text = prompt(intent, &request(), Some(&response(500, "{}")), None);
+            assert!(text.trim_end().ends_with(REQUEST_FORMAT), "{intent:?}");
+        }
+        for intent in [AssistIntent::ExplainResponse, AssistIntent::WriteTests] {
+            let text = prompt(intent, &request(), Some(&response(200, "{}")), None);
+            assert!(!text.contains(REQUEST_FORMAT), "{intent:?}");
+        }
+        // The request the prompt quotes is itself a block the panel reads back.
+        let text = prompt(AssistIntent::ReviewRequest, &request(), None, None);
+        let quoted = crate::api::generated::http_requests(&text);
+        assert_eq!(quoted.len(), 1);
+        assert_eq!(quoted[0].url, "https://api.example.test/items");
+        assert_eq!(quoted[0].body, r#"{"name":"widget"}"#);
+    }
+
+    #[test]
+    fn asked_labels_name_the_action_and_request() {
+        assert_eq!(
+            asked_label(AssistIntent::DiagnoseFailure, Some(&request())),
+            "Debug failure: POST https://api.example.test/items"
+        );
+        assert_eq!(
+            asked_label(AssistIntent::ReviewRequest, Some(&request())),
+            "Review request: POST https://api.example.test/items"
+        );
+        assert_eq!(
+            asked_label(AssistIntent::FillEnvironment, None),
+            "Fill from spec"
+        );
+    }
+
+    #[test]
+    fn describe_prompt_carries_the_description_and_names_only() {
+        let text = describe_prompt(
+            "  list the 10 newest orders  ",
+            &[
+                ("Collection", "Shop API".into()),
+                ("Environment keys", "baseUrl, token".into()),
+                ("Empty", " ".into()),
+            ],
+        );
+        assert!(text.contains("to do this: list the 10 newest orders\n"));
+        assert!(text.contains(REQUEST_FORMAT));
+        assert!(text.contains("### Environment keys\nbaseUrl, token\n"));
+        assert!(!text.contains("### Empty"));
+        assert!(!text.contains("AgentOps"));
     }
 }
