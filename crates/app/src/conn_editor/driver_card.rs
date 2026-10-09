@@ -13,6 +13,7 @@ use switchyard_core::drivers::{Component, ComponentStatus, InstallPlan, InstallP
 use switchyard_core::{Command, Event};
 
 use super::{ConnEditor, ConnEditorEvent, TestState};
+use crate::appearance::{rpx, ts};
 use crate::theme::{MONO, Palette, SANS};
 use crate::ui::{self, Kind};
 
@@ -339,26 +340,26 @@ impl ConnEditor {
         let command_box = |cmd: String, id: &'static str| {
             let copy = cmd.clone();
             div()
-                .mx(px(14.))
-                .mb(px(12.))
+                .mx(rpx(14.))
+                .mb(rpx(12.))
                 .flex()
                 .items_center()
-                .gap(px(8.))
-                .px(px(10.))
-                .py(px(7.))
+                .gap(rpx(8.))
+                .px(rpx(10.))
+                .py(rpx(7.))
                 .border_1()
                 .border_color(p.bd)
                 .rounded(px(6.))
                 .bg(p.surface)
                 .font_family(MONO)
-                .text_size(px(12.))
+                .text_size(ts::BODY)
                 .child(div().text_color(p.fg3).child("$"))
                 .child(div().flex_1().child(cmd))
                 .child(
                     div()
                         .id(id)
                         .font_family(SANS)
-                        .text_size(px(11.5))
+                        .text_size(ts::LABEL)
                         .text_color(p.acc)
                         .on_click(cx.listener(move |_, _, _, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
@@ -394,16 +395,16 @@ impl ConnEditor {
                     };
                     Some(
                         div()
-                            .mx(px(14.))
-                            .mb(px(12.))
+                            .mx(rpx(14.))
+                            .mb(rpx(12.))
                             .flex()
                             .flex_col()
-                            .gap(px(4.))
-                            .text_size(px(12.))
+                            .gap(rpx(4.))
+                            .text_size(ts::BODY)
                             .children(steps.into_iter().enumerate().map(|(i, s)| {
                                 div()
                                     .flex()
-                                    .gap(px(8.))
+                                    .gap(rpx(8.))
                                     .child(div().text_color(p.fg3).child(format!("{}.", i + 1)))
                                     .child(div().flex_1().min_w_0().font_family(MONO).child(s))
                             }))
@@ -413,10 +414,10 @@ impl ConnEditor {
                 Step::License => c.license.as_ref().and_then(|l| l.url.clone()).map(|url| {
                     let open = url.clone();
                     div()
-                        .mx(px(14.))
-                        .mb(px(12.))
+                        .mx(rpx(14.))
+                        .mb(rpx(12.))
                         .id("drv-license")
-                        .text_size(px(12.))
+                        .text_size(ts::BODY)
                         .text_color(p.acc)
                         .on_click(move |_, _, cx| cx.open_url(&open))
                         .child(format!("Read the license: {url}"))
@@ -424,12 +425,12 @@ impl ConnEditor {
                 }),
                 Step::Path => Some(
                     div()
-                        .mx(px(14.))
-                        .mb(px(12.))
-                        .h(px(28.))
+                        .mx(rpx(14.))
+                        .mb(rpx(12.))
+                        .h(rpx(28.))
                         .flex()
                         .items_center()
-                        .px(px(9.))
+                        .px(rpx(9.))
                         .border_1()
                         .border_color(p.bd2)
                         .rounded(px(6.))
@@ -437,7 +438,7 @@ impl ConnEditor {
                         .child(
                             Input::new(&self.driver_path)
                                 .appearance(false)
-                                .text_size(px(12.)),
+                                .text_size(ts::BODY),
                         )
                         .into_any_element(),
                 ),
@@ -456,20 +457,20 @@ impl ConnEditor {
                     };
                     Some(
                         div()
-                            .mx(px(14.))
-                            .mb(px(12.))
+                            .mx(rpx(14.))
+                            .mb(rpx(12.))
                             .flex()
                             .flex_col()
-                            .gap(px(6.))
+                            .gap(rpx(6.))
                             .child(
-                                div().h(px(4.)).rounded(px(2.)).bg(p.bd).child(
+                                div().h(rpx(4.)).rounded(px(2.)).bg(p.bd).child(
                                     div().h_full().rounded(px(2.)).bg(p.acc).w(relative(frac)),
                                 ),
                             )
                             .child(
                                 div()
                                     .font_family(MONO)
-                                    .text_size(px(11.))
+                                    .text_size(ts::SMALL)
                                     .text_color(p.fg3)
                                     .child(label),
                             )
@@ -571,21 +572,21 @@ impl ConnEditor {
             .child(
                 div()
                     .flex()
-                    .gap(px(12.))
+                    .gap(rpx(12.))
                     .items_start()
-                    .px(px(14.))
-                    .py(px(12.))
+                    .px(rpx(14.))
+                    .py(rpx(12.))
                     .child(
                         div()
                             .flex_none()
-                            .px(px(6.))
+                            .px(rpx(6.))
                             .rounded(px(4.))
                             .bg(bg)
                             .text_color(fg)
                             .font_family(MONO)
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_size(px(9.))
-                            .line_height(px(18.))
+                            .text_size(ts::TINY)
+                            .line_height(rpx(18.))
                             .child(tag),
                     )
                     .child(
@@ -593,20 +594,20 @@ impl ConnEditor {
                             .flex_1()
                             .flex()
                             .flex_col()
-                            .gap(px(4.))
+                            .gap(rpx(4.))
                             .child(
                                 div()
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_size(px(13.))
+                                    .text_size(ts::BASE)
                                     .child(title),
                             )
                             .when(!body.is_empty(), |d| {
-                                d.child(div().text_size(px(12.)).text_color(p.fg2).child(body))
+                                d.child(div().text_size(ts::BODY).text_color(p.fg2).child(body))
                             })
                             .child(
                                 div()
                                     .font_family(MONO)
-                                    .text_size(px(11.))
+                                    .text_size(ts::SMALL)
                                     .text_color(p.fg3)
                                     .child(meta),
                             ),
@@ -617,9 +618,9 @@ impl ConnEditor {
                 d.child(
                     div()
                         .flex()
-                        .gap(px(6.))
-                        .px(px(14.))
-                        .py(px(10.))
+                        .gap(rpx(6.))
+                        .px(rpx(14.))
+                        .py(rpx(10.))
                         .border_t_1()
                         .border_color(p.bd)
                         .bg(p.panel)

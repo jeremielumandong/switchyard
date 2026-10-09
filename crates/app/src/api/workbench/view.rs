@@ -26,6 +26,7 @@ use std::rc::Rc;
 
 use super::move_request::{Destination, DraggedRequest};
 use super::*;
+use crate::appearance::rpx;
 
 // ---------------------------------------------------------------------------
 // Shared widgets
@@ -40,7 +41,7 @@ pub(super) enum Col {
 
 pub(super) fn icon(name: &'static str, size: f32, color: Hsla) -> Svg {
     svg()
-        .size(px(size))
+        .size(rpx(size))
         .flex_none()
         .path(crate::api::compat::icon_path(name))
         .text_color(color)
@@ -48,7 +49,7 @@ pub(super) fn icon(name: &'static str, size: f32, color: Hsla) -> Svg {
 
 fn dot(size: f32, color: Hsla) -> Div {
     div()
-        .size(px(size))
+        .size(rpx(size))
         .flex_none()
         .rounded(radius::full())
         .bg(color)
@@ -93,7 +94,7 @@ fn underline_tab(id: String, label: impl Into<SharedString>, active: bool, cx: &
 /// A tinted verb (`GET`, `POST`…) in a fixed-width mono column.
 fn verb(label: impl Into<SharedString>, tint: Hsla, width: f32, cx: &App) -> Div {
     div()
-        .w(px(width))
+        .w(rpx(width))
         .flex_none()
         .font_family(crate::api::compat::fonts::mono(cx))
         .text_size(text::S9)
@@ -119,7 +120,7 @@ fn lavender_button(
         .flex_none()
         .items_center()
         .justify_center()
-        .gap(px(6.))
+        .gap(rpx(6.))
         .rounded(radius::sm())
         .cursor_pointer()
         .whitespace_nowrap()
@@ -128,14 +129,14 @@ fn lavender_button(
         .text_color(lavender)
         .map(|el| {
             if tall {
-                el.h(px(32.))
-                    .px(px(12.))
+                el.h(rpx(32.))
+                    .px(rpx(12.))
                     .bg(lavender.opacity(0.16))
                     .text_size(text::S12)
                     .font_weight(text::weight::SEMIBOLD)
             } else {
-                el.px(px(10.))
-                    .py(px(3.))
+                el.px(rpx(10.))
+                    .py(rpx(3.))
                     .bg(lavender.opacity(0.12))
                     .text_size(text::S11)
             }
@@ -176,9 +177,9 @@ fn accent_button(
         .flex_none()
         .items_center()
         .justify_center()
-        .gap(px(6.))
-        .h(px(height))
-        .px(if height >= 32. { px(16.) } else { px(10.) })
+        .gap(rpx(6.))
+        .h(rpx(height))
+        .px(if height >= 32. { rpx(16.) } else { rpx(10.) })
         .rounded(radius::sm())
         .cursor_pointer()
         .whitespace_nowrap()
@@ -213,7 +214,7 @@ fn icon_button(id: String, name: &'static str, tint: Option<Hsla>, cx: &App) -> 
         .flex_none()
         .items_center()
         .justify_center()
-        .size(px(32.))
+        .size(rpx(32.))
         .rounded(radius::sm())
         .border_1()
         .border_color(tint.map(|tint| tint.opacity(0.45)).unwrap_or(colors.input))
@@ -247,7 +248,7 @@ fn note_card(
         .flex()
         .items_center()
         .gap(space::SP_2)
-        .px(px(10.))
+        .px(rpx(10.))
         .py(space::SP_2)
         .rounded(radius::sm())
         .border_1()
@@ -256,7 +257,7 @@ fn note_card(
         .text_size(text::S11)
         .text_color(palette::text_secondary(cx))
         .when_some(name, |el, name| el.child(icon(name, 14., tint)))
-        .child(div().flex_1().min_w(px(0.)).child(body.into()))
+        .child(div().flex_1().min_w(rpx(0.)).child(body.into()))
 }
 
 /// The mock's `gap 1px; background: border` grid: a column of rows whose
@@ -266,7 +267,7 @@ pub(super) fn table(cx: &App) -> Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(1.))
+        .gap(rpx(1.))
         .rounded(radius::md())
         .border_1()
         .border_color(colors.border)
@@ -292,19 +293,19 @@ pub(super) fn table_row(cols: &[Col], cells: Vec<AnyElement>, header: bool, cx: 
     };
     div()
         .flex()
-        .gap(px(1.))
-        .min_w(px(0.))
+        .gap(rpx(1.))
+        .min_w(rpx(0.))
         .children(cols.iter().zip(cells).map(|(col, cell)| {
             div()
                 .px(space::SP_2)
-                .py(px(6.))
-                .min_w(px(0.))
+                .py(rpx(6.))
+                .min_w(rpx(0.))
                 .bg(bg)
                 .text_color(fg)
                 .whitespace_nowrap()
                 .overflow_hidden()
                 .map(|el| match col {
-                    Col::Px(width) => el.w(px(*width)).flex_none(),
+                    Col::Px(width) => el.w(rpx(*width)).flex_none(),
                     Col::Flex => el.flex_1(),
                 })
                 .child(cell)
@@ -344,7 +345,7 @@ fn pill(label: impl Into<SharedString>, fg: Hsla, cx: &App) -> Div {
     div()
         .flex_none()
         .px(space::SP_2)
-        .py(px(2.))
+        .py(rpx(2.))
         .rounded(radius::full())
         .bg(cx.theme().colors.accent)
         .text_size(text::S10)
@@ -361,8 +362,8 @@ pub(super) fn mono_field(state: &Entity<InputState>, window: &Window, cx: &App) 
     div()
         .flex()
         .items_center()
-        .h(px(30.))
-        .px(px(10.))
+        .h(rpx(30.))
+        .px(rpx(10.))
         .rounded(radius::sm())
         .border_1()
         .border_color(if focused { colors.ring } else { colors.input })
@@ -424,7 +425,7 @@ fn menu_trigger(
             div()
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(rpx(6.))
                 .text_color(fg)
                 .child(content),
         )
@@ -470,8 +471,8 @@ pub(super) enum RailItem {
 /// A muted one-line note in the rail.
 fn rail_note(text: &'static str, cx: &App) -> AnyElement {
     div()
-        .px(px(6.))
-        .py(px(5.))
+        .px(rpx(6.))
+        .py(rpx(5.))
         .text_size(text::S11)
         .text_color(palette::text_tertiary(cx))
         .child(text)
@@ -494,7 +495,7 @@ fn rail_item_menu(
         cx,
     )
     .debug_selector(move || selector.clone())
-    .size(px(20.))
+    .size(rpx(20.))
     .p_0()
     .dropdown_menu(move |menu: PopupMenu, window, cx| build(menu.min_w(px(200.)), window, cx))
 }
@@ -717,7 +718,7 @@ impl Render for WorkbenchPanel {
                         .bg(colors.warning.opacity(0.12))
                         .text_size(text::S10)
                         .text_color(colors.warning)
-                        .child(div().flex_1().min_w(px(0.)).truncate().child(notice))
+                        .child(div().flex_1().min_w(rpx(0.)).truncate().child(notice))
                         .when(self.dirty, |el| {
                             el.child(
                                 outline_chip("workbench-notice-save".into(), "Save", cx)
@@ -904,11 +905,11 @@ impl WorkbenchPanel {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(rpx(6.))
                         .child(icon("folder", 12., colors.muted_foreground))
                         .child(
                             div()
-                                .max_w(px(180.))
+                                .max_w(rpx(180.))
                                 .truncate()
                                 .text_size(text::S11)
                                 .child(self.workspace_display_name()),
@@ -917,14 +918,14 @@ impl WorkbenchPanel {
                     cx,
                 )
                 .flex_none()
-                .h(px(24.))
-                .px(px(10.))
+                .h(rpx(24.))
+                .px(rpx(10.))
                 .dropdown_menu(self.workspace_menu(cx)),
             )
             .child(
                 div()
                     .flex_1()
-                    .min_w(px(0.))
+                    .min_w(rpx(0.))
                     .overflow_x_scrollbar()
                     // `Scrollable` wraps this element, so the tabs need
                     // their own flex row inside its scroll area.
@@ -973,7 +974,7 @@ impl WorkbenchPanel {
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(6.))
+                                .gap(rpx(6.))
                                 .child(dot(
                                     6.,
                                     env_label_color.unwrap_or_else(|| self.environment_dot(cx)),
@@ -987,8 +988,8 @@ impl WorkbenchPanel {
                                 .child(icon("chevron-down", 12., colors.muted_foreground)),
                             cx,
                         )
-                        .h(px(24.))
-                        .px(px(10.))
+                        .h(rpx(24.))
+                        .px(rpx(10.))
                         .dropdown_menu(self.environment_menu("workbench-env", cx)),
                     )
                     .child(
@@ -1049,15 +1050,15 @@ impl WorkbenchPanel {
                         .flex()
                         .flex_col()
                         .flex_1()
-                        .min_w(px(0.))
-                        .min_h(px(0.))
+                        .min_w(rpx(0.))
+                        .min_h(rpx(0.))
                         .child(self.render_request_tabs(cx))
                         .child(self.render_url_row(window, cx))
                         .child(self.render_composer_tabs(cx))
                         .child(
                             div()
                                 .flex_1()
-                                .min_h(px(0.))
+                                .min_h(rpx(0.))
                                 .relative()
                                 .overflow_hidden()
                                 .child(
@@ -1103,7 +1104,7 @@ impl WorkbenchPanel {
             );
         div()
             .flex_1()
-            .min_h(px(0.))
+            .min_h(rpx(0.))
             .relative()
             .overflow_hidden()
             .child(div().absolute().inset_0().child(split))
@@ -1129,7 +1130,7 @@ impl WorkbenchPanel {
             icon("plus", 12., colors.primary),
             cx,
         )
-        .size(px(26.))
+        .size(rpx(26.))
         .p_0()
         .dropdown_menu(move |menu: PopupMenu, _window, _cx| {
             menu.min_w(px(180.))
@@ -1169,7 +1170,7 @@ impl WorkbenchPanel {
             .flex_none()
             .flex()
             .flex_col()
-            .min_h(px(0.))
+            .min_h(rpx(0.))
             .border_r_1()
             .border_color(colors.border)
             .bg(colors.sidebar)
@@ -1177,7 +1178,7 @@ impl WorkbenchPanel {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(rpx(6.))
                     .p(space::SP_2)
                     .border_b_1()
                     .border_color(colors.sidebar_border)
@@ -1185,10 +1186,10 @@ impl WorkbenchPanel {
                         div()
                             .flex()
                             .flex_1()
-                            .min_w(px(0.))
+                            .min_w(rpx(0.))
                             .items_center()
-                            .gap(px(6.))
-                            .h(px(26.))
+                            .gap(rpx(6.))
+                            .h(rpx(26.))
                             .px(space::SP_2)
                             .rounded(radius::sm())
                             .border_1()
@@ -1200,7 +1201,7 @@ impl WorkbenchPanel {
                             .bg(colors.background)
                             .text_size(text::S11)
                             .child(icon("search", 12., palette::text_tertiary(cx)))
-                            .child(field::bare(&self.rail_filter).flex_1().min_w(px(0.))),
+                            .child(field::bare(&self.rail_filter).flex_1().min_w(rpx(0.))),
                     )
                     .child(add_menu),
             )
@@ -1212,7 +1213,7 @@ impl WorkbenchPanel {
                 let state = self.ux.rail_rows.state().clone();
                 div()
                     .flex_1()
-                    .min_h(px(0.))
+                    .min_h(rpx(0.))
                     .relative()
                     .child(
                         list(state.clone(), move |ix, window, cx| {
@@ -1222,8 +1223,8 @@ impl WorkbenchPanel {
                             let row = view
                                 .update(cx, |this, cx| this.render_rail_item(&item, window, cx));
                             div()
-                                .px(px(6.))
-                                .when(ix == 0, |el| el.pt(px(6.)))
+                                .px(rpx(6.))
+                                .when(ix == 0, |el| el.pt(rpx(6.)))
                                 .when(ix == last, |el| el.pb(space::SP_3))
                                 .child(row)
                                 .into_any_element()
@@ -1326,8 +1327,8 @@ impl WorkbenchPanel {
             RailItem::EmptyCollection => div()
                 .id("workbench-rail-empty")
                 .debug_selector(|| "workbench-rail-empty".into())
-                .pl(px(24.))
-                .py(px(5.))
+                .pl(rpx(24.))
+                .py(rpx(5.))
                 .text_size(text::S11)
                 .text_color(palette::text_tertiary(cx))
                 .child("No requests in this collection.")
@@ -1498,8 +1499,8 @@ impl WorkbenchPanel {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(2.))
-                    .pr(px(2.))
+                    .gap(rpx(2.))
+                    .pr(rpx(2.))
                     .when(index > 0, |el| el.mt(space::SP_2))
                     .child(
                         div()
@@ -1510,11 +1511,11 @@ impl WorkbenchPanel {
                             .debug_selector(move || format!("workbench-collection-{index}"))
                             .flex()
                             .flex_1()
-                            .min_w(px(0.))
+                            .min_w(rpx(0.))
                             .items_center()
-                            .gap(px(6.))
-                            .px(px(6.))
-                            .py(px(5.))
+                            .gap(rpx(6.))
+                            .px(rpx(6.))
+                            .py(rpx(5.))
                             .rounded(radius::sm())
                             .cursor_pointer()
                             .hover(|style| style.bg(colors.accent))
@@ -1672,10 +1673,10 @@ impl WorkbenchPanel {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(2.))
-                    .ml(px(12. * (depth as f32 + 1.)))
+                    .gap(rpx(2.))
+                    .ml(rpx(12. * (depth as f32 + 1.)))
                     .mt(space::SP_1)
-                    .pr(px(2.))
+                    .pr(rpx(2.))
                     .child(
                         Button::new(SharedString::from(format!(
                             "folder-disclosure-{}",
@@ -1712,11 +1713,11 @@ impl WorkbenchPanel {
                             .debug_selector(move || format!("workbench-folder-{index}"))
                             .flex()
                             .flex_1()
-                            .min_w(px(0.))
+                            .min_w(rpx(0.))
                             .items_center()
-                            .gap(px(6.))
-                            .px(px(6.))
-                            .py(px(5.))
+                            .gap(rpx(6.))
+                            .px(rpx(6.))
+                            .py(rpx(5.))
                             .rounded(radius::sm())
                             .cursor_pointer()
                             .when(assigned, |el| el.bg(colors.accent))
@@ -1857,9 +1858,9 @@ impl WorkbenchPanel {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(2.))
-                    .ml(px(12. * (depth as f32 + 1.)))
-                    .pr(px(2.))
+                    .gap(rpx(2.))
+                    .ml(rpx(12. * (depth as f32 + 1.)))
+                    .pr(rpx(2.))
                     .child(
                         div()
                             .id(SharedString::from(format!(
@@ -1869,11 +1870,11 @@ impl WorkbenchPanel {
                             .debug_selector(move || format!("workbench-rail-{index}"))
                             .flex()
                             .flex_1()
-                            .min_w(px(0.))
+                            .min_w(rpx(0.))
                             .items_center()
                             .gap(space::SP_2)
-                            .px(px(6.))
-                            .py(px(5.))
+                            .px(rpx(6.))
+                            .py(rpx(5.))
                             .rounded(radius::sm())
                             .cursor_pointer()
                             .when(active, |el| el.bg(colors.accent))
@@ -1902,7 +1903,7 @@ impl WorkbenchPanel {
                             .child(
                                 div()
                                     .flex_1()
-                                    .min_w(px(0.))
+                                    .min_w(rpx(0.))
                                     .truncate()
                                     .font_family(crate::api::compat::fonts::mono(cx))
                                     .text_size(text::S11)
@@ -1942,7 +1943,7 @@ impl WorkbenchPanel {
             .min_w_0()
             .overflow_x_scroll()
             .track_scroll(&self.ux.request_tabs_scroll)
-            .h(px(32.))
+            .h(rpx(32.))
             .bg(colors.sidebar);
         for (index, tab) in self.request_tabs.iter().enumerate() {
             let active = index == self.active_request_tab;
@@ -1965,7 +1966,7 @@ impl WorkbenchPanel {
                     .flex()
                     .flex_col()
                     .flex_none()
-                    .w(px(220.))
+                    .w(rpx(220.))
                     .border_r_1()
                     .border_color(colors.sidebar_border)
                     .bg(if active {
@@ -1986,7 +1987,7 @@ impl WorkbenchPanel {
                     }))
                     // The mock's `inset 0 2px 0 0 #7c8cff`: a 2px accent
                     // strip along the top of the active tab.
-                    .child(div().h(px(2.)).flex_none().bg(if active {
+                    .child(div().h(rpx(2.)).flex_none().bg(if active {
                         colors.primary
                     } else {
                         colors.sidebar
@@ -2009,12 +2010,12 @@ impl WorkbenchPanel {
                             .child(if active {
                                 field::bare(&self.request_name)
                                     .flex_1()
-                                    .min_w(px(0.))
+                                    .min_w(rpx(0.))
                                     .into_any_element()
                             } else {
                                 div()
                                     .flex_1()
-                                    .min_w(px(0.))
+                                    .min_w(rpx(0.))
                                     .truncate()
                                     .child(name)
                                     .into_any_element()
@@ -2038,7 +2039,7 @@ impl WorkbenchPanel {
             .flex()
             .flex_none()
             .min_w_0()
-            .h(px(32.))
+            .h(rpx(32.))
             .border_b_1()
             .border_color(colors.border)
             .bg(colors.sidebar)
@@ -2048,7 +2049,7 @@ impl WorkbenchPanel {
                     .debug_selector(|| "workbench-new-request".into())
                     .ghost()
                     .flex_none()
-                    .size(px(32.))
+                    .size(rpx(32.))
                     .tooltip("Add request")
                     .on_click(cx.listener(|this, _, window, cx| this.new_request(window, cx)))
                     .icon(IconName::Plus),
@@ -2112,7 +2113,7 @@ impl WorkbenchPanel {
             div()
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(rpx(6.))
                 .font_family(crate::api::compat::fonts::mono(cx))
                 .text_size(text::S11)
                 .font_weight(text::weight::MEDIUM)
@@ -2120,8 +2121,8 @@ impl WorkbenchPanel {
                 .child(icon("chevron-down", 12., tint)),
             cx,
         )
-        .h(px(32.))
-        .px(px(10.))
+        .h(rpx(32.))
+        .px(rpx(10.))
         .dropdown_menu({
             let handle = handle.clone();
             move |menu: PopupMenu, _window, _cx| {
@@ -2149,7 +2150,7 @@ impl WorkbenchPanel {
             icon("kebab", 14., palette::text_secondary(cx)),
             cx,
         )
-        .size(px(32.))
+        .size(rpx(32.))
         .p_0()
         .dropdown_menu({
             let handle = handle.clone();
@@ -2241,18 +2242,18 @@ impl WorkbenchPanel {
                     .when(self.method == transport::Method::Custom, |el| {
                         el.child(
                             mono_field(&self.custom_method, window, cx)
-                                .w(px(96.))
-                                .h(px(32.)),
+                                .w(rpx(96.))
+                                .h(rpx(32.)),
                         )
                     })
                     .child(
                         div()
                             .flex()
                             .flex_1()
-                            .min_w(px(0.))
+                            .min_w(rpx(0.))
                             .items_center()
-                            .h(px(32.))
-                            .px(px(10.))
+                            .h(rpx(32.))
+                            .px(rpx(10.))
                             .rounded(radius::sm())
                             .border_1()
                             .border_color(if url_focused {
@@ -2291,11 +2292,11 @@ impl WorkbenchPanel {
                                         div()
                                             .flex()
                                             .items_center()
-                                            .gap(px(4.))
-                                            .min_w(px(0.))
+                                            .gap(rpx(4.))
+                                            .min_w(rpx(0.))
                                             .child(
                                                 div()
-                                                    .min_w(px(0.))
+                                                    .min_w(rpx(0.))
                                                     .text_size(text::S10)
                                                     .truncate()
                                                     .child(if missing {
@@ -2309,15 +2310,15 @@ impl WorkbenchPanel {
                                         cx,
                                     )
                                     .flex_none()
-                                    .max_w(px(260.))
-                                    .mr(px(6.))
-                                    .h(px(18.))
-                                    .px(px(6.))
+                                    .max_w(rpx(260.))
+                                    .mr(rpx(6.))
+                                    .h(rpx(18.))
+                                    .px(rpx(6.))
                                     .overflow_hidden()
                                     .dropdown_menu(self.environment_menu("workbench-url-env", cx)),
                                 )
                             })
-                            .child(field::bare(&self.url).flex_1().min_w(px(0.))),
+                            .child(field::bare(&self.url).flex_1().min_w(rpx(0.))),
                     )
                     .child(
                         accent_button(
@@ -2402,7 +2403,7 @@ impl WorkbenchPanel {
             .flex_wrap()
             .flex_none()
             .items_center()
-            .gap(px(2.))
+            .gap(rpx(2.))
             .px(space::SP_4)
             .border_b_1()
             .border_color(colors.border)
@@ -2460,7 +2461,7 @@ impl WorkbenchPanel {
             .id("workbench-request-editor")
             .debug_selector(|| "workbench-request-editor".into())
             .flex_1()
-            .min_h(px(0.))
+            .min_h(rpx(0.))
             .overflow_hidden()
             .child(if body_fills_pane {
                 div()
@@ -2633,7 +2634,7 @@ impl WorkbenchPanel {
                 ),
                 |el| el.flex_1().min_h_0(),
             )
-            .gap(px(10.))
+            .gap(rpx(10.))
             .child(
                 div()
                     .flex()
@@ -2645,7 +2646,7 @@ impl WorkbenchPanel {
                             .flex()
                             .flex_wrap()
                             .items_center()
-                            .gap(px(2.))
+                            .gap(rpx(2.))
                             .children(draft::BodyMode::ALL.into_iter().map(|mode| {
                                 chip(
                                     format!("workbench-body-{}", mode.label()),
@@ -2667,7 +2668,7 @@ impl WorkbenchPanel {
                     .child(
                         div()
                             .flex_1()
-                            .min_w(px(0.))
+                            .min_w(rpx(0.))
                             .truncate()
                             .text_size(text::S11)
                             .text_color(colors.muted_foreground)
@@ -2748,8 +2749,8 @@ impl WorkbenchPanel {
                     .flex()
                     .flex_col()
                     .flex_none()
-                    .w(px(180.))
-                    .gap(px(6.))
+                    .w(rpx(180.))
+                    .gap(rpx(6.))
                     .child(heading("Type", colors.muted_foreground).px(space::SP_2))
                     .children(draft::AuthMode::ALL.into_iter().map(|mode| {
                         let active = self.auth_mode == mode;
@@ -2757,7 +2758,7 @@ impl WorkbenchPanel {
                             .id(SharedString::from(format!("workbench-auth-{}", mode.label())))
                             .debug_selector(move || format!("workbench-auth-{}", mode.label()))
                             .px(space::SP_2)
-                            .py(px(6.))
+                            .py(rpx(6.))
                             .rounded(radius::sm())
                             .cursor_pointer()
                             .text_size(text::S12)
@@ -2782,8 +2783,8 @@ impl WorkbenchPanel {
                     .flex()
                     .flex_col()
                     .flex_1()
-                    .min_w(px(0.))
-                    .gap(px(10.))
+                    .min_w(rpx(0.))
+                    .gap(rpx(10.))
                     .child(
                         div()
                             .flex()
@@ -2794,7 +2795,7 @@ impl WorkbenchPanel {
                                 el.child(
                                     div()
                                         .flex_1()
-                                        .min_w(px(0.))
+                                        .min_w(rpx(0.))
                                         .truncate()
                                         .font_family(crate::api::compat::fonts::mono(cx))
                                         .text_size(text::S11)
@@ -2846,7 +2847,7 @@ impl WorkbenchPanel {
         div()
             .flex()
             .flex_col()
-            .gap(px(10.))
+            .gap(rpx(10.))
             .child(heading(
                 "Pre-request script · pm.* sandbox",
                 colors.muted_foreground,
@@ -2887,9 +2888,9 @@ impl WorkbenchPanel {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
-                    .py(px(6.))
-                    .px(px(2.))
+                    .gap(rpx(6.))
+                    .py(rpx(6.))
+                    .px(rpx(2.))
                     .text_size(text::S11)
                     .text_color(colors.primary)
                     .child(icon("plus", 12., colors.primary))
@@ -2908,7 +2909,7 @@ impl WorkbenchPanel {
             .flex()
             .items_center()
             .gap(space::SP_2)
-            .px(px(10.))
+            .px(rpx(10.))
             .py(space::SP_2)
             .rounded(radius::sm())
             .border_1()
@@ -2962,9 +2963,9 @@ impl WorkbenchPanel {
         div()
             .flex()
             .flex_col()
-            .gap(px(10.))
+            .gap(rpx(10.))
             .child(
-                div().flex().items_center().gap(px(2.)).children(
+                div().flex().items_center().gap(rpx(2.)).children(
                     SNIPPET_LANGUAGES
                         .into_iter()
                         .enumerate()
@@ -3048,15 +3049,15 @@ impl WorkbenchPanel {
             div()
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(rpx(6.))
                 .text_size(text::S11)
                 .child(icon("spark", 11., lavender))
                 .child("Explain · write tests")
                 .child(icon("chevron-down", 11., lavender)),
             cx,
         )
-        .h(px(24.))
-        .px(px(10.))
+        .h(rpx(24.))
+        .px(rpx(10.))
         .dropdown_menu({
             let has_response = response.is_some();
             move |menu: PopupMenu, _window, _cx| {
@@ -3134,7 +3135,7 @@ impl WorkbenchPanel {
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(1.))
+                        .gap(rpx(1.))
                         .rounded(radius::md())
                         .overflow_hidden()
                         .bg(colors.muted)
@@ -3197,7 +3198,7 @@ impl WorkbenchPanel {
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(6.))
+                        .gap(rpx(6.))
                         .child(div().flex().justify_end().child(self.copy_chip(
                             "workbench-tests-copy-all",
                             "Copy all",
@@ -3278,7 +3279,7 @@ impl WorkbenchPanel {
             .flex()
             .flex_col()
             .flex_1()
-            .min_h(px(0.))
+            .min_h(rpx(0.))
             .overflow_hidden()
             .border_t_1()
             .border_color(colors.border)
@@ -3294,7 +3295,7 @@ impl WorkbenchPanel {
                     .border_b_1()
                     .border_color(colors.sidebar_border)
                     .flex_wrap()
-                    .child(div().flex().flex_wrap().gap(px(2.)).children(
+                    .child(div().flex().flex_wrap().gap(rpx(2.)).children(
                         ResponseTab::ALL.into_iter().map(|tab| {
                             chip(
                                 format!("workbench-response-{}", tab.label()),
@@ -3314,7 +3315,7 @@ impl WorkbenchPanel {
                         div()
                             .flex()
                             .flex_1()
-                            .min_w(px(0.))
+                            .min_w(rpx(0.))
                             .items_center()
                             .gap(space::SP_3)
                             .font_family(crate::api::compat::fonts::mono(cx))
@@ -3440,7 +3441,7 @@ impl WorkbenchPanel {
             .child(if virtualized_body {
                 div()
                     .flex_1()
-                    .min_h(px(0.))
+                    .min_h(rpx(0.))
                     .px(space::SP_4)
                     .py(space::SP_3)
                     .child(pane)
@@ -3448,7 +3449,7 @@ impl WorkbenchPanel {
             } else {
                 div()
                     .flex_1()
-                    .min_h(px(0.))
+                    .min_h(rpx(0.))
                     .overflow_y_scrollbar()
                     .child(
                         div()
@@ -3504,22 +3505,28 @@ impl WorkbenchPanel {
                     .flex()
                     .items_center()
                     .gap(space::SP_3)
-                    .py(px(7.))
+                    .py(rpx(7.))
                     .border_b_1()
                     .border_color(colors.muted)
                     .child(
                         div()
-                            .w(px(56.))
+                            .w(rpx(56.))
                             .flex_none()
                             .text_right()
                             .text_color(palette::text_tertiary(cx))
                             .child(format!("{} ms", row.offset_ms)),
                     )
-                    .child(div().w(px(56.)).flex_none().text_color(tint).child(row.tag))
+                    .child(
+                        div()
+                            .w(rpx(56.))
+                            .flex_none()
+                            .text_color(tint)
+                            .child(row.tag),
+                    )
                     .child(
                         div()
                             .flex_1()
-                            .min_w(px(0.))
+                            .min_w(rpx(0.))
                             .truncate()
                             .text_color(palette::text_secondary(cx))
                             .child(row.text),
@@ -3549,7 +3556,7 @@ impl WorkbenchPanel {
             .flex()
             .flex_col()
             .gap(space::SP_1)
-            .px(px(10.))
+            .px(rpx(10.))
             .py(space::SP_2)
             .rounded(radius::sm())
             .when(!result.passed && !result.skipped, |el| {
@@ -3565,7 +3572,7 @@ impl WorkbenchPanel {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
+                    .gap(rpx(10.))
                     .child(
                         div()
                             .flex_none()
@@ -3587,7 +3594,7 @@ impl WorkbenchPanel {
                     .child(
                         div()
                             .flex_1()
-                            .min_w(px(0.))
+                            .min_w(rpx(0.))
                             .truncate()
                             .child(result.name.clone()),
                     )
@@ -3600,7 +3607,7 @@ impl WorkbenchPanel {
             .when_some(result.error.clone(), |el, error| {
                 el.child(
                     div()
-                        .pl(px(38.))
+                        .pl(rpx(38.))
                         .text_color(colors.muted_foreground)
                         .child(error),
                 )
@@ -3640,7 +3647,7 @@ impl WorkbenchPanel {
             .flex()
             .flex_col()
             .flex_1()
-            .min_w(px(0.))
+            .min_w(rpx(0.))
             .gap(space::SP_2)
             .p(space::SP_5)
             .rounded(radius::md())
@@ -3667,7 +3674,7 @@ impl WorkbenchPanel {
             )
             .child(
                 code_box(cx)
-                    .min_h(px(120.))
+                    .min_h(rpx(120.))
                     .text_size(text::S11)
                     .bg(colors.background)
                     .when(source_focused, |el| el.border_color(colors.ring))
@@ -3681,7 +3688,7 @@ impl WorkbenchPanel {
                     .mt(space::SP_1)
                     .child(
                         outline_chip("workbench-import-file".into(), "Open file…", cx)
-                            .h(px(30.))
+                            .h(rpx(30.))
                             .px(space::SP_3)
                             .child(icon("upload", 12., palette::text_secondary(cx)))
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -3690,7 +3697,7 @@ impl WorkbenchPanel {
                     )
                     .child(
                         outline_chip("workbench-import-preview".into(), "Parse", cx)
-                            .h(px(30.))
+                            .h(rpx(30.))
                             .px(space::SP_3)
                             .border_color(colors.primary.opacity(0.45))
                             .text_color(colors.primary)
@@ -3702,7 +3709,7 @@ impl WorkbenchPanel {
                         el.child(
                             div()
                                 .flex_1()
-                                .min_w(px(0.))
+                                .min_w(rpx(0.))
                                 .truncate()
                                 .text_size(text::S11)
                                 .text_color(colors.muted_foreground)
@@ -3714,8 +3721,8 @@ impl WorkbenchPanel {
             .flex()
             .flex_col()
             .flex_none()
-            .w(px(280.))
-            .gap(px(10.))
+            .w(rpx(280.))
+            .gap(rpx(10.))
             .p(space::SP_4)
             .rounded(radius::md())
             .border_1()
@@ -3761,7 +3768,7 @@ impl WorkbenchPanel {
                         div()
                             .flex()
                             .flex_wrap()
-                            .gap(px(6.))
+                            .gap(rpx(6.))
                             .child(pill(
                                 format!("{} folders", imported.folders.len()),
                                 palette::text_secondary(cx),
@@ -3792,7 +3799,7 @@ impl WorkbenchPanel {
             });
         div()
             .flex_1()
-            .min_h(px(0.))
+            .min_h(rpx(0.))
             .overflow_y_scrollbar()
             .child(
                 div()
@@ -3834,9 +3841,9 @@ impl WorkbenchPanel {
                 .flex()
                 .items_center()
                 .gap(space::SP_2)
-                .py(px(5.))
-                .pr(px(6.))
-                .pl(if indent { px(18.) } else { px(6.) })
+                .py(rpx(5.))
+                .pr(rpx(6.))
+                .pl(if indent { rpx(18.) } else { rpx(6.) })
                 .rounded(radius::sm())
                 .cursor_pointer()
                 .font_family(crate::api::compat::fonts::mono(cx))
@@ -3853,7 +3860,7 @@ impl WorkbenchPanel {
             .flex()
             .flex_col()
             .flex_1()
-            .min_w(px(0.))
+            .min_w(rpx(0.))
             .rounded(radius::md())
             .border_1()
             .border_color(colors.border)
@@ -3892,7 +3899,7 @@ impl WorkbenchPanel {
                     .flex_col()
                     .p(space::SP_2)
                     .bg(colors.sidebar)
-                    .max_h(px(360.))
+                    .max_h(rpx(360.))
                     .overflow_y_scrollbar()
                     .child(
                         div()
@@ -3952,7 +3959,7 @@ impl WorkbenchPanel {
                                             40.,
                                             cx,
                                         ))
-                                        .child(div().flex_1().min_w(px(0.)).truncate().child(
+                                        .child(div().flex_1().min_w(rpx(0.)).truncate().child(
                                             if request.url.is_empty() {
                                                 request.name.clone()
                                             } else {
@@ -4029,8 +4036,8 @@ impl WorkbenchPanel {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(6.))
-                .p(px(10.))
+                .gap(rpx(6.))
+                .p(rpx(10.))
                 .rounded(radius::md())
                 .border_1()
                 .border_color(tint.map(|tint| tint.opacity(0.35)).unwrap_or(colors.border))
@@ -4057,8 +4064,8 @@ impl WorkbenchPanel {
             .flex()
             .flex_col()
             .flex_none()
-            .w(px(300.))
-            .gap(px(10.))
+            .w(rpx(300.))
+            .gap(rpx(10.))
             .child(heading("What the parser found", palette::lavender(cx)))
             .child(card(
                 format!("{} source", import_format_label(&imported.format)),
@@ -4160,7 +4167,7 @@ impl WorkbenchPanel {
         div()
             .flex()
             .flex_1()
-            .min_h(px(0.))
+            .min_h(rpx(0.))
             .child(self.render_data_scenario(window, cx))
             .child(self.render_data_results(window, cx))
             .into_any_element()
@@ -4206,15 +4213,15 @@ impl WorkbenchPanel {
                     .child(label)
                     .child(
                         mono_field(state, window, cx)
-                            .w(px(120.))
-                            .h(px(24.))
+                            .w(rpx(120.))
+                            .h(rpx(24.))
                             .text_size(text::S11),
                     )
             };
         div()
             .flex_none()
-            .w(px(340.))
-            .min_h(px(0.))
+            .w(rpx(340.))
+            .min_h(rpx(0.))
             .border_r_1()
             .border_color(colors.border)
             .overflow_y_scrollbar()
@@ -4227,8 +4234,8 @@ impl WorkbenchPanel {
                     .child(heading("Describe the scenario", lavender))
                     .child(
                         div()
-                            .p(px(10.))
-                            .min_h(px(96.))
+                            .p(rpx(10.))
+                            .min_h(rpx(96.))
                             .rounded(radius::md())
                             .border_1()
                             .border_color(if prompt_focused {
@@ -4242,13 +4249,13 @@ impl WorkbenchPanel {
                             .text_color(colors.foreground)
                             .child(field::bare(&self.data_prompt).w_full()),
                     )
-                    .child(div().flex().flex_wrap().gap(px(6.)).children(
+                    .child(div().flex().flex_wrap().gap(rpx(6.)).children(
                         DATA_PRESETS.iter().enumerate().map(|(index, preset)| {
                             let active = self.data_presets.contains(&index);
                             div()
                                 .id(SharedString::from(format!("workbench-data-preset-{index}")))
                                 .debug_selector(move || format!("workbench-data-preset-{index}"))
-                                .px(px(10.))
+                                .px(rpx(10.))
                                 .py(space::SP_1)
                                 .rounded(radius::full())
                                 .border_1()
@@ -4274,7 +4281,7 @@ impl WorkbenchPanel {
                                 .child(*preset)
                         }),
                     ))
-                    .child(div().h(px(1.)).bg(colors.border))
+                    .child(div().h(rpx(1.)).bg(colors.border))
                     .child(heading("Constraints", colors.muted_foreground))
                     .child(
                         constraint(
@@ -4408,14 +4415,14 @@ impl WorkbenchPanel {
             div()
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(rpx(6.))
                 .text_size(text::S11)
                 .child(run_scope_label)
                 .child(icon("chevron-down", 11., colors.muted_foreground)),
             cx,
         )
-        .h(px(24.))
-        .px(px(10.))
+        .h(rpx(24.))
+        .px(rpx(10.))
         .dropdown_menu(move |menu: PopupMenu, _window, _cx| {
             let mut menu = menu.min_w(px(240.)).max_h(px(360.)).scrollable(true).item(
                 menu_item(
@@ -4473,8 +4480,8 @@ impl WorkbenchPanel {
             .flex()
             .flex_col()
             .flex_1()
-            .min_w(px(0.))
-            .min_h(px(0.))
+            .min_w(rpx(0.))
+            .min_h(rpx(0.))
             .child(
                 div()
                     .flex()
@@ -4496,7 +4503,7 @@ impl WorkbenchPanel {
                     .child(
                         div()
                             .flex_1()
-                            .min_w(px(0.))
+                            .min_w(rpx(0.))
                             .truncate()
                             .font_family(crate::api::compat::fonts::mono(cx))
                             .text_size(text::S11)
@@ -4584,7 +4591,7 @@ impl WorkbenchPanel {
                     }),
             )
             .child(
-                div().flex_1().min_h(px(0.)).overflow_y_scrollbar().child(
+                div().flex_1().min_h(rpx(0.)).overflow_y_scrollbar().child(
                     div()
                         .flex()
                         .flex_col()
@@ -4596,7 +4603,7 @@ impl WorkbenchPanel {
                         ))
                         .child(
                             code_box(cx)
-                                .min_h(px(72.))
+                                .min_h(rpx(72.))
                                 .text_size(text::S11)
                                 .when(source_focused, |el| el.border_color(colors.ring))
                                 .child(field::bare(&self.data_source).w_full()),
@@ -4698,7 +4705,7 @@ impl WorkbenchPanel {
                 el.child(
                     div()
                         .px(space::SP_2)
-                        .py(px(6.))
+                        .py(rpx(6.))
                         .bg(colors.sidebar)
                         .text_color(palette::text_tertiary(cx))
                         .child(format!("… {} more rows", rows.len() - 12)),
@@ -4761,7 +4768,7 @@ impl WorkbenchPanel {
                             .child(
                                 div()
                                     .flex_1()
-                                    .min_w(px(0.))
+                                    .min_w(rpx(0.))
                                     .truncate()
                                     .font_family(crate::api::compat::fonts::mono(cx))
                                     .text_size(text::S10)
@@ -4804,7 +4811,7 @@ impl WorkbenchPanel {
                                         .items_center()
                                         .gap(space::SP_3)
                                         .px(space::SP_3)
-                                        .py(px(6.))
+                                        .py(rpx(6.))
                                         .border_t_1()
                                         .border_color(colors.sidebar_border)
                                         .cursor_pointer()
@@ -4817,14 +4824,14 @@ impl WorkbenchPanel {
                                         }))
                                         .child(
                                             div()
-                                                .w(px(80.))
+                                                .w(rpx(80.))
                                                 .flex_none()
                                                 .text_color(palette::text_tertiary(cx))
                                                 .child(format!("iter {}", item.iteration + 1)),
                                         )
                                         .child(
                                             div()
-                                                .w(px(56.))
+                                                .w(rpx(56.))
                                                 .flex_none()
                                                 .text_color(
                                                     item.status
@@ -4835,14 +4842,14 @@ impl WorkbenchPanel {
                                         )
                                         .child(
                                             div()
-                                                .w(px(72.))
+                                                .w(rpx(72.))
                                                 .flex_none()
                                                 .child(format!("{} ms", item.duration_ms)),
                                         )
                                         .child(
                                             div()
                                                 .flex_1()
-                                                .min_w(px(0.))
+                                                .min_w(rpx(0.))
                                                 .truncate()
                                                 .text_color(if item.error.is_some() {
                                                     colors.danger
@@ -5043,14 +5050,14 @@ impl WorkbenchPanel {
         div()
             .flex()
             .flex_1()
-            .min_h(px(0.))
+            .min_h(rpx(0.))
             .child(
                 div()
                     .flex_none()
                     .flex()
                     .flex_col()
                     .gap(space::SP_1)
-                    .w(px(220.))
+                    .w(rpx(220.))
                     .p(space::SP_3)
                     .border_r_1()
                     .border_color(colors.border)
@@ -5072,7 +5079,7 @@ impl WorkbenchPanel {
                             .flex()
                             .items_center()
                             .gap(space::SP_2)
-                            .py(px(7.))
+                            .py(rpx(7.))
                             .px(space::SP_2)
                             .rounded(radius::sm())
                             .cursor_pointer()
@@ -5097,7 +5104,7 @@ impl WorkbenchPanel {
                                     palette::text_tertiary(cx)
                                 },
                             ))
-                            .child(div().flex_1().min_w(px(0.)).truncate().child(environment.name.clone()))
+                            .child(div().flex_1().min_w(rpx(0.)).truncate().child(environment.name.clone()))
                             .when_some(environment_label::label_color(environment.label, cx), |el, color| {
                                 el.child(div().text_size(text::S9).font_weight(text::weight::BOLD).text_color(color).child(environment_label::badge(environment.label)))
                             })
@@ -5159,7 +5166,7 @@ impl WorkbenchPanel {
                             .id("workbench-env-new")
                             .debug_selector(|| "workbench-env-new".into())
                             .mt(space::SP_1)
-                            .py(px(7.))
+                            .py(rpx(7.))
                             .px(space::SP_2)
                             .rounded(radius::sm())
                             .border_1()
@@ -5178,16 +5185,16 @@ impl WorkbenchPanel {
                     .flex()
                     .flex_col()
                     .flex_1()
-                    .min_w(px(0.))
-                    .min_h(px(0.))
+                    .min_w(rpx(0.))
+                    .min_h(rpx(0.))
                     .child(
                         div()
                             .flex()
                             .flex_none()
                             .items_center()
-                            .gap(px(10.))
+                            .gap(rpx(10.))
                             .px(space::SP_4)
-                            .py(px(10.))
+                            .py(rpx(10.))
                             .border_b_1()
                             .border_color(colors.border)
                             .child(dot(8., env_dot))
@@ -5196,7 +5203,7 @@ impl WorkbenchPanel {
                                 // this is where a new environment gets its name.
                                 div()
                                     .flex_none()
-                                    .w(px(200.))
+                                    .w(rpx(200.))
                                     .text_size(text::S13)
                                     .font_weight(text::weight::SEMIBOLD)
                                     .text_color(colors.foreground)
@@ -5205,7 +5212,7 @@ impl WorkbenchPanel {
                             .child(
                                 div()
                                     .flex_1()
-                                    .min_w(px(0.))
+                                    .min_w(rpx(0.))
                                     .truncate()
                                     .font_family(crate::api::compat::fonts::mono(cx))
                                     .text_size(text::S11)
@@ -5243,7 +5250,7 @@ impl WorkbenchPanel {
                     .child(
                         div()
                             .flex_1()
-                            .min_h(px(0.))
+                            .min_h(rpx(0.))
                             .overflow_y_scrollbar()
                             .child(
                                 div()
@@ -5302,7 +5309,7 @@ impl WorkbenchPanel {
         div()
             .flex()
             .flex_col()
-            .gap(px(6.))
+            .gap(rpx(6.))
             .child(
                 div()
                     .flex()
@@ -5368,7 +5375,7 @@ impl WorkbenchPanel {
         div()
             .flex()
             .flex_col()
-            .gap(px(8.))
+            .gap(rpx(8.))
             .child(
                 div()
                     .flex()
@@ -5378,7 +5385,7 @@ impl WorkbenchPanel {
                     .child(
                         div()
                             .flex_1()
-                            .min_w(px(0.))
+                            .min_w(rpx(0.))
                             .truncate()
                             .text_size(text::S11)
                             .text_color(colors.muted_foreground)
@@ -5389,7 +5396,7 @@ impl WorkbenchPanel {
                 div()
                     .flex()
                     .flex_wrap()
-                    .gap(px(2.))
+                    .gap(rpx(2.))
                     .children(modes.into_iter().map(|mode| {
                         chip(
                             format!("workbench-env-auth-{}", mode.label()),
@@ -5428,7 +5435,7 @@ impl WorkbenchPanel {
                             el.child(
                                 div()
                                     .flex_1()
-                                    .min_w(px(0.))
+                                    .min_w(rpx(0.))
                                     .truncate()
                                     .font_family(crate::api::compat::fonts::mono(cx))
                                     .text_size(text::S11)
@@ -5487,7 +5494,7 @@ impl WorkbenchPanel {
             .flex()
             .flex_col()
             .flex_1()
-            .min_h(px(0.))
+            .min_h(rpx(0.))
             .overflow_y_scrollbar()
             .child(
                 div()
@@ -5504,9 +5511,9 @@ impl WorkbenchPanel {
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap(px(6.))
-                                    .h(px(26.))
-                                    .w(px(220.))
+                                    .gap(rpx(6.))
+                                    .h(rpx(26.))
+                                    .w(rpx(220.))
                                     .px(space::SP_2)
                                     .rounded(radius::sm())
                                     .border_1()
@@ -5518,7 +5525,7 @@ impl WorkbenchPanel {
                             )
                             .child(
                                 chip("workbench-history-24h".into(), "Last 24 h", self.history_last_24h, cx)
-                                    .h(px(26.))
+                                    .h(rpx(26.))
                                     .border_1()
                                     .border_color(colors.border)
                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -5528,7 +5535,7 @@ impl WorkbenchPanel {
                             )
                             .child(
                                 chip("workbench-history-retention".into(), format!("Keep latest {}", self.history_retention), false, cx)
-                                    .h(px(26.))
+                                    .h(rpx(26.))
                                     .border_1()
                                     .border_color(colors.border)
                                     .on_click(cx.listener(|this, _, _, cx| this.cycle_history_retention(cx))),
@@ -5580,13 +5587,13 @@ impl WorkbenchPanel {
                                         }),
                                     )
                                     .with_sizing_behavior(gpui_kit::ListSizingBehavior::Infer)
-                                    .max_h(px(HISTORY_LIST_MAX_H))
+                                    .max_h(rpx(HISTORY_LIST_MAX_H))
                                 })
                                 .when(rows.is_empty(), |el| {
                                     el.child(
                                         div()
                                             .px(space::SP_2)
-                                            .py(px(6.))
+                                            .py(rpx(6.))
                                             .bg(colors.muted)
                                             .text_color(palette::text_tertiary(cx))
                                             .child("No runs match the filter."),
@@ -5694,12 +5701,12 @@ impl WorkbenchPanel {
             .flex()
             .items_center()
             .gap(space::SP_2)
-            .min_w(px(0.))
+            .min_w(rpx(0.))
             .child(verb(entry.method.clone(), tint, 44., cx))
             .child(
                 div()
                     .flex_1()
-                    .min_w(px(0.))
+                    .min_w(rpx(0.))
                     .truncate()
                     .text_color(colors.foreground)
                     .child(entry.target.clone()),
@@ -5837,7 +5844,7 @@ fn history_action(selector: String, name: &'static str, tint: Hsla, cx: &App) ->
         .flex()
         .items_center()
         .justify_center()
-        .size(px(22.))
+        .size(rpx(22.))
         .rounded(radius::xs())
         .border_1()
         .border_color(colors.input)
@@ -5914,8 +5921,8 @@ impl WorkbenchPanel {
                 .flex()
                 .items_center()
                 .gap(space::SP_2)
-                .py(px(6.))
-                .px(px(10.))
+                .py(rpx(6.))
+                .px(rpx(10.))
                 .rounded(radius::sm())
                 .border_1()
                 .border_color(colors.border)
@@ -5924,7 +5931,12 @@ impl WorkbenchPanel {
                 .text_size(text::S11)
                 .text_color(palette::text_secondary(cx))
                 .child(verb(entry.method.clone(), tint, 44., cx))
-                .child(div().truncate().max_w(px(320.)).child(entry.target.clone()))
+                .child(
+                    div()
+                        .truncate()
+                        .max_w(rpx(320.))
+                        .child(entry.target.clone()),
+                )
                 .child(
                     div()
                         .text_color(palette::text_tertiary(cx))
@@ -5935,7 +5947,7 @@ impl WorkbenchPanel {
             .flex()
             .flex_col()
             .flex_1()
-            .min_h(px(0.))
+            .min_h(rpx(0.))
             .overflow_y_scrollbar()
             .child(
                 div()
@@ -5988,7 +6000,7 @@ impl WorkbenchPanel {
                             .flex()
                             .flex_col()
                             .gap(space::SP_1)
-                            .p(px(10.))
+                            .p(rpx(10.))
                             .rounded(radius::md())
                             .border_1()
                             .border_color(colors.border)
@@ -6025,15 +6037,15 @@ impl WorkbenchPanel {
             .flex()
             .flex_col()
             .flex_1()
-            .min_w(px(0.))
+            .min_w(rpx(0.))
             .rounded(radius::md())
             .border_1()
             .border_color(colors.border)
             .overflow_hidden()
             .child(
                 div()
-                    .py(px(6.))
-                    .px(px(10.))
+                    .py(rpx(6.))
+                    .px(rpx(10.))
                     .bg(colors.muted)
                     .border_b_1()
                     .border_color(colors.border)
@@ -6049,7 +6061,7 @@ impl WorkbenchPanel {
                 div()
                     .flex()
                     .flex_col()
-                    .p(px(10.))
+                    .p(rpx(10.))
                     .bg(colors.sidebar)
                     .font_family(crate::api::compat::fonts::mono(cx))
                     .text_size(text::S11)

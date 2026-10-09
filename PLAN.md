@@ -618,7 +618,11 @@ server or bundled Unix tools on Windows (Tier 3).
   (`app/src/appearance.rs`). Dirty tabs show an amber dot; closing an editor tab with unsaved
   changes (alone, a tab-menu group, or the window) asks Save / Discard / Cancel in a
   gpui-component dialog, Save only when every file can be saved now (`app/src/unsaved.rs`).
-  Note: chrome text with explicit px sizes (sidebar, tab strip, toolbars) does not scale.
+  Whole-UI follow-up: every fixed size in element styles (~2,000 sites: text, row heights,
+  paddings, gaps, fixed widths in the sidebar, tab strip, title/status bars, dialogs, settings,
+  plan view, workbench, Redis, Files, assistant, terminal chrome) goes through
+  `appearance::rpx` (rem-relative, no context needed) and text through the named `ts::*`
+  steps, so the whole chrome zooms. `SWITCHYARD_ZOOM` overrides the zoom for screenshots.
 
 ## Extra — Redis (user request, 2026-10-08)
 
@@ -852,10 +856,10 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   the API History page's "Saved examples" table is not virtualized (the history rows are).
 - Assistant on Hosts: "always allow this command on this Host" for repeat read-only commands;
   approvals from an interactive "Open in terminal" run show in the panel, not the terminal.
-- Zoom: chrome text sized in px (sidebar tree, tab strip, toolbars, status bar; ~490 call
-  sites) stays at 100 %; route them through `appearance::scaled` or rem sizes. Grid column
-  widths scale only for results opened after a zoom change. No quit (Cmd+Q) action exists
-  yet to hook the unsaved-files dialog into; window close is covered.
+- Zoom: grid column widths scale only for results opened after a zoom change; user-resized
+  panes (sidebar, inspector, editor/terminal splits) keep their px size; gpui-component popup
+  menus keep their px minimum widths. No quit (Cmd+Q) action exists yet to hook the
+  unsaved-files dialog into; window close is covered.
 - Agent actual plans (done: approval card in the app, `swy mcp` captures after approval): the
   approved plan is not opened in the app's plan view; no "always allow" per statement.
 - Assistant markdown (done: bold, italic, inline code, headings, lists, tables, quotes,

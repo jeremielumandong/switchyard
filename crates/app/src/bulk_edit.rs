@@ -11,6 +11,7 @@ use gpui_kit::{
 use switchyard_core::store::{EnvironmentLabel, Host, HostPatch, ProfileId};
 use switchyard_core::{Command, RuntimeHandle};
 
+use crate::appearance::{rpx, ts};
 use crate::terminal_settings::field;
 use crate::theme::palette;
 use crate::ui::{self, Kind};
@@ -161,22 +162,22 @@ impl Render for BulkEditView {
         let p = palette(cx);
         div()
             .id("bulk-edit")
-            .w(px(560.))
+            .w(rpx(560.))
             .flex()
             .flex_col()
-            .gap(px(12.))
-            .p(px(20.))
+            .gap(rpx(12.))
+            .p(rpx(20.))
             .bg(p.elev)
             .rounded(px(10.))
             .shadow(ui::shadow(&p))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 div()
-                    .text_size(px(15.))
+                    .text_size(ts::TITLE_PLUS)
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(self.title.clone()),
             )
-            .child(div().text_size(px(12.)).text_color(p.fg3).child(format!(
+            .child(div().text_size(ts::BODY).text_color(p.fg3).child(format!(
                 "{} Host{} · only the fields you change are applied",
                 self.ids.len(),
                 if self.ids.len() == 1 { "" } else { "s" }
@@ -185,7 +186,7 @@ impl Render for BulkEditView {
                 div()
                     .flex()
                     .flex_wrap()
-                    .gap(px(10.))
+                    .gap(rpx(10.))
                     .child(field("Folder", &self.folder, 250., &p))
                     .child(field("User", &self.user, 250., &p))
                     .child(field("Start folder", &self.start_dir, 250., &p))
@@ -195,18 +196,18 @@ impl Render for BulkEditView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
-                    .text_size(px(12.))
-                    .child(div().w(px(90.)).text_color(p.fg3).child("Environment"))
+                    .gap(rpx(6.))
+                    .text_size(ts::BODY)
+                    .child(div().w(rpx(90.)).text_color(p.fg3).child("Environment"))
                     .children(EnvironmentLabel::ALL.iter().map(|&e| {
                         let on = self.environment == Some(e);
                         div()
                             .id(SharedString::from(format!("bulk-env-{e:?}")))
                             .flex()
                             .items_center()
-                            .gap(px(5.))
-                            .px(px(8.))
-                            .py(px(3.))
+                            .gap(rpx(5.))
+                            .px(rpx(8.))
+                            .py(rpx(3.))
                             .border_1()
                             .border_color(if on { p.acc } else { p.bd2 })
                             .rounded(px(5.))
@@ -238,7 +239,7 @@ impl Render for BulkEditView {
                 div()
                     .flex()
                     .justify_end()
-                    .gap(px(8.))
+                    .gap(rpx(8.))
                     .child(
                         ui::button("bulk-cancel", "Cancel", Kind::Secondary, &p)
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(BulkEditClosed))),

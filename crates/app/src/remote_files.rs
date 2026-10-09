@@ -16,6 +16,7 @@ use switchyard_core::store::ProfileId;
 use switchyard_core::{Command, Event, FsOp, FsRef, OnConflict, RequestId, RuntimeHandle};
 
 use crate::app_state::next_id;
+use crate::appearance::{rpx, ts};
 use crate::theme::{MONO, Palette, palette};
 use crate::transfers::Transfers;
 
@@ -338,10 +339,10 @@ impl RemoteFiles {
             .unwrap_or_else(|| "connecting…".into());
         let path_line: AnyElement = match (&self.goto, &self.path) {
             (Some((input, _)), _) => div()
-                .h(px(22.))
+                .h(rpx(22.))
                 .flex()
                 .items_center()
-                .px(px(6.))
+                .px(rpx(6.))
                 .border_1()
                 .border_color(p.acc)
                 .rounded(px(4.))
@@ -349,7 +350,7 @@ impl RemoteFiles {
                     Input::new(input)
                         .appearance(false)
                         .font_family(MONO)
-                        .text_size(px(11.)),
+                        .text_size(ts::SMALL),
                 )
                 .into_any_element(),
             (None, Some(current)) => {
@@ -365,7 +366,7 @@ impl RemoteFiles {
                     .flex_wrap()
                     .items_center()
                     .font_family(MONO)
-                    .text_size(px(10.5))
+                    .text_size(ts::CAPTION_PLUS)
                     .text_color(p.fg3)
                     .rounded(px(3.))
                     .cursor_text()
@@ -379,7 +380,7 @@ impl RemoteFiles {
                             .child(
                                 div()
                                     .id(SharedString::from(format!("rf-crumb-{i}")))
-                                    .px(px(2.))
+                                    .px(rpx(2.))
                                     .rounded(px(3.))
                                     .cursor_pointer()
                                     .when(i == last, |d| d.text_color(p.fg2))
@@ -395,7 +396,7 @@ impl RemoteFiles {
             }
             (None, None) => div()
                 .font_family(MONO)
-                .text_size(px(10.5))
+                .text_size(ts::CAPTION_PLUS)
                 .text_color(p.fg3)
                 .child(path)
                 .into_any_element(),
@@ -403,12 +404,12 @@ impl RemoteFiles {
         let icon_btn = |id: &'static str, label: &'static str, p: &Palette| {
             div()
                 .id(id)
-                .px(px(6.))
-                .h(px(22.))
+                .px(rpx(6.))
+                .h(rpx(22.))
                 .flex()
                 .items_center()
                 .rounded(px(4.))
-                .text_size(px(12.))
+                .text_size(ts::BODY)
                 .text_color(p.fg2)
                 .hover(|s| s.bg(p.hover))
                 .child(label)
@@ -416,21 +417,21 @@ impl RemoteFiles {
         let header =
             div()
                 .flex_none()
-                .px(px(8.))
-                .pb(px(6.))
+                .px(rpx(8.))
+                .pb(rpx(6.))
                 .flex()
                 .flex_col()
-                .gap(px(4.))
+                .gap(rpx(4.))
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(2.))
+                        .gap(rpx(2.))
                         .child(
                             div()
                                 .flex_1()
                                 .min_w_0()
-                                .text_size(px(12.))
+                                .text_size(ts::BODY)
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .truncate()
                                 .child(host_name.to_owned()),
@@ -469,16 +470,16 @@ impl RemoteFiles {
         let list: AnyElement = if let Some(e) = &self.error {
             div()
                 .flex_1()
-                .p(px(12.))
-                .text_size(px(12.))
+                .p(rpx(12.))
+                .text_size(ts::BODY)
                 .text_color(p.prod)
                 .child(e.clone())
                 .into_any_element()
         } else if self.path.is_none() {
             div()
                 .flex_1()
-                .p(px(12.))
-                .text_size(px(12.))
+                .p(rpx(12.))
+                .text_size(ts::BODY)
                 .text_color(p.fg3)
                 .child("Opening SFTP on the Host's session…")
                 .into_any_element()
@@ -508,22 +509,22 @@ impl RemoteFiles {
                                 .id(SharedString::from(format!("rf-{}", e.name)))
                                 .group("rf-row")
                                 .w_full()
-                                .h(px(24.))
-                                .px(px(8.))
+                                .h(rpx(24.))
+                                .px(rpx(8.))
                                 .flex()
                                 .items_center()
-                                .gap(px(6.))
-                                .text_size(px(12.5))
+                                .gap(rpx(6.))
+                                .text_size(ts::UI)
                                 .when(is_sel, |d| d.bg(p.sel))
                                 .when(!is_sel, |d| d.hover(|s| s.bg(p.hover)))
                                 .on_click(cx.listener(move |this, _, _, cx| this.click(&entry, cx)))
-                                .child(div().w(px(10.)).text_color(icon_color).child(icon))
+                                .child(div().w(rpx(10.)).text_color(icon_color).child(icon))
                                 .child(div().flex_1().min_w_0().truncate().child(e.name.clone()))
                                 .when(!e.is_dir(), |d| {
                                     d.child(
                                         div()
                                             .font_family(MONO)
-                                            .text_size(px(10.5))
+                                            .text_size(ts::CAPTION_PLUS)
                                             .text_color(p.fg3)
                                             .child(human(e.size)),
                                     )
@@ -531,14 +532,14 @@ impl RemoteFiles {
                                 .child(
                                     div()
                                         .flex()
-                                        .gap(px(2.))
+                                        .gap(rpx(2.))
                                         .when(!confirming, |d| {
                                             d.invisible().group_hover("rf-row", |s| s.visible())
                                         })
                                         .child(
                                             div()
                                                 .id(SharedString::from(format!("rf-dl-{}", e.name)))
-                                                .px(px(4.))
+                                                .px(rpx(4.))
                                                 .rounded(px(3.))
                                                 .text_color(p.fg2)
                                                 .hover(|s| s.bg(p.hover))
@@ -560,7 +561,7 @@ impl RemoteFiles {
                                         .child(
                                             div()
                                                 .id(SharedString::from(format!("rf-rm-{}", e.name)))
-                                                .px(px(4.))
+                                                .px(rpx(4.))
                                                 .rounded(px(3.))
                                                 .text_color(if confirming { p.prod } else { p.fg2 })
                                                 .hover(|s| s.bg(p.hover))
@@ -627,7 +628,7 @@ impl RemoteFiles {
                         .flex_none()
                         .border_t_1()
                         .border_color(p.bd)
-                        .py(px(4.))
+                        .py(rpx(4.))
                         .flex()
                         .flex_col()
                         .children(transfers),
@@ -636,9 +637,9 @@ impl RemoteFiles {
             .child(
                 div()
                     .flex_none()
-                    .px(px(8.))
-                    .py(px(4.))
-                    .text_size(px(10.5))
+                    .px(rpx(8.))
+                    .py(rpx(4.))
+                    .text_size(ts::CAPTION_PLUS)
                     .text_color(p.fg3)
                     .child("Drop files here to upload · double-click to open"),
             )

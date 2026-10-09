@@ -11,10 +11,11 @@ use std::time::Duration;
 
 use gpui_kit::component::Disableable;
 use gpui_kit::component::button::Button;
-use gpui_kit::{Div, Stateful, Task, div, px};
+use gpui_kit::{Div, Stateful, Task, div};
 
 use super::view::{icon, outline_chip};
 use super::*;
+use crate::appearance::rpx;
 
 /// How long a copy control reads "Copied" after a click.
 pub(super) const COPIED_FOR: Duration = Duration::from_millis(1500);
@@ -318,7 +319,7 @@ impl WorkbenchPanel {
             .flex_none()
             .items_center()
             .justify_center()
-            .size(px(20.))
+            .size(rpx(20.))
             .rounded(radius::sm())
             .cursor_pointer()
             .hover(|el| el.bg(cx.theme().colors.muted))

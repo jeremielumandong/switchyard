@@ -28,6 +28,7 @@ use switchyard_core::store::{DbConnection, EnvironmentLabel, Host, ProfileId};
 use switchyard_core::{AgentApproval, ApprovalKind, Command, RuntimeHandle};
 
 use crate::api::generated::{GeneratedRequest, http_requests};
+use crate::appearance::{rpx, ts};
 use crate::chat_markdown::{self, Block, Inline};
 use crate::rich_text::RichText;
 use crate::theme::{MONO, palette};
@@ -199,13 +200,13 @@ fn markdown_block(
     use gpui_kit::IntoElement as _;
     match block {
         Block::Paragraph(text) => div()
-            .text_size(px(12.5))
+            .text_size(ts::UI)
             .whitespace_normal()
             .child(rich(id.to_owned(), text, next(), p))
             .into_any_element(),
         Block::Heading { level, text } => div()
-            .pt(px(if level <= 2 { 4. } else { 2. }))
-            .text_size(px(match level {
+            .pt(rpx(if level <= 2 { 4. } else { 2. }))
+            .text_size(rpx(match level {
                 1 => 15.,
                 2 => 14.,
                 _ => 13.,
@@ -220,13 +221,13 @@ fn markdown_block(
             text,
         } => div()
             .flex()
-            .gap(px(6.))
-            .pl(px(4. + 16. * depth as f32))
-            .text_size(px(12.5))
+            .gap(rpx(6.))
+            .pl(rpx(4. + 16. * depth as f32))
+            .text_size(ts::UI)
             .child(
                 div()
                     .flex_none()
-                    .min_w(px(12.))
+                    .min_w(rpx(12.))
                     .text_color(p.fg2)
                     .child(marker),
             )
@@ -238,12 +239,12 @@ fn markdown_block(
             )))
             .into_any_element(),
         Block::Code { body, .. } => div()
-            .px(px(8.))
-            .py(px(6.))
+            .px(rpx(8.))
+            .py(rpx(6.))
             .rounded(px(6.))
             .bg(p.surface)
             .font_family(MONO)
-            .text_size(px(11.5))
+            .text_size(ts::LABEL)
             .whitespace_normal()
             .child(
                 SelectableText::new(SharedString::from(id.to_owned()), body).document_order(next()),
@@ -268,8 +269,8 @@ fn markdown_block(
                     let mut d = div()
                         .flex_1()
                         .min_w_0()
-                        .px(px(6.))
-                        .py(px(4.))
+                        .px(rpx(6.))
+                        .py(rpx(4.))
                         .whitespace_normal()
                         .border_color(p.bd)
                         .child(rich(format!("{id}-{r}-{c}"), cell, next(), p));
@@ -287,7 +288,7 @@ fn markdown_block(
                 .border_1()
                 .border_color(p.bd)
                 .overflow_hidden()
-                .text_size(px(12.))
+                .text_size(ts::BODY)
                 .child(row(head, 0, true));
             for (r, cells) in rows.into_iter().enumerate() {
                 table = table.child(row(cells, r + 1, false));
@@ -295,15 +296,15 @@ fn markdown_block(
             table.into_any_element()
         }
         Block::Quote(text) => div()
-            .pl(px(8.))
+            .pl(rpx(8.))
             .border_l_2()
             .border_color(p.bd2)
             .text_color(p.fg2)
-            .text_size(px(12.5))
+            .text_size(ts::UI)
             .whitespace_normal()
             .child(rich(id.to_owned(), text, next(), p))
             .into_any_element(),
-        Block::Rule => div().h(px(1.)).bg(p.bd).into_any_element(),
+        Block::Rule => div().h(rpx(1.)).bg(p.bd).into_any_element(),
     }
 }
 
@@ -789,9 +790,9 @@ impl AssistantPanel {
             .flex_none()
             .flex()
             .flex_col()
-            .gap(px(8.))
-            .px(px(12.))
-            .py(px(8.))
+            .gap(rpx(8.))
+            .px(rpx(12.))
+            .py(rpx(8.))
             .border_t_1()
             .border_color(p.bd);
         for a in &self.approvals {
@@ -801,32 +802,32 @@ impl AssistantPanel {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(6.))
-                    .p(px(9.))
+                    .gap(rpx(6.))
+                    .p(rpx(9.))
                     .rounded(px(6.))
                     .border_1()
                     .border_color(if prod { p.prod } else { p.acc })
                     .bg(if prod { p.prod_bg } else { p.surface })
                     .child(
                         div()
-                            .text_size(px(11.5))
+                            .text_size(ts::LABEL)
                             .text_color(p.fg2)
                             .child(approval_title(a)),
                     )
                     .child(
                         div()
-                            .px(px(7.))
-                            .py(px(5.))
+                            .px(rpx(7.))
+                            .py(rpx(5.))
                             .rounded(px(4.))
                             .bg(p.bg)
                             .font_family(MONO)
-                            .text_size(px(12.))
+                            .text_size(ts::BODY)
                             .child(a.text.clone()),
                     )
                     .child(
                         div()
                             .flex()
-                            .gap(px(6.))
+                            .gap(rpx(6.))
                             .child(
                                 ui::button(
                                     SharedString::from(format!("asst-run-{id}")),
@@ -1055,20 +1056,20 @@ impl Render for AssistantPanel {
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(8.))
-            .px(px(12.))
-            .h(px(40.))
+            .gap(rpx(8.))
+            .px(rpx(12.))
+            .h(rpx(40.))
             .border_b_1()
             .border_color(p.bd)
             .child(
                 div()
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_size(px(13.))
+                    .text_size(ts::BASE)
                     .child("Assistant"),
             )
             .child(
                 div()
-                    .text_size(px(11.5))
+                    .text_size(ts::LABEL)
                     .text_color(p.fg3)
                     .truncate()
                     .child(conn_name),
@@ -1077,12 +1078,12 @@ impl Render for AssistantPanel {
             .child(
                 div()
                     .id("asst-agent")
-                    .px(px(7.))
-                    .py(px(2.))
+                    .px(rpx(7.))
+                    .py(rpx(2.))
                     .rounded(px(5.))
                     .border_1()
                     .border_color(p.bd2)
-                    .text_size(px(11.5))
+                    .text_size(ts::LABEL)
                     .hover(|s| s.bg(p.hover))
                     .tooltip(|w, cx| {
                         gpui_kit::component::tooltip::Tooltip::new(
@@ -1112,8 +1113,8 @@ impl Render for AssistantPanel {
             .child(
                 div()
                     .id("asst-terminal")
-                    .px(px(6.))
-                    .text_size(px(11.5))
+                    .px(rpx(6.))
+                    .text_size(ts::LABEL)
                     .text_color(p.fg2)
                     .hover(|s| s.text_color(p.fg))
                     .tooltip(|w, cx| {
@@ -1130,7 +1131,7 @@ impl Render for AssistantPanel {
             .child(
                 div()
                     .id("asst-close")
-                    .px(px(4.))
+                    .px(rpx(4.))
                     .text_color(p.fg3)
                     .hover(|s| s.text_color(p.fg))
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(AssistantPanelEvent::Close)))
@@ -1139,9 +1140,9 @@ impl Render for AssistantPanel {
         let modes = div()
             .flex_none()
             .flex()
-            .gap(px(6.))
-            .px(px(12.))
-            .py(px(8.))
+            .gap(rpx(6.))
+            .px(rpx(12.))
+            .py(rpx(8.))
             .when(
                 !self.api && self.connection.as_ref().is_none_or(AssistantTarget::is_sql),
                 |d| {
@@ -1198,15 +1199,15 @@ impl Render for AssistantPanel {
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| window.focus(&this.transcript_focus, cx)),
             )
-            .px(px(12.))
-            .pb(px(12.))
+            .px(rpx(12.))
+            .pb(rpx(12.))
             .flex()
             .flex_col()
-            .gap(px(12.));
+            .gap(rpx(12.));
         if empty {
             transcript = transcript.child(
                 div()
-                    .text_size(px(12.))
+                    .text_size(ts::BODY)
                     .text_color(p.fg2)
                     .child(match (self.api, self.mode) {
                         (false, _) if matches!(self.connection, Some(AssistantTarget::Host(_))) => "Ask about this host below. The assistant uses your coding CLI and asks you to approve every command it wants to run here; nothing runs until you click Run.",
@@ -1231,13 +1232,13 @@ impl Render for AssistantPanel {
         let turns = self.turns.len();
         for (ti, turn) in self.turns.iter().enumerate() {
             let last = ti + 1 == turns;
-            let mut t = div().flex().flex_col().gap(px(8.)).child(
+            let mut t = div().flex().flex_col().gap(rpx(8.)).child(
                 div()
-                    .px(px(9.))
-                    .py(px(6.))
+                    .px(rpx(9.))
+                    .py(rpx(6.))
                     .rounded(px(6.))
                     .bg(p.sel)
-                    .text_size(px(12.))
+                    .text_size(ts::BODY)
                     .child(sel(format!("asst-q-{ti}"), turn.asked.clone())),
             );
             let tools: Vec<&Item> = turn
@@ -1247,10 +1248,10 @@ impl Render for AssistantPanel {
                 .collect();
             if !tools.is_empty() {
                 let expanded = turn.expanded_tools;
-                let mut list = div().flex().flex_col().gap(px(3.)).child(
+                let mut list = div().flex().flex_col().gap(rpx(3.)).child(
                     div()
                         .id(SharedString::from(format!("asst-tools-{ti}")))
-                        .text_size(px(11.))
+                        .text_size(ts::SMALL)
                         .text_color(p.fg3)
                         .hover(|s| s.text_color(p.fg2))
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -1281,8 +1282,8 @@ impl Render for AssistantPanel {
                     };
                     let mut row = div()
                         .flex()
-                        .gap(px(6.))
-                        .text_size(px(11.5))
+                        .gap(rpx(6.))
+                        .text_size(ts::LABEL)
                         .font_family(MONO)
                         .child(div().text_color(color).child(mark))
                         .child(
@@ -1301,7 +1302,7 @@ impl Render for AssistantPanel {
                         row = row.flex_wrap().child(
                             div()
                                 .w_full()
-                                .pl(px(14.))
+                                .pl(rpx(14.))
                                 .text_color(p.fg3)
                                 .whitespace_normal()
                                 .child(sel(format!("asst-tr-{k}"), ellipsis(text, 1200))),
@@ -1322,7 +1323,7 @@ impl Render for AssistantPanel {
                     Item::Thinking(s) if last && turn.done.is_none() => {
                         t = t.child(
                             div()
-                                .text_size(px(11.5))
+                                .text_size(ts::LABEL)
                                 .text_color(p.fg3)
                                 .italic()
                                 .child(sel(format!("asst-th-{ti}-{ii}"), ellipsis(s, 300))),
@@ -1331,18 +1332,18 @@ impl Render for AssistantPanel {
                     Item::Error(e) => {
                         t = t.child(
                             div()
-                                .px(px(9.))
-                                .py(px(6.))
+                                .px(rpx(9.))
+                                .py(rpx(6.))
                                 .rounded(px(6.))
                                 .bg(p.prod_bg)
-                                .text_size(px(12.))
+                                .text_size(ts::BODY)
                                 .child(sel(format!("asst-e-{ti}-{ii}"), e.clone())),
                         );
                     }
                     Item::Note(n) => {
                         t = t.child(
                             div()
-                                .text_size(px(11.5))
+                                .text_size(ts::LABEL)
                                 .text_color(p.fg3)
                                 .child(sel(format!("asst-n-{ti}-{ii}"), n.clone())),
                         );
@@ -1364,14 +1365,14 @@ impl Render for AssistantPanel {
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(6.))
-                        .p(px(8.))
+                        .gap(rpx(6.))
+                        .p(rpx(8.))
                         .rounded(px(6.))
                         .border_1()
                         .border_color(p.bd2)
                         .child(
                             div()
-                                .text_size(px(10.5))
+                                .text_size(ts::CAPTION_PLUS)
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(p.fg3)
                                 .child(s.kind.label().to_uppercase()),
@@ -1379,14 +1380,14 @@ impl Render for AssistantPanel {
                         .child(
                             div()
                                 .font_family(MONO)
-                                .text_size(px(11.5))
+                                .text_size(ts::LABEL)
                                 .whitespace_normal()
                                 .child(sel(format!("asst-s-{ti}-{si}"), s.sql.clone())),
                         )
                         .child(
                             div()
                                 .flex()
-                                .gap(px(6.))
+                                .gap(rpx(6.))
                                 .child(
                                     ui::button(
                                         SharedString::from(format!("asst-cmp-{ti}-{si}")),
@@ -1439,14 +1440,14 @@ impl Render for AssistantPanel {
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(6.))
-                        .p(px(8.))
+                        .gap(rpx(6.))
+                        .p(rpx(8.))
                         .rounded(px(6.))
                         .border_1()
                         .border_color(p.bd2)
                         .child(
                             div()
-                                .text_size(px(10.5))
+                                .text_size(ts::CAPTION_PLUS)
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(p.fg3)
                                 .child(format!("REQUEST · {}", r.name)),
@@ -1454,17 +1455,17 @@ impl Render for AssistantPanel {
                         .child(
                             div()
                                 .font_family(MONO)
-                                .text_size(px(11.5))
+                                .text_size(ts::LABEL)
                                 .whitespace_normal()
                                 .child(sel(format!("asst-r-{ti}-{ri}"), line)),
                         )
-                        .child(div().text_size(px(11.)).text_color(p.fg3).child(format!(
+                        .child(div().text_size(ts::SMALL).text_color(p.fg3).child(format!(
                             "{} header{}{body_note}",
                             r.headers.len(),
                             if r.headers.len() == 1 { "" } else { "s" }
                         )))
                         .child(
-                            div().flex().gap(px(6.)).child(
+                            div().flex().gap(rpx(6.)).child(
                                 ui::button(
                                     SharedString::from(format!("asst-req-{ti}-{ri}")),
                                     "Open in Workbench",
@@ -1499,7 +1500,7 @@ impl Render for AssistantPanel {
             if last && running {
                 t = t.child(
                     div()
-                        .text_size(px(11.5))
+                        .text_size(ts::LABEL)
                         .text_color(p.acc)
                         .child("Working…"),
                 );
@@ -1510,28 +1511,24 @@ impl Render for AssistantPanel {
         let footer = div()
             .flex_none()
             .flex()
-            .gap(px(6.))
+            .gap(rpx(6.))
             .items_center()
-            .p(px(10.))
+            .p(rpx(10.))
             .border_t_1()
             .border_color(p.bd)
             .child(
                 div()
                     .flex_1()
-                    .h(px(30.))
+                    .h(rpx(30.))
                     .flex()
                     .items_center()
-                    .px(px(8.))
+                    .px(rpx(8.))
                     .border_1()
                     .border_color(p.bd2)
                     .rounded(px(6.))
                     .bg(p.bg)
-                    .text_size(px(12.5))
-                    .child(
-                        Input::new(&self.input)
-                            .appearance(false)
-                            .text_size(px(12.5)),
-                    ),
+                    .text_size(ts::UI)
+                    .child(Input::new(&self.input).appearance(false).text_size(ts::UI)),
             )
             .child(
                 ui::button("asst-send", "Send", Kind::Primary, &p)

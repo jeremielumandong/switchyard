@@ -275,3 +275,9 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
   timeout: it is best effort with a 2 s limit.
 - vsftpd applies `-o` options and the config file in argument order: put the file first or
   its `background=YES` overrides `-obackground=NO` and the container exits.
+- UI zoom works through the window rem size (13 px × zoom). Write fixed sizes in element
+  styles as `appearance::rpx(v)` and text as `appearance::ts::*`, not `px(..)`, or they stay
+  at 100 %; keep `px` for window coordinates (drags, user-resized panes, canvas painting).
+- GPUI on Linux renders through Vulkan: under Xvfb the window fails with "Failed to create
+  surface" unless a Vulkan driver is installed (`mesa-vulkan-drivers` gives lavapipe).
+  `SWITCHYARD_THEME` and `SWITCHYARD_ZOOM` pin theme and zoom for screenshots.

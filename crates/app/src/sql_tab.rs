@@ -46,6 +46,7 @@ use switchyard_core::db::{
 };
 
 use crate::app_state::{SessionState, next_id};
+use crate::appearance::{rpx, ts};
 use crate::completion::{CompletionState, SqlCompletion};
 use crate::grid::{
     GridDelegate, MenuBuilder, NEW_ROW, PagedView, Pager, PagerAction, pager_action,
@@ -1768,12 +1769,12 @@ impl SqlTab {
         // Explain / Analyze only where the engine has plans.
         let plans = self.dialect().plans();
         div()
-            .h(px(38.))
+            .h(rpx(38.))
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(6.))
-            .px(px(10.))
+            .gap(rpx(6.))
+            .px(rpx(10.))
             .border_b_1()
             .border_color(p.bd)
             .overflow_hidden()
@@ -1863,17 +1864,17 @@ impl SqlTab {
             .child(
                 div()
                     .id("conn-pill")
-                    .h(px(26.))
+                    .h(rpx(26.))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .px(px(10.))
+                    .gap(rpx(8.))
+                    .px(rpx(10.))
                     .border_1()
                     .border_color(pill_color)
                     .rounded(px(6.))
                     .when(self.connection.is_some(), |d| d.bg(p.env_bg(env)))
-                    .text_size(px(12.))
+                    .text_size(ts::BODY)
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(SqlTabEvent::PickConnection)))
                     .when(self.connection.is_some(), |d| {
                         d.child(ui::dot(p.env(env), 7.))
@@ -1884,7 +1885,7 @@ impl SqlTab {
                             div()
                                 .font_family(MONO)
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .text_size(px(9.5))
+                                .text_size(ts::TINY_PLUS)
                                 .text_color(p.env(env))
                                 .child(env.badge()),
                         )
@@ -1896,7 +1897,7 @@ impl SqlTab {
                     .when(matches!(self.session_state, SessionState::Failed(_)), |d| {
                         d.child(ui::dot(p.prod, 6.))
                     })
-                    .child(div().text_color(p.fg3).text_size(px(10.)).child("▾")),
+                    .child(div().text_color(p.fg3).text_size(ts::CAPTION).child("▾")),
             )
             .into_any_element()
     }
@@ -1925,29 +1926,29 @@ impl SqlTab {
         );
         div()
             .flex_1()
-            .px(px(22.))
-            .py(px(20.))
+            .px(rpx(22.))
+            .py(rpx(20.))
             .flex()
             .flex_col()
-            .gap(px(10.))
+            .gap(rpx(10.))
             .child(
                 div()
                     .flex()
-                    .gap(px(10.))
+                    .gap(rpx(10.))
                     .items_baseline()
                     .when_some(e.code.clone(), |d, code| {
                         d.child(
                             div()
                                 .font_family(MONO)
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .text_size(px(12.))
+                                .text_size(ts::BODY)
                                 .text_color(p.prod)
                                 .child(format!("ERROR {code}")),
                         )
                     })
                     .child(
                         div()
-                            .text_size(px(13.5))
+                            .text_size(ts::BASE_PLUS)
                             .font_weight(FontWeight::MEDIUM)
                             .child(e.message.clone()),
                     ),
@@ -1956,8 +1957,8 @@ impl SqlTab {
                 d.child(
                     div()
                         .font_family(MONO)
-                        .text_size(px(12.))
-                        .line_height(px(19.))
+                        .text_size(ts::BODY)
+                        .line_height(rpx(19.))
                         .text_color(p.fg2)
                         .whitespace_nowrap()
                         .children(context.lines().map(|l| div().child(l.to_owned()))),
@@ -1966,7 +1967,7 @@ impl SqlTab {
             .child(
                 div()
                     .flex()
-                    .gap(px(6.))
+                    .gap(rpx(6.))
                     .when_some(e.location, |d, (l, c)| {
                         d.child(
                             ui::button(
@@ -2028,11 +2029,11 @@ impl SqlTab {
             (v.has_content() || self.show_plan, v.is_capturing())
         };
         let header = div()
-            .h(px(32.))
+            .h(rpx(32.))
             .flex_none()
             .flex()
-            .gap(px(2.))
-            .px(px(8.))
+            .gap(rpx(2.))
+            .px(rpx(8.))
             .border_b_1()
             .border_color(p.bd)
             .bg(p.panel)
@@ -2043,9 +2044,9 @@ impl SqlTab {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(6.))
-                    .px(px(10.))
-                    .text_size(px(12.))
+                    .gap(rpx(6.))
+                    .px(rpx(10.))
+                    .text_size(ts::BODY)
                     .whitespace_nowrap()
                     .text_color(if active { p.fg } else { p.fg2 })
                     .when(active, |d| d.border_b_2().border_color(p.fg))
@@ -2060,7 +2061,7 @@ impl SqlTab {
                     .child(
                         div()
                             .font_family(MONO)
-                            .text_size(px(11.))
+                            .text_size(ts::SMALL)
                             .text_color(p.fg3)
                             .child(count),
                     )
@@ -2069,9 +2070,9 @@ impl SqlTab {
                         d.child(
                             div()
                                 .id(("rtab-pin", i))
-                                .px(px(4.))
+                                .px(rpx(4.))
                                 .rounded(px(3.))
-                                .text_size(px(10.5))
+                                .text_size(ts::CAPTION_PLUS)
                                 .text_color(if pinned { p.acc } else { p.fg3 })
                                 .when(pinned, |d| d.font_weight(FontWeight::SEMIBOLD))
                                 .hover(|s| s.bg(p.hover))
@@ -2090,9 +2091,9 @@ impl SqlTab {
                         .flex()
                         .flex_none()
                         .items_center()
-                        .gap(px(6.))
-                        .px(px(10.))
-                        .text_size(px(12.))
+                        .gap(rpx(6.))
+                        .px(rpx(10.))
+                        .text_size(ts::BODY)
                         .whitespace_nowrap()
                         .text_color(if self.show_plan { p.fg } else { p.fg2 })
                         .when(self.show_plan, |d| d.border_b_2().border_color(p.fg))
@@ -2115,9 +2116,9 @@ impl SqlTab {
                         .flex()
                         .flex_none()
                         .items_center()
-                        .gap(px(6.))
-                        .px(px(10.))
-                        .text_size(px(12.))
+                        .gap(rpx(6.))
+                        .px(rpx(10.))
+                        .text_size(ts::BODY)
                         .whitespace_nowrap()
                         .text_color(if self.show_compare { p.fg } else { p.fg2 })
                         .when(self.show_compare, |d| d.border_b_2().border_color(p.fg))
@@ -2131,7 +2132,7 @@ impl SqlTab {
                         .child(
                             div()
                                 .id("rtab-diff-close")
-                                .px(px(3.))
+                                .px(rpx(3.))
                                 .rounded(px(3.))
                                 .text_color(p.fg3)
                                 .hover(|s| s.bg(p.hover))
@@ -2151,12 +2152,12 @@ impl SqlTab {
                     .relative()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
+                    .gap(rpx(6.))
                     .when(self.results.len() >= 2 && !self.show_plan, |d| {
                         d.child(
                             ui::button("compare", "Compare ▾", Kind::Ghost, p)
-                                .h(px(22.))
-                                .text_size(px(11.5))
+                                .h(rpx(22.))
+                                .text_size(ts::LABEL)
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     if this.active_result >= this.results.len() {
                                         this.active_result = 0;
@@ -2175,11 +2176,11 @@ impl SqlTab {
                         |d| {
                             d.child(
                                 div()
-                                    .w(px(150.))
-                                    .h(px(22.))
+                                    .w(rpx(150.))
+                                    .h(rpx(22.))
                                     .flex()
                                     .items_center()
-                                    .px(px(6.))
+                                    .px(rpx(6.))
                                     .border_1()
                                     .border_color(p.bd)
                                     .rounded(px(5.))
@@ -2187,7 +2188,7 @@ impl SqlTab {
                                     .child(
                                         Input::new(&self.filter)
                                             .appearance(false)
-                                            .text_size(px(11.5)),
+                                            .text_size(ts::LABEL),
                                     ),
                             )
                         },
@@ -2198,9 +2199,9 @@ impl SqlTab {
                             let row_button =
                                 |id: &'static str, label: &'static str, action: RowAction| {
                                     ui::button(id, label, Kind::Ghost, p)
-                                        .h(px(22.))
-                                        .px(px(6.))
-                                        .text_size(px(11.5))
+                                        .h(rpx(22.))
+                                        .px(rpx(6.))
+                                        .text_size(ts::LABEL)
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.row_action(action, cx)
                                         }))
@@ -2213,16 +2214,16 @@ impl SqlTab {
                     .when(!self.show_plan && !self.show_compare, |d| {
                         d.child(
                             ui::button("fetch-all", "Fetch all", Kind::Ghost, p)
-                                .h(px(22.))
-                                .text_size(px(11.5))
+                                .h(rpx(22.))
+                                .text_size(ts::LABEL)
                                 .when(!paused, |d| d.text_color(p.fg3))
                                 .on_click(cx.listener(|this, _, _, cx| this.fetch_all(cx))),
                         )
                         .child(
                             ui::button("export", "Export ▾", Kind::Secondary, p)
-                                .h(px(22.))
-                                .px(px(8.))
-                                .text_size(px(11.5))
+                                .h(rpx(22.))
+                                .px(rpx(8.))
+                                .text_size(ts::LABEL)
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.export_open = !this.export_open;
                                     cx.notify();
@@ -2273,10 +2274,10 @@ impl SqlTab {
                 .id("messages")
                 .flex_1()
                 .overflow_y_scroll()
-                .p(px(12.))
+                .p(rpx(12.))
                 .font_family(MONO)
-                .text_size(px(12.))
-                .line_height(px(20.))
+                .text_size(ts::BODY)
+                .line_height(rpx(20.))
                 .children(
                     self.messages
                         .iter()
@@ -2324,13 +2325,13 @@ impl SqlTab {
                             .flex_none()
                             .flex()
                             .items_center()
-                            .gap(px(10.))
-                            .px(px(12.))
-                            .py(px(6.))
+                            .gap(rpx(10.))
+                            .px(rpx(12.))
+                            .py(rpx(6.))
                             .bg(p.stg_bg)
                             .border_b_1()
                             .border_color(p.bd)
-                            .text_size(px(12.))
+                            .text_size(ts::BODY)
                             .child(
                                 div()
                                     .font_weight(FontWeight::SEMIBOLD)
@@ -2371,14 +2372,14 @@ impl SqlTab {
                 .when(streaming, |d| {
                     d.child(
                         div()
-                            .h(px(26.))
+                            .h(rpx(26.))
                             .flex_none()
                             .flex()
                             .items_center()
-                            .pl(px(54.))
-                            .gap(px(10.))
+                            .pl(rpx(54.))
+                            .gap(rpx(10.))
                             .text_color(p.fg3)
-                            .text_size(px(12.))
+                            .text_size(ts::BODY)
                             .child(ui::shimmer(120., p))
                             .child("receiving rows…"),
                     )
@@ -2395,9 +2396,9 @@ impl SqlTab {
                 .flex()
                 .items_center()
                 .justify_center()
-                .gap(px(10.))
+                .gap(rpx(10.))
                 .text_color(p.fg3)
-                .text_size(px(12.))
+                .text_size(ts::BODY)
                 .child(ui::shimmer(120., p))
                 .child("running…")
                 .into_any_element()
@@ -2416,22 +2417,22 @@ impl SqlTab {
         let (label, color, meta, pulsing) = self.status(p);
         let footer =
             div()
-                .h(px(26.))
+                .h(rpx(26.))
                 .flex_none()
                 .flex()
                 .items_center()
-                .gap(px(14.))
-                .px(px(12.))
+                .gap(rpx(14.))
+                .px(rpx(12.))
                 .border_t_1()
                 .border_color(p.bd)
                 .bg(p.panel)
-                .text_size(px(11.5))
+                .text_size(ts::LABEL)
                 .text_color(p.fg2)
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(rpx(6.))
                         .child(if pulsing {
                             ui::pulse_dot("rs-dot", color, 6.)
                         } else {
@@ -2485,13 +2486,13 @@ impl SqlTab {
                     cx: &mut Context<Self>| {
             div()
                 .id(id)
-                .h(px(26.))
+                .h(rpx(26.))
                 .flex()
                 .items_center()
                 .justify_between()
-                .px(px(8.))
+                .px(rpx(8.))
                 .rounded(px(4.))
-                .text_size(px(12.5))
+                .text_size(ts::UI)
                 .hover(|s| s.bg(p.sel))
                 .on_click(cx.listener(move |this, _, _, cx| match fmt {
                     Some(f) => this.copy_selection(f, cx),
@@ -2505,7 +2506,7 @@ impl SqlTab {
                 .child(
                     div()
                         .font_family(MONO)
-                        .text_size(px(10.5))
+                        .text_size(ts::CAPTION_PLUS)
                         .text_color(p.fg3)
                         .child(key),
                 )
@@ -2514,19 +2515,19 @@ impl SqlTab {
             div()
                 .id("export-menu")
                 .absolute()
-                .top(px(28.))
-                .right(px(0.))
-                .w(px(220.))
-                .p(px(4.))
+                .top(rpx(28.))
+                .right(rpx(0.))
+                .w(rpx(220.))
+                .p(rpx(4.))
                 .bg(p.elev)
                 .rounded(px(7.))
                 .shadow(ui::shadow(p))
                 .occlude()
                 .child(
                     div()
-                        .px(px(8.))
-                        .py(px(4.))
-                        .text_size(px(11.))
+                        .px(rpx(8.))
+                        .py(rpx(4.))
+                        .text_size(ts::SMALL)
                         .text_color(p.fg3)
                         .child("Copy selection as"),
                 )
@@ -2565,7 +2566,7 @@ impl SqlTab {
                     Some(ExportFormat::SqlInsert),
                     cx,
                 ))
-                .child(div().h(px(1.)).bg(p.bd).my(px(4.)))
+                .child(div().h(rpx(1.)).bg(p.bd).my(rpx(4.)))
                 .child(item(
                     "x-file",
                     "Export full result to file…".into(),
@@ -2740,29 +2741,29 @@ impl SqlTab {
         let pill = |id: &'static str, icon: &'static str, label: String, menu: ContextMenu| {
             div()
                 .id(id)
-                .h(px(24.))
-                .max_w(px(180.))
+                .h(rpx(24.))
+                .max_w(rpx(180.))
                 .flex_none()
                 .flex()
                 .items_center()
-                .gap(px(5.))
-                .px(px(8.))
+                .gap(rpx(5.))
+                .px(rpx(8.))
                 .border_1()
                 .border_color(p.bd)
                 .rounded(px(5.))
-                .text_size(px(11.5))
+                .text_size(ts::LABEL)
                 .overflow_hidden()
                 .hover(|s| s.bg(p.hover))
                 .on_click(cx.listener(move |this, _, _, cx| this.open_context_menu(menu, cx)))
                 .child(
                     div()
                         .font_family(MONO)
-                        .text_size(px(9.5))
+                        .text_size(ts::TINY_PLUS)
                         .text_color(p.fg3)
                         .child(icon),
                 )
                 .child(div().min_w_0().overflow_hidden().child(label))
-                .child(div().text_color(p.fg3).text_size(px(9.)).child("▾"))
+                .child(div().text_color(p.fg3).text_size(ts::TINY).child("▾"))
         };
         let db = self.current_database().unwrap_or_else(|| "database".into());
         let db_pill = pill("ctx-db", "DB", db, ContextMenu::Database);
@@ -2775,7 +2776,7 @@ impl SqlTab {
                 .flex()
                 .flex_none()
                 .items_center()
-                .gap(px(4.))
+                .gap(rpx(4.))
                 .child(db_pill)
                 .children(schema_pill)
                 .when(busy, |d| d.child(ui::pulse_dot("ctx-pulse", p.acc, 6.)))
@@ -2791,16 +2792,16 @@ impl SqlTab {
         };
         let body: AnyElement = match items {
             None => div()
-                .px(px(8.))
-                .py(px(6.))
-                .text_size(px(12.))
+                .px(rpx(8.))
+                .py(rpx(6.))
+                .text_size(ts::BODY)
                 .text_color(p.fg3)
                 .child("Loading…")
                 .into_any_element(),
             Some(items) if items.is_empty() => div()
-                .px(px(8.))
-                .py(px(6.))
-                .text_size(px(12.))
+                .px(rpx(8.))
+                .py(rpx(6.))
+                .text_size(ts::BODY)
                 .text_color(p.fg3)
                 .child("Nothing to switch to")
                 .into_any_element(),
@@ -2819,13 +2820,13 @@ impl SqlTab {
                                 let pick = name.clone();
                                 div()
                                     .id(("ctx-item", i))
-                                    .h(px(26.))
+                                    .h(rpx(26.))
                                     .flex()
                                     .items_center()
-                                    .gap(px(6.))
-                                    .px(px(8.))
+                                    .gap(rpx(6.))
+                                    .px(rpx(8.))
                                     .rounded(px(4.))
-                                    .text_size(px(12.5))
+                                    .text_size(ts::UI)
                                     .whitespace_nowrap()
                                     .overflow_hidden()
                                     .hover(|s| s.bg(pp.sel))
@@ -2838,7 +2839,7 @@ impl SqlTab {
                                             this.switch_context(None, Some(pick.clone()), cx)
                                         }
                                     }))
-                                    .child(div().w(px(10.)).text_color(pp.acc).child(if active {
+                                    .child(div().w(rpx(10.)).text_color(pp.acc).child(if active {
                                         "✓"
                                     } else {
                                         ""
@@ -2848,7 +2849,7 @@ impl SqlTab {
                             .collect::<Vec<_>>()
                     }),
                 )
-                .h(px((n as f32 * 26.).min(300.)))
+                .h(rpx((n as f32 * 26.).min(300.)))
                 .into_any_element()
             }
         };
@@ -2857,10 +2858,10 @@ impl SqlTab {
                 div()
                     .id("ctx-menu")
                     .absolute()
-                    .top(px(36.))
-                    .right(px(10.))
-                    .w(px(260.))
-                    .p(px(4.))
+                    .top(rpx(36.))
+                    .right(rpx(10.))
+                    .w(rpx(260.))
+                    .p(rpx(4.))
                     .bg(p.elev)
                     .rounded(px(7.))
                     .shadow(ui::shadow(p))
@@ -2871,9 +2872,9 @@ impl SqlTab {
                     }))
                     .child(
                         div()
-                            .px(px(8.))
-                            .py(px(4.))
-                            .text_size(px(11.))
+                            .px(rpx(8.))
+                            .py(rpx(4.))
+                            .text_size(ts::SMALL)
                             .text_color(p.fg3)
                             .child(title),
                     )
@@ -2973,28 +2974,28 @@ impl SqlTab {
         };
         let body: AnyElement = match &peek.columns {
             None => div()
-                .px(px(10.))
-                .py(px(8.))
+                .px(rpx(10.))
+                .py(rpx(8.))
                 .text_color(p.fg3)
                 .child("Loading columns…")
                 .into_any_element(),
             Some(cols) if cols.is_empty() => div()
-                .px(px(10.))
-                .py(px(8.))
+                .px(rpx(10.))
+                .py(rpx(8.))
                 .text_color(p.fg3)
                 .child("No columns found")
                 .into_any_element(),
             Some(cols) => div()
                 .id("peek-cols")
-                .max_h(px(240.))
+                .max_h(rpx(240.))
                 .overflow_y_scroll()
-                .py(px(4.))
+                .py(rpx(4.))
                 .children(cols.iter().map(|(n, t)| {
                     div()
                         .flex()
-                        .gap(px(10.))
-                        .px(px(10.))
-                        .h(px(20.))
+                        .gap(rpx(10.))
+                        .px(rpx(10.))
+                        .h(rpx(20.))
                         .items_center()
                         .whitespace_nowrap()
                         .child(div().flex_1().min_w_0().overflow_hidden().child(n.clone()))
@@ -3007,9 +3008,9 @@ impl SqlTab {
             div()
                 .id("peek")
                 .absolute()
-                .top(px(8.))
-                .right(px(16.))
-                .w(px(320.))
+                .top(rpx(8.))
+                .right(rpx(16.))
+                .w(rpx(320.))
                 .bg(p.elev)
                 .border_1()
                 .border_color(p.bd)
@@ -3017,7 +3018,7 @@ impl SqlTab {
                 .shadow(ui::shadow(p))
                 .occlude()
                 .font_family(MONO)
-                .text_size(px(11.5))
+                .text_size(ts::LABEL)
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                     this.peek = None;
                     cx.notify();
@@ -3026,9 +3027,9 @@ impl SqlTab {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
-                        .px(px(10.))
-                        .py(px(6.))
+                        .gap(rpx(8.))
+                        .px(rpx(10.))
+                        .py(rpx(6.))
                         .border_b_1()
                         .border_color(p.bd)
                         .child(
@@ -3126,10 +3127,10 @@ impl SqlTab {
             div()
                 .id("compare-menu")
                 .absolute()
-                .top(px(28.))
-                .right(px(0.))
-                .w(px(260.))
-                .p(px(4.))
+                .top(rpx(28.))
+                .right(rpx(0.))
+                .w(rpx(260.))
+                .p(rpx(4.))
                 .bg(p.elev)
                 .rounded(px(7.))
                 .shadow(ui::shadow(p))
@@ -3140,21 +3141,21 @@ impl SqlTab {
                 }))
                 .child(
                     div()
-                        .px(px(8.))
-                        .py(px(4.))
-                        .text_size(px(11.))
+                        .px(rpx(8.))
+                        .py(rpx(4.))
+                        .text_size(ts::SMALL)
                         .text_color(p.fg3)
                         .child(format!("Compare {} with", self.result_label(active))),
                 )
                 .children(others.into_iter().map(|(i, label)| {
                     div()
                         .id(("cmp-item", i))
-                        .h(px(26.))
+                        .h(rpx(26.))
                         .flex()
                         .items_center()
-                        .px(px(8.))
+                        .px(rpx(8.))
                         .rounded(px(4.))
-                        .text_size(px(12.5))
+                        .text_size(ts::UI)
                         .hover(|s| s.bg(p.sel))
                         .on_click(
                             cx.listener(move |this, _, _, cx| this.start_compare(active, i, cx)),
@@ -3176,9 +3177,9 @@ impl SqlTab {
                 .flex()
                 .items_center()
                 .justify_center()
-                .gap(px(10.))
+                .gap(rpx(10.))
                 .text_color(p.fg3)
-                .text_size(px(12.))
+                .text_size(ts::BODY)
                 .child(ui::shimmer(120., p))
                 .child("comparing…")
                 .into_any_element();
@@ -3205,12 +3206,12 @@ impl SqlTab {
             .flex()
             .flex_wrap()
             .items_center()
-            .gap(px(14.))
-            .px(px(12.))
-            .py(px(6.))
+            .gap(rpx(14.))
+            .px(rpx(12.))
+            .py(rpx(6.))
             .border_b_1()
             .border_color(p.bd)
-            .text_size(px(12.))
+            .text_size(ts::BODY)
             .child(
                 div()
                     .min_w_0()
@@ -3251,21 +3252,21 @@ impl SqlTab {
         let width = px(36. + ncols as f32 * DIFF_CELL_W);
         let header = div()
             .flex_none()
-            .h(px(DIFF_LINE_H))
+            .h(rpx(DIFF_LINE_H))
             .flex()
             .items_center()
             .border_b_1()
             .border_color(p.bd)
             .bg(p.panel)
-            .text_size(px(11.5))
+            .text_size(ts::LABEL)
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(p.fg2)
-            .child(div().w(px(36.)).flex_none())
+            .child(div().w(rpx(36.)).flex_none())
             .children(d.columns.iter().map(|(_, _, name)| {
                 div()
-                    .w(px(DIFF_CELL_W))
+                    .w(rpx(DIFF_CELL_W))
                     .flex_none()
-                    .px(px(6.))
+                    .px(rpx(6.))
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .child(name.clone())
@@ -3329,19 +3330,19 @@ fn render_diff_line(
     let (data, other_data) = if from_a { (a, b) } else { (b, a) };
     let mut buf = String::new();
     div()
-        .h(px(DIFF_LINE_H))
+        .h(rpx(DIFF_LINE_H))
         .flex()
         .items_center()
         .bg(bg)
         .border_b_1()
         .border_color(p.bd)
         .font_family(MONO)
-        .text_size(px(12.))
+        .text_size(ts::BODY)
         .child(
             div()
-                .w(px(36.))
+                .w(rpx(36.))
                 .flex_none()
-                .px(px(6.))
+                .px(rpx(6.))
                 .text_color(color)
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(marker),
@@ -3363,12 +3364,12 @@ fn render_diff_line(
                 cell.write_display(&mut buf, 80);
             }
             div()
-                .w(px(DIFF_CELL_W))
+                .w(rpx(DIFF_CELL_W))
                 .h_full()
                 .flex_none()
                 .flex()
                 .items_center()
-                .px(px(6.))
+                .px(rpx(6.))
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .when(differs, |d| d.bg(p.staged).text_color(p.fg))
@@ -3384,17 +3385,17 @@ fn empty_state(title: &str, sub: &str, p: &Palette) -> AnyElement {
         .flex()
         .flex_col()
         .items_center()
-        .pt(px(40.))
-        .gap(px(4.))
+        .pt(rpx(40.))
+        .gap(rpx(4.))
         .child(
             div()
-                .text_size(px(13.))
+                .text_size(ts::BASE)
                 .text_color(p.fg2)
                 .child(title.to_owned()),
         )
         .child(
             div()
-                .text_size(px(12.))
+                .text_size(ts::BODY)
                 .text_color(p.fg3)
                 .child(sub.to_owned()),
         )
@@ -3457,7 +3458,9 @@ impl Render for SqlTab {
                 if let Some((y0, h0)) = this.drag {
                     if ev.pressed_button == Some(MouseButton::Left) {
                         let y: f32 = ev.position.y.into();
-                        this.editor_height = (h0 + y - y0).clamp(120.0, 900.0);
+                        // In 100 % design units (drawn with `rpx`).
+                        let z = crate::appearance::zoom(cx);
+                        this.editor_height = (h0 + (y - y0) / z).clamp(120.0, 900.0);
                         cx.notify();
                     } else {
                         this.drag = None;
@@ -3471,21 +3474,29 @@ impl Render for SqlTab {
             .child(toolbar)
             .child(
                 div()
-                    .h(px(self.editor_height))
+                    .h(rpx(self.editor_height))
                     // In a short split pane the editor gives way so the results stay visible.
                     .flex_shrink(1.)
-                    .min_h(px(60.))
+                    .min_h(rpx(60.))
                     .flex()
                     .relative()
                     .overflow_hidden()
                     .when_some(bar, |d, c| {
-                        d.child(div().absolute().left_0().top_0().bottom_0().w(px(2.)).bg(c))
+                        d.child(
+                            div()
+                                .absolute()
+                                .left_0()
+                                .top_0()
+                                .bottom_0()
+                                .w(rpx(2.))
+                                .bg(c),
+                        )
                     })
                     .child(
                         div()
                             .flex_1()
                             .h_full()
-                            .pl(px(2.))
+                            .pl(rpx(2.))
                             // A schema-tree object dropped here inserts its (qualified) name
                             // at the cursor (the editor has no public point-to-offset map).
                             .on_drop(cx.listener(
@@ -3511,7 +3522,7 @@ impl Render for SqlTab {
             .child(
                 div()
                     .id("splitter")
-                    .h(px(6.))
+                    .h(rpx(6.))
                     .flex_none()
                     .flex()
                     .items_center()
@@ -3528,12 +3539,12 @@ impl Render for SqlTab {
                             cx.stop_propagation();
                         }),
                     )
-                    .child(div().w(px(28.)).h(px(2.)).rounded(px(2.)).bg(p.bd2)),
+                    .child(div().w(rpx(28.)).h(rpx(2.)).rounded(px(2.)).bg(p.bd2)),
             )
             .child(
                 div()
                     .flex_1()
-                    .min_h(px(120.))
+                    .min_h(rpx(120.))
                     .flex()
                     .flex_col()
                     .child(results),
@@ -4469,14 +4480,14 @@ impl SqlTab {
                 .flex_none()
                 .flex()
                 .items_center()
-                .gap(px(8.))
-                .px(px(12.))
-                .py(px(6.))
+                .gap(rpx(8.))
+                .px(rpx(12.))
+                .py(rpx(6.))
                 .bg(p.panel)
                 .border_t_1()
                 .border_color(p.bd)
-                .text_size(px(12.))
-                .child(div().w(px(8.)).h(px(8.)).rounded(px(2.)).bg(p.stg))
+                .text_size(ts::BODY)
+                .child(div().w(rpx(8.)).h(rpx(8.)).rounded(px(2.)).bg(p.stg))
                 .child(
                     div()
                         .font_weight(FontWeight::SEMIBOLD)
@@ -4490,16 +4501,16 @@ impl SqlTab {
                 .child(
                     div()
                         .flex_1()
-                        .h(px(26.))
+                        .h(rpx(26.))
                         .flex()
                         .items_center()
-                        .px(px(6.))
+                        .px(rpx(6.))
                         .border_1()
                         .border_color(p.acc)
                         .rounded(px(5.))
                         .bg(p.bg)
                         .font_family(MONO)
-                        .child(Input::new(&e.input).appearance(false).text_size(px(12.))),
+                        .child(Input::new(&e.input).appearance(false).text_size(ts::BODY)),
                 )
                 .child(
                     ui::button("edit-null", "Set NULL", Kind::Ghost, p)
@@ -4546,10 +4557,10 @@ impl SqlTab {
             div()
                 .flex_none()
                 .flex()
-                .gap(px(14.))
+                .gap(rpx(14.))
                 .items_start()
-                .px(px(12.))
-                .py(px(10.))
+                .px(rpx(12.))
+                .py(rpx(10.))
                 .border_t_1()
                 .border_color(p.bd)
                 .bg(p.panel)
@@ -4560,11 +4571,11 @@ impl SqlTab {
                         .child(
                             div()
                                 .flex()
-                                .gap(px(8.))
+                                .gap(rpx(8.))
                                 .items_center()
-                                .text_size(px(12.))
-                                .mb(px(6.))
-                                .child(div().w(px(8.)).h(px(8.)).rounded(px(2.)).bg(p.stg))
+                                .text_size(ts::BODY)
+                                .mb(rpx(6.))
+                                .child(div().w(rpx(8.)).h(rpx(8.)).rounded(px(2.)).bg(p.stg))
                                 .child(div().font_weight(FontWeight::SEMIBOLD).child(format!(
                                     "{n} staged change{}",
                                     if n == 1 { "" } else { "s" }
@@ -4576,17 +4587,17 @@ impl SqlTab {
                         .child(
                             div()
                                 .id("staged-sql")
-                                .max_h(px(110.))
+                                .max_h(rpx(110.))
                                 .overflow_y_scroll()
-                                .px(px(10.))
-                                .py(px(8.))
+                                .px(rpx(10.))
+                                .py(rpx(8.))
                                 .bg(p.bg)
                                 .border_1()
                                 .border_color(p.bd)
                                 .rounded(px(6.))
                                 .font_family(MONO)
-                                .text_size(px(11.5))
-                                .line_height(px(19.))
+                                .text_size(ts::LABEL)
+                                .line_height(rpx(19.))
                                 .text_color(p.fg2)
                                 .children(
                                     statements
@@ -4600,8 +4611,8 @@ impl SqlTab {
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(6.))
-                        .pt(px(22.))
+                        .gap(rpx(6.))
+                        .pt(rpx(22.))
                         .child(
                             ui::button(
                                 "commit-edits",
