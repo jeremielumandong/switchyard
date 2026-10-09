@@ -71,6 +71,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
+      # Anonymous Docker Hub pulls hit its rate limit (429) on shared runners; pull Docker Hub
+      # images through Google's public mirror, which falls back to Docker Hub on a miss.
+      - name: Use a Docker Hub mirror
+        run: |
+          f=/etc/docker/daemon.json
+          cfg=$( [ -s $f ] && sudo cat $f || echo '{}' )
+          echo "$cfg" | jq '. + {"registry-mirrors": ["https://mirror.gcr.io"]}' | sudo tee $f
+          sudo systemctl restart docker
+          docker info --format '{{.RegistryConfig.Mirrors}}'
       # The compose service, not a job service: it preloads pg_stat_statements, adds HypoPG
       # (docker/postgres-image) and seeds itself from docker/postgres.
       - name: Start PostgreSQL
@@ -122,6 +131,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.98.1
       - uses: Swatinem/rust-cache@v2
+      # Anonymous Docker Hub pulls hit its rate limit (429) on shared runners; pull Docker Hub
+      # images through Google's public mirror, which falls back to Docker Hub on a miss.
+      - name: Use a Docker Hub mirror
+        run: |
+          f=/etc/docker/daemon.json
+          cfg=$( [ -s $f ] && sudo cat $f || echo '{}' )
+          echo "$cfg" | jq '. + {"registry-mirrors": ["https://mirror.gcr.io"]}' | sudo tee $f
+          sudo systemctl restart docker
+          docker info --format '{{.RegistryConfig.Mirrors}}'
       # MySQL seeds itself from docker/mysql; MongoDB and Redis start empty.
       - name: Start MySQL, MongoDB and Redis
         run: docker compose -f docker/compose.yml up -d --wait mysql mongo redis
