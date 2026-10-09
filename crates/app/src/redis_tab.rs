@@ -233,7 +233,15 @@ impl RedisTab {
                 self.open_error = None;
                 self.rescan(cx);
             }
-            Err(e) => self.open_error = Some(e),
+            Err(e) => {
+                // A stopped tunnel ends the session: nothing it had is live any more.
+                self.info = None;
+                self.scan_request = None;
+                self.load_request = None;
+                self.edit_request = None;
+                self.run_request = None;
+                self.open_error = Some(e);
+            }
         }
         cx.notify();
     }

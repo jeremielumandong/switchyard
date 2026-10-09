@@ -72,16 +72,27 @@ fn truthy(v: Option<&str>) -> bool {
 }
 
 /// A per-connection CA written where the driver can read it (it takes a file path).
-fn ca_file(pem: &str) -> Result<std::path::PathBuf> {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    pem.hash(&mut h);
-    let path = std::env::temp_dir().join(format!("switchyard-mongo-ca-{:016x}.pem", h.finish()));
-    std::fs::write(&path, pem).map_err(|e| DbError::Tls(format!("could not stage the CA: {e}")))?;
-    Ok(path)
+/// The file has a random name, is created exclusively (never through an existing path) and
+/// is readable by this user only; it is removed when the returned handle drops, so the
+/// session keeps it for as long as its client may reconnect.
+fn ca_file(pem: &str) -> Result<tempfile::NamedTempFile> {
+    use std::io::Write;
+    let stage = |e: std::io::Error| DbError::Tls(format!("could not stage the CA: {e}"));
+    let mut f = tempfile::Builder::new()
+        .prefix("switchyard-mongo-ca-")
+        .suffix(".pem")
+        .tempfile()
+        .map_err(stage)?;
+    f.write_all(pem.as_bytes()).map_err(stage)?;
+    f.flush().map_err(stage)?;
+    Ok(f)
 }
 
-async fn client_options(cfg: &DbConfig, via: Option<&TunnelEndpoint>) -> Result<ClientOptions> {
+/// The client options, plus the staged CA file they point at (kept alive by the session).
+async fn client_options(
+    cfg: &DbConfig,
+    via: Option<&TunnelEndpoint>,
+) -> Result<(ClientOptions, Option<tempfile::NamedTempFile>)> {
     let srv = truthy(cfg.option("srv"));
     let mut o = if srv && via.is_none() {
         let host = cfg.host.trim();
@@ -134,16 +145,19 @@ async fn client_options(cfg: &DbConfig, via: Option<&TunnelEndpoint>) -> Result<
         SslMode::Prefer => srv,
         SslMode::Disable => false,
     };
+    let mut ca = None;
     o.tls = Some(if tls_on {
         let mut t = TlsOptions::default();
         if let Some(pem) = &cfg.trusted_ca_pem {
-            t.ca_file_path = Some(ca_file(pem)?);
+            let f = ca_file(pem)?;
+            t.ca_file_path = Some(f.path().to_path_buf());
+            ca = Some(f);
         }
         Tls::Enabled(t)
     } else {
         Tls::Disabled
     });
-    Ok(o)
+    Ok((o, ca))
 }
 
 impl Driver for MongoDriver {
@@ -165,7 +179,7 @@ impl Driver for MongoDriver {
         via: Option<TunnelEndpoint>,
     ) -> BoxFuture<'a, Result<Box<dyn DbSession>>> {
         Box::pin(async move {
-            let options = client_options(cfg, via.as_ref()).await?;
+            let (options, ca_file) = client_options(cfg, via.as_ref()).await?;
             let client =
                 Client::with_options(options).map_err(|e| DbError::Connect(message(&e)))?;
             let info = client
@@ -188,6 +202,7 @@ impl Driver for MongoDriver {
                 cancel: Cancel::default(),
                 version,
                 closed: false,
+                _ca_file: ca_file,
             }) as Box<dyn DbSession>)
         })
     }
@@ -236,6 +251,8 @@ pub struct MongoSession {
     cancel: Cancel,
     version: String,
     closed: bool,
+    /// The staged CA the client reads on every (re)connect; removed when the session drops.
+    _ca_file: Option<tempfile::NamedTempFile>,
 }
 
 /// The driver's error text without its `Kind: ` wrapping.
@@ -674,7 +691,7 @@ mod tests {
             host: "127.0.0.1".into(),
             port: 40000,
         };
-        let o = client_options(&cfg, Some(&via)).await.expect("options");
+        let o = client_options(&cfg, Some(&via)).await.expect("options").0;
         assert_eq!(o.direct_connection, Some(true));
         assert_eq!(
             o.hosts,
@@ -687,7 +704,7 @@ mod tests {
         assert_eq!(c.source.as_deref(), Some("shop"));
         assert!(matches!(o.tls, Some(Tls::Disabled)));
         cfg.ssl_mode = SslMode::Require;
-        let o = client_options(&cfg, None).await.expect("options");
+        let o = client_options(&cfg, None).await.expect("options").0;
         assert!(matches!(o.tls, Some(Tls::Enabled(_))));
     }
 }

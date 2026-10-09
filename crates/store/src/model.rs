@@ -717,6 +717,12 @@ impl Profile {
                 if d.server.trim().is_empty() {
                     return Err(ValidationError::new("server", "Host is required"));
                 }
+                if d.agent_access {
+                    return Err(ValidationError::new(
+                        "agent_access",
+                        "Coding agents work with SQL connections only",
+                    ));
+                }
                 if d.port == 0 {
                     return Err(ValidationError::new("port", "Port must be 1–65535"));
                 }
@@ -948,6 +954,15 @@ mod tests {
         r.agent_access = false;
         let back: DbConnection = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
         assert_eq!(back.engine, Engine::Redis);
+    }
+
+    #[test]
+    fn mongodb_has_no_agent_access() {
+        let mut m = DbConnection::new("docs", Engine::MongoDb);
+        m.server = "localhost".into();
+        assert!(Profile::Db(m.clone()).validate().is_ok());
+        m.agent_access = true;
+        assert_eq!(Profile::Db(m).validate().unwrap_err().field, "agent_access");
     }
 
     #[test]

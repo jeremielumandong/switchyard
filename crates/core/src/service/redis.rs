@@ -188,6 +188,18 @@ impl Service {
         let args = command::split(line)?;
         let slot = self.redis_slot(session)?;
         let conn = &slot.connection;
+        // KEYS is a read (read-only profiles may run it) but blocks the server while it
+        // walks every key, so Production asks first.
+        let blocks_server = command::name(&args) == "KEYS";
+        if conn.environment == EnvironmentLabel::Production && !confirmed && blocks_server {
+            return Ok(RedisOutcome::NeedsConfirmation {
+                reason: format!(
+                    "KEYS blocks {} while it walks every key; on a Production connection the \
+                     key list (SCAN) is safer.",
+                    conn.name
+                ),
+            });
+        }
         if command::classify(&args) == CommandClass::Destructive
             && conn.environment == EnvironmentLabel::Production
             && !confirmed

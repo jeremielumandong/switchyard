@@ -34,11 +34,11 @@ base64.workspace = true
 uuid.workspace = true
 flate2.workspace = true
 mongodb.workspace = true
+tempfile.workspace = true
 rusqlite = { workspace = true, features = ["column_decltype", "column_metadata"] }
 
 [dev-dependencies]
 rsa = { workspace = true, features = ["getrandom"] }
-tempfile.workspace = true
 insta.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 criterion.workspace = true
