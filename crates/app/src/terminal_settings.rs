@@ -9,7 +9,8 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Styled as _, Window, div, px,
 };
 use switchyard_core::term_settings::{
-    DEFAULT_LOG_TEMPLATE, LogFormat, TERMINAL_SETTINGS_KEY, TerminalSettings,
+    DEFAULT_LOG_TEMPLATE, HighlightColor, HighlightRule, LogFormat, TERMINAL_SETTINGS_KEY,
+    TerminalSettings,
 };
 use switchyard_core::{Command, RuntimeHandle};
 
@@ -42,7 +43,39 @@ pub struct TerminalSettingsView {
     timestamps: bool,
     folder: Entity<InputState>,
     template: Entity<InputState>,
+    copy_on_select: bool,
+    right_click_paste: bool,
+    confirm_paste: bool,
+    highlight: bool,
+    /// Comma-separated words per highlight color.
+    words: Vec<(HighlightColor, Entity<InputState>)>,
     saved: bool,
+}
+
+/// The rules' words for one color, comma-separated.
+fn words_of(rules: &[HighlightRule], color: HighlightColor) -> String {
+    rules
+        .iter()
+        .filter(|r| r.color == color)
+        .map(|r| r.word.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Rules from comma-separated words per color.
+fn rules_from(words: &[(HighlightColor, String)]) -> Vec<HighlightRule> {
+    words
+        .iter()
+        .flat_map(|(color, text)| {
+            text.split(',')
+                .map(str::trim)
+                .filter(|w| !w.is_empty())
+                .map(|w| HighlightRule {
+                    word: w.to_owned(),
+                    color: *color,
+                })
+        })
+        .collect()
 }
 
 fn input(
@@ -71,6 +104,14 @@ impl TerminalSettingsView {
                 "Default: the app's data folder / terminal-logs",
             ),
             template: input(window, cx, &s.log.template, DEFAULT_LOG_TEMPLATE),
+            copy_on_select: s.copy_on_select,
+            right_click_paste: s.right_click_paste,
+            confirm_paste: s.confirm_multiline_paste,
+            highlight: s.highlight,
+            words: HighlightColor::ALL
+                .into_iter()
+                .map(|c| (c, input(window, cx, &words_of(&s.highlight_rules, c), "none")))
+                .collect(),
             saved: false,
         }
     }
@@ -88,6 +129,16 @@ impl TerminalSettingsView {
         } else {
             template
         };
+        s.copy_on_select = self.copy_on_select;
+        s.right_click_paste = self.right_click_paste;
+        s.confirm_multiline_paste = self.confirm_paste;
+        s.highlight = self.highlight;
+        let words: Vec<(HighlightColor, String)> = self
+            .words
+            .iter()
+            .map(|(c, e)| (*c, e.read(cx).value().to_string()))
+            .collect();
+        s.highlight_rules = rules_from(&words);
         s
     }
 
@@ -252,12 +303,78 @@ impl Render for TerminalSettingsView {
                 "File name placeholders: {host} {date} {time} {datetime}. An existing file is never overwritten.",
                 &p,
             ));
+        let mouse = div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(heading("Mouse and clipboard", &p))
+            .child(
+                ui::checkbox("ts-copy-sel", self.copy_on_select, "Copy on select", &p).on_click(
+                    cx.listener(|this, _, _, cx| {
+                        this.copy_on_select = !this.copy_on_select;
+                        this.changed(cx);
+                    }),
+                ),
+            )
+            .child(
+                ui::checkbox(
+                    "ts-right-paste",
+                    self.right_click_paste,
+                    "Right click pastes",
+                    &p,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.right_click_paste = !this.right_click_paste;
+                    this.changed(cx);
+                })),
+            )
+            .child(
+                ui::checkbox(
+                    "ts-confirm-paste",
+                    self.confirm_paste,
+                    "Ask before pasting more than one line",
+                    &p,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.confirm_paste = !this.confirm_paste;
+                    this.changed(cx);
+                })),
+            );
+        let highlight = div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(heading("Keyword highlighting", &p))
+            .child(
+                ui::checkbox(
+                    "ts-highlight",
+                    self.highlight,
+                    "Color these words in output (whole words, any case; not in full-screen programs)",
+                    &p,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.highlight = !this.highlight;
+                    this.changed(cx);
+                })),
+            )
+            .when(self.highlight, |d| {
+                d.child(
+                    div().flex().flex_wrap().gap(px(10.)).children(
+                        self.words
+                            .iter()
+                            .map(|(c, e)| field(c.label(), e, 260., &p)),
+                    ),
+                )
+                .child(hint("Comma-separated words or phrases.", &p))
+            });
         div()
             .flex()
             .flex_col()
             .gap(px(16.))
             .p(px(18.))
             .child(logging)
+            .child(mouse)
+            .child(highlight)
             .child(
                 div()
                     .flex()
@@ -277,4 +394,21 @@ impl Render for TerminalSettingsView {
 /// The page body for the settings overlay.
 pub fn element(view: &Entity<TerminalSettingsView>) -> AnyElement {
     view.clone().into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn highlight_words_round_trip_through_the_form() {
+        let rules = switchyard_core::term_settings::default_highlight_rules();
+        let words: Vec<(HighlightColor, String)> = HighlightColor::ALL
+            .into_iter()
+            .map(|c| (c, words_of(&rules, c)))
+            .collect();
+        assert_eq!(words[0].1, "error, errors, fail, failed, failure, fatal, denied");
+        assert_eq!(rules_from(&words), rules);
+        assert!(rules_from(&[(HighlightColor::Red, " , ,".into())]).is_empty());
+    }
 }
