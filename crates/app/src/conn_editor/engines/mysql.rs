@@ -1,4 +1,4 @@
-//! MySQL (and MariaDB).
+//! MySQL and MariaDB.
 
 use switchyard_core::db::{DbAuthMethod, Engine};
 use switchyard_core::store::DbConnection;
