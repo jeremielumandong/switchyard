@@ -770,10 +770,7 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 - UX pass: Headers/Console/Trace/Tests response tabs copy via buttons only (no drag-select);
   `pm.sendRequest` inside runs skips the Production check; env dropdown doesn't show labels;
   no window-level UI tests for the new Workbench interactions.
-- Agent actual plans: approval prompt in the app for `explain` with ANALYZE / STATISTICS XML
-  from an agent (the MCP server refuses them until then).
-- Assistant panel: markdown is prose + code blocks only (no bold/lists/tables); GPUI tests
-  for the panel and Assistant settings.
+- Assistant panel: GPUI tests for the panel and Assistant settings.
 - Oracle: EXPLAIN PLAN / DBMS_XPLAN → `PlanNode`; V$SQL workload view; arm64 Linux archive;
   CI job with the `oracle` compose profile + Instant Client; TCPS / wallet sign-in.
 - MySQL: `EXPLAIN FORMAT=JSON` / `EXPLAIN ANALYZE` → `PlanNode`; performance_schema digest
@@ -807,3 +804,8 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   sites) stays at 100 %; route them through `appearance::scaled` or rem sizes. Grid column
   widths scale only for results opened after a zoom change. No quit (Cmd+Q) action exists
   yet to hook the unsaved-files dialog into; window close is covered.
+- Agent actual plans (done: approval card in the app, `swy mcp` captures after approval): the
+  approved plan is not opened in the app's plan view; no "always allow" per statement.
+- Assistant markdown (done: bold, italic, inline code, headings, lists, tables, quotes,
+  links): answers are re-parsed on every render (cache per item if long transcripts lag);
+  images show their alt text; wide tables wrap cells instead of scrolling sideways.

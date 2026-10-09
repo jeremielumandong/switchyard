@@ -45,6 +45,7 @@ use crate::runtime::EventSender;
 
 mod activity;
 pub mod agent;
+pub mod agent_plan;
 pub mod agent_ssh;
 mod assistant;
 mod redis;
@@ -388,7 +389,10 @@ impl Service {
                     tokio::spawn(crate::handoff::serve(
                         crate::handoff::handoff_file(&data_dir),
                         self.events.clone(),
-                        Some(self.agent_responder()),
+                        Some(crate::handoff::AgentResponders {
+                            command: self.agent_responder(),
+                            plan: self.plan_approver(),
+                        }),
                     ));
                     continue;
                 }
