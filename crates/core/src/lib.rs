@@ -18,9 +18,9 @@ pub mod ssh_import;
 pub mod terminals;
 
 pub use bus::{
-    AgentApproval, Command, Event, FetchLimit, FsOp, FsRef, OnConflict, PromptAnswer, QueryEvent,
-    QueryId, RequestId, SaveError, SessionContext, SessionId, StatementRequest, TermId, TermStatus,
-    TermTarget, TextFile, TransferError,
+    AgentApproval, ApprovalKind, Command, Event, FetchLimit, FsOp, FsRef, OnConflict, PromptAnswer,
+    QueryEvent, QueryId, RequestId, SaveError, SessionContext, SessionId, StatementRequest, TermId,
+    TermStatus, TermTarget, TextFile, TransferError,
 };
 pub use error::{CoreError, Result};
 pub use runtime::{Core, EventReceiver, EventSender, RuntimeHandle};

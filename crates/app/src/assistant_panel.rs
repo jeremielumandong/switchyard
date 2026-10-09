@@ -9,8 +9,8 @@
 //! Workbench. Those runs reach no database connection.
 //!
 //! The database conversation follows the active tab: a SQL editor, a Redis browser or an
-//! SSH terminal. Commands an agent wants to run on a Host show here as approval cards and
-//! run only when the user clicks Run.
+//! SSH terminal. Commands an agent wants to run on a Host, and actual plans it asks for, show
+//! here as approval cards and run only when the user clicks Run.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -25,9 +25,11 @@ use gpui_kit::{
 use switchyard_core::agents::{AgentEvent, AgentKind, RunSummary};
 use switchyard_core::db::Engine;
 use switchyard_core::store::{DbConnection, EnvironmentLabel, Host, ProfileId};
-use switchyard_core::{AgentApproval, Command, RuntimeHandle};
+use switchyard_core::{AgentApproval, ApprovalKind, Command, RuntimeHandle};
 
 use crate::api::generated::{GeneratedRequest, http_requests};
+use crate::chat_markdown::{self, Block, Inline};
+use crate::rich_text::RichText;
 use crate::theme::{MONO, palette};
 use crate::ui::{self, Kind};
 
@@ -94,6 +96,28 @@ fn classify(sql: &str) -> SuggestionKind {
     }
 }
 
+/// The line above an approval card's command or statement.
+fn approval_title(a: &AgentApproval) -> String {
+    let prod = if a.environment == EnvironmentLabel::Production {
+        " (Production)"
+    } else {
+        ""
+    };
+    let agent = a.agent.display_name();
+    match a.kind {
+        ApprovalKind::SshCommand => format!("{agent} wants to run on {}{prod}:", a.target_name),
+        ApprovalKind::ActualPlan { writes } => format!(
+            "{agent} wants an actual plan on {}{prod}. It runs the statement{}:",
+            a.target_name,
+            if writes {
+                " and rolls it back (triggers and sequences still fire)"
+            } else {
+                ""
+            }
+        ),
+    }
+}
+
 /// The ```sql blocks of `text` (also unlabelled blocks that look like SQL).
 pub fn suggestions(text: &str) -> Vec<Suggestion> {
     let mut out = Vec::new();
@@ -127,46 +151,160 @@ pub fn suggestions(text: &str) -> Vec<Suggestion> {
     out
 }
 
-/// A run of an answer: prose, or the body of a fenced code block (fences dropped).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Segment {
-    /// Text outside code fences, trimmed.
-    Prose(String),
-    /// The lines between a pair of fences.
-    Code(String),
-}
-
-/// Splits `text` at its code fences; an unclosed fence runs to the end (still streaming).
-pub fn segments(text: &str) -> Vec<Segment> {
-    let mut out = Vec::new();
-    let mut buf: Vec<&str> = Vec::new();
-    let mut in_code = false;
-    let flush = |buf: &mut Vec<&str>, code: bool, out: &mut Vec<Segment>| {
-        let joined = buf.join("\n");
-        let body = if code {
-            joined.trim_end()
-        } else {
-            joined.trim()
-        };
-        if !body.is_empty() {
-            out.push(if code {
-                Segment::Code(body.to_owned())
-            } else {
-                Segment::Prose(body.to_owned())
+/// One selectable run of styled markdown text.
+fn rich(id: String, text: Inline, order: u64, p: &crate::theme::Palette) -> RichText {
+    use gpui_kit::{FontStyle, HighlightStyle, StrikethroughStyle, UnderlineStyle};
+    let mut highlights = Vec::new();
+    let mut fonts = Vec::new();
+    let mut links = Vec::new();
+    for (range, m) in text.spans {
+        let mut h = HighlightStyle::default();
+        if m.bold {
+            h.font_weight = Some(FontWeight::BOLD);
+        }
+        if m.italic {
+            h.font_style = Some(FontStyle::Italic);
+        }
+        if m.strike {
+            h.strikethrough = Some(StrikethroughStyle {
+                thickness: px(1.),
+                color: Some(p.fg2),
             });
         }
-        buf.clear();
-    };
-    for l in text.lines() {
-        if l.trim_start().starts_with("```") {
-            flush(&mut buf, in_code, &mut out);
-            in_code = !in_code;
-        } else {
-            buf.push(l);
+        if m.code {
+            h.background_color = Some(p.surface);
+            fonts.push((range.clone(), SharedString::from(MONO)));
         }
+        if let Some(url) = m.link {
+            h.color = Some(p.acc);
+            h.underline = Some(UnderlineStyle {
+                thickness: px(1.),
+                color: Some(p.acc),
+                wavy: false,
+            });
+            links.push((range.clone(), url));
+        }
+        highlights.push((range, h));
     }
-    flush(&mut buf, in_code, &mut out);
-    out
+    RichText::new(SharedString::from(id), text.text, highlights, fonts, links).document_order(order)
+}
+
+/// One block of an answer, its text selectable in reading order (`next` numbers the runs).
+fn markdown_block(
+    block: Block,
+    id: &str,
+    next: &dyn Fn() -> u64,
+    p: &crate::theme::Palette,
+) -> gpui_kit::AnyElement {
+    use gpui_kit::IntoElement as _;
+    match block {
+        Block::Paragraph(text) => div()
+            .text_size(px(12.5))
+            .whitespace_normal()
+            .child(rich(id.to_owned(), text, next(), p))
+            .into_any_element(),
+        Block::Heading { level, text } => div()
+            .pt(px(if level <= 2 { 4. } else { 2. }))
+            .text_size(px(match level {
+                1 => 15.,
+                2 => 14.,
+                _ => 13.,
+            }))
+            .font_weight(FontWeight::SEMIBOLD)
+            .whitespace_normal()
+            .child(rich(id.to_owned(), text, next(), p))
+            .into_any_element(),
+        Block::Item {
+            depth,
+            marker,
+            text,
+        } => div()
+            .flex()
+            .gap(px(6.))
+            .pl(px(4. + 16. * depth as f32))
+            .text_size(px(12.5))
+            .child(
+                div()
+                    .flex_none()
+                    .min_w(px(12.))
+                    .text_color(p.fg2)
+                    .child(marker),
+            )
+            .child(div().flex_1().min_w_0().whitespace_normal().child(rich(
+                id.to_owned(),
+                text,
+                next(),
+                p,
+            )))
+            .into_any_element(),
+        Block::Code { body, .. } => div()
+            .px(px(8.))
+            .py(px(6.))
+            .rounded(px(6.))
+            .bg(p.surface)
+            .font_family(MONO)
+            .text_size(px(11.5))
+            .whitespace_normal()
+            .child(
+                SelectableText::new(SharedString::from(id.to_owned()), body).document_order(next()),
+            )
+            .into_any_element(),
+        Block::Table { head, rows } => {
+            let cols = head
+                .len()
+                .max(rows.iter().map(Vec::len).max().unwrap_or(0))
+                .max(1);
+            let row = |cells: Vec<Inline>, r: usize, header: bool| {
+                let mut line = div().flex().w_full().border_color(p.bd);
+                if r > 0 {
+                    line = line.border_t_1();
+                }
+                if header {
+                    line = line.bg(p.surface).font_weight(FontWeight::SEMIBOLD);
+                }
+                let mut cells = cells.into_iter();
+                for c in 0..cols {
+                    let cell = cells.next().unwrap_or_default();
+                    let mut d = div()
+                        .flex_1()
+                        .min_w_0()
+                        .px(px(6.))
+                        .py(px(4.))
+                        .whitespace_normal()
+                        .border_color(p.bd)
+                        .child(rich(format!("{id}-{r}-{c}"), cell, next(), p));
+                    if c > 0 {
+                        d = d.border_l_1();
+                    }
+                    line = line.child(d);
+                }
+                line
+            };
+            let mut table = div()
+                .flex()
+                .flex_col()
+                .rounded(px(6.))
+                .border_1()
+                .border_color(p.bd)
+                .overflow_hidden()
+                .text_size(px(12.))
+                .child(row(head, 0, true));
+            for (r, cells) in rows.into_iter().enumerate() {
+                table = table.child(row(cells, r + 1, false));
+            }
+            table.into_any_element()
+        }
+        Block::Quote(text) => div()
+            .pl(px(8.))
+            .border_l_2()
+            .border_color(p.bd2)
+            .text_color(p.fg2)
+            .text_size(px(12.5))
+            .whitespace_normal()
+            .child(rich(id.to_owned(), text, next(), p))
+            .into_any_element(),
+        Block::Rule => div().h(px(1.)).bg(p.bd).into_any_element(),
+    }
 }
 
 /// What the assistant is asked about: a database connection or an SSH Host.
@@ -610,7 +748,7 @@ impl AssistantPanel {
         cx.notify();
     }
 
-    /// A command an agent wants to run on a Host.
+    /// A command an agent wants to run on a Host, or an actual plan it asks for.
     pub fn on_approval(&mut self, approval: AgentApproval, cx: &mut Context<Self>) {
         self.approvals.retain(|a| a.id != approval.id);
         self.approvals.push(approval);
@@ -659,12 +797,12 @@ impl AssistantPanel {
                     .border_1()
                     .border_color(if prod { p.prod } else { p.acc })
                     .bg(if prod { p.prod_bg } else { p.surface })
-                    .child(div().text_size(px(11.5)).text_color(p.fg2).child(format!(
-                        "{} wants to run on {}{}:",
-                        a.agent.display_name(),
-                        a.host_name,
-                        if prod { " (Production)" } else { "" }
-                    )))
+                    .child(
+                        div()
+                            .text_size(px(11.5))
+                            .text_color(p.fg2)
+                            .child(approval_title(a)),
+                    )
                     .child(
                         div()
                             .px(px(7.))
@@ -673,7 +811,7 @@ impl AssistantPanel {
                             .bg(p.bg)
                             .font_family(MONO)
                             .text_size(px(12.))
-                            .child(a.command.clone()),
+                            .child(a.text.clone()),
                     )
                     .child(
                         div()
@@ -1072,10 +1210,13 @@ impl Render for AssistantPanel {
         }
         // Every transcript string is one run of the window's text selection: a drag can cross
         // runs and the copy (Ctrl/Cmd+C) joins them in reading order.
-        let mut order = 0u64;
-        let mut sel = |id: String, text: String| {
-            order += 1;
-            SelectableText::new(SharedString::from(id), text).document_order(order)
+        let order = std::cell::Cell::new(0u64);
+        let next = || {
+            order.set(order.get() + 1);
+            order.get()
+        };
+        let sel = |id: String, text: String| {
+            SelectableText::new(SharedString::from(id), text).document_order(next())
         };
         let turns = self.turns.len();
         for (ti, turn) in self.turns.iter().enumerate() {
@@ -1163,23 +1304,9 @@ impl Render for AssistantPanel {
             for (ii, item) in turn.items.iter().enumerate() {
                 match item {
                     Item::Text(s) => {
-                        for (si, seg) in segments(s).into_iter().enumerate() {
+                        for (si, block) in chat_markdown::parse(s).into_iter().enumerate() {
                             let id = format!("asst-x-{ti}-{ii}-{si}");
-                            t = t.child(match seg {
-                                Segment::Prose(s) => div()
-                                    .text_size(px(12.5))
-                                    .whitespace_normal()
-                                    .child(sel(id, s)),
-                                Segment::Code(s) => div()
-                                    .px(px(8.))
-                                    .py(px(6.))
-                                    .rounded(px(6.))
-                                    .bg(p.surface)
-                                    .font_family(MONO)
-                                    .text_size(px(11.5))
-                                    .whitespace_normal()
-                                    .child(sel(id, s)),
-                            });
+                            t = t.child(markdown_block(block, &id, &next, &p));
                         }
                     }
                     Item::Thinking(s) if last && turn.done.is_none() => {
@@ -1472,18 +1599,27 @@ mod tests {
 
     #[test]
     fn splits_prose_and_code() {
-        let s = segments(
-            "Add an index:\n\n```sql\nCREATE INDEX i ON t (a);\n```\nThen\n```\nANALYZE t;",
-        );
+        let text = "Add an index:\n\n```sql\nCREATE INDEX i ON t (a);\n```\nThen\n```\nANALYZE t;";
+        let blocks = chat_markdown::parse(text);
         assert_eq!(
-            s,
+            blocks,
             [
-                Segment::Prose("Add an index:".into()),
-                Segment::Code("CREATE INDEX i ON t (a);".into()),
-                Segment::Prose("Then".into()),
-                Segment::Code("ANALYZE t;".into()),
+                Block::Paragraph(Inline::plain("Add an index:")),
+                Block::Code {
+                    lang: "sql".into(),
+                    body: "CREATE INDEX i ON t (a);".into()
+                },
+                Block::Paragraph(Inline::plain("Then")),
+                Block::Code {
+                    lang: String::new(),
+                    body: "ANALYZE t;".into()
+                },
             ]
         );
+        // The suggestion cards read the same fences.
+        let s = suggestions(text);
+        assert_eq!(s.len(), 2);
+        assert_eq!(s[0].sql, "CREATE INDEX i ON t (a);");
     }
 
     #[test]
