@@ -20,6 +20,8 @@ pub enum Engine {
     Oracle,
     /// MySQL (and MariaDB, which speaks the same protocol).
     MySql,
+    /// MongoDB: documents queried with a mongosh-style shell syntax.
+    MongoDb,
 }
 
 impl Engine {
@@ -32,6 +34,7 @@ impl Engine {
             Engine::Snowflake => "Snowflake",
             Engine::Oracle => "Oracle",
             Engine::MySql => "MySQL",
+            Engine::MongoDb => "MongoDB",
         }
     }
 
@@ -44,6 +47,7 @@ impl Engine {
             Engine::Snowflake => "SF",
             Engine::Oracle => "OR",
             Engine::MySql => "MY",
+            Engine::MongoDb => "MG",
         }
     }
 
@@ -55,13 +59,22 @@ impl Engine {
             Engine::D1 | Engine::Snowflake => 443,
             Engine::Oracle => 1521,
             Engine::MySql => 3306,
+            Engine::MongoDb => 27017,
         }
     }
 
     /// Whether the engine supports interactive transactions (BEGIN ... COMMIT across
-    /// requests). D1's and Snowflake's HTTP APIs run every request on its own.
+    /// requests). D1's and Snowflake's HTTP APIs run every request on its own; MongoDB
+    /// statements are single operations (multi-document transactions need a replica set
+    /// and are not offered yet).
     pub fn supports_transactions(self) -> bool {
-        !matches!(self, Engine::D1 | Engine::Snowflake)
+        !matches!(self, Engine::D1 | Engine::Snowflake | Engine::MongoDb)
+    }
+
+    /// Whether statements are documents and shell calls rather than SQL (MongoDB): SQL
+    /// parsing, formatting and SQL-only tools (plans, agents) do not apply.
+    pub fn is_document_store(self) -> bool {
+        matches!(self, Engine::MongoDb)
     }
 
     /// Whether the engine is reached through a cloud HTTP API (account and database ids

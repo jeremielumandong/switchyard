@@ -122,6 +122,9 @@ oracle = "0.6"
 # MySQL / MariaDB: pure-Rust wire protocol on tokio + rustls (MIT OR Apache-2.0); no
 # native library. `ring` matches the rest of the tree; roots come from the OS store.
 mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust", "rustls-tls", "ring", "tls12"] }
+# MongoDB: the official driver (Apache-2.0), rustls with ring like the rest of the tree;
+# `dns-resolver` resolves mongodb+srv:// seed lists. See DECISIONS 2026-10-08.
+mongodb = "3.9"
 # Snowflake key-pair auth: parse PKCS#1 / (encrypted) PKCS#8 keys; ring signs.
 rsa = { version = "0.9", default-features = false, features = ["std", "pem", "pkcs5", "u64_digit"] }
 sxd-document = "0.3"

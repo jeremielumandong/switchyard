@@ -1,0 +1,25 @@
+---
+source: crates/store/src/snippets.rs
+expression: rendered
+---
+-- Find documents (sel) [builtin:mongodb:sel]
+db.${1:collection}.find({ ${2:field}: ${3:value} }).limit(${4:100})
+
+-- Insert document (ins) [builtin:mongodb:ins]
+db.${1:collection}.insertOne({ ${2:field}: ${3:value} })
+
+-- Update with filter (upd) [builtin:mongodb:upd]
+db.${1:collection}.updateOne(
+  { ${2:_id}: ${3:value} },
+  { $set: { ${4:field}: ${5:value} } }
+)
+
+-- Aggregate (group and count) (agg) [builtin:mongodb:agg]
+db.${1:collection}.aggregate([
+  { $match: { ${2:field}: ${3:value} } },
+  { $group: { _id: "$${4:key}", count: { $sum: 1 } } },
+  { $sort: { count: -1 } }
+])
+
+-- Create index (idx) [builtin:mongodb:idx]
+db.${1:collection}.createIndex({ ${2:field}: 1 })

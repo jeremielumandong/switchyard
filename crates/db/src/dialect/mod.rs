@@ -1,6 +1,7 @@
 //! SQL dialects: identifier quoting, script splitting, parameters, row limits, literals.
 
 pub mod lexer;
+pub mod mongo;
 pub mod mysql;
 pub mod oracle;
 pub mod postgres;
@@ -192,6 +193,24 @@ pub trait Dialect: Send + Sync {
         &[]
     }
 
+    /// Folder label in the schema explorer for objects of `kind` (MongoDB calls tables
+    /// collections).
+    fn folder_label(&self, kind: ObjectKind) -> &'static str {
+        kind.folder_label()
+    }
+
+    /// Classify a statement or script without `sqlparser`, for engines whose statements
+    /// are not SQL. `None` (the default) parses it as SQL.
+    fn classify(&self, _sql: &str) -> Option<crate::guard::Classification> {
+        None
+    }
+
+    /// Check a data-view filter for engines whose filters are not SQL expressions.
+    /// `None` (the default) checks it as one SQL expression.
+    fn check_filter(&self, _cond: &str) -> Option<Result<(), String>> {
+        None
+    }
+
     /// Whether the engine can list an object's dependencies (DBX-5a).
     fn supports_dependencies(&self) -> bool {
         true
@@ -341,6 +360,7 @@ pub fn dialect_for(engine: Engine) -> &'static dyn Dialect {
         Engine::Snowflake => &snowflake::SnowflakeDialect,
         Engine::Oracle => &oracle::OracleDialect,
         Engine::MySql => &mysql::MySqlDialect,
+        Engine::MongoDb => &mongo::MongoDialect,
     }
 }
 

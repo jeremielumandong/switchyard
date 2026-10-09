@@ -293,6 +293,7 @@ impl Service {
         );
         drivers.insert(Engine::SqlServer, Arc::new(MssqlDriver));
         drivers.insert(Engine::MySql, Arc::new(switchyard_db::mysql::MySqlDriver));
+        drivers.insert(Engine::MongoDb, Arc::new(switchyard_db::mongo::MongoDriver));
         for (engine, d) in config.extra_drivers {
             drivers.insert(engine, d);
         }
