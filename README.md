@@ -9,6 +9,23 @@ Written in Rust on [GPUI](https://www.gpui.rs/) and
 [gpui-component](https://github.com/longbridge/gpui-kit). Runs on macOS, Windows and Linux.
 Licensed under Apache-2.0.
 
+## Quick install (Linux x86_64)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jeremielumandong/switchyard/main/install.sh | sh
+```
+
+Downloads the latest published release, verifies its SHA-256 checksum, and installs
+Switchyard with a desktop launcher and the `swy` CLI. No Rust compiler or sudo is needed.
+See [Install (Linux)](#install-linux) for requirements, updates and uninstalling.
+
+## Download (Windows x64)
+
+[Download the latest Switchyard release for Windows](https://github.com/jeremielumandong/switchyard/releases/latest/download/Switchyard-windows-x64-setup.exe)
+
+Run the downloaded setup program. It installs for your user only, so it needs no
+administrator rights.
+
 ## Features
 
 ### One connection model
@@ -229,7 +246,7 @@ then the Driver Manager detects it, explains why, installs it and retries the co
 
 ## Status
 
-Switchyard is pre-beta (v0.1.6). Not finished yet (see [`PLAN.md`](PLAN.md)):
+Switchyard is pre-beta (v0.1.7). Not finished yet (see [`PLAN.md`](PLAN.md)):
 
 - FTP / FTPS, corporate CA import and per-connection certificate pinning.
 - Query plans and workload stats for Oracle and Snowflake; in-app approval for agent actual plans.
@@ -238,6 +255,57 @@ Switchyard is pre-beta (v0.1.6). Not finished yet (see [`PLAN.md`](PLAN.md)):
 - Terminal extras (logging, macros, key generator, PuTTY/MobaXterm import, Telnet, SCP).
 - Packaging: MSI/winget, `.deb`/`.rpm`/AUR, Homebrew cask, auto-update, portable mode,
   performance gates in CI.
+
+<a id="install-linux"></a>
+## Install (Linux)
+
+Install the latest published Linux x86_64 release:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/jeremielumandong/switchyard/main/install.sh | sh
+```
+
+The installer ([`install.sh`](install.sh)) downloads the AppImage from this repository's
+GitHub Releases, checks its SHA-256 checksum, and installs it for your user:
+
+| What | Where |
+| --- | --- |
+| The app | `~/Applications/Switchyard.AppImage` |
+| Launcher command | `~/.local/bin/switchyard` |
+| `swy` CLI | `~/.local/bin/swy` (a link to the AppImage) |
+| Desktop entry and icon | `~/.local/share/applications/switchyard.desktop`, `~/.local/share/icons/hicolor` |
+
+No Rust compiler or sudo is needed, but the AppImage uses the system's graphics stack:
+a working GPU driver with the Vulkan loader, plus `libxkbcommon`, `libxkbcommon-x11`,
+`libwayland-client`, `libxcb`, `fontconfig` and `freetype`. Most desktops already have
+them. On Ubuntu or Debian, install any that are missing with
+`sudo apt install libvulkan1 libxkbcommon0 libxkbcommon-x11-0 libwayland-client0 libxcb1 libfontconfig1 libfreetype6`.
+The release is built on Ubuntu 22.04, so it needs glibc 2.35 or newer. Make sure
+`~/.local/bin` is on your `PATH` so the `switchyard` and `swy` commands resolve; the
+installer warns if it is not.
+
+- **Update:** quit Switchyard and run the same command again. The previous version is
+  kept as `Switchyard.AppImage.bak`. The installer won't replace an AppImage that is
+  running (it may have open transactions or unsaved edits) unless you add
+  `--stop-running`: `curl -fsSL …/install.sh | sh -s -- --stop-running`.
+- **Pick a release:** `curl -fsSL …/install.sh | SWITCHYARD_VERSION=v0.1.7 sh`.
+- **Install somewhere else:** set `SWITCHYARD_APPIMAGE=/absolute/path/Switchyard.AppImage`.
+- **Uninstall:** `curl -fsSL …/install.sh | sh -s -- --uninstall`, or
+  `./install.sh --uninstall` from a checkout. Your connections, history and settings in
+  `~/.local/share/switchyard` are kept (delete that folder yourself to remove them);
+  passwords stay in your keychain or the Switchyard vault.
+
+To build and install from a source checkout instead (needs Rust and the build packages
+under [Quick start](#quick-start)):
+
+```sh
+./install.sh --build                         # build the AppImage, then install it
+./install.sh dist/Switchyard-0.1.7-x86_64.AppImage   # install an AppImage you already have
+./install.sh --uninstall
+```
+
+`packaging/linux/build-appimage.sh` only builds, into `dist/`. Other architectures than
+x86_64 have no release AppImage; use `--build` there.
 
 ## Quick start
 
