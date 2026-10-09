@@ -22,19 +22,18 @@ use rustls::pki_types::pem::PemObject as _;
 use secrecy::{ExposeSecret as _, SecretString};
 use suppaftp::list::File as ListFile;
 use suppaftp::list::{ListParser, PosixPexQuery};
-use suppaftp::tokio::{
-    AsyncRustlsConnector, AsyncRustlsStream, ImplAsyncFtpStream, TransferStream,
-};
+use suppaftp::tokio::{ImplAsyncFtpStream, TransferStream};
 use suppaftp::types::FileType;
 use suppaftp::{FtpError, Mode, Status};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::fs::{EntryKind, FileEntry, FsError, FsReader, FsWriter, RemoteFs, sort_entries};
+use crate::ftp_tls::{FtpTlsConnector, FtpTlsStream};
 use crate::sftp::posix;
 
 /// A control connection. Plain FTP uses the same type and simply never starts TLS.
-type Ctl = ImplAsyncFtpStream<AsyncRustlsStream>;
-type Transfer = TransferStream<AsyncRustlsStream>;
+type Ctl = ImplAsyncFtpStream<FtpTlsStream>;
+type Transfer = TransferStream<FtpTlsStream>;
 
 /// How long a finished transfer waits for the server to acknowledge `QUIT`.
 const QUIT_TIMEOUT: Duration = Duration::from_secs(2);
@@ -355,44 +354,88 @@ impl FtpFs {
     }
 }
 
+/// Connect to one address and start TLS as configured. Only failing to reach `addr` is
+/// [`FsError::Io`]; TLS and protocol errors are [`FsError::Remote`].
+async fn establish(
+    cfg: &FtpConfig,
+    addr: SocketAddr,
+    connector: &impl Fn() -> Result<FtpTlsConnector, FsError>,
+) -> Result<Ctl, FsError> {
+    let unreachable = |e: FtpError| match e {
+        FtpError::ConnectionError(io) => FsError::Io(io),
+        other => err(other),
+    };
+    let ctl = match cfg.security {
+        FtpSecurity::Implicit => {
+            let mut ctl = Ctl::connect_secure_implicit(addr, connector()?, &cfg.host)
+                .await
+                .map_err(unreachable)?;
+            // Unlike `into_secure`, this does not protect the data connections, which
+            // suppaftp still wraps in TLS: ask for that (RFC 4217).
+            for cmd in ["PBSZ 0", "PROT P"] {
+                ctl.custom_command(cmd, &[Status::CommandOk])
+                    .await
+                    .map_err(protocol)?;
+            }
+            ctl
+        }
+        FtpSecurity::None | FtpSecurity::Explicit => {
+            let tcp = tokio::net::TcpStream::connect(addr).await?;
+            let ctl = Ctl::connect_with_stream(tcp).await.map_err(protocol)?;
+            if cfg.security == FtpSecurity::Explicit {
+                ctl.into_secure(connector()?, &cfg.host)
+                    .await
+                    .map_err(protocol)?
+            } else {
+                ctl
+            }
+        }
+    };
+    Ok(ctl)
+}
+
+/// Connect to the first of `addrs` that answers.
+async fn reach(
+    cfg: &FtpConfig,
+    addrs: &[SocketAddr],
+    connector: &impl Fn() -> Result<FtpTlsConnector, FsError>,
+) -> Result<(Ctl, SocketAddr), FsError> {
+    let mut last = None;
+    for &addr in addrs {
+        match establish(cfg, addr, connector).await {
+            Ok(ctl) => return Ok((ctl, addr)),
+            // Nothing listening there: the next address may answer.
+            Err(FsError::Io(e)) => last = Some(e),
+            Err(e) => return Err(e),
+        }
+    }
+    Err(match last {
+        Some(e) => FsError::Io(e),
+        None => FsError::Remote(format!("{} did not resolve", cfg.host)),
+    })
+}
+
+/// An error once connected: never "unreachable", so no other address is tried.
+fn protocol(e: FtpError) -> FsError {
+    match err(e) {
+        FsError::Io(io) => FsError::Remote(io.to_string()),
+        other => other,
+    }
+}
+
 /// Open, secure, log in and switch to binary.
 async fn open(cfg: &FtpConfig, tls: Option<&Arc<rustls::ClientConfig>>) -> Result<Ctl, FsError> {
     let connector = || {
-        tls.map(|t| AsyncRustlsConnector::from(tokio_rustls::TlsConnector::from(t.clone())))
+        tls.map(|t| FtpTlsConnector::new(t.clone()))
             .ok_or_else(|| FsError::Remote("TLS is not configured".into()))
     };
     let work = async {
-        let addr: SocketAddr = tokio::net::lookup_host((cfg.host.as_str(), cfg.port))
+        // Try every address the name resolves to: `localhost` is often ::1 first, while
+        // the server may listen on 127.0.0.1 only.
+        let addrs: Vec<SocketAddr> = tokio::net::lookup_host((cfg.host.as_str(), cfg.port))
             .await?
-            .next()
-            .ok_or_else(|| FsError::Remote(format!("{} did not resolve", cfg.host)))?;
-        let mut ctl = match cfg.security {
-            FtpSecurity::Implicit => {
-                let mut ctl = Ctl::connect_secure_implicit(addr, connector()?, &cfg.host)
-                    .await
-                    .map_err(err)?;
-                // Unlike `into_secure`, this does not protect the data connections, which
-                // suppaftp still wraps in TLS: ask for that (RFC 4217).
-                ctl.custom_command("PBSZ 0", &[Status::CommandOk])
-                    .await
-                    .map_err(err)?;
-                ctl.custom_command("PROT P", &[Status::CommandOk])
-                    .await
-                    .map_err(err)?;
-                ctl
-            }
-            FtpSecurity::None | FtpSecurity::Explicit => {
-                let tcp = tokio::net::TcpStream::connect(addr).await?;
-                let ctl = Ctl::connect_with_stream(tcp).await.map_err(err)?;
-                if cfg.security == FtpSecurity::Explicit {
-                    ctl.into_secure(connector()?, &cfg.host)
-                        .await
-                        .map_err(err)?
-                } else {
-                    ctl
-                }
-            }
-        };
+            .collect();
+        let (mut ctl, addr) = reach(cfg, &addrs, &connector).await?;
         ctl = match cfg.mode {
             FtpDataMode::Active => ctl.active_mode(ACTIVE_TIMEOUT),
             FtpDataMode::Passive => {
@@ -780,6 +823,29 @@ mod tests {
         let m = parse_line("type=file;size=3;modify=20261009120000; c.bin", true).unwrap();
         assert_eq!((m.name(), m.size()), ("c.bin", 3));
         assert!(parse_line("type=cdir;modify=20261009120000; /home/x", true).is_none());
+    }
+
+    /// `localhost` can resolve to ::1 first while the server listens on 127.0.0.1 only
+    /// (GitHub's runners): the next address is tried.
+    #[tokio::test]
+    async fn tries_every_resolved_address() {
+        use tokio::io::AsyncWriteExt as _;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            s.write_all(b"220 ready\r\n").await.unwrap();
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        });
+        let mut cfg = FtpConfig::new("localhost", port, "u", SecretString::from("p"));
+        cfg.security = FtpSecurity::None;
+        let addrs: Vec<SocketAddr> = vec![
+            format!("[::1]:{port}").parse().unwrap(),
+            format!("127.0.0.1:{port}").parse().unwrap(),
+        ];
+        let no_tls = || Err(FsError::Remote("no TLS".into()));
+        let (_, addr) = reach(&cfg, &addrs, &no_tls).await.unwrap();
+        assert_eq!(addr, addrs[1]);
     }
 
     #[test]
