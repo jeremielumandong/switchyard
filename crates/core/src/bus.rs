@@ -108,6 +108,17 @@ pub enum PromptAnswer {
     Cancel,
 }
 
+/// Session logging state of a terminal (MX-3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TermLogState {
+    /// Output is being written to this file.
+    Started(std::path::PathBuf),
+    /// Logging stopped.
+    Stopped,
+    /// Logging could not start or stopped after a write error.
+    Failed(String),
+}
+
 /// Connection state of an SSH terminal.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TermStatus {
@@ -687,6 +698,18 @@ pub enum Command {
     },
     /// Retry a dropped SSH terminal now instead of waiting for the backoff.
     ReconnectTerminal {
+        /// Terminal.
+        term: TermId,
+    },
+    /// Log a terminal's output to a new file ([`Event::TerminalLog`]).
+    StartTerminalLog {
+        /// Terminal.
+        term: TermId,
+        /// Format, folder and file name.
+        settings: crate::term_settings::LogSettings,
+    },
+    /// Stop logging a terminal ([`Event::TerminalLog`]).
+    StopTerminalLog {
         /// Terminal.
         term: TermId,
     },
@@ -1274,6 +1297,13 @@ pub enum Event {
     TerminalBell {
         /// Terminal.
         term: TermId,
+    },
+    /// A terminal's session log started, stopped or failed.
+    TerminalLog {
+        /// Terminal.
+        term: TermId,
+        /// New state.
+        state: TermLogState,
     },
     /// The program asked to copy text (OSC 52).
     TerminalClipboard {

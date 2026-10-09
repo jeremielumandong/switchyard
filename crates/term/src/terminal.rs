@@ -18,6 +18,8 @@ use alacritty_terminal::term::search::{Match, RegexSearch};
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, CursorShape as AlacCursorShape, NamedColor, Processor};
 
+use crate::log::SessionLog;
+
 /// Default scrollback, in lines.
 pub const DEFAULT_SCROLLBACK: usize = 10_000;
 
@@ -39,6 +41,8 @@ pub enum TermEvent {
     Bell,
     /// The program asked to copy text to the clipboard (OSC 52).
     Clipboard(String),
+    /// Writing the session log failed; logging stopped.
+    LogFailed(String),
 }
 
 /// Receives terminal events. Called with the terminal locked: it must not lock it again.
@@ -231,6 +235,10 @@ struct Shared {
     term: FairMutex<Term<Listener>>,
     dirty: AtomicBool,
     sink: EventSink,
+    /// Session log fed with the program's output (MX-3); `logging` mirrors `is_some`
+    /// so the feeder skips the lock when there is none.
+    log: std::sync::Mutex<Option<SessionLog>>,
+    logging: AtomicBool,
 }
 
 /// The UI-side handle. Cheap to clone.
@@ -273,6 +281,8 @@ pub fn new_terminal(size: TermSize, scrollback: usize, sink: EventSink) -> (Term
         term: FairMutex::new(term),
         dirty: AtomicBool::new(false),
         sink,
+        log: std::sync::Mutex::new(None),
+        logging: AtomicBool::new(false),
     });
     (
         Terminal {
@@ -295,6 +305,9 @@ impl Feeder {
         {
             let mut term = self.shared.term.lock();
             self.parser.advance(&mut *term, bytes);
+        }
+        if self.shared.logging.load(Ordering::Acquire) {
+            self.log(bytes);
         }
         if !self.shared.dirty.swap(true, Ordering::AcqRel) {
             (self.shared.sink)(TermEvent::Wakeup);
@@ -337,7 +350,42 @@ fn resolve(c: Color, colors: &alacritty_terminal::term::color::Colors) -> (TermC
     }
 }
 
+impl Feeder {
+    fn log(&self, bytes: &[u8]) {
+        let mut slot = lock_log(&self.shared.log);
+        let Some(log) = slot.as_mut() else { return };
+        if let Err(e) = log.write(bytes) {
+            tracing::warn!(error = %e, "session log failed; logging stopped");
+            *slot = None;
+            self.shared.logging.store(false, Ordering::Release);
+            drop(slot);
+            (self.shared.sink)(TermEvent::LogFailed(e.to_string()));
+        }
+    }
+}
+
+fn lock_log(
+    m: &std::sync::Mutex<Option<SessionLog>>,
+) -> std::sync::MutexGuard<'_, Option<SessionLog>> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 impl Terminal {
+    /// Start (`Some`) or stop (`None`) copying output into a session log. Returns the
+    /// previous log, unfinished: the caller finishes it off the UI thread.
+    pub fn set_log(&self, log: Option<SessionLog>) -> Option<SessionLog> {
+        let mut slot = lock_log(&self.shared.log);
+        self.shared.logging.store(log.is_some(), Ordering::Release);
+        std::mem::replace(&mut *slot, log)
+    }
+
+    /// Where the session log goes, while logging.
+    pub fn log_label(&self) -> Option<String> {
+        lock_log(&self.shared.log)
+            .as_ref()
+            .map(|l| l.label().to_owned())
+    }
+
     /// Copy the visible screen. Clears the dirty flag so the next change wakes the UI.
     pub fn snapshot(&self) -> Snapshot {
         self.shared.dirty.store(false, Ordering::Release);

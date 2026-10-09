@@ -504,8 +504,14 @@ server or bundled Unix tools on Windows (Tier 3).
   XWayland hints). Test servers allow agent and X11 forwarding. Tests: forwarded agent signs
   a nested `ssh` on the server (and fails without forwarding); an X client on the server
   reaches a fake local display with the fake cookie stripped; X11 unit tests.
-- [ ] **MX-3 Terminal logging.** Per-session "log to file" (plain text, ANSI stripped, or
+- [x] **MX-3 Terminal logging.** Per-session "log to file" (plain text, ANSI stripped, or
   raw), file name template with host and timestamp, started from settings or the tab menu.
+  Note: `term::log::SessionLog` is fed on the I/O side with the bytes the terminal parses
+  (plain: escape sequences stripped, `\r` redraws and backspaces resolved per line, optional
+  timestamps; raw: every byte). `Command::StartTerminalLog`/`StopTerminalLog` open/finish the
+  file on a blocking task; `Event::TerminalLog`. Settings → Terminal: log every session,
+  format, timestamps, folder (default `<data>/terminal-logs`), file name template
+  (`{host}` `{date}` `{time}` `{datetime}`; never overwrites). Tab header "Log" button per pane.
 - [ ] **MX-4 Terminal conveniences.** Copy on select, right-click paste (settings, default
   off like today), paste confirmation for multi-line text, keyword highlighting of output
   (error/warning/fail/ok… with user rules), font zoom per tab.

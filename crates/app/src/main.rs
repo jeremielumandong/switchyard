@@ -35,6 +35,7 @@ mod snippets;
 mod split;
 mod sql_tab;
 mod ssh_prompts;
+mod terminal_settings;
 mod terminal_tab;
 mod theme;
 mod transfers;
