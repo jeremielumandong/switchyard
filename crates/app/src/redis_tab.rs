@@ -401,7 +401,11 @@ impl RedisTab {
         match result {
             Ok(m) => {
                 self.status = Some((true, m));
-                let was_new = matches!(self.mode, Mode::NewKey(_));
+                let new_kind = match &self.mode {
+                    Mode::NewKey(k) => Some(k.clone()),
+                    _ => None,
+                };
+                let was_new = new_kind.is_some();
                 let renamed = self.mode == Mode::Rename;
                 let deleted = self.mode == Mode::ConfirmDelete;
                 self.mode = Mode::View;
@@ -420,10 +424,8 @@ impl RedisTab {
                             .as_ref()
                             .filter(|_| renamed)
                             .map(|d| d.kind.clone())
-                            .unwrap_or_else(|| match &self.mode {
-                                Mode::NewKey(k) => k.clone(),
-                                _ => KeyKind::String,
-                            });
+                            .or(new_kind)
+                            .unwrap_or(KeyKind::String);
                         self.keys.push(KeyEntry {
                             key: key.clone(),
                             kind,
