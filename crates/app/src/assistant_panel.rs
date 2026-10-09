@@ -10,12 +10,13 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use gpui_kit::base::SelectableText;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AppContext as _, Context, Entity, EventEmitter, FontWeight, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
+    AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, FontWeight,
+    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, ScrollHandle,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 use switchyard_core::agents::{AgentEvent, AgentKind, RunSummary};
 use switchyard_core::store::DbConnection;
@@ -258,6 +259,9 @@ pub struct AssistantPanel {
     turns: Vec<Turn>,
     input: Entity<InputState>,
     scroll: ScrollHandle,
+    /// Focused by a click in the transcript, so Ctrl/Cmd+C copies the selected text there
+    /// instead of reaching the ask box.
+    transcript_focus: FocusHandle,
     /// Settings → Assistant (for the CLI's name).
     settings: switchyard_core::agent_run::AssistantSettings,
     /// Showing the API Workbench conversation.
@@ -298,6 +302,7 @@ impl AssistantPanel {
             turns: Vec::new(),
             input,
             scroll: ScrollHandle::new(),
+            transcript_focus: cx.focus_handle(),
             settings: Default::default(),
             api: false,
             api_context: Vec::new(),
@@ -673,6 +678,19 @@ fn api_prompt(
     }
 }
 
+/// The answer's own text (no tool calls, thinking or notes), as the CLI wrote it.
+fn answer_text(items: &[Item]) -> String {
+    items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Text(s) => Some(s.trim()),
+            _ => None,
+        })
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 fn ellipsis(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_owned()
@@ -833,6 +851,11 @@ impl Render for AssistantPanel {
             .min_h_0()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
+            .track_focus(&self.transcript_focus)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| window.focus(&this.transcript_focus, cx)),
+            )
             .px(px(12.))
             .pb(px(12.))
             .flex()
@@ -851,6 +874,13 @@ impl Render for AssistantPanel {
                     }),
             );
         }
+        // Every transcript string is one run of the window's text selection: a drag can cross
+        // runs and the copy (Ctrl/Cmd+C) joins them in reading order.
+        let mut order = 0u64;
+        let mut sel = |id: String, text: String| {
+            order += 1;
+            SelectableText::new(SharedString::from(id), text).document_order(order)
+        };
         let turns = self.turns.len();
         for (ti, turn) in self.turns.iter().enumerate() {
             let last = ti + 1 == turns;
@@ -861,7 +891,7 @@ impl Render for AssistantPanel {
                     .rounded(px(6.))
                     .bg(p.sel)
                     .text_size(px(12.))
-                    .child(turn.asked.clone()),
+                    .child(sel(format!("asst-q-{ti}"), turn.asked.clone())),
             );
             let tools: Vec<&Item> = turn
                 .items
@@ -889,13 +919,14 @@ impl Render for AssistantPanel {
                             if tools.len() == 1 { "" } else { "s" }
                         )),
                 );
-                for item in tools {
+                for (ki, item) in tools.into_iter().enumerate() {
                     let Item::Tool {
                         name, args, result, ..
                     } = item
                     else {
                         continue;
                     };
+                    let k = format!("{ti}-{ki}");
                     let (mark, color) = match result {
                         None => ("…", p.fg3),
                         Some((_, false)) => ("✓", p.dev),
@@ -907,13 +938,17 @@ impl Render for AssistantPanel {
                         .text_size(px(11.5))
                         .font_family(MONO)
                         .child(div().text_color(color).child(mark))
-                        .child(div().text_color(p.fg2).child(name.clone()))
+                        .child(
+                            div()
+                                .text_color(p.fg2)
+                                .child(sel(format!("asst-tn-{k}"), name.clone())),
+                        )
                         .child(
                             div()
                                 .text_color(p.fg3)
                                 .truncate()
                                 .min_w_0()
-                                .child(ellipsis(args, 80)),
+                                .child(sel(format!("asst-ta-{k}"), ellipsis(args, 80))),
                         );
                     if expanded && let Some((text, _)) = result {
                         row = row.flex_wrap().child(
@@ -922,21 +957,23 @@ impl Render for AssistantPanel {
                                 .pl(px(14.))
                                 .text_color(p.fg3)
                                 .whitespace_normal()
-                                .child(ellipsis(text, 1200)),
+                                .child(sel(format!("asst-tr-{k}"), ellipsis(text, 1200))),
                         );
                     }
                     list = list.child(row);
                 }
                 t = t.child(list);
             }
-            for item in &turn.items {
+            for (ii, item) in turn.items.iter().enumerate() {
                 match item {
                     Item::Text(s) => {
-                        for seg in segments(s) {
+                        for (si, seg) in segments(s).into_iter().enumerate() {
+                            let id = format!("asst-x-{ti}-{ii}-{si}");
                             t = t.child(match seg {
-                                Segment::Prose(s) => {
-                                    div().text_size(px(12.5)).whitespace_normal().child(s)
-                                }
+                                Segment::Prose(s) => div()
+                                    .text_size(px(12.5))
+                                    .whitespace_normal()
+                                    .child(sel(id, s)),
                                 Segment::Code(s) => div()
                                     .px(px(8.))
                                     .py(px(6.))
@@ -945,7 +982,7 @@ impl Render for AssistantPanel {
                                     .font_family(MONO)
                                     .text_size(px(11.5))
                                     .whitespace_normal()
-                                    .child(s),
+                                    .child(sel(id, s)),
                             });
                         }
                     }
@@ -955,7 +992,7 @@ impl Render for AssistantPanel {
                                 .text_size(px(11.5))
                                 .text_color(p.fg3)
                                 .italic()
-                                .child(ellipsis(s, 300)),
+                                .child(sel(format!("asst-th-{ti}-{ii}"), ellipsis(s, 300))),
                         );
                     }
                     Item::Error(e) => {
@@ -966,11 +1003,16 @@ impl Render for AssistantPanel {
                                 .rounded(px(6.))
                                 .bg(p.prod_bg)
                                 .text_size(px(12.))
-                                .child(e.clone()),
+                                .child(sel(format!("asst-e-{ti}-{ii}"), e.clone())),
                         );
                     }
                     Item::Note(n) => {
-                        t = t.child(div().text_size(px(11.5)).text_color(p.fg3).child(n.clone()));
+                        t = t.child(
+                            div()
+                                .text_size(px(11.5))
+                                .text_color(p.fg3)
+                                .child(sel(format!("asst-n-{ti}-{ii}"), n.clone())),
+                        );
                     }
                     _ => {}
                 }
@@ -978,6 +1020,7 @@ impl Render for AssistantPanel {
             for (si, s) in turn.suggestions.iter().enumerate() {
                 let s2 = s.clone();
                 let s3 = s.clone();
+                let sql_copy = s.sql.clone();
                 let compare_label = match s.kind {
                     SuggestionKind::Index => "Compare plan (hypothetical)",
                     SuggestionKind::Statistics => "Re-plan & compare",
@@ -1005,7 +1048,7 @@ impl Render for AssistantPanel {
                                 .font_family(MONO)
                                 .text_size(px(11.5))
                                 .whitespace_normal()
-                                .child(s.sql.clone()),
+                                .child(sel(format!("asst-s-{ti}-{si}"), s.sql.clone())),
                         )
                         .child(
                             div()
@@ -1032,12 +1075,28 @@ impl Render for AssistantPanel {
                                     .on_click(cx.listener(
                                         move |this, _, _, cx| this.card_action(&s3, false, cx),
                                     )),
+                                )
+                                .child(
+                                    ui::button(
+                                        SharedString::from(format!("asst-cpy-{ti}-{si}")),
+                                        "Copy",
+                                        Kind::Ghost,
+                                        &p,
+                                    )
+                                    .on_click(
+                                        move |_, _, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                sql_copy.clone(),
+                                            ))
+                                        },
+                                    ),
                                 ),
                         ),
                 );
             }
             for (ri, r) in turn.requests.iter().enumerate() {
                 let open = r.clone();
+                let line = format!("{} {}", r.method.as_str(), r.url);
                 let body_note = if r.body.is_empty() {
                     String::new()
                 } else {
@@ -1064,7 +1123,7 @@ impl Render for AssistantPanel {
                                 .font_family(MONO)
                                 .text_size(px(11.5))
                                 .whitespace_normal()
-                                .child(format!("{} {}", r.method.as_str(), r.url)),
+                                .child(sel(format!("asst-r-{ti}-{ri}"), line)),
                         )
                         .child(div().text_size(px(11.)).text_color(p.fg3).child(format!(
                             "{} header{}{body_note}",
@@ -1086,6 +1145,22 @@ impl Render for AssistantPanel {
                                 )),
                             ),
                         ),
+                );
+            }
+            let answer = answer_text(&turn.items);
+            if !answer.is_empty() && !(last && running) {
+                t = t.child(
+                    div().flex().child(
+                        ui::button(
+                            SharedString::from(format!("asst-cpa-{ti}")),
+                            "Copy answer",
+                            Kind::Ghost,
+                            &p,
+                        )
+                        .on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(answer.clone()))
+                        }),
+                    ),
                 );
             }
             if last && running {
@@ -1145,6 +1220,25 @@ impl Render for AssistantPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copied_answer_keeps_only_the_answer_text() {
+        let items = vec![
+            Item::Thinking("hmm".into()),
+            Item::Text("First part.\n".into()),
+            Item::Tool {
+                id: "1".into(),
+                name: "explain".into(),
+                args: "{}".into(),
+                result: None,
+            },
+            Item::Text("  ".into()),
+            Item::Text("```sql\nSELECT 1;\n```".into()),
+            Item::Note("done".into()),
+        ];
+        assert_eq!(answer_text(&items), "First part.\n\n```sql\nSELECT 1;\n```");
+        assert_eq!(answer_text(&[Item::Error("boom".into())]), "");
+    }
 
     #[test]
     fn api_prompts_follow_the_mode() {
