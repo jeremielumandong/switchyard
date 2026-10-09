@@ -92,6 +92,12 @@ pub struct KeyEntry {
     pub key: Vec<u8>,
     /// Type.
     pub kind: KeyKind,
+    /// Time to live in ms when the page was read; `None` when the key has no expiry.
+    #[serde(default)]
+    pub ttl_ms: Option<i64>,
+    /// Memory used, when `MEMORY USAGE` is allowed.
+    #[serde(default)]
+    pub memory: Option<u64>,
 }
 
 /// One page of `SCAN`.
@@ -292,19 +298,37 @@ pub async fn scan(c: &mut RedisClient, cursor: u64, pattern: &str, count: u32) -
         .iter()
         .filter_map(|k| k.bytes().map(<[u8]>::to_vec))
         .collect();
-    let types = if keys.is_empty() {
+    // TYPE, PTTL and MEMORY USAGE per key in one round trip (the key list's columns).
+    let replies = if keys.is_empty() {
         Vec::new()
     } else {
-        let cmds: Vec<[&[u8]; 2]> = keys.iter().map(|k| [b"TYPE".as_slice(), k]).collect();
-        let refs: Vec<&[&[u8]]> = cmds.iter().map(|c| c.as_slice()).collect();
+        let cmds: Vec<Vec<&[u8]>> = keys
+            .iter()
+            .flat_map(|k| {
+                [
+                    vec![b"TYPE".as_slice(), k],
+                    vec![b"PTTL".as_slice(), k],
+                    vec![b"MEMORY".as_slice(), b"USAGE".as_slice(), k],
+                ]
+            })
+            .collect();
+        let refs: Vec<&[&[u8]]> = cmds.iter().map(Vec::as_slice).collect();
         c.pipeline(&refs).await?
     };
     let mut out: Vec<KeyEntry> = keys
         .into_iter()
-        .zip(types)
-        .map(|(key, t)| KeyEntry {
+        .zip(replies.chunks(3))
+        .map(|(key, r)| KeyEntry {
             key,
-            kind: KeyKind::parse(&String::from_utf8_lossy(t.bytes().unwrap_or(b"none"))),
+            kind: KeyKind::parse(&String::from_utf8_lossy(
+                r.first().and_then(Reply::bytes).unwrap_or(b"none"),
+            )),
+            ttl_ms: r.get(1).and_then(Reply::int).filter(|t| *t >= 0),
+            // An error (ACL, old server) leaves the size blank.
+            memory: r
+                .get(2)
+                .and_then(Reply::int)
+                .and_then(|m| u64::try_from(m).ok()),
         })
         .filter(|e| e.kind != KeyKind::Missing)
         .collect();
