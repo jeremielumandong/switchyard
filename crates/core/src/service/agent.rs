@@ -202,6 +202,10 @@ async fn read_only(
                 .map_err(|e| e.to_string())?;
         }
         Engine::SqlServer => s.begin().await.map_err(|e| e.to_string())?,
+        // MySQL fixes a transaction's access mode when it starts.
+        Engine::MySql => drain(s.execute("START TRANSACTION READ ONLY", &[]).await)
+            .await
+            .map_err(|e| e.to_string())?,
         // No transactions across requests: the SELECT-only check is the guard.
         Engine::D1 | Engine::Snowflake => {}
     }

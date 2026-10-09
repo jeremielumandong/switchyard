@@ -18,6 +18,8 @@ pub enum Engine {
     Snowflake,
     /// Oracle Database through Oracle Instant Client, loaded at runtime.
     Oracle,
+    /// MySQL (and MariaDB, which speaks the same protocol).
+    MySql,
 }
 
 impl Engine {
@@ -29,6 +31,7 @@ impl Engine {
             Engine::D1 => "Cloudflare D1",
             Engine::Snowflake => "Snowflake",
             Engine::Oracle => "Oracle",
+            Engine::MySql => "MySQL",
         }
     }
 
@@ -40,6 +43,7 @@ impl Engine {
             Engine::D1 => "D1",
             Engine::Snowflake => "SF",
             Engine::Oracle => "OR",
+            Engine::MySql => "MY",
         }
     }
 
@@ -50,6 +54,7 @@ impl Engine {
             Engine::SqlServer => 1433,
             Engine::D1 | Engine::Snowflake => 443,
             Engine::Oracle => 1521,
+            Engine::MySql => 3306,
         }
     }
 

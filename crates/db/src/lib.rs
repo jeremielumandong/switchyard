@@ -19,6 +19,7 @@ pub mod format;
 pub mod guard;
 pub mod mock;
 pub mod mssql;
+pub mod mysql;
 pub mod oracle;
 pub mod pg;
 pub mod snowflake;

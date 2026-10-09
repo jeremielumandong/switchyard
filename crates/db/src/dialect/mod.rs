@@ -1,6 +1,7 @@
 //! SQL dialects: identifier quoting, script splitting, parameters, row limits, literals.
 
 pub mod lexer;
+pub mod mysql;
 pub mod oracle;
 pub mod postgres;
 pub mod snowflake;
@@ -339,6 +340,7 @@ pub fn dialect_for(engine: Engine) -> &'static dyn Dialect {
         Engine::D1 => &sqlite::SqliteDialect,
         Engine::Snowflake => &snowflake::SnowflakeDialect,
         Engine::Oracle => &oracle::OracleDialect,
+        Engine::MySql => &mysql::MySqlDialect,
     }
 }
 
@@ -642,6 +644,7 @@ mod tests {
         assert_eq!(server(Engine::Oracle), [K::Role]);
         assert_eq!(server(Engine::Snowflake), [K::Role]);
         assert!(server(Engine::D1).is_empty());
+        assert_eq!(server(Engine::MySql), [K::Role]);
         assert!(has(Engine::Oracle, K::Package));
         for k in [K::Stage, K::Task, K::Pipe] {
             assert!(has(Engine::Snowflake, k));
@@ -652,6 +655,7 @@ mod tests {
             Engine::Oracle,
             Engine::Snowflake,
             Engine::D1,
+            Engine::MySql,
         ] {
             let d = dialect_for(e);
             // Server-level kinds never sit under a schema, and schema kinds never at the top.
@@ -675,6 +679,7 @@ mod tests {
             Engine::Oracle,
             Engine::Snowflake,
             Engine::D1,
+            Engine::MySql,
         ] {
             let d = dialect_for(engine);
             let q = d.qualified("sales", "order");
@@ -731,6 +736,7 @@ mod tests {
             Engine::Oracle,
             Engine::Snowflake,
             Engine::D1,
+            Engine::MySql,
         ] {
             let d = dialect_for(engine);
             let name = format!("{engine:?}").to_lowercase();
@@ -778,6 +784,7 @@ mod tests {
             Engine::Oracle,
             Engine::Snowflake,
             Engine::D1,
+            Engine::MySql,
         ] {
             let d = dialect_for(engine);
             let q = d.qualified("sales", "order");
@@ -817,6 +824,7 @@ mod tests {
             Engine::Oracle,
             Engine::Snowflake,
             Engine::D1,
+            Engine::MySql,
         ] {
             let d = dialect_for(engine);
             let q = d.qualified("sales", "order");
