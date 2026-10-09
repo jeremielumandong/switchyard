@@ -64,6 +64,20 @@ impl Service {
         Ok(info)
     }
 
+    /// Drop the Redis sessions that go through tunnel `id` (it was stopped).
+    pub(super) fn end_redis_on_tunnel(&self, id: u64) -> Vec<SessionId> {
+        let mut slots = lock(&self.redis);
+        let ended: Vec<SessionId> = slots
+            .iter()
+            .filter(|(_, s)| s.tunnel.as_ref().is_some_and(|t| t.id() == id))
+            .map(|(s, _)| *s)
+            .collect();
+        for s in &ended {
+            slots.remove(s);
+        }
+        ended
+    }
+
     fn redis_slot(&self, session: SessionId) -> Result<Arc<RedisSlot>> {
         lock(&self.redis)
             .get(&session)

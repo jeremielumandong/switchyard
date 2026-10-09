@@ -1651,7 +1651,9 @@ impl Workspace {
         // From the quick switcher: a SQL tab without a connection picks it up.
         match self.profiles.all.iter().find(|p| p.id() == id).cloned() {
             Some(Profile::Db(d)) => {
-                if let Some(t) = self.active_sql() {
+                if !d.engine.is_sql() {
+                    self.open_redis(d, window, cx);
+                } else if let Some(t) = self.active_sql() {
                     t.update(cx, |t, cx| t.set_connection(Some(d.clone()), cx));
                     self.sync_schema(cx);
                 } else {

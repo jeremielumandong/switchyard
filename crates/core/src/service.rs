@@ -1619,6 +1619,12 @@ impl Service {
                 message: message.clone(),
             });
         }
+        for session in self.end_redis_on_tunnel(id) {
+            self.emit(Event::RedisOpened {
+                session,
+                result: Err(message.clone()),
+            });
+        }
         self.emit(Event::Tunnels(self.tunnel_infos()));
     }
 

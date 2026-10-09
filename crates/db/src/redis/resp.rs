@@ -95,7 +95,57 @@ pub fn encode<A: AsRef<[u8]>>(args: &[A]) -> Vec<u8> {
 /// Decode one reply from the front of `buf`: `Ok(None)` when more bytes are needed,
 /// otherwise the reply and how many bytes it used.
 pub fn decode(buf: &[u8]) -> Result<Option<(Reply, usize)>> {
+    // Find the end first without allocating: a large reply arrives over many reads, and
+    // building it on each one would be quadratic.
+    if reply_end(buf, 0, 0)?.is_none() {
+        return Ok(None);
+    }
     decode_at(buf, 0, 0)
+}
+
+/// Where the reply starting at `pos` ends, or `None` when the buffer doesn't hold all of it.
+/// Lengths are validated by [`decode_at`] once the reply is complete.
+fn reply_end(buf: &[u8], pos: usize, depth: usize) -> Result<Option<usize>> {
+    if depth > MAX_DEPTH {
+        return Err(DbError::Protocol("reply nested too deeply".into()));
+    }
+    let Some(line_end) = find_crlf(buf, pos + 1) else {
+        return Ok(None);
+    };
+    let next = line_end + 2;
+    match buf.get(pos) {
+        Some(b'$') => {
+            let len = parse_int(&buf[pos + 1..line_end])?;
+            if len < 0 {
+                return Ok(Some(next));
+            }
+            let len = usize::try_from(len).map_err(|_| bad("bulk length"))?;
+            if len > MAX_BULK {
+                return Err(DbError::Protocol("bulk reply too large".into()));
+            }
+            let end = next + len + 2;
+            Ok((buf.len() >= end).then_some(end))
+        }
+        Some(b'*') => {
+            let n = parse_int(&buf[pos + 1..line_end])?;
+            if n < 0 {
+                return Ok(Some(next));
+            }
+            let n = usize::try_from(n).map_err(|_| bad("array length"))?;
+            if n > MAX_ARRAY {
+                return Err(DbError::Protocol("array reply too large".into()));
+            }
+            let mut at = next;
+            for _ in 0..n {
+                match reply_end(buf, at, depth + 1)? {
+                    Some(end) => at = end,
+                    None => return Ok(None),
+                }
+            }
+            Ok(Some(at))
+        }
+        _ => Ok(Some(next)),
+    }
 }
 
 fn decode_at(buf: &[u8], pos: usize, depth: usize) -> Result<Option<(Reply, usize)>> {
