@@ -94,14 +94,15 @@ impl ObjectSearch {
     }
 }
 
-/// How well `name` matches `filter`: exact, prefix, substring, then fuzzy-only.
-fn rank(filter: &str, name: &str) -> u8 {
-    let (f, n) = (filter.to_lowercase(), name.to_lowercase());
+/// How well `name` matches `f` (already lowercase): exact, prefix, substring, then
+/// fuzzy-only.
+fn rank(f: &str, name: &str) -> u8 {
+    let n = name.to_lowercase();
     if n == f {
         0
-    } else if n.starts_with(&f) {
+    } else if n.starts_with(f) {
         1
-    } else if n.contains(&f) {
+    } else if n.contains(f) {
         2
     } else {
         3
@@ -116,20 +117,22 @@ pub fn merge<'a>(
     server: &'a [ObjectInfo],
 ) -> Vec<&'a ObjectInfo> {
     let mut seen: HashSet<(&str, &str, ObjectKind)> = HashSet::new();
-    let mut out: Vec<&ObjectInfo> = local
+    let f = filter.to_lowercase();
+    // Rank once per object, not once per comparison.
+    let mut out: Vec<(u8, &ObjectInfo)> = local
         .into_iter()
         .chain(server)
         .filter(|o| seen.insert((o.schema.as_str(), o.name.as_str(), o.kind)))
+        .map(|o| (rank(&f, &o.name), o))
         .collect();
-    out.sort_by(|a, b| {
-        rank(filter, &a.name)
-            .cmp(&rank(filter, &b.name))
+    out.sort_by(|(ra, a), (rb, b)| {
+        ra.cmp(rb)
             .then(a.name.len().cmp(&b.name.len()))
             .then_with(|| a.name.cmp(&b.name))
             .then_with(|| a.schema.cmp(&b.schema))
             .then(a.kind.cmp(&b.kind))
     });
-    out
+    out.into_iter().map(|(_, o)| o).collect()
 }
 
 /// Lower-case kind name shown next to a search hit.

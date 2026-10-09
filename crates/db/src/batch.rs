@@ -78,6 +78,8 @@ pub trait ArenaData {
     fn push(buf: &mut Self::Owned, v: &Self);
     /// Borrow a range.
     fn slice(buf: &Self::Owned, start: usize, end: usize) -> &Self;
+    /// Release unused capacity.
+    fn shrink_to_fit(buf: &mut Self::Owned);
 }
 
 impl ArenaData for str {
@@ -91,6 +93,9 @@ impl ArenaData for str {
     fn slice(buf: &String, start: usize, end: usize) -> &str {
         &buf[start..end]
     }
+    fn shrink_to_fit(buf: &mut String) {
+        buf.shrink_to_fit()
+    }
 }
 
 impl ArenaData for [u8] {
@@ -103,6 +108,9 @@ impl ArenaData for [u8] {
     }
     fn slice(buf: &Vec<u8>, start: usize, end: usize) -> &[u8] {
         &buf[start..end]
+    }
+    fn shrink_to_fit(buf: &mut Vec<u8>) {
+        buf.shrink_to_fit()
     }
 }
 
@@ -129,6 +137,11 @@ impl<T: ArenaData + ?Sized> Arena<T> {
 
     fn heap_bytes(&self) -> usize {
         self.offsets.capacity() * 4 + T::len(&self.data)
+    }
+
+    fn shrink_to_fit(&mut self) {
+        self.offsets.shrink_to_fit();
+        T::shrink_to_fit(&mut self.data);
     }
 }
 
@@ -204,6 +217,23 @@ impl ColumnData {
         }
     }
 
+    fn shrink_to_fit(&mut self) {
+        match self {
+            ColumnData::Bool(v) => v.shrink_to_fit(),
+            ColumnData::Int16(v) => v.shrink_to_fit(),
+            ColumnData::Int32(v) | ColumnData::Date(v) => v.shrink_to_fit(),
+            ColumnData::Int64(v)
+            | ColumnData::Time(v)
+            | ColumnData::Timestamp(v)
+            | ColumnData::TimestampTz(v) => v.shrink_to_fit(),
+            ColumnData::Float32(v) => v.shrink_to_fit(),
+            ColumnData::Float64(v) => v.shrink_to_fit(),
+            ColumnData::Uuid(v) => v.shrink_to_fit(),
+            ColumnData::Text(a) => a.shrink_to_fit(),
+            ColumnData::Bytes(a) => a.shrink_to_fit(),
+        }
+    }
+
     fn heap_bytes(&self) -> usize {
         match self {
             ColumnData::Bool(v) => v.capacity(),
@@ -231,6 +261,11 @@ pub struct Column {
 }
 
 impl Column {
+    fn shrink_to_fit(&mut self) {
+        self.data.shrink_to_fit();
+        self.nulls.shrink_to_fit();
+    }
+
     fn new(data_type: DataType, rows: usize) -> Self {
         Self {
             data: ColumnData::for_type(data_type, rows),
@@ -376,6 +411,13 @@ impl CellRef<'_> {
         s
     }
 
+    /// Order of result views: NULL last, numbers numerically (integers and floats
+    /// together), text as numbers when both sides parse (NUMERIC columns), binary and
+    /// UUIDs byte by byte, anything else by its display text.
+    pub fn sort_cmp(&self, other: &CellRef<'_>) -> std::cmp::Ordering {
+        sort_cmp(*self, *other, text_number(self), text_number(other))
+    }
+
     /// Convert to an owned [`Value`], using `data_type` to pick the text-backed variant.
     pub fn to_value(&self, data_type: DataType) -> Value {
         match *self {
@@ -396,6 +438,62 @@ impl CellRef<'_> {
                 _ => Value::Other(s.to_owned()),
             },
         }
+    }
+}
+
+/// The number in a text cell, for [`CellRef::sort_cmp`].
+fn text_number(cell: &CellRef<'_>) -> Option<f64> {
+    match cell {
+        CellRef::Text(s) => s.parse().ok(),
+        _ => None,
+    }
+}
+
+/// Whether `hay` contains `lower_needle` (already lowercase), ignoring case. ASCII text
+/// is compared in place; anything else is lowercased first.
+fn contains_ignore_case(hay: &str, lower_needle: &str) -> bool {
+    if lower_needle.is_empty() {
+        return true;
+    }
+    if hay.is_ascii() && lower_needle.is_ascii() {
+        let n = lower_needle.as_bytes();
+        return hay
+            .as_bytes()
+            .windows(n.len())
+            .any(|w| w.eq_ignore_ascii_case(n));
+    }
+    hay.to_lowercase().contains(lower_needle)
+}
+
+/// [`CellRef::sort_cmp`] with each side's [`text_number`] already parsed.
+fn sort_cmp(
+    a: CellRef<'_>,
+    b: CellRef<'_>,
+    an: Option<f64>,
+    bn: Option<f64>,
+) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a, b) {
+        (CellRef::Null, CellRef::Null) => Ordering::Equal,
+        (CellRef::Null, _) => Ordering::Greater,
+        (_, CellRef::Null) => Ordering::Less,
+        (CellRef::Int(x), CellRef::Int(y)) => x.cmp(&y),
+        (CellRef::Float(x), CellRef::Float(y)) => x.total_cmp(&y),
+        (CellRef::Int(x), CellRef::Float(y)) => (x as f64).total_cmp(&y),
+        (CellRef::Float(x), CellRef::Int(y)) => x.total_cmp(&(y as f64)),
+        (CellRef::Bool(x), CellRef::Bool(y)) => x.cmp(&y),
+        (CellRef::Date(x), CellRef::Date(y)) => x.cmp(&y),
+        (CellRef::Time(x), CellRef::Time(y))
+        | (CellRef::Timestamp(x), CellRef::Timestamp(y))
+        | (CellRef::TimestampTz(x), CellRef::TimestampTz(y)) => x.cmp(&y),
+        (CellRef::Text(x), CellRef::Text(y)) => match (an, bn) {
+            (Some(p), Some(q)) => p.total_cmp(&q),
+            _ => x.cmp(y),
+        },
+        // Hex display order is byte order.
+        (CellRef::Uuid(x), CellRef::Uuid(y)) => x.cmp(y),
+        (CellRef::Bytes(x), CellRef::Bytes(y)) => x.cmp(y),
+        (x, y) => x.to_display().cmp(&y.to_display()),
     }
 }
 
@@ -588,8 +686,17 @@ impl RowBatchBuilder {
     }
 
     /// Finish the batch. Panics in debug builds if a row is incomplete.
-    pub fn finish(self) -> RowBatch {
+    ///
+    /// A batch flushed well short of its capacity (drivers flush whatever has arrived
+    /// rather than wait) gives the unused space back: a result of many small batches
+    /// would otherwise hold a full batch's buffers for each.
+    pub fn finish(mut self) -> RowBatch {
         debug_assert_eq!(self.col, 0, "incomplete row");
+        if self.len < self.capacity / 2 {
+            for c in &mut self.columns {
+                c.shrink_to_fit();
+            }
+        }
         RowBatch {
             columns: self.columns,
             len: self.len,
@@ -658,6 +765,50 @@ impl BatchList {
     /// Approximate heap usage in bytes.
     pub fn heap_bytes(&self) -> usize {
         self.batches.iter().map(|b| b.heap_bytes()).sum()
+    }
+
+    /// Rows (in order) where any cell's display text contains `needle`, ignoring case;
+    /// NULL reads as `NULL`. Walks batch by batch and formats no text cell.
+    pub fn rows_containing(&self, needle: &str) -> Vec<u32> {
+        let needle = needle.to_lowercase();
+        let mut keep = Vec::new();
+        let mut buf = String::new();
+        for (batch, &start) in self.batches.iter().zip(&self.starts) {
+            for r in 0..batch.len() {
+                let hit = (0..batch.column_count()).any(|c| match batch.cell(r, c) {
+                    CellRef::Text(s) => contains_ignore_case(s, &needle),
+                    cell => {
+                        buf.clear();
+                        cell.write_display(&mut buf, 0);
+                        contains_ignore_case(&buf, &needle)
+                    }
+                });
+                if hit {
+                    keep.push((start + r) as u32);
+                }
+            }
+        }
+        keep
+    }
+
+    /// Sort `rows` (global row numbers) by column `col` in [`CellRef::sort_cmp`] order,
+    /// reversed when `descending`; equal rows keep their order. Each cell is looked up
+    /// and its text parsed once, not once per comparison.
+    pub fn sort_rows(&self, rows: &mut [u32], col: usize, descending: bool) {
+        let mut keyed: Vec<(u32, CellRef<'_>, Option<f64>)> = rows
+            .iter()
+            .map(|&r| {
+                let cell = self.cell(r as usize, col).unwrap_or(CellRef::Null);
+                (r, cell, text_number(&cell))
+            })
+            .collect();
+        keyed.sort_by(|a, b| {
+            let o = sort_cmp(a.1, b.1, a.2, b.2);
+            if descending { o.reverse() } else { o }
+        });
+        for (dst, (r, _, _)) in rows.iter_mut().zip(keyed) {
+            *dst = r;
+        }
     }
 }
 
@@ -740,6 +891,103 @@ mod tests {
         let mb = list.heap_bytes() as f64 / (1024.0 * 1024.0);
         assert!(mb < 150.0, "{mb:.1} MB");
         assert!(mb > 70.0, "accounting looks wrong: {mb:.1} MB");
+    }
+
+    #[test]
+    fn sort_rows_matches_pairwise_order_across_batches() {
+        let cols = [
+            ColumnMeta::new("n", "numeric", DataType::Numeric),
+            ColumnMeta::new("f", "float8", DataType::Float64),
+        ];
+        let mut list = BatchList::default();
+        let texts = [
+            Some("10"),
+            Some("9.5"),
+            None,
+            Some("abc"),
+            Some("-2"),
+            Some("10"),
+        ];
+        for chunk in texts.chunks(2) {
+            let mut b = RowBatchBuilder::for_columns(&cols, 2);
+            for (i, t) in chunk.iter().enumerate() {
+                match t {
+                    Some(t) => b.push_str(t),
+                    None => b.push_null(),
+                }
+                b.push_f64(i as f64);
+            }
+            list.push(b.finish());
+        }
+        for descending in [false, true] {
+            let mut rows: Vec<u32> = (0..texts.len() as u32).collect();
+            list.sort_rows(&mut rows, 0, descending);
+            let mut expected: Vec<u32> = (0..texts.len() as u32).collect();
+            expected.sort_by(|a, b| {
+                let ca = list.cell(*a as usize, 0).unwrap();
+                let cb = list.cell(*b as usize, 0).unwrap();
+                let o = ca.sort_cmp(&cb);
+                if descending { o.reverse() } else { o }
+            });
+            assert_eq!(rows, expected);
+        }
+        let mut rows: Vec<u32> = (0..texts.len() as u32).collect();
+        list.sort_rows(&mut rows, 0, false);
+        // Numbers numerically, ties in row order, NULL last.
+        assert_eq!(rows, [4, 1, 0, 5, 3, 2]);
+        // Integers and floats compare as numbers; binary byte by byte.
+        assert!(CellRef::Int(2).sort_cmp(&CellRef::Float(10.0)).is_lt());
+        assert!(
+            CellRef::Bytes(&[1])
+                .sort_cmp(&CellRef::Bytes(&[1, 0]))
+                .is_lt()
+        );
+    }
+
+    #[test]
+    fn rows_containing_ignores_case_and_reads_null() {
+        let cols = [
+            ColumnMeta::new("id", "int8", DataType::Int64),
+            ColumnMeta::new("name", "text", DataType::Text),
+        ];
+        let mut list = BatchList::default();
+        let rows: [(i64, Option<&str>); 4] = [
+            (1, Some("Alice")),
+            (12, Some("ÉCOLE")),
+            (3, None),
+            (4, Some("bob")),
+        ];
+        for chunk in rows.chunks(3) {
+            let mut b = RowBatchBuilder::for_columns(&cols, 3);
+            for (id, name) in chunk {
+                b.push_i64(*id);
+                match name {
+                    Some(n) => b.push_str(n),
+                    None => b.push_null(),
+                }
+            }
+            list.push(b.finish());
+        }
+        assert_eq!(list.rows_containing("ALI"), [0]);
+        assert_eq!(list.rows_containing("école"), [1]);
+        assert_eq!(list.rows_containing("1"), [0, 1]);
+        assert_eq!(list.rows_containing("null"), [2]);
+        assert_eq!(list.rows_containing("B"), [3]);
+        assert_eq!(list.rows_containing("").len(), 4);
+    }
+
+    #[test]
+    fn short_batches_release_unused_capacity() {
+        let cols = vec![ColumnMeta::new("id", "int8", DataType::Int64); 10];
+        let mut b = RowBatchBuilder::for_columns(&cols, 1000);
+        for i in 0..10 {
+            for _ in 0..10 {
+                b.push_i64(i);
+            }
+        }
+        let batch = b.finish();
+        // 10 rows x 10 columns x 8 bytes, not a 1,000-row reservation per column.
+        assert!(batch.heap_bytes() < 2_000, "{}", batch.heap_bytes());
     }
 
     #[test]

@@ -237,13 +237,13 @@ impl GridDelegate {
                 }
             }
         }
+        let loaded = self.data.len() as u32;
         self.data.push(batch);
-        if let Some(v) = &self.view {
+        if let Some(v) = &mut self.view {
             // New rows join the end of a sorted/filtered view unordered; resorting is
-            // explicit (click the header again).
-            let mut v2 = (**v).clone();
-            v2.extend((v.len() as u32)..(self.data.len() as u32));
-            self.view = Some(Arc::new(v2));
+            // explicit (click the header again). Appending in place keeps streaming into
+            // a sorted grid linear instead of copying the whole view per batch.
+            Arc::make_mut(v).extend(loaded..self.data.len() as u32);
         }
     }
 
@@ -287,21 +287,7 @@ impl GridDelegate {
             self.view = None;
             return;
         }
-        let n = needle.to_lowercase();
-        let mut keep = Vec::new();
-        let mut buf = String::new();
-        for r in 0..self.data.len() {
-            let hit = (0..self.columns.len()).any(|c| {
-                buf.clear();
-                if let Some(cell) = self.data.cell(r, c) {
-                    cell.write_display(&mut buf, 0);
-                }
-                buf.to_lowercase().contains(&n)
-            });
-            if hit {
-                keep.push(r as u32);
-            }
-        }
+        let keep = self.data.rows_containing(needle);
         self.view = Some(Arc::new(keep));
     }
 
@@ -313,46 +299,10 @@ impl GridDelegate {
         if sort == ColumnSort::Default {
             order.sort_unstable();
         } else {
-            let data = &self.data;
-            order.sort_by(|a, b| {
-                let ca = data.cell(*a as usize, col).unwrap_or(CellRef::Null);
-                let cb = data.cell(*b as usize, col).unwrap_or(CellRef::Null);
-                let o = compare(ca, cb);
-                if sort == ColumnSort::Descending {
-                    o.reverse()
-                } else {
-                    o
-                }
-            });
+            self.data
+                .sort_rows(&mut order, col, sort == ColumnSort::Descending);
         }
         self.view = Some(Arc::new(order));
-    }
-}
-
-/// Total order for cells: NULLs last, numbers numerically, everything else as text.
-pub fn compare(a: CellRef<'_>, b: CellRef<'_>) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    match (a, b) {
-        (CellRef::Null, CellRef::Null) => Ordering::Equal,
-        (CellRef::Null, _) => Ordering::Greater,
-        (_, CellRef::Null) => Ordering::Less,
-        (CellRef::Int(x), CellRef::Int(y)) => x.cmp(&y),
-        (CellRef::Float(x), CellRef::Float(y)) => x.total_cmp(&y),
-        (CellRef::Int(x), CellRef::Float(y)) => (x as f64).total_cmp(&y),
-        (CellRef::Float(x), CellRef::Int(y)) => x.total_cmp(&(y as f64)),
-        (CellRef::Bool(x), CellRef::Bool(y)) => x.cmp(&y),
-        (CellRef::Date(x), CellRef::Date(y)) => x.cmp(&y),
-        (CellRef::Time(x), CellRef::Time(y))
-        | (CellRef::Timestamp(x), CellRef::Timestamp(y))
-        | (CellRef::TimestampTz(x), CellRef::TimestampTz(y)) => x.cmp(&y),
-        (CellRef::Text(x), CellRef::Text(y)) => {
-            // Numeric text (NUMERIC columns) compares as numbers when both parse.
-            match (x.parse::<f64>(), y.parse::<f64>()) {
-                (Ok(p), Ok(q)) => p.total_cmp(&q),
-                _ => x.cmp(y),
-            }
-        }
-        (x, y) => x.to_display().cmp(&y.to_display()),
     }
 }
 
@@ -1176,6 +1126,22 @@ mod tests {
         assert_eq!(g.visible_rows(), 1);
         g.set_filter("");
         assert_eq!(g.visible_rows(), 4);
+    }
+
+    #[test]
+    fn batches_streamed_into_a_view_join_its_end_once() {
+        let mut g = delegate();
+        g.set_filter("b");
+        let mut b = RowBatchBuilder::for_columns(&g.columns(), 2);
+        for (i, n) in [(5, "e"), (6, "f")] {
+            b.push_i64(i);
+            b.push_str(n);
+        }
+        g.push(b.finish());
+        let ids: Vec<_> = (0..g.visible_rows())
+            .map(|r| g.cell(r, 0).unwrap().to_display())
+            .collect();
+        assert_eq!(ids, ["2", "5", "6"]);
     }
 
     #[test]
