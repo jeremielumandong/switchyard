@@ -113,7 +113,7 @@ pub fn builtin_snippets(engine: Engine) -> Vec<Snippet> {
     let select = match engine {
         Engine::SqlServer => "SELECT TOP (${3:100}) ${2:*}\nFROM ${1:table_name};",
         Engine::Oracle => "SELECT ${2:*}\nFROM ${1:table_name}\nFETCH FIRST ${3:100} ROWS ONLY;",
-        Engine::Postgres | Engine::D1 | Engine::Snowflake => {
+        Engine::Postgres | Engine::D1 | Engine::Snowflake | Engine::MySql => {
             "SELECT ${2:*}\nFROM ${1:table_name}\nLIMIT ${3:100};"
         }
     };
@@ -152,6 +152,7 @@ pub fn builtin_snippets(engine: Engine) -> Vec<Snippet> {
             Some("BEGIN TRANSACTION;\n\n${1:-- statements}\n\nCOMMIT TRANSACTION;")
         }
         Engine::Postgres => Some("BEGIN;\n\n${1:-- statements}\n\nCOMMIT;"),
+        Engine::MySql => Some("START TRANSACTION;\n\n${1:-- statements}\n\nCOMMIT;"),
         // Oracle starts a transaction implicitly with the first DML.
         Engine::Oracle => Some("SET TRANSACTION READ WRITE;\n\n${1:-- statements}\n\nCOMMIT;"),
         // Not supported over these engines' HTTP APIs (`Engine::supports_transactions`).
@@ -285,6 +286,7 @@ mod tests {
             Engine::Oracle,
             Engine::Snowflake,
             Engine::D1,
+            Engine::MySql,
         ] {
             let rendered: String = builtin_snippets(engine)
                 .iter()

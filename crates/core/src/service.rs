@@ -292,6 +292,7 @@ impl Service {
             Arc::new(switchyard_db::snowflake::SnowflakeDriver::default()),
         );
         drivers.insert(Engine::SqlServer, Arc::new(MssqlDriver));
+        drivers.insert(Engine::MySql, Arc::new(switchyard_db::mysql::MySqlDriver));
         for (engine, d) in config.extra_drivers {
             drivers.insert(engine, d);
         }

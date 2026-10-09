@@ -42,3 +42,8 @@ fn oracle_context_switch() {
 fn d1_has_no_switcher() {
     insta::assert_snapshot!(render(Engine::D1, "main", "main"));
 }
+
+#[test]
+fn mysql_context_switch() {
+    insta::assert_snapshot!(render(Engine::MySql, "shop", "odd`name"));
+}
