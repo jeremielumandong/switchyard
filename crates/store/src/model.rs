@@ -713,6 +713,81 @@ impl Profile {
                     ));
                 }
             }
+            Profile::Db(d) if d.engine == Engine::MongoDb => {
+                if d.server.trim().is_empty() {
+                    return Err(ValidationError::new("server", "Host is required"));
+                }
+                if d.agent_access {
+                    return Err(ValidationError::new(
+                        "agent_access",
+                        "Coding agents work with SQL connections only",
+                    ));
+                }
+                if d.port == 0 {
+                    return Err(ValidationError::new("port", "Port must be 1–65535"));
+                }
+                if d.auth != DbAuthMethod::Password {
+                    return Err(ValidationError::new(
+                        "auth",
+                        "MongoDB connections sign in with a user and password (or none)",
+                    ));
+                }
+                if d.option("srv").is_some() && d.via_host.is_some() {
+                    return Err(ValidationError::new(
+                        "via_host",
+                        "An SRV connection finds its members through DNS, not through a Host",
+                    ));
+                }
+                if d.fetch_limit == Some(0) {
+                    return Err(ValidationError::new(
+                        "fetch_limit",
+                        "Fetch limit must be positive",
+                    ));
+                }
+            }
+            Profile::Db(d) if d.engine.is_local_file() => {
+                if d.database.trim().is_empty() {
+                    return Err(ValidationError::new("database", "Choose a database file"));
+                }
+                if d.via_host.is_some() {
+                    return Err(ValidationError::new(
+                        "via_host",
+                        "A SQLite file is opened on this computer, not through a Host",
+                    ));
+                }
+                if d.fetch_limit == Some(0) {
+                    return Err(ValidationError::new(
+                        "fetch_limit",
+                        "Fetch limit must be positive",
+                    ));
+                }
+            }
+            Profile::Db(d) if d.engine == Engine::Redis => {
+                if d.server.trim().is_empty() {
+                    return Err(ValidationError::new("server", "Host is required"));
+                }
+                if d.port == 0 {
+                    return Err(ValidationError::new("port", "Port must be 1–65535"));
+                }
+                if switchyard_db::redis::client::database_index(&d.database).is_err() {
+                    return Err(ValidationError::new(
+                        "database",
+                        "Database must be a number (0, 1, 2…)",
+                    ));
+                }
+                if d.auth != DbAuthMethod::Password {
+                    return Err(ValidationError::new(
+                        "auth",
+                        "Redis signs in with a password (and an optional ACL user)",
+                    ));
+                }
+                if d.agent_access {
+                    return Err(ValidationError::new(
+                        "agent_access",
+                        "Coding agents work with SQL connections only",
+                    ));
+                }
+            }
             Profile::Db(d) if d.engine.is_cloud_api() => {
                 if d.server.trim().is_empty() {
                     return Err(ValidationError::new("server", "Account ID is required"));
@@ -861,6 +936,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn redis_validation() {
+        let mut r = DbConnection::new("cache", Engine::Redis);
+        assert_eq!(r.port, 6379);
+        assert!(Profile::Db(r.clone()).validate().is_ok(), "no user needed");
+        r.database = "cache".into();
+        assert_eq!(
+            Profile::Db(r.clone()).validate().unwrap_err().field,
+            "database"
+        );
+        r.database = "2".into();
+        r.agent_access = true;
+        assert_eq!(
+            Profile::Db(r.clone()).validate().unwrap_err().field,
+            "agent_access"
+        );
+        r.agent_access = false;
+        let back: DbConnection = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+        assert_eq!(back.engine, Engine::Redis);
+    }
+
+    #[test]
+    fn mongodb_has_no_agent_access() {
+        let mut m = DbConnection::new("docs", Engine::MongoDb);
+        m.server = "localhost".into();
+        assert!(Profile::Db(m.clone()).validate().is_ok());
+        m.agent_access = true;
+        assert_eq!(Profile::Db(m).validate().unwrap_err().field, "agent_access");
+    }
+
+    #[test]
     fn port_forwards() {
         // Hosts saved before forwards existed still load.
         let mut v = serde_json::to_value(Host::new("web", "10.0.0.1", "deploy")).unwrap();
@@ -964,6 +1069,27 @@ mod tests {
         );
         cf.database = "9f1c-uuid".into();
         assert!(Profile::Db(cf).validate().is_ok(), "D1 needs no user");
+        let mut mg = DbConnection::new("docs", Engine::MongoDb);
+        assert!(
+            Profile::Db(mg.clone()).validate().is_ok(),
+            "MongoDB may run without authentication"
+        );
+        mg.server.clear();
+        assert!(Profile::Db(mg).validate().is_err());
+
+        let mut lite = DbConnection::new("local", Engine::Sqlite);
+        assert_eq!(
+            Profile::Db(lite.clone()).validate().unwrap_err().field,
+            "database"
+        );
+        lite.database = "~/data/app.db".into();
+        lite.server.clear();
+        assert!(
+            Profile::Db(lite.clone()).validate().is_ok(),
+            "SQLite needs no server, port or user"
+        );
+        lite.via_host = Some(ProfileId("h1".into()));
+        assert_eq!(Profile::Db(lite).validate().unwrap_err().field, "via_host");
 
         let mut sf = DbConnection::new("wh", Engine::Snowflake);
         sf.server = "myorg-acct".into();

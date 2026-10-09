@@ -924,7 +924,7 @@ fn folder_rows(
     let row = TreeRow::new;
     rows.push(TreeRow {
         caret: if show { "▾" } else { "▸" },
-        label: kind.folder_label().into(),
+        label: s.dialect().folder_label(kind).into(),
         sub: count.into(),
         loading: matches!(state, Some(Loadable::Loading)),
         ..row(depth, fkey)
@@ -1486,6 +1486,10 @@ impl Workspace {
                         .then(|| s.connection.as_ref().map(|c| c.id.clone()))
                         .flatten()
                 }
+                Tab::Redis(r) => {
+                    let r = r.read(cx);
+                    r.is_open().then(|| r.connection.id.clone())
+                }
                 _ => None,
             })
             .collect();
@@ -1923,7 +1927,12 @@ impl Workspace {
                         ui::button("new-conn", "New connection", ui::Kind::Secondary, p)
                             .flex_1()
                             .on_click(cx.listener(|this, _, w, cx| {
-                                this.open_conn_editor(ConnKind::Postgres, None, w, cx)
+                                this.open_conn_editor(
+                                    ConnKind::Db(switchyard_core::db::Engine::Postgres),
+                                    None,
+                                    w,
+                                    cx,
+                                )
                             })),
                     )
                     .child(
@@ -2687,6 +2696,14 @@ impl Workspace {
             _ if per_cell => {}
             None => lines.push(vec![("Select a row in the results".into(), p.fg3)]),
             Some((_, cols)) => {
+                // A document store's row is its document: show that, not the flattened
+                // columns.
+                let document = cols.iter().find_map(|(n, v, _)| match v {
+                    Value::Json(s) if n == switchyard_core::db::batch::DOCUMENT_COLUMN => {
+                        serde_json::from_str::<serde_json::Value>(s).ok()
+                    }
+                    _ => None,
+                });
                 let obj: serde_json::Map<String, serde_json::Value> = cols
                     .iter()
                     .map(|(n, v, _)| {
@@ -2704,8 +2721,10 @@ impl Workspace {
                         (n.clone(), j)
                     })
                     .collect();
-                let json = serde_json::to_string_pretty(&serde_json::Value::Object(obj))
-                    .unwrap_or_default();
+                let json = serde_json::to_string_pretty(
+                    &document.unwrap_or(serde_json::Value::Object(obj)),
+                )
+                .unwrap_or_default();
                 size_label = format!("{} bytes · UTF-8", json.len());
                 match fmt {
                     ViewerFormat::Json => {

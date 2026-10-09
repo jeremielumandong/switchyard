@@ -1,7 +1,7 @@
 //! Database contracts shared by every engine: the [`Driver`] / [`DbSession`] / [`Dialect`]
 //! traits, the [`Value`] type, columnar [`RowBatch`]es and [`ResultEvent`] streams.
 //!
-//! Engine-specific code lives in one module per driver (`pg`). Nothing outside a driver
+//! Engine-specific code lives in one module per driver (`pg`, `sqlite`, ...). Nothing outside a driver
 //! module should branch on [`Engine`]; dialect differences go through [`Dialect`].
 
 pub mod activity;
@@ -18,11 +18,14 @@ pub mod error;
 pub mod format;
 pub mod guard;
 pub mod mock;
+pub mod mongo;
 pub mod mssql;
 pub mod mysql;
 pub mod oracle;
 pub mod pg;
+pub mod redis;
 pub mod snowflake;
+pub mod sqlite;
 pub mod stream;
 pub mod tls;
 pub mod value;

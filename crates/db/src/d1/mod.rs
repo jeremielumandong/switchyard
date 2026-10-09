@@ -6,7 +6,7 @@
 //! id and `DbConfig::password` the API token. Interactive transactions do not exist; each
 //! request commits on its own.
 
-mod catalog;
+pub(crate) mod catalog;
 mod wire;
 
 use std::sync::Arc;
@@ -70,7 +70,7 @@ impl Driver for D1Driver {
     }
 
     fn dialect(&self) -> &dyn Dialect {
-        &SqliteDialect
+        &SqliteDialect::D1
     }
 
     fn requirements(&self, _cfg: &DbConfig) -> Vec<ComponentId> {

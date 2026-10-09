@@ -110,12 +110,22 @@ fn builtin(engine: Engine, prefix: &str, name: &str, body: &str) -> Snippet {
 
 /// Snippets shipped with the app for `engine`, in display order.
 pub fn builtin_snippets(engine: Engine) -> Vec<Snippet> {
+    if !engine.is_sql() {
+        return Vec::new();
+    }
+    if engine == Engine::MongoDb {
+        return mongo_snippets();
+    }
     let select = match engine {
         Engine::SqlServer => "SELECT TOP (${3:100}) ${2:*}\nFROM ${1:table_name};",
         Engine::Oracle => "SELECT ${2:*}\nFROM ${1:table_name}\nFETCH FIRST ${3:100} ROWS ONLY;",
-        Engine::Postgres | Engine::D1 | Engine::Snowflake | Engine::MySql => {
-            "SELECT ${2:*}\nFROM ${1:table_name}\nLIMIT ${3:100};"
-        }
+        Engine::Postgres
+        | Engine::D1
+        | Engine::Snowflake
+        | Engine::MySql
+        | Engine::MongoDb
+        | Engine::Sqlite
+        | Engine::Redis => "SELECT ${2:*}\nFROM ${1:table_name}\nLIMIT ${3:100};",
     };
     let mut out = vec![
         builtin(engine, "sel", "Select rows", select),
@@ -151,17 +161,54 @@ pub fn builtin_snippets(engine: Engine) -> Vec<Snippet> {
         Engine::SqlServer => {
             Some("BEGIN TRANSACTION;\n\n${1:-- statements}\n\nCOMMIT TRANSACTION;")
         }
-        Engine::Postgres => Some("BEGIN;\n\n${1:-- statements}\n\nCOMMIT;"),
+        Engine::Postgres | Engine::Sqlite => Some("BEGIN;\n\n${1:-- statements}\n\nCOMMIT;"),
         Engine::MySql => Some("START TRANSACTION;\n\n${1:-- statements}\n\nCOMMIT;"),
         // Oracle starts a transaction implicitly with the first DML.
         Engine::Oracle => Some("SET TRANSACTION READ WRITE;\n\n${1:-- statements}\n\nCOMMIT;"),
         // Not supported over these engines' HTTP APIs (`Engine::supports_transactions`).
-        Engine::D1 | Engine::Snowflake => None,
+        Engine::D1 | Engine::Snowflake | Engine::MongoDb | Engine::Redis => None,
     };
     if let Some(body) = tran {
         out.push(builtin(engine, "tran", "Transaction", body));
     }
     out
+}
+
+/// MongoDB shell snippets (same prefixes as the SQL ones where the idea matches).
+fn mongo_snippets() -> Vec<Snippet> {
+    let e = Engine::MongoDb;
+    vec![
+        builtin(
+            e,
+            "sel",
+            "Find documents",
+            "db.${1:collection}.find({ ${2:field}: ${3:value} }).limit(${4:100})",
+        ),
+        builtin(
+            e,
+            "ins",
+            "Insert document",
+            "db.${1:collection}.insertOne({ ${2:field}: ${3:value} })",
+        ),
+        builtin(
+            e,
+            "upd",
+            "Update with filter",
+            "db.${1:collection}.updateOne(\n  { ${2:_id}: ${3:value} },\n  { $set: { ${4:field}: ${5:value} } }\n)",
+        ),
+        builtin(
+            e,
+            "agg",
+            "Aggregate (group and count)",
+            "db.${1:collection}.aggregate([\n  { $match: { ${2:field}: ${3:value} } },\n  { $group: { _id: \"$${4:key}\", count: { $sum: 1 } } },\n  { $sort: { count: -1 } }\n])",
+        ),
+        builtin(
+            e,
+            "idx",
+            "Create index",
+            "db.${1:collection}.createIndex({ ${2:field}: 1 })",
+        ),
+    ]
 }
 
 /// Built-ins plus user snippets that apply to `engine`. A user snippet with the same
@@ -287,6 +334,8 @@ mod tests {
             Engine::Snowflake,
             Engine::D1,
             Engine::MySql,
+            Engine::MongoDb,
+            Engine::Sqlite,
         ] {
             let rendered: String = builtin_snippets(engine)
                 .iter()

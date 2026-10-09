@@ -114,6 +114,10 @@ fn word_at(code: &str, i: usize) -> &str {
 
 /// Format a script. Statements are separated by a blank line.
 pub fn format_sql(sql: &str, flavor: Flavor) -> String {
+    if flavor == Flavor::JavaScript {
+        // Shell statements are not SQL: leave them as written.
+        return sql.to_owned();
+    }
     let segs = lexer::segments(sql, flavor);
     let mut out = String::with_capacity(sql.len() + 64);
     let mut depth: usize = 0;

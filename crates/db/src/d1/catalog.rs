@@ -44,7 +44,7 @@ const DETAIL_TRIGGERS: &str =
 
 /// Timing and event of a SQLite trigger from its `CREATE TRIGGER` text (D1 keeps no
 /// separate columns for them). Defaults to SQLite's own default, `BEFORE`.
-fn trigger_timing(sql: &str) -> (String, String) {
+pub(crate) fn trigger_timing(sql: &str) -> (String, String) {
     let words: Vec<String> = sql
         .split(|c: char| c.is_whitespace() || c == '(' || c == ';')
         .filter(|w| !w.is_empty())

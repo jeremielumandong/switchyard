@@ -201,13 +201,16 @@ async fn read_only(
                 .await
                 .map_err(|e| e.to_string())?;
         }
-        Engine::SqlServer => s.begin().await.map_err(|e| e.to_string())?,
+        // Rolled back below whatever the statement did.
+        Engine::SqlServer | Engine::Sqlite => s.begin().await.map_err(|e| e.to_string())?,
         // MySQL fixes a transaction's access mode when it starts.
         Engine::MySql => drain(s.execute("START TRANSACTION READ ONLY", &[]).await)
             .await
             .map_err(|e| e.to_string())?,
         // No transactions across requests: the SELECT-only check is the guard.
-        Engine::D1 | Engine::Snowflake => {}
+        Engine::D1 | Engine::Snowflake | Engine::MongoDb => {}
+        // Never a SQL session; agent tools are SQL only.
+        Engine::Redis => return Err("Redis connections have no SQL tools".into()),
     }
     let mut stream = s.execute(sql, &[]).await.map_err(|e| e.to_string())?;
     let mut out = AgentRows {

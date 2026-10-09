@@ -191,8 +191,15 @@ pub async fn workload(session: &mut dyn DbSession, engine: Engine) -> Result<Wor
     match engine {
         Engine::Postgres => postgres(session).await,
         Engine::SqlServer => sql_server(session).await,
-        Engine::D1 => Err(PlanError::Unsupported(
-            "workload statistics are not available for Cloudflare D1".into(),
+        Engine::D1 | Engine::Redis => Err(PlanError::Unsupported(format!(
+            "workload statistics are not available for {}",
+            engine.display_name()
+        ))),
+        Engine::MongoDb => Err(PlanError::Unsupported(
+            "workload statistics are not available for MongoDB yet".into(),
+        )),
+        Engine::Sqlite => Err(PlanError::Unsupported(
+            "SQLite keeps no workload statistics".into(),
         )),
         Engine::Snowflake => Err(PlanError::Unsupported(
             "workload statistics are not available for Snowflake yet".into(),

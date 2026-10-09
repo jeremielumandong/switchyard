@@ -27,6 +27,7 @@ mod object_tab;
 mod overlays;
 mod palette;
 mod plan_view;
+mod redis_tab;
 mod remote_files;
 mod result_diff;
 mod sidebar;
