@@ -69,7 +69,7 @@ fn entry(name: String, attrs: &FileAttributes, kind: EntryKind) -> FileEntry {
     }
 }
 
-fn join(dir: &Path, name: &str) -> PathBuf {
+pub(crate) fn join(dir: &Path, name: &str) -> PathBuf {
     let d = posix(dir);
     PathBuf::from(if d.ends_with('/') {
         format!("{d}{name}")

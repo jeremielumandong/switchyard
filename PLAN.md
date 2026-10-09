@@ -271,9 +271,10 @@ Exit: resume an interrupted 1 GB upload.
   implementations for local and SFTP (`russh-sftp` on the Host session).
   Done when: shared test suite passes for local and SFTP.
   Note: `RemoteFs` gained stat, read/write streams and whole-file read/write; `SftpFs` (russh-sftp) runs on the Host's shared session. Shared suite: local unit test + SFTP integration test (listing, overwrite, size cap, 3 MB stream, rename, delete). chmod deferred.
-- [ ] **M4-2 FTP/FTPS.** `suppaftp` implementation of `RemoteFs`; explicit and implicit TLS;
+- [x] **M4-2 FTP/FTPS.** `suppaftp` implementation of `RemoteFs`; explicit and implicit TLS;
   passive and active modes.
   Done when: shared test suite passes against the docker FTP server.
+  Note: `remote::ftp::FtpFs` (suppaftp + rustls/ring): plain, explicit and implicit TLS (verification on, optional per-connection PEM), passive (NAT-safe, EPSV on IPv6) and active; one browsing connection, one connection per transfer stream; resume via REST+RETR and APPE (REST+STOR). FTP connections show in the Files tab source picker (`FsRef::Ftp`), open from the sidebar, and the editor tests them and has a default path. Suite (`remote/tests/ftp.rs`) passes for explicit, implicit, plain passive and plain active against three vsftpd services; CI runs it. Trusted-cert UI deferred.
 - [x] **M4-3 Transfer queue.** Parallel transfers (default 4), pause, resume, retry; resume from
   offset (SFTP) and REST (FTP); progress, speed, ETA events.
   Done when: a killed 1 GB upload resumes from its last byte.
@@ -795,3 +796,8 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   The grid row filter still runs on the UI thread per keystroke (now allocation-free).
 - Assistant on Hosts: "always allow this command on this Host" for repeat read-only commands;
   approvals from an interactive "Open in terminal" run show in the panel, not the terminal.
+- FTP: store a per-connection trusted certificate (`FtpConfig::trusted_ca_pem`, like
+  `DbConfig::trusted_ca_pem`, also not in profiles) and offer "trust this certificate" when
+  verification fails; FTP through a Host tunnel; chmod (`SITE CHMOD`); reuse idle transfer
+  connections instead of logging in per file; a cancelled browse command can leave the
+  shared control connection mid-reply (reconnect then).

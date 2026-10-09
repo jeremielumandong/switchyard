@@ -97,7 +97,7 @@ impl Pane {
     }
 
     fn posix(&self) -> bool {
-        matches!(self.fs, FsRef::Host(_)) || cfg!(unix)
+        self.fs.is_remote() || cfg!(unix)
     }
 
     fn join(&self, dir: &Path, name: &str) -> PathBuf {
@@ -172,7 +172,8 @@ pub struct FilesTab {
     transfers: Entity<Transfers>,
     panes: [Pane; 2],
     active: usize,
-    hosts: Vec<(ProfileId, String)>,
+    /// What the right pane can show: Hosts (SFTP) and FTP connections, with names.
+    sources: Vec<(FsRef, String)>,
     picker_open: bool,
     edit: Option<(usize, Edit, Entity<InputState>)>,
     /// A pane's "go to folder" box while it is open.
@@ -185,6 +186,18 @@ pub struct FilesTab {
 
 impl EventEmitter<FilesTabEvent> for FilesTab {}
 
+/// The display name of `fs` among `sources`.
+fn source_name(sources: &[(FsRef, String)], fs: &FsRef) -> String {
+    match fs {
+        FsRef::Local => "This computer".into(),
+        _ => sources
+            .iter()
+            .find(|(s, _)| s == fs)
+            .map(|(_, n)| n.clone())
+            .unwrap_or_default(),
+    }
+}
+
 fn fmt_time(ms: i64) -> String {
     let days = ms.div_euclid(86_400_000);
     let (y, m, d) = switchyard_core::db::value::civil_from_days(days);
@@ -193,31 +206,21 @@ fn fmt_time(ms: i64) -> String {
 }
 
 impl FilesTab {
-    /// Local on the left; `right` is a Host (or this computer).
+    /// Local on the left; `right` is a Host, an FTP connection or this computer.
     pub fn new(
         core: RuntimeHandle,
         transfers: Entity<Transfers>,
-        hosts: Vec<(ProfileId, String)>,
-        right: Option<ProfileId>,
+        sources: Vec<(FsRef, String)>,
+        right: FsRef,
         cx: &mut Context<Self>,
     ) -> Self {
-        let right_pane = match &right {
-            Some(h) => {
-                let name = hosts
-                    .iter()
-                    .find(|(id, _)| id == h)
-                    .map(|(_, n)| n.clone())
-                    .unwrap_or_default();
-                Pane::new(FsRef::Host(h.clone()), name)
-            }
-            None => Pane::new(FsRef::Local, "This computer".into()),
-        };
+        let right_pane = Pane::new(right.clone(), source_name(&sources, &right));
         let mut this = Self {
             core,
             transfers,
             panes: [Pane::new(FsRef::Local, "This computer".into()), right_pane],
             active: 0,
-            hosts,
+            sources,
             picker_open: false,
             edit: None,
             goto: None,
@@ -235,37 +238,31 @@ impl FilesTab {
     pub fn right_host(&self) -> Option<&ProfileId> {
         match &self.panes[1].fs {
             FsRef::Host(h) => Some(h),
-            FsRef::Local => None,
+            FsRef::Local | FsRef::Ftp(_) => None,
         }
     }
 
-    /// Point the right pane at a Host (or this computer).
-    pub fn show_host(&mut self, host: Option<ProfileId>, cx: &mut Context<Self>) {
+    /// What the right pane shows.
+    pub fn right_source(&self) -> &FsRef {
+        &self.panes[1].fs
+    }
+
+    /// Point the right pane at a Host, an FTP connection or this computer.
+    pub fn show(&mut self, fs: FsRef, cx: &mut Context<Self>) {
         self.picker_open = false;
-        let pane = match host {
-            Some(h) => {
-                let name = self
-                    .hosts
-                    .iter()
-                    .find(|(id, _)| *id == h)
-                    .map(|(_, n)| n.clone())
-                    .unwrap_or_default();
-                Pane::new(FsRef::Host(h), name)
-            }
-            None => Pane::new(FsRef::Local, "This computer".into()),
-        };
-        self.panes[1] = pane;
+        let name = source_name(&self.sources, &fs);
+        self.panes[1] = Pane::new(fs, name);
         self.list(1, None, cx);
     }
 
-    /// Hosts for the right pane's picker.
-    pub fn set_hosts(&mut self, hosts: Vec<(ProfileId, String)>, cx: &mut Context<Self>) {
-        if let FsRef::Host(h) = &self.panes[1].fs
-            && let Some((_, n)) = hosts.iter().find(|(id, _)| id == h)
+    /// Hosts and FTP connections for the right pane's picker.
+    pub fn set_sources(&mut self, sources: Vec<(FsRef, String)>, cx: &mut Context<Self>) {
+        if self.panes[1].fs.is_remote()
+            && let Some((_, n)) = sources.iter().find(|(fs, _)| *fs == self.panes[1].fs)
         {
             self.panes[1].label = n.clone();
         }
-        self.hosts = hosts;
+        self.sources = sources;
         cx.notify();
     }
 
@@ -855,10 +852,10 @@ impl FilesTab {
                 .p(px(14.))
                 .text_size(px(12.))
                 .text_color(p.fg3)
-                .child(if matches!(pane.fs, FsRef::Host(_)) {
-                    "Opening SFTP on the Host's session…"
-                } else {
-                    "Loading…"
+                .child(match pane.fs {
+                    FsRef::Host(_) => "Opening SFTP on the Host's session…",
+                    FsRef::Ftp(_) => "Connecting to the FTP server…",
+                    FsRef::Local => "Loading…",
                 })
                 .into_any_element()
         } else if count == 0 {
@@ -978,12 +975,8 @@ impl FilesTab {
         };
 
         let picker: Option<AnyElement> = (ix == 1 && self.picker_open).then(|| {
-            let mut items: Vec<(Option<ProfileId>, String)> = vec![(None, "This computer".into())];
-            items.extend(
-                self.hosts
-                    .iter()
-                    .map(|(id, n)| (Some(id.clone()), n.clone())),
-            );
+            let mut items: Vec<(FsRef, String)> = vec![(FsRef::Local, "This computer".into())];
+            items.extend(self.sources.iter().cloned());
             deferred(
                 div()
                     .absolute()
@@ -996,7 +989,12 @@ impl FilesTab {
                     .border_color(p.bd2)
                     .rounded(px(6.))
                     .shadow(ui::shadow(p))
-                    .children(items.into_iter().enumerate().map(|(i, (id, name))| {
+                    .children(items.into_iter().enumerate().map(|(i, (fs, name))| {
+                        let badge = match fs {
+                            FsRef::Local => "FS",
+                            FsRef::Host(_) => "SSH",
+                            FsRef::Ftp(_) => "FTP",
+                        };
                         div()
                             .id(SharedString::from(format!("files-pick-{i}")))
                             .px(px(10.))
@@ -1006,15 +1004,13 @@ impl FilesTab {
                             .gap(px(6.))
                             .text_size(px(12.))
                             .hover(|s| s.bg(p.hover))
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| this.show_host(id.clone(), cx)),
-                            )
+                            .on_click(cx.listener(move |this, _, _, cx| this.show(fs.clone(), cx)))
                             .child(
                                 div()
                                     .text_color(p.fg3)
                                     .font_family(MONO)
                                     .text_size(px(9.))
-                                    .child(if i == 0 { "FS" } else { "SSH" }),
+                                    .child(badge),
                             )
                             .child(name)
                     })),
