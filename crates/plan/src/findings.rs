@@ -528,4 +528,337 @@ mod tests {
         assert!(compared_columns("(lower(email) = 'x'::text)").is_empty());
         assert_eq!(fmt_rows(1234567.0), "1,234,567");
     }
+
+    use crate::model::{Io, MissingIndex, PlanKind, Predicate};
+
+    fn node(op: &str, object: Option<&str>) -> PlanNode {
+        PlanNode {
+            object: object.map(str::to_owned),
+            ..PlanNode::op(op)
+        }
+    }
+
+    fn timed(mut n: PlanNode, total: f64, children: Vec<PlanNode>) -> PlanNode {
+        n.total_time_ms = Some(total);
+        n.children = children;
+        n
+    }
+
+    fn actual(source: PlanSource, root: PlanNode) -> Plan {
+        Plan::new(source, PlanKind::Actual, "select", root)
+    }
+
+    fn of(plan: &Plan, rule: Rule) -> Vec<Finding> {
+        analyze(plan, &Thresholds::default())
+            .into_iter()
+            .filter(|f| f.rule == rule)
+            .collect()
+    }
+
+    #[test]
+    fn rows_format_with_separators_and_sign() {
+        assert_eq!(fmt_rows(0.0), "0");
+        assert_eq!(fmt_rows(999.4), "999");
+        assert_eq!(fmt_rows(1000.0), "1,000");
+        assert_eq!(fmt_rows(-12345.0), "-12,345");
+    }
+
+    #[test]
+    fn tables_come_from_objects_per_engine() {
+        let pg = node("Index Scan", Some("orders.orders_pkey"));
+        assert_eq!(
+            table_of(&pg, PlanSource::Postgres).as_deref(),
+            Some("orders")
+        );
+        let ms = node("Index Seek", Some("dbo.orders.ix_status"));
+        assert_eq!(
+            table_of(&ms, PlanSource::SqlServer).as_deref(),
+            Some("dbo.orders")
+        );
+        let short = node("Table Scan", Some("orders"));
+        assert_eq!(
+            table_of(&short, PlanSource::SqlServer).as_deref(),
+            Some("orders")
+        );
+        assert_eq!(table_of(&PlanNode::op("Sort"), PlanSource::Postgres), None);
+    }
+
+    #[test]
+    fn rows_read_prefers_measured_counts() {
+        let mut n = PlanNode::op("Seq Scan");
+        assert_eq!(rows_read(&n), None);
+        n.estimated_rows = Some(10.0);
+        assert_eq!(rows_read(&n), Some(10.0));
+        n.details.insert("Estimated Rows Read".into(), "500".into());
+        assert_eq!(rows_read(&n), Some(500.0));
+        n.actual_rows = Some(5.0);
+        n.loops = Some(4.0);
+        n.details
+            .insert("Rows Removed by Filter".into(), "95".into());
+        assert_eq!(rows_read(&n), Some(400.0));
+        n.details.insert("Actual Rows Read".into(), "7".into());
+        assert_eq!(rows_read(&n), Some(7.0));
+    }
+
+    #[test]
+    fn full_scan_needs_enough_rows_and_suggests_an_index_from_the_filter() {
+        let mut scan = node("Seq Scan", Some("orders"));
+        scan.estimated_rows = Some(9_999.0);
+        let plan = Plan::new(PlanSource::Postgres, PlanKind::Estimated, "q", scan.clone());
+        assert!(of(&plan, Rule::FullScan).is_empty());
+
+        scan.estimated_rows = Some(20_000.0);
+        scan.predicates.push(Predicate {
+            kind: "Filter".into(),
+            text: "((total > '5'::numeric) AND (status = 'new'::text))".into(),
+        });
+        let plan = Plan::new(PlanSource::Postgres, PlanKind::Estimated, "q", scan);
+        let f = of(&plan, Rule::FullScan);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].detail, "Reads 20,000 rows.");
+        assert_eq!(
+            f[0].suggestion.as_deref(),
+            Some("CREATE INDEX ON orders (status, total);")
+        );
+
+        // SQL Server scans get generic advice; an Index Seek is not a scan.
+        let ms = node("Clustered Index Scan", Some("dbo.orders.pk"));
+        let ms = PlanNode {
+            estimated_rows: Some(50_000.0),
+            ..ms
+        };
+        let plan = Plan::new(PlanSource::SqlServer, PlanKind::Estimated, "q", ms);
+        let f = of(&plan, Rule::FullScan);
+        assert_eq!(f.len(), 1);
+        assert!(
+            f[0].suggestion
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("Add an index")
+        );
+        let seek = PlanNode {
+            estimated_rows: Some(50_000.0),
+            ..node("Index Seek", Some("dbo.orders.ix"))
+        };
+        let plan = Plan::new(PlanSource::SqlServer, PlanKind::Estimated, "q", seek);
+        assert!(of(&plan, Rule::FullScan).is_empty());
+    }
+
+    #[test]
+    fn over_estimates_below_a_limit_are_expected_but_under_estimates_are_not() {
+        let mut over = node("Index Scan", Some("orders.orders_pkey"));
+        over.estimated_rows = Some(10_000.0);
+        over.actual_rows = Some(10.0);
+        let limited = actual(
+            PlanSource::Postgres,
+            timed(
+                PlanNode::op("Limit"),
+                1.0,
+                vec![timed(over.clone(), 1.0, vec![])],
+            ),
+        );
+        assert!(of(&limited, Rule::BadEstimate).is_empty());
+
+        let unlimited = actual(PlanSource::Postgres, timed(over, 1.0, vec![]));
+        let f = of(&unlimited, Rule::BadEstimate);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].title, "Rows over-estimated 1000× at Index Scan");
+        assert_eq!(f[0].suggestion.as_deref(), Some("ANALYZE orders;"));
+
+        let mut under = node("Index Seek", Some("dbo.orders.ix_status"));
+        under.estimated_rows = Some(1.0);
+        under.actual_rows = Some(5_000.0);
+        let plan = actual(
+            PlanSource::SqlServer,
+            timed(PlanNode::op("Top"), 1.0, vec![timed(under, 1.0, vec![])]),
+        );
+        let f = of(&plan, Rule::BadEstimate);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].title, "Rows under-estimated 5000× at Index Seek");
+        assert_eq!(
+            f[0].suggestion.as_deref(),
+            Some("UPDATE STATISTICS dbo.orders;")
+        );
+    }
+
+    #[test]
+    fn small_estimates_are_ignored() {
+        let mut n = PlanNode::op("Index Scan");
+        n.estimated_rows = Some(1.0);
+        n.actual_rows = Some(99.0);
+        let plan = actual(PlanSource::Postgres, timed(n, 1.0, vec![]));
+        assert!(of(&plan, Rule::BadEstimate).is_empty());
+    }
+
+    #[test]
+    fn filter_removal_counts_every_loop() {
+        let mut n = node("Index Scan", Some("items"));
+        n.actual_rows = Some(1.0);
+        n.loops = Some(20.0);
+        n.details
+            .insert("Rows Removed by Filter".into(), "99".into());
+        let plan = actual(PlanSource::Postgres, timed(n.clone(), 1.0, vec![]));
+        let f = of(&plan, Rule::RowsRemovedByFilter);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].title, "Filter discards 99% of rows at items");
+        assert_eq!(f[0].detail, "Read 2,000 rows to return 20.");
+
+        // Fewer than 1,000 rows removed in total is not worth a finding.
+        n.loops = Some(10.0);
+        let plan = actual(PlanSource::Postgres, timed(n, 1.0, vec![]));
+        assert!(of(&plan, Rule::RowsRemovedByFilter).is_empty());
+    }
+
+    #[test]
+    fn spills_show_from_temp_pages_only_on_sorts_and_hashes() {
+        let io = Io {
+            temp_written: Some(1234.0),
+            ..Io::default()
+        };
+        let sort = PlanNode {
+            io,
+            ..PlanNode::op("Sort")
+        };
+        let plan = actual(PlanSource::Postgres, timed(sort, 1.0, vec![]));
+        let f = of(&plan, Rule::Spill);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].detail, "Wrote 1,234 temporary pages.");
+        assert!(
+            f[0].suggestion
+                .as_deref()
+                .unwrap_or("")
+                .contains("work_mem")
+        );
+
+        let cte = PlanNode {
+            io,
+            ..PlanNode::op("CTE Scan")
+        };
+        let plan = actual(PlanSource::Postgres, timed(cte, 1.0, vec![]));
+        assert!(of(&plan, Rule::Spill).is_empty());
+
+        let mut hash = PlanNode::op("Hash Match");
+        hash.warnings
+            .push("Operator used tempdb to spill data during execution".into());
+        let plan = actual(PlanSource::SqlServer, timed(hash, 1.0, vec![]));
+        let f = of(&plan, Rule::Spill);
+        assert_eq!(f.len(), 1);
+        assert!(f[0].detail.contains("tempdb"));
+        assert!(
+            f[0].suggestion
+                .as_deref()
+                .unwrap_or("")
+                .contains("memory grant")
+        );
+    }
+
+    #[test]
+    fn key_lookups_below_the_threshold_are_skipped() {
+        let mut lookup = node("Key Lookup", Some("dbo.orders.pk"));
+        let plan = Plan::new(
+            PlanSource::SqlServer,
+            PlanKind::Estimated,
+            "q",
+            lookup.clone(),
+        );
+        let f = of(&plan, Rule::KeyLookup);
+        assert_eq!(f.len(), 1, "estimated plans have no execution count");
+        assert_eq!(f[0].detail, "Looks up the base row many times.");
+
+        lookup.loops = Some(99.0);
+        let plan = actual(PlanSource::SqlServer, timed(lookup.clone(), 1.0, vec![]));
+        assert!(of(&plan, Rule::KeyLookup).is_empty());
+        lookup.loops = Some(1500.0);
+        let plan = actual(PlanSource::SqlServer, timed(lookup, 1.0, vec![]));
+        assert_eq!(
+            of(&plan, Rule::KeyLookup)[0].detail,
+            "Looks up the base row 1,500 times."
+        );
+    }
+
+    #[test]
+    fn casts_on_columns_are_implicit_conversions() {
+        let mut n = node("Seq Scan", Some("users"));
+        n.predicates.push(Predicate {
+            kind: "Filter".into(),
+            text: "((phone)::bigint = 5551234)".into(),
+        });
+        let plan = actual(PlanSource::Postgres, timed(n, 1.0, vec![]));
+        let f = of(&plan, Rule::ImplicitConversion);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].detail, "Filter: ((phone)::bigint = 5551234)");
+
+        // A cast on the constant side does not block an index.
+        let mut n = node("Seq Scan", Some("users"));
+        n.predicates.push(Predicate {
+            kind: "Filter".into(),
+            text: "(status = 'new'::text)".into(),
+        });
+        let plan = actual(PlanSource::Postgres, timed(n, 1.0, vec![]));
+        assert!(of(&plan, Rule::ImplicitConversion).is_empty());
+    }
+
+    #[test]
+    fn severity_follows_the_share_of_the_plan() {
+        // Three scans taking 50%, 20% and 5% of the time.
+        let scan = |table: &str, total: f64| {
+            let mut n = node("Seq Scan", Some(table));
+            n.actual_rows = Some(50_000.0);
+            timed(n, total, vec![])
+        };
+        let root = timed(
+            PlanNode::op("Append"),
+            100.0,
+            vec![scan("big", 50.0), scan("mid", 20.0), scan("small", 5.0)],
+        );
+        let plan = actual(PlanSource::Postgres, root);
+        let f = of(&plan, Rule::FullScan);
+        let sev: Vec<(&str, Severity)> = f.iter().map(|f| (f.title.as_str(), f.severity)).collect();
+        assert_eq!(
+            sev,
+            [
+                ("Seq Scan on big", Severity::High),
+                ("Seq Scan on mid", Severity::Medium),
+                ("Seq Scan on small", Severity::Low),
+            ]
+        );
+        assert!(f.windows(2).all(|w| w[0].score >= w[1].score));
+    }
+
+    #[test]
+    fn engine_missing_indexes_point_at_the_heaviest_matching_node() {
+        let cheap = PlanNode {
+            cost: Some(5.0),
+            ..node("Index Seek", Some("dbo.orders.ix_a"))
+        };
+        let heavy = PlanNode {
+            cost: Some(80.0),
+            ..node("Clustered Index Scan", Some("dbo.orders.pk"))
+        };
+        let other = PlanNode {
+            cost: Some(10.0),
+            ..node("Clustered Index Scan", Some("dbo.customers.pk"))
+        };
+        let root = PlanNode {
+            cost: Some(100.0),
+            children: vec![cheap, heavy, other],
+            ..PlanNode::op("Nested Loops")
+        };
+        let mut plan = Plan::new(PlanSource::SqlServer, PlanKind::Estimated, "q", root);
+        plan.missing_indexes.push(MissingIndex {
+            impact: None,
+            table: "[dbo].[orders]".into(),
+            equality: vec!["[status]".into()],
+            inequality: Vec::new(),
+            include: Vec::new(),
+        });
+        let f = of(&plan, Rule::MissingIndex);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].title, "Missing index on dbo.orders");
+        assert_eq!(f[0].node_id, Some(2));
+        assert_eq!(f[0].detail, "SQL Server estimates 0% improvement.");
+        // No impact reported: ranked as a medium (50%) one.
+        assert_eq!(f[0].severity, Severity::High);
+        assert!((f[0].score - 0.9 * 0.75).abs() < 1e-9);
+    }
 }
