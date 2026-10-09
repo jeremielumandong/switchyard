@@ -214,8 +214,9 @@ async fn run_shell(
     feeder: &mut Feeder,
     input: &mut mpsc::UnboundedReceiver<TermInput>,
     startup: &[u8],
+    env: &[(String, String)],
 ) -> Result<ShellEnd, SshError> {
-    let mut ch = conn.open_shell(size.cols, size.rows).await?;
+    let mut ch = conn.open_shell_with_env(size.cols, size.rows, env).await?;
     if !startup.is_empty() {
         // Typed like keystrokes; the shell reads them once its prompt is up.
         let _ = ch.data(startup).await;
@@ -268,11 +269,40 @@ pub struct SshTerminalSpec {
     pub size: TermSize,
     /// Typed into every new shell (each reconnect too): see [`shell_startup`].
     pub startup: Vec<u8>,
+    /// Environment variables sent with every new shell.
+    pub env: Vec<(String, String)>,
 }
 
-/// What to type into a new shell on `host`: the bytes of its connect macro.
-pub fn shell_startup(connect_macro: Option<&[u8]>) -> Vec<u8> {
-    connect_macro.map(<[u8]>::to_vec).unwrap_or_default()
+/// A folder as a POSIX shell word: single-quoted, with a leading `~` or `~/` left
+/// outside the quotes so it still expands.
+fn shell_dir(dir: &str) -> String {
+    let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+    match dir {
+        "~" => "~".to_owned(),
+        d if d.starts_with("~/") => format!("~/{}", quote(&d[2..])),
+        d => quote(d),
+    }
+}
+
+/// What to type into a new shell on a Host: `cd` to its start folder, its startup
+/// command, then its connect macro.
+pub fn shell_startup(
+    start_directory: Option<&str>,
+    startup_command: Option<&str>,
+    connect_macro: Option<&[u8]>,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    if let Some(dir) = start_directory.map(str::trim).filter(|d| !d.is_empty()) {
+        out.extend_from_slice(format!("cd -- {}\r", shell_dir(dir)).as_bytes());
+    }
+    if let Some(cmd) = startup_command.map(str::trim).filter(|c| !c.is_empty()) {
+        out.extend_from_slice(cmd.as_bytes());
+        out.push(b'\r');
+    }
+    if let Some(m) = connect_macro {
+        out.extend_from_slice(m);
+    }
+    out
 }
 
 impl Terminals {
@@ -290,6 +320,7 @@ impl Terminals {
             target,
             mut size,
             startup,
+            env,
         } = spec;
         let (tx, mut rx) = mpsc::unbounded_channel::<TermInput>();
         let input: InputFn = Arc::new(move |msg| {
@@ -353,7 +384,7 @@ impl Terminals {
                         description: conn.description.clone(),
                     },
                 });
-                match run_shell(&conn, &mut size, &mut feeder, &mut rx, &startup).await {
+                match run_shell(&conn, &mut size, &mut feeder, &mut rx, &startup, &env).await {
                     Ok(ShellEnd::Exited(code)) => {
                         registry.remove(term);
                         events.emit(Event::TerminalExited {
@@ -426,5 +457,24 @@ async fn backoff(
                 Some(_) => {}
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_cds_runs_the_command_then_the_macro() {
+        assert!(shell_startup(None, Some("  "), None).is_empty());
+        assert_eq!(
+            shell_startup(Some("/srv/my app"), Some("tmux attach"), Some(b"ls\r")),
+            b"cd -- '/srv/my app'\rtmux attach\rls\r"
+        );
+        assert_eq!(
+            shell_startup(Some("~/it's"), None, None),
+            b"cd -- ~/'it'\\''s'\r"
+        );
+        assert_eq!(shell_startup(Some("~"), None, None), b"cd -- ~\r");
     }
 }

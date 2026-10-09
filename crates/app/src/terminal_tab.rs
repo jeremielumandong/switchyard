@@ -17,14 +17,15 @@ use gpui_kit::{
     StrikethroughStyle, Styled as _, Subscription, TextAlign, TextRun, UnderlineStyle, WeakEntity,
     Window, canvas, div, fill, font, outline, point, px, size,
 };
+use switchyard_core::store::macros::{MAX_MACRO_BYTES, escape_input};
+use switchyard_core::store::model::parse_hex_color;
 use switchyard_core::store::{EnvironmentLabel, ProfileId};
+use switchyard_core::store::{Macro, TerminalColors};
 use switchyard_core::term::input::{
     Key, Mods, MouseAction, MouseButton as TermButton, encode_key, encode_mouse, encode_paste,
 };
 use switchyard_core::term::links::url_at;
 use switchyard_core::term::{CursorShape, Mark, Snapshot, TermColor, TermSize, Terminal};
-use switchyard_core::store::Macro;
-use switchyard_core::store::macros::{MAX_MACRO_BYTES, escape_input};
 use switchyard_core::term_settings::{HighlightRule, highlight_spans};
 use switchyard_core::{Command, RuntimeHandle, TermId, TermLogState, TermStatus, TermTarget};
 
@@ -114,6 +115,8 @@ pub struct TerminalTab {
     macro_save: Option<(Vec<u8>, Entity<InputState>)>,
     /// The Macros menu is open.
     macro_menu: bool,
+    /// The Host's terminal colors (text, background) instead of the theme's (MX-6).
+    colors: (Option<Hsla>, Option<Hsla>),
     /// A coding CLI with Switchyard's tools ("Open in terminal"): (CLI, connection).
     agent: Option<(
         Option<switchyard_core::agents::AgentKind>,
@@ -157,6 +160,7 @@ impl TerminalTab {
             recording: None,
             macro_save: None,
             macro_menu: false,
+            colors: (None, None),
             agent: None,
         };
         this.add_pane(cx);
@@ -188,10 +192,28 @@ impl TerminalTab {
             recording: None,
             macro_save: None,
             macro_menu: false,
+            colors: (None, None),
             agent: Some((agent, connection)),
         };
         this.add_pane(cx);
         this
+    }
+
+    /// Draw with a Host's own terminal colors.
+    pub fn with_colors(mut self, colors: Option<&TerminalColors>) -> Self {
+        let hex = |v: &Option<String>| {
+            let (r, g, b) = parse_hex_color(v.as_deref()?)?;
+            Some(Hsla::from(gpui_kit::Rgba {
+                r: f32::from(r) / 255.,
+                g: f32::from(g) / 255.,
+                b: f32::from(b) / 255.,
+                a: 1.,
+            }))
+        };
+        if let Some(c) = colors {
+            self.colors = (hex(&c.foreground), hex(&c.background));
+        }
+        self
     }
 
     /// Type `input` into the first shell once it is up.
@@ -766,9 +788,7 @@ impl TerminalTab {
                 .child(
                     ui::button("t-macro-save", "Save", Kind::Primary, p)
                         .h(px(22.))
-                        .on_click(
-                            cx.listener(|this, _, w, cx| this.finish_recording(true, w, cx)),
-                        ),
+                        .on_click(cx.listener(|this, _, w, cx| this.finish_recording(true, w, cx))),
                 )
                 .child(
                     ui::button("t-macro-discard", "Discard", Kind::Ghost, p)
@@ -1134,7 +1154,13 @@ impl TerminalTab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
-        let p = palette(cx);
+        let mut p = palette(cx);
+        if let Some(fg) = self.colors.0 {
+            p.fg = fg;
+        }
+        if let Some(bg) = self.colors.1 {
+            p.term = bg;
+        }
         let multi = self.panes.len() > 1;
         let is_active = ix == self.active;
         let weak = cx.entity().downgrade();
@@ -1168,7 +1194,17 @@ impl TerminalTab {
         };
         let grid = canvas(
             move |bounds, window, cx| {
-                prepaint(bounds, &snap, &geom, term_id, weak, &highlights, &p, window, cx)
+                prepaint(
+                    bounds,
+                    &snap,
+                    &geom,
+                    term_id,
+                    weak,
+                    &highlights,
+                    &p,
+                    window,
+                    cx,
+                )
             },
             move |_bounds, frame, window, cx| paint(frame, focused, &p, window, cx),
         )
@@ -1488,11 +1524,7 @@ impl TerminalTab {
                                 .text_size(px(11.5))
                                 .children(preview.into_iter().map(|l| div().truncate().child(l)))
                                 .when(more > 0, |d| {
-                                    d.child(
-                                        div()
-                                            .text_color(p.fg3)
-                                            .child(format!("… {more} more")),
-                                    )
+                                    d.child(div().text_color(p.fg3).child(format!("… {more} more")))
                                 }),
                         )
                         .child(
@@ -1507,10 +1539,11 @@ impl TerminalTab {
                                         })),
                                 )
                                 .child(
-                                    ui::button("t-paste-ok", "Paste", Kind::Primary, p)
-                                        .on_click(cx.listener(|this, _, w, cx| {
+                                    ui::button("t-paste-ok", "Paste", Kind::Primary, p).on_click(
+                                        cx.listener(|this, _, w, cx| {
                                             this.finish_paste(true, w, cx)
-                                        })),
+                                        }),
+                                    ),
                                 ),
                         ),
                 )
@@ -2014,7 +2047,8 @@ impl Render for TerminalTab {
                         .tooltip(move |window, cx| {
                             let text = match &log {
                                 Some(path) => format!("Logging to {path} · click to stop"),
-                                None => "Log this session's output to a file (Settings → Terminal)".into(),
+                                None => "Log this session's output to a file (Settings → Terminal)"
+                                    .into(),
                             };
                             gpui_kit::component::tooltip::Tooltip::new(text).build(window, cx)
                         })

@@ -528,9 +528,19 @@ server or bundled Unix tools on Windows (Tier 3).
   kept as an escaped string (`\r`, `\e`, `\xHH`). Macros ▾ menu: play into the active pane
   (all panes when broadcasting), "All panes", delete. Host "Macro on connect" is typed into
   every new shell (reconnects too). Replay sends everything at once (no per-key delays).
-- [ ] **MX-6 Session folders and per-session settings.** Folders and favorites in the
+- [x] **MX-6 Session folders and per-session settings.** Folders and favorites in the
   sidebar; per-Host startup command, remote start directory, terminal font/colors override,
   environment variables; duplicate and bulk edit.
+  Note: Host gains `favorite`, `startup_command`, `start_directory`, `env`,
+  `terminal_colors` (editor fields; `folder` now editable). Sidebar: "★ Favorites" group (one
+  click opens a terminal), then Hosts outside folders, then collapsible folders (by name).
+  New shells get `cd -- '<dir>'`, the startup command and the connect macro typed in; env
+  goes as SSH `env` requests (server `AcceptEnv`). Host menu: Duplicate (copies the stored
+  secret under the new id), Add/Remove Favorites, "Folder and session settings…"; folder
+  menu: "Edit Hosts in folder…" (bulk edit: folder, user, start folder, startup command,
+  environment, favorite; only changed fields, `Command::UpdateHosts` + `store::HostPatch`),
+  "Open all terminals". Deferred: terminal font override (font settings were being reworked
+  in parallel), multi-select bulk edit outside a folder.
 - [ ] **MX-7 Session import.** PuTTY sessions (Windows registry, `~/.putty/sessions`) and
   MobaXterm bookmarks (`MobaXterm.ini` / `.mxtsessions`) into Hosts, with the same preview
   as the `~/.ssh/config` import.
@@ -812,3 +822,6 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   The grid row filter still runs on the UI thread per keystroke (now allocation-free).
 - Assistant on Hosts: "always allow this command on this Host" for repeat read-only commands;
   approvals from an interactive "Open in terminal" run show in the panel, not the terminal.
+- Terminal (MX-4/MX-6): font zoom per tab and a per-Host terminal font override, once the
+  UI zoom / font-size settings land; multi-select in the sidebar for bulk edit outside a
+  folder; per-key delays when replaying macros (some programs drop fast input).
