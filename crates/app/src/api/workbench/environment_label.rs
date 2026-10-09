@@ -5,7 +5,8 @@
 use super::view::{chip, heading};
 use super::*;
 use crate::api::compat::dialogs::{self, Dismiss};
-use gpui_kit::{Div, Hsla, div, px};
+use crate::appearance::rpx;
+use gpui_kit::{Div, Hsla, div};
 use switchyard_api::{EnvironmentLabel, send_needs_confirmation};
 use switchyard_core::store::EnvironmentLabel as DbLabel;
 
@@ -66,13 +67,13 @@ impl WorkbenchPanel {
         div()
             .flex()
             .flex_col()
-            .gap(px(6.))
+            .gap(rpx(6.))
             .child(heading("Label", colors.muted_foreground))
             .child(
                 div()
                     .flex()
                     .flex_wrap()
-                    .gap(px(4.))
+                    .gap(rpx(4.))
                     .children(EnvironmentLabel::ALL.into_iter().map(|label| {
                         let selected = self.environment_label == label;
                         let mut button = chip(

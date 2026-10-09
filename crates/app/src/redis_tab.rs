@@ -36,6 +36,7 @@ use switchyard_core::store::{DbConnection, HistoryEntry};
 use switchyard_core::{Command, RequestId, RuntimeHandle, SessionId};
 
 use crate::app_state::next_id;
+use crate::appearance::{rpx, ts};
 use crate::theme::{MONO, Palette, SANS, palette};
 use crate::ui::{self, Kind};
 use crate::workspace::{Tab, Workspace};
@@ -1007,18 +1008,18 @@ impl RedisTab {
         let can_write = self.info.is_some() && !self.read_only();
         div()
             .flex_none()
-            .h(px(38.))
+            .h(rpx(38.))
             .flex()
             .items_center()
-            .gap(px(10.))
-            .px(px(12.))
+            .gap(rpx(10.))
+            .px(rpx(12.))
             .border_b_1()
             .border_color(p.bd)
             .child(ui::monogram("RD", 24., p))
             .child(
                 div()
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_size(px(13.))
+                    .text_size(ts::BASE)
                     .child(self.connection.name.clone()),
             )
             .when(self.connection.environment.is_production(), |d| {
@@ -1028,7 +1029,7 @@ impl RedisTab {
             .child(
                 div()
                     .font_family(MONO)
-                    .text_size(px(11.))
+                    .text_size(ts::SMALL)
                     .text_color(p.fg3)
                     .truncate()
                     .child(info),
@@ -1037,7 +1038,7 @@ impl RedisTab {
             .when(can_write, |d| {
                 d.child(
                     ui::button("rd-new", "New key", Kind::Secondary, p)
-                        .h(px(24.))
+                        .h(rpx(24.))
                         .on_click(cx.listener(|t, _, w, cx| {
                             t.start_mode(Mode::NewKey(KeyKind::String), w, cx)
                         })),
@@ -1054,7 +1055,7 @@ impl RedisTab {
                     Kind::Secondary,
                     p,
                 )
-                .h(px(24.))
+                .h(rpx(24.))
                 .on_click(cx.listener(|t, _, w, cx| {
                     t.console_open = !t.console_open;
                     if t.console_open {
@@ -1065,7 +1066,7 @@ impl RedisTab {
             )
             .child(
                 ui::button("rd-refresh", "Refresh", Kind::Secondary, p)
-                    .h(px(24.))
+                    .h(rpx(24.))
                     .on_click(cx.listener(|t, _, w, cx| {
                         t.rescan(cx);
                         t.reload(w, cx);
@@ -1097,15 +1098,15 @@ impl RedisTab {
         );
         let body = if let Some(e) = &self.list_error {
             div()
-                .p(px(12.))
-                .text_size(px(12.))
+                .p(rpx(12.))
+                .text_size(ts::BODY)
                 .text_color(p.prod)
                 .child(e.clone())
                 .into_any_element()
         } else if keys.is_empty() && !scanning && self.info.is_some() {
             div()
-                .p(px(12.))
-                .text_size(px(12.))
+                .p(rpx(12.))
+                .text_size(ts::BODY)
                 .text_color(p.fg3)
                 .child(if self.scanned.is_empty() && self.scanned_kind.is_none() {
                     "This database is empty."
@@ -1124,12 +1125,12 @@ impl RedisTab {
                             let row = div()
                                 .id(("rd-key", r))
                                 .w_full()
-                                .h(px(ROW_H))
+                                .h(rpx(ROW_H))
                                 .flex()
                                 .items_center()
-                                .gap(px(6.))
-                                .pr(px(10.))
-                                .text_size(px(12.))
+                                .gap(rpx(6.))
+                                .pr(rpx(10.))
+                                .text_size(ts::BODY)
                                 .cursor_pointer();
                             match &rows[r] {
                                 KeyRow::Folder {
@@ -1140,14 +1141,14 @@ impl RedisTab {
                                     open,
                                 } => {
                                     let prefix = prefix.clone();
-                                    row.pl(px(indent(*depth)))
+                                    row.pl(rpx(indent(*depth)))
                                         .hover(|s| s.bg(p.hover))
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.toggle_folder(prefix.clone(), cx)
                                         }))
                                         .child(
                                             div()
-                                                .w(px(12.))
+                                                .w(rpx(12.))
                                                 .flex_none()
                                                 .text_color(p.fg3)
                                                 .child(if *open { "▾" } else { "▸" }),
@@ -1164,10 +1165,10 @@ impl RedisTab {
                                         .child(
                                             div()
                                                 .flex_none()
-                                                .px(px(6.))
+                                                .px(rpx(6.))
                                                 .rounded(px(8.))
                                                 .bg(p.hover)
-                                                .text_size(px(10.5))
+                                                .text_size(ts::CAPTION_PLUS)
                                                 .text_color(p.fg3)
                                                 .child(ui::thousands(*n as u64)),
                                         )
@@ -1176,7 +1177,7 @@ impl RedisTab {
                                     let k = &keys[*ix];
                                     let key = k.key.clone();
                                     let is_sel = selected.as_deref() == Some(k.key.as_slice());
-                                    row.pl(px(indent(*depth) + 18.))
+                                    row.pl(rpx(indent(*depth) + 18.))
                                         .when(is_sel, |d| d.bg(p.sel))
                                         .when(!is_sel, |d| d.hover(|s| s.bg(p.hover)))
                                         .on_click(cx.listener(move |this, _, w, cx| {
@@ -1194,20 +1195,20 @@ impl RedisTab {
                                         .child(
                                             div()
                                                 .flex_none()
-                                                .w(px(48.))
+                                                .w(rpx(48.))
                                                 .text_right()
                                                 .font_family(MONO)
-                                                .text_size(px(10.5))
+                                                .text_size(ts::CAPTION_PLUS)
                                                 .text_color(p.fg3)
                                                 .child(short_ttl(k.ttl_ms)),
                                         )
                                         .child(
                                             div()
                                                 .flex_none()
-                                                .w(px(58.))
+                                                .w(rpx(58.))
                                                 .text_right()
                                                 .font_family(MONO)
-                                                .text_size(px(10.5))
+                                                .text_size(ts::CAPTION_PLUS)
                                                 .text_color(p.fg3)
                                                 .child(k.memory.map(ui::bytes).unwrap_or_default()),
                                         )
@@ -1233,10 +1234,10 @@ impl RedisTab {
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(6.))
-            .px(px(8.))
-            .pb(px(6.))
-            .text_size(px(11.))
+            .gap(rpx(6.))
+            .px(rpx(8.))
+            .pb(rpx(6.))
+            .text_size(ts::SMALL)
             .child(ui::segmented(
                 "rd-key-view",
                 vec![
@@ -1267,20 +1268,20 @@ impl RedisTab {
             });
         let columns = div()
             .flex_none()
-            .h(px(22.))
+            .h(rpx(22.))
             .flex()
             .items_center()
-            .gap(px(6.))
-            .px(px(10.))
+            .gap(rpx(6.))
+            .px(rpx(10.))
             .border_b_1()
             .border_color(p.bd)
-            .text_size(px(10.))
+            .text_size(ts::CAPTION)
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(p.fg3)
-            .child(div().w(px(38.)).flex_none().child("TYPE"))
+            .child(div().w(rpx(38.)).flex_none().child("TYPE"))
             .child(div().flex_1().min_w_0().child("KEY"))
-            .child(div().w(px(48.)).flex_none().text_right().child("TTL"))
-            .child(div().w(px(58.)).flex_none().text_right().child("SIZE"));
+            .child(div().w(rpx(48.)).flex_none().text_right().child("TTL"))
+            .child(div().w(rpx(58.)).flex_none().text_right().child("SIZE"));
         div()
             .w(px(self.keys_w()))
             .flex_none()
@@ -1294,13 +1295,13 @@ impl RedisTab {
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
-                    .p(px(8.))
+                    .gap(rpx(6.))
+                    .p(rpx(8.))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
-                            .child(Input::new(&self.pattern).text_size(px(12.))),
+                            .child(Input::new(&self.pattern).text_size(ts::BODY)),
                     )
                     .child(self.render_kind_filter(cx)),
             )
@@ -1310,14 +1311,14 @@ impl RedisTab {
             .child(
                 div()
                     .flex_none()
-                    .h(px(30.))
+                    .h(rpx(30.))
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .px(px(10.))
+                    .gap(rpx(8.))
+                    .px(rpx(10.))
                     .border_t_1()
                     .border_color(p.bd)
-                    .text_size(px(11.))
+                    .text_size(ts::SMALL)
                     .text_color(p.fg3)
                     .child(div().flex_1().min_w_0().truncate().child(footer))
                     .when(scanning, |d| d.child(ui::shimmer(40., p)))
@@ -1337,10 +1338,10 @@ impl RedisTab {
                 div()
                     .id("rd-keys-resize")
                     .absolute()
-                    .right(px(-3.))
+                    .right(rpx(-3.))
                     .top_0()
                     .bottom_0()
-                    .w(px(6.))
+                    .w(rpx(6.))
                     .cursor_col_resize()
                     .hover(|s| s.bg(p.acc.opacity(0.35)))
                     .when(self.keys_drag.is_some(), |d| d.bg(p.acc.opacity(0.35)))
@@ -1398,13 +1399,13 @@ impl RedisTab {
                 .flex_none()
                 .flex()
                 .items_center()
-                .gap(px(8.))
-                .px(px(12.))
-                .py(px(8.))
+                .gap(rpx(8.))
+                .px(rpx(12.))
+                .py(rpx(8.))
                 .border_b_1()
                 .border_color(p.bd)
                 .bg(p.panel)
-                .text_size(px(12.))
+                .text_size(ts::BODY)
                 .map(|d| {
                     if self.mode == Mode::ConfirmDelete {
                         d.child(
@@ -1416,7 +1417,7 @@ impl RedisTab {
                         d.child(div().text_color(p.fg2).child(label)).child(
                             div()
                                 .flex_1()
-                                .child(Input::new(&self.in_key).text_size(px(12.))),
+                                .child(Input::new(&self.in_key).text_size(ts::BODY)),
                         )
                     }
                 })
@@ -1461,19 +1462,19 @@ impl RedisTab {
             .min_h_0()
             .flex()
             .flex_col()
-            .gap(px(12.))
-            .p(px(16.))
-            .text_size(px(12.))
+            .gap(rpx(12.))
+            .p(rpx(16.))
+            .text_size(ts::BODY)
             .child(
                 div()
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_size(px(13.))
+                    .text_size(ts::BASE)
                     .child("New key"),
             )
             .child(ui::segmented("rd-new-kind", options, 22., p))
             .child(labelled(
                 "Key",
-                Input::new(&self.in_key).text_size(px(12.)),
+                Input::new(&self.in_key).text_size(ts::BODY),
                 p,
             ))
             .map(|d| {
@@ -1481,7 +1482,7 @@ impl RedisTab {
                     d.child(
                         div()
                             .flex_1()
-                            .min_h(px(120.))
+                            .min_h(rpx(120.))
                             .border_1()
                             .border_color(p.bd2)
                             .rounded(px(6.))
@@ -1491,22 +1492,22 @@ impl RedisTab {
                                     .appearance(false)
                                     .h(relative(1.))
                                     .font_family(MONO)
-                                    .text_size(px(12.)),
+                                    .text_size(ts::BODY),
                             ),
                     )
                 } else {
                     d.when_some(a, |d, a| {
-                        d.child(labelled(a, Input::new(&self.in_a).text_size(px(12.)), p))
+                        d.child(labelled(a, Input::new(&self.in_a).text_size(ts::BODY), p))
                     })
                     .when_some(b, |d, b| {
-                        d.child(labelled(b, Input::new(&self.in_b).text_size(px(12.)), p))
+                        d.child(labelled(b, Input::new(&self.in_b).text_size(ts::BODY), p))
                     })
                 }
             })
             .child(
                 div()
                     .flex()
-                    .gap(px(8.))
+                    .gap(rpx(8.))
                     .child(
                         ui::button("rd-create", "Create", Kind::Primary, p)
                             .when(self.edit_request.is_some(), |b| b.opacity(0.5))
@@ -1536,8 +1537,8 @@ impl RedisTab {
             };
             return div()
                 .flex_1()
-                .p(px(16.))
-                .text_size(px(12.))
+                .p(rpx(16.))
+                .text_size(ts::BODY)
                 .text_color(if self.value_error.is_some() {
                     p.prod
                 } else {
@@ -1565,16 +1566,16 @@ impl RedisTab {
             .flex_none()
             .flex()
             .flex_col()
-            .gap(px(4.))
-            .px(px(12.))
-            .py(px(8.))
+            .gap(rpx(4.))
+            .px(rpx(12.))
+            .py(rpx(8.))
             .border_b_1()
             .border_color(p.bd)
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(rpx(8.))
                     .child(kind_badge(&d.kind, p))
                     .child(
                         div()
@@ -1582,7 +1583,7 @@ impl RedisTab {
                             .min_w_0()
                             .truncate()
                             .font_family(MONO)
-                            .text_size(px(13.))
+                            .text_size(ts::BASE)
                             .font_weight(FontWeight::MEDIUM)
                             .child(key_text),
                     )
@@ -1613,7 +1614,7 @@ impl RedisTab {
             )
             .child(
                 div()
-                    .text_size(px(11.))
+                    .text_size(ts::SMALL)
                     .text_color(p.fg3)
                     .font_family(MONO)
                     .child(facts.join(" · ")),
@@ -1621,9 +1622,9 @@ impl RedisTab {
         let truncated = d.truncated().then(|| {
             div()
                 .flex_none()
-                .px(px(12.))
-                .py(px(4.))
-                .text_size(px(11.))
+                .px(rpx(12.))
+                .py(rpx(4.))
+                .text_size(ts::SMALL)
                 .text_color(p.stg)
                 .child(match d.kind {
                     KeyKind::String => format!(
@@ -1685,7 +1686,7 @@ impl RedisTab {
                         .appearance(false)
                         .h(relative(1.))
                         .font_family(MONO)
-                        .text_size(px(12.)),
+                        .text_size(ts::BODY),
                 ),
             )
             .child(
@@ -1693,12 +1694,12 @@ impl RedisTab {
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .px(px(12.))
-                    .py(px(6.))
+                    .gap(rpx(8.))
+                    .px(rpx(12.))
+                    .py(rpx(6.))
                     .border_t_1()
                     .border_color(p.bd)
-                    .text_size(px(11.))
+                    .text_size(ts::SMALL)
                     .text_color(p.fg3)
                     .child(div().flex_1().child(if binary {
                         "Binary value, shown escaped. Edit it in the console."
@@ -1755,21 +1756,21 @@ impl RedisTab {
         let selected = self.row;
         let p2 = *p;
         let cell = move |w: Option<f32>| {
-            let c = div().px(px(6.)).min_w_0().truncate();
+            let c = div().px(rpx(6.)).min_w_0().truncate();
             match w {
-                Some(w) => c.w(px(w)).flex_none(),
+                Some(w) => c.w(rpx(w)).flex_none(),
                 None => c.flex_1(),
             }
         };
         let header = div()
             .flex_none()
             .flex()
-            .h(px(ROW_H))
+            .h(rpx(ROW_H))
             .items_center()
-            .px(px(6.))
+            .px(rpx(6.))
             .border_b_1()
             .border_color(p.bd)
-            .text_size(px(10.5))
+            .text_size(ts::CAPTION_PLUS)
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(p.fg3)
             .children(
@@ -1792,13 +1793,13 @@ impl RedisTab {
                             div()
                                 .id(("rd-row", r))
                                 .w_full()
-                                .h(px(ROW_H))
+                                .h(rpx(ROW_H))
                                 .flex()
                                 .items_center()
-                                .px(px(6.))
+                                .px(rpx(6.))
                                 .border_b_1()
                                 .border_color(p.line)
-                                .text_size(px(12.))
+                                .text_size(ts::BODY)
                                 .font_family(MONO)
                                 .cursor_pointer()
                                 .when(is_sel, |d| d.bg(p.sel))
@@ -1847,7 +1848,7 @@ impl RedisTab {
         Some(
             div()
                 .flex_none()
-                .h(px(DETAIL_H))
+                .h(rpx(DETAIL_H))
                 .flex()
                 .flex_col()
                 .border_t_1()
@@ -1857,10 +1858,10 @@ impl RedisTab {
                         .flex_none()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
-                        .px(px(12.))
-                        .py(px(4.))
-                        .text_size(px(11.))
+                        .gap(rpx(8.))
+                        .px(rpx(12.))
+                        .py(rpx(4.))
+                        .text_size(ts::SMALL)
                         .child(div().flex_none().text_color(p.fg3).child(title))
                         .child(
                             div()
@@ -1900,14 +1901,14 @@ impl RedisTab {
                         ),
                 )
                 .child(
-                    div().flex_1().min_h_0().px(px(6.)).child(
+                    div().flex_1().min_h_0().px(rpx(6.)).child(
                         Editor::new(&self.row_view)
                             .readonly(true)
                             .bordered(false)
                             .appearance(false)
                             .h(relative(1.))
                             .font_family(MONO)
-                            .text_size(px(12.)),
+                            .text_size(ts::BODY),
                     ),
                 )
                 .into_any_element(),
@@ -2021,28 +2022,28 @@ impl RedisTab {
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(8.))
-            .px(px(12.))
-            .py(px(8.))
+            .gap(rpx(8.))
+            .px(rpx(12.))
+            .py(rpx(8.))
             .border_t_1()
             .border_color(p.bd)
             .bg(p.panel)
-            .text_size(px(12.))
+            .text_size(ts::BODY)
             .when(a.is_some(), |el| {
                 el.child(
                     div()
                         .flex_1()
                         .min_w_0()
-                        .child(Input::new(&self.in_a).text_size(px(12.))),
+                        .child(Input::new(&self.in_a).text_size(ts::BODY)),
                 )
             })
             .when(b.is_some(), |el| {
                 el.child(
                     div()
-                        .w(px(if d.kind == KeyKind::ZSet { 110. } else { 0. }))
+                        .w(rpx(if d.kind == KeyKind::ZSet { 110. } else { 0. }))
                         .when(d.kind != KeyKind::ZSet, |d| d.flex_1())
                         .min_w_0()
-                        .child(Input::new(&self.in_b).text_size(px(12.))),
+                        .child(Input::new(&self.in_b).text_size(ts::BODY)),
                 )
             })
             .children(buttons)
@@ -2057,11 +2058,11 @@ impl RedisTab {
                 .flex_none()
                 .flex()
                 .items_center()
-                .gap(px(8.))
-                .px(px(12.))
-                .py(px(6.))
+                .gap(rpx(8.))
+                .px(rpx(12.))
+                .py(rpx(6.))
                 .bg(p.prod_bg)
-                .text_size(px(12.))
+                .text_size(ts::BODY)
                 .child(div().flex_1().text_color(p.prod).child(reason.clone()))
                 .child(
                     ui::button("rd-run-anyway", "Run anyway", Kind::Destructive, p).on_click(
@@ -2079,7 +2080,7 @@ impl RedisTab {
         });
         div()
             .flex_none()
-            .h(px(220.))
+            .h(rpx(220.))
             .flex()
             .flex_col()
             .border_t_1()
@@ -2089,9 +2090,9 @@ impl RedisTab {
                 div()
                     .flex_1()
                     .min_h_0()
-                    .px(px(12.))
-                    .py(px(6.))
-                    .text_size(px(12.))
+                    .px(rpx(12.))
+                    .py(rpx(6.))
+                    .text_size(ts::BODY)
                     .text_color(p.fg3)
                     .child(
                         "Run any Redis command. Blocking and connection commands \
@@ -2103,7 +2104,7 @@ impl RedisTab {
                 div()
                     .flex_1()
                     .min_h_0()
-                    .px(px(6.))
+                    .px(rpx(6.))
                     .child(
                         Editor::new(&self.console_view)
                             .readonly(true)
@@ -2111,7 +2112,7 @@ impl RedisTab {
                             .appearance(false)
                             .h(relative(1.))
                             .font_family(MONO)
-                            .text_size(px(12.)),
+                            .text_size(ts::BODY),
                     )
                     .into_any_element()
             })
@@ -2121,15 +2122,15 @@ impl RedisTab {
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .px(px(12.))
-                    .py(px(6.))
+                    .gap(rpx(8.))
+                    .px(rpx(12.))
+                    .py(rpx(6.))
                     .border_t_1()
                     .border_color(p.bd)
                     .child(
                         div()
                             .font_family(MONO)
-                            .text_size(px(12.))
+                            .text_size(ts::BODY)
                             .text_color(p.acc)
                             .child(prompt),
                     )
@@ -2153,19 +2154,19 @@ impl RedisTab {
                                 Input::new(&self.console_input)
                                     .appearance(false)
                                     .font_family(MONO)
-                                    .text_size(px(12.)),
+                                    .text_size(ts::BODY),
                             ),
                     )
                     .child(
                         ui::button("rd-run", "Run", Kind::Secondary, p)
-                            .h(px(24.))
+                            .h(rpx(24.))
                             .when(self.run_request.is_some(), |b| b.opacity(0.5))
                             .on_click(cx.listener(|t, _, w, cx| t.run_console(w, cx))),
                     )
                     .when(!self.console.is_empty(), |d| {
                         d.child(
                             ui::button("rd-console-copy", "Copy all", Kind::Ghost, p)
-                                .h(px(24.))
+                                .h(rpx(24.))
                                 .on_click(cx.listener(|t, _, _, cx| {
                                     let all = t.console_view.read(cx).value().to_string();
                                     cx.write_to_clipboard(ClipboardItem::new_string(all));
@@ -2173,7 +2174,7 @@ impl RedisTab {
                         )
                         .child(
                             ui::button("rd-console-clear", "Clear", Kind::Ghost, p)
-                                .h(px(24.))
+                                .h(rpx(24.))
                                 .on_click(cx.listener(|t, _, w, cx| {
                                     if t.run_request.is_none() {
                                         t.console.clear();
@@ -2195,20 +2196,20 @@ impl Render for RedisTab {
         let status = self.status.as_ref().map(|(ok, m)| {
             div()
                 .flex_none()
-                .px(px(12.))
-                .py(px(4.))
-                .text_size(px(12.))
+                .px(rpx(12.))
+                .py(rpx(4.))
+                .text_size(ts::BODY)
                 .text_color(if *ok { p.dev } else { p.prod })
                 .child(m.clone())
         });
         let main = match &self.open_error {
             Some(e) => div()
                 .flex_1()
-                .p(px(16.))
+                .p(rpx(16.))
                 .flex()
                 .flex_col()
-                .gap(px(10.))
-                .text_size(px(12.))
+                .gap(rpx(10.))
+                .text_size(ts::BODY)
                 .child(div().text_color(p.prod).child(e.clone()))
                 .child(
                     ui::button("rd-reconnect", "Reconnect", Kind::Secondary, &p).on_click(
@@ -2290,11 +2291,11 @@ enum EditAction {
 
 fn tag(label: &'static str, color: Hsla) -> gpui_kit::Div {
     div()
-        .px(px(5.))
+        .px(rpx(5.))
         .rounded(px(3.))
         .border_1()
         .border_color(color)
-        .text_size(px(9.5))
+        .text_size(ts::TINY_PLUS)
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(color)
         .child(label)
@@ -2316,7 +2317,7 @@ fn kind_color(kind: &KeyKind, p: &Palette) -> Hsla {
 fn kind_badge(kind: &KeyKind, p: &Palette) -> gpui_kit::Div {
     let c = kind_color(kind, p);
     div()
-        .w(px(38.))
+        .w(rpx(38.))
         .flex_none()
         .flex()
         .justify_center()
@@ -2326,8 +2327,8 @@ fn kind_badge(kind: &KeyKind, p: &Palette) -> gpui_kit::Div {
         .text_color(c)
         .font_family(MONO)
         .font_weight(FontWeight::SEMIBOLD)
-        .text_size(px(9.))
-        .line_height(px(15.))
+        .text_size(ts::TINY)
+        .line_height(rpx(15.))
         .child(SharedString::from(kind.badge().to_owned()))
 }
 
@@ -2335,15 +2336,15 @@ fn labelled(label: &'static str, input: impl IntoElement, p: &Palette) -> gpui_k
     div()
         .flex()
         .flex_col()
-        .gap(px(4.))
-        .child(div().text_size(px(11.5)).text_color(p.fg2).child(label))
+        .gap(rpx(4.))
+        .child(div().text_size(ts::LABEL).text_color(p.fg2).child(label))
         .child(input)
 }
 
 fn note(text: &'static str, p: &Palette) -> AnyElement {
     div()
-        .p(px(16.))
-        .text_size(px(12.))
+        .p(rpx(16.))
+        .text_size(ts::BODY)
         .text_color(p.fg3)
         .child(text)
         .into_any_element()

@@ -17,6 +17,7 @@ use switchyard_core::store::ProfileId;
 use switchyard_core::{Command, Event, FsOp, FsRef, OnConflict, RequestId, RuntimeHandle};
 
 use crate::app_state::next_id;
+use crate::appearance::{rpx, ts};
 use crate::remote_files::human;
 use crate::theme::{MONO, Palette, palette};
 use crate::transfers::Transfers;
@@ -55,13 +56,13 @@ impl Render for DragPreview {
     fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         div()
-            .px(px(8.))
-            .py(px(4.))
+            .px(rpx(8.))
+            .py(rpx(4.))
             .rounded(px(5.))
             .bg(p.elev)
             .border_1()
             .border_color(p.acc)
-            .text_size(px(12.))
+            .text_size(ts::BODY)
             .text_color(p.fg)
             .child(self.0.clone())
     }
@@ -561,12 +562,12 @@ impl FilesTab {
         let tool = |id: String, label: &'static str| {
             div()
                 .id(SharedString::from(id))
-                .h(px(22.))
-                .px(px(7.))
+                .h(rpx(22.))
+                .px(rpx(7.))
                 .flex()
                 .items_center()
                 .rounded(px(4.))
-                .text_size(px(11.5))
+                .text_size(ts::LABEL)
                 .text_color(p.fg2)
                 .hover(|s| s.bg(p.hover))
                 .child(label)
@@ -574,7 +575,7 @@ impl FilesTab {
         let arrow = if ix == 0 { "Copy →" } else { "← Copy" };
         let source: AnyElement = if ix == 0 {
             div()
-                .text_size(px(12.))
+                .text_size(ts::BODY)
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(pane.label.clone())
                 .into_any_element()
@@ -583,13 +584,13 @@ impl FilesTab {
                 .id("files-source")
                 .flex()
                 .items_center()
-                .gap(px(4.))
-                .px(px(6.))
-                .h(px(22.))
+                .gap(rpx(4.))
+                .px(rpx(6.))
+                .h(rpx(22.))
                 .rounded(px(4.))
                 .border_1()
                 .border_color(p.bd2)
-                .text_size(px(12.))
+                .text_size(ts::BODY)
                 .font_weight(FontWeight::SEMIBOLD)
                 .hover(|s| s.bg(p.hover))
                 .on_click(cx.listener(|this, _, _, cx| {
@@ -597,16 +598,16 @@ impl FilesTab {
                     cx.notify();
                 }))
                 .child(pane.label.clone())
-                .child(div().text_color(p.fg3).text_size(px(9.)).child("▾"))
+                .child(div().text_color(p.fg3).text_size(ts::TINY).child("▾"))
                 .into_any_element()
         };
         let toolbar = div()
-            .h(px(32.))
+            .h(rpx(32.))
             .flex_none()
-            .px(px(8.))
+            .px(rpx(8.))
             .flex()
             .items_center()
-            .gap(px(2.))
+            .gap(rpx(2.))
             .border_b_1()
             .border_color(p.bd)
             .bg(p.panel)
@@ -662,8 +663,8 @@ impl FilesTab {
                         Kind::Primary,
                         p,
                     )
-                    .h(px(22.))
-                    .text_size(px(11.5))
+                    .h(rpx(22.))
+                    .text_size(ts::LABEL)
                     .on_click(
                         cx.listener(move |this, _, _, cx| this.copy_selection_across(ix, cx)),
                     ),
@@ -677,29 +678,29 @@ impl FilesTab {
             .map(|(_, input, _)| input.clone());
         let crumb_bar = div()
             .id(SharedString::from(format!("f{ix}-path")))
-            .h(px(26.))
+            .h(rpx(26.))
             .flex_none()
-            .px(px(10.))
+            .px(rpx(10.))
             .flex()
             .items_center()
-            .gap(px(2.))
+            .gap(rpx(2.))
             .overflow_hidden()
             .border_b_1()
             .border_color(p.bd)
             .font_family(MONO)
-            .text_size(px(11.))
+            .text_size(ts::SMALL)
             .when_some(goto, |d, input| {
                 d.child(
                     div()
                         .flex_1()
-                        .h(px(20.))
+                        .h(rpx(20.))
                         .flex()
                         .items_center()
-                        .px(px(6.))
+                        .px(rpx(6.))
                         .border_1()
                         .border_color(p.acc)
                         .rounded(px(4.))
-                        .child(Input::new(&input).appearance(false).text_size(px(11.5))),
+                        .child(Input::new(&input).appearance(false).text_size(ts::LABEL)),
                 )
             })
             .when(self.goto.as_ref().is_none_or(|(i, ..)| *i != ix), |d| {
@@ -711,12 +712,12 @@ impl FilesTab {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(2.))
+                            .gap(rpx(2.))
                             .when(i > 1, |d| d.child(div().text_color(p.fg3).child("/")))
                             .child(
                                 div()
                                     .id(SharedString::from(format!("f{ix}-crumb-{i}")))
-                                    .px(px(3.))
+                                    .px(rpx(3.))
                                     .rounded(px(3.))
                                     .text_color(p.fg2)
                                     .hover(|s| s.bg(p.hover).text_color(p.fg))
@@ -732,7 +733,7 @@ impl FilesTab {
                     .child(
                         div()
                             .id(SharedString::from(format!("f{ix}-home")))
-                            .px(px(5.))
+                            .px(rpx(5.))
                             .rounded(px(3.))
                             .cursor_pointer()
                             .text_color(p.fg3)
@@ -762,13 +763,13 @@ impl FilesTab {
                 .child(format!("{label}{mark}"))
         };
         let header = div()
-            .h(px(24.))
+            .h(rpx(24.))
             .flex_none()
             .flex()
             .items_center()
-            .px(px(10.))
-            .gap(px(8.))
-            .text_size(px(11.))
+            .px(rpx(10.))
+            .gap(rpx(8.))
+            .text_size(ts::SMALL)
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(p.fg2)
             .border_b_1()
@@ -776,20 +777,20 @@ impl FilesTab {
             .child(
                 div()
                     .flex_1()
-                    .pl(px(18.))
+                    .pl(rpx(18.))
                     .child(head("sort-name", "Name", SortBy::Name)),
             )
-            .child(div().w(px(72.)).flex().justify_end().child(head(
+            .child(div().w(rpx(72.)).flex().justify_end().child(head(
                 "sort-size",
                 "Size",
                 SortBy::Size,
             )))
             .child(
                 div()
-                    .w(px(118.))
+                    .w(rpx(118.))
                     .child(head("sort-mod", "Modified", SortBy::Modified)),
             )
-            .child(div().w(px(76.)).child("Mode"));
+            .child(div().w(rpx(76.)).child("Mode"));
 
         let edit_row: Option<AnyElement> =
             self.edit
@@ -798,38 +799,38 @@ impl FilesTab {
                 .map(|(_, e, input)| {
                     div()
                         .flex_none()
-                        .px(px(10.))
-                        .py(px(5.))
+                        .px(rpx(10.))
+                        .py(rpx(5.))
                         .flex()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(rpx(6.))
                         .border_b_1()
                         .border_color(p.bd)
                         .bg(p.surface)
-                        .child(div().text_size(px(11.5)).text_color(p.fg2).child(match e {
+                        .child(div().text_size(ts::LABEL).text_color(p.fg2).child(match e {
                             Edit::NewFolder => "New folder:",
                             Edit::Rename(_) => "Rename to:",
                         }))
                         .child(
                             div()
                                 .flex_1()
-                                .h(px(24.))
+                                .h(rpx(24.))
                                 .flex()
                                 .items_center()
-                                .px(px(7.))
+                                .px(rpx(7.))
                                 .border_1()
                                 .border_color(p.acc)
                                 .rounded(px(4.))
-                                .child(Input::new(input).appearance(false).text_size(px(12.))),
+                                .child(Input::new(input).appearance(false).text_size(ts::BODY)),
                         )
                         .child(
                             ui::button("f-edit-ok", "OK", Kind::Primary, p)
-                                .h(px(22.))
+                                .h(rpx(22.))
                                 .on_click(cx.listener(|this, _, _, cx| this.finish_edit(cx))),
                         )
                         .child(
                             ui::button("f-edit-cancel", "Cancel", Kind::Ghost, p)
-                                .h(px(22.))
+                                .h(rpx(22.))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.edit = None;
                                     cx.notify();
@@ -841,16 +842,16 @@ impl FilesTab {
         let body: AnyElement = if let Some(e) = &pane.error {
             div()
                 .flex_1()
-                .p(px(14.))
-                .text_size(px(12.))
+                .p(rpx(14.))
+                .text_size(ts::BODY)
                 .text_color(p.prod)
                 .child(e.clone())
                 .into_any_element()
         } else if pane.path.is_none() {
             div()
                 .flex_1()
-                .p(px(14.))
-                .text_size(px(12.))
+                .p(rpx(14.))
+                .text_size(ts::BODY)
                 .text_color(p.fg3)
                 .child(match pane.fs {
                     FsRef::Host(_) => "Opening SFTP on the Host's session…",
@@ -861,8 +862,8 @@ impl FilesTab {
         } else if count == 0 {
             div()
                 .flex_1()
-                .p(px(14.))
-                .text_size(px(12.))
+                .p(rpx(14.))
+                .text_size(ts::BODY)
                 .text_color(p.fg3)
                 .child("Empty folder")
                 .into_any_element()
@@ -916,12 +917,12 @@ impl FilesTab {
                             div()
                                 .id(SharedString::from(format!("f{ix}-row-{}", e.name)))
                                 .w_full()
-                                .h(px(24.))
-                                .px(px(10.))
+                                .h(rpx(24.))
+                                .px(rpx(10.))
                                 .flex()
                                 .items_center()
-                                .gap(px(8.))
-                                .text_size(px(12.5))
+                                .gap(rpx(8.))
+                                .text_size(ts::UI)
                                 .when(is_sel, |d| d.bg(p.sel))
                                 .when(!is_sel, |d| d.hover(|s| s.bg(p.hover)))
                                 .on_click(cx.listener(
@@ -934,15 +935,15 @@ impl FilesTab {
                                     let label = label.clone();
                                     cx.new(|_| DragPreview(label))
                                 })
-                                .child(div().w(px(10.)).text_color(color).child(icon))
+                                .child(div().w(rpx(10.)).text_color(color).child(icon))
                                 .child(div().flex_1().min_w_0().truncate().child(e.name.clone()))
                                 .child(
                                     div()
-                                        .w(px(72.))
+                                        .w(rpx(72.))
                                         .flex()
                                         .justify_end()
                                         .font_family(MONO)
-                                        .text_size(px(11.))
+                                        .text_size(ts::SMALL)
                                         .text_color(p.fg2)
                                         .child(if e.is_dir() {
                                             String::new()
@@ -952,17 +953,17 @@ impl FilesTab {
                                 )
                                 .child(
                                     div()
-                                        .w(px(118.))
+                                        .w(rpx(118.))
                                         .font_family(MONO)
-                                        .text_size(px(11.))
+                                        .text_size(ts::SMALL)
                                         .text_color(p.fg3)
                                         .child(e.modified_ms.map(fmt_time).unwrap_or_default()),
                                 )
                                 .child(
                                     div()
-                                        .w(px(76.))
+                                        .w(rpx(76.))
                                         .font_family(MONO)
-                                        .text_size(px(10.5))
+                                        .text_size(ts::CAPTION_PLUS)
                                         .text_color(p.fg3)
                                         .child(e.mode_string()),
                                 )
@@ -980,10 +981,10 @@ impl FilesTab {
             deferred(
                 div()
                     .absolute()
-                    .top(px(30.))
-                    .left(px(8.))
-                    .w(px(220.))
-                    .py(px(4.))
+                    .top(rpx(30.))
+                    .left(rpx(8.))
+                    .w(rpx(220.))
+                    .py(rpx(4.))
                     .bg(p.elev)
                     .border_1()
                     .border_color(p.bd2)
@@ -997,19 +998,19 @@ impl FilesTab {
                         };
                         div()
                             .id(SharedString::from(format!("files-pick-{i}")))
-                            .px(px(10.))
-                            .h(px(26.))
+                            .px(rpx(10.))
+                            .h(rpx(26.))
                             .flex()
                             .items_center()
-                            .gap(px(6.))
-                            .text_size(px(12.))
+                            .gap(rpx(6.))
+                            .text_size(ts::BODY)
                             .hover(|s| s.bg(p.hover))
                             .on_click(cx.listener(move |this, _, _, cx| this.show(fs.clone(), cx)))
                             .child(
                                 div()
                                     .text_color(p.fg3)
                                     .font_family(MONO)
-                                    .text_size(px(9.))
+                                    .text_size(ts::TINY)
                                     .child(badge),
                             )
                             .child(name)
@@ -1093,11 +1094,11 @@ impl Render for FilesTab {
             .when_some(self.error.clone(), |d, e| {
                 d.child(
                     div()
-                        .px(px(12.))
-                        .py(px(5.))
+                        .px(rpx(12.))
+                        .py(rpx(5.))
                         .bg(p.prod_bg)
                         .text_color(p.prod)
-                        .text_size(px(12.))
+                        .text_size(ts::BODY)
                         .child(e),
                 )
             })

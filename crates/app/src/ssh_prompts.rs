@@ -13,6 +13,7 @@ use secrecy::SecretString;
 use switchyard_core::remote::ssh::{HostKeyDecision, HostKeyRequest, InteractiveRequest};
 use switchyard_core::{Command, PromptAnswer, RequestId};
 
+use crate::appearance::{rpx, ts};
 use crate::theme::{MONO, Palette};
 use crate::ui::{self, Kind};
 use crate::workspace::{Tab, Workspace};
@@ -251,16 +252,16 @@ impl Workspace {
                 .flex_col()
                 .child(
                     div()
-                        .text_size(px(14.))
+                        .text_size(ts::TITLE)
                         .font_weight(FontWeight::SEMIBOLD)
-                        .mb(px(4.))
+                        .mb(rpx(4.))
                         .child(format!("Unknown host key for {}", key.host)),
                 )
                 .child(
                     div()
                         .text_color(p.fg2)
-                        .text_size(px(12.5))
-                        .mb(px(12.))
+                        .text_size(ts::UI)
+                        .mb(rpx(12.))
                         .child(format!(
                             "This is the first connection to {}. Compare the fingerprint with the one your admin published before trusting it.",
                             key.address
@@ -269,22 +270,22 @@ impl Workspace {
                 .child(
                     div()
                         .font_family(MONO)
-                        .text_size(px(12.))
-                        .line_height(px(19.))
+                        .text_size(ts::BODY)
+                        .line_height(rpx(19.))
                         .bg(p.bg)
                         .border_1()
                         .border_color(p.bd)
                         .rounded(px(6.))
-                        .px(px(10.))
-                        .py(px(8.))
-                        .mb(px(14.))
+                        .px(rpx(10.))
+                        .py(rpx(8.))
+                        .mb(rpx(14.))
                         .child(key.algorithm.clone())
                         .child(key.fingerprint.clone()),
                 )
                 .child(
                     div()
                         .flex()
-                        .gap(px(6.))
+                        .gap(rpx(6.))
                         .justify_end()
                         .child(ui::button("hk-cancel", "Cancel", Kind::Ghost, p).on_click(
                             cx.listener(|this, _, w, cx| {
@@ -327,25 +328,25 @@ impl Workspace {
                 .flex_col()
                 .child(
                     div()
-                        .text_size(px(14.))
+                        .text_size(ts::TITLE)
                         .font_weight(FontWeight::SEMIBOLD)
-                        .mb(px(4.))
+                        .mb(rpx(4.))
                         .child(format!("Sign in to {host}")),
                 )
                 .child(
                     div()
                         .text_color(p.fg2)
-                        .text_size(px(12.5))
-                        .mb(px(10.))
+                        .text_size(ts::UI)
+                        .mb(rpx(10.))
                         .child(prompt.clone()),
                 )
                 .child(field(input, p))
                 .child(
                     div()
                         .text_color(p.fg3)
-                        .text_size(px(11.))
-                        .mt(px(6.))
-                        .mb(px(14.))
+                        .text_size(ts::SMALL)
+                        .mt(rpx(6.))
+                        .mb(rpx(14.))
                         .child("Used for this connection only. Save it in the Host's settings to keep it in the keychain."),
                 )
                 .child(buttons(p, cx))
@@ -359,10 +360,10 @@ impl Workspace {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(8.))
+                    .gap(rpx(8.))
                     .child(
                         div()
-                            .text_size(px(14.))
+                            .text_size(ts::TITLE)
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(title),
                     )
@@ -370,7 +371,7 @@ impl Workspace {
                         d.child(
                             div()
                                 .text_color(p.fg2)
-                                .text_size(px(12.5))
+                                .text_size(ts::UI)
                                 .child(req.instructions.clone()),
                         )
                     })
@@ -378,17 +379,17 @@ impl Workspace {
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(5.))
+                            .gap(rpx(5.))
                             .child(
                                 div()
-                                    .text_size(px(11.5))
+                                    .text_size(ts::LABEL)
                                     .text_color(p.fg2)
                                     .font_weight(FontWeight::MEDIUM)
                                     .child(label.trim().to_owned()),
                             )
                             .child(field(input, p))
                     }))
-                    .child(div().h(px(6.)))
+                    .child(div().h(rpx(6.)))
                     .child(buttons(p, cx))
                     .into_any_element()
             }
@@ -426,20 +427,20 @@ impl Workspace {
                 .child(
                     div()
                         .id("ssh-prompt")
-                        .w(px(480.))
+                        .w(rpx(480.))
                         .bg(p.elev)
                         .rounded(px(10.))
                         .shadow(ui::shadow(p))
-                        .px(px(20.))
-                        .py(px(18.))
-                        .text_size(px(12.5))
+                        .px(rpx(20.))
+                        .py(rpx(18.))
+                        .text_size(ts::UI)
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .child(body)
                         .when(more > 0, |d| {
                             d.child(
                                 div()
-                                    .mt(px(10.))
-                                    .text_size(px(11.))
+                                    .mt(rpx(10.))
+                                    .text_size(ts::SMALL)
                                     .text_color(p.fg3)
                                     .child(format!("{more} more waiting")),
                             )
@@ -452,21 +453,21 @@ impl Workspace {
 
 fn field(input: &Entity<InputState>, p: &Palette) -> impl IntoElement {
     div()
-        .h(px(28.))
+        .h(rpx(28.))
         .flex()
         .items_center()
-        .px(px(9.))
+        .px(rpx(9.))
         .border_1()
         .border_color(p.bd2)
         .rounded(px(6.))
         .bg(p.bg)
-        .child(Input::new(input).appearance(false).text_size(px(12.5)))
+        .child(Input::new(input).appearance(false).text_size(ts::UI))
 }
 
 fn buttons(p: &Palette, cx: &mut Context<Workspace>) -> impl IntoElement {
     div()
         .flex()
-        .gap(px(6.))
+        .gap(rpx(6.))
         .justify_end()
         .child(
             ui::button("sp-cancel", "Cancel", Kind::Ghost, p).on_click(cx.listener(
@@ -489,15 +490,15 @@ fn entra_body(
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let title = div()
-        .text_size(px(14.))
+        .text_size(ts::TITLE)
         .font_weight(FontWeight::SEMIBOLD)
-        .mb(px(4.))
+        .mb(rpx(4.))
         .child(format!("Sign in to Microsoft for {connection}"));
     let note = |text: String| {
         div()
             .text_color(p.fg2)
-            .text_size(px(12.5))
-            .mb(px(12.))
+            .text_size(ts::UI)
+            .mb(rpx(12.))
             .child(text)
     };
     let cancel = ui::button("entra-cancel", "Cancel", Kind::Ghost, p).on_click(cx.listener(
@@ -517,21 +518,21 @@ fn entra_body(
                 .child(
                     div()
                         .font_family(MONO)
-                        .text_size(px(22.))
+                        .text_size(ts::DISPLAY_M)
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_center()
                         .bg(p.bg)
                         .border_1()
                         .border_color(p.bd)
                         .rounded(px(6.))
-                        .py(px(10.))
-                        .mb(px(14.))
+                        .py(rpx(10.))
+                        .mb(rpx(14.))
                         .child(code.clone()),
                 )
                 .child(
                     div()
                         .flex()
-                        .gap(px(6.))
+                        .gap(rpx(6.))
                         .justify_end()
                         .child(cancel)
                         .child(
@@ -564,14 +565,14 @@ fn entra_body(
                 .child(
                     div()
                         .text_color(p.fg3)
-                        .text_size(px(11.))
-                        .mb(px(14.))
+                        .text_size(ts::SMALL)
+                        .mb(rpx(14.))
                         .child("No browser window? Open it again, or copy the link into a browser on this computer."),
                 )
                 .child(
                     div()
                         .flex()
-                        .gap(px(6.))
+                        .gap(rpx(6.))
                         .justify_end()
                         .child(cancel)
                         .child(

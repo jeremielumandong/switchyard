@@ -24,6 +24,7 @@ use switchyard_core::db::{
     RowBatch, Value,
 };
 
+use crate::appearance::{rpx, ts};
 use crate::theme::{MONO, Palette, palette};
 use crate::ui::{self, Kind, thousands};
 
@@ -724,9 +725,9 @@ pub fn render_pager<T: PagedView>(
 ) -> AnyElement {
     let act = |id: &'static str, label: String, kind: Kind, enabled: bool, a: PagerAction| {
         ui::button(id, label, kind, p)
-            .h(px(22.))
-            .px(px(7.))
-            .text_size(px(11.5))
+            .h(rpx(22.))
+            .px(rpx(7.))
+            .text_size(ts::LABEL)
             .when(!enabled, |d| d.opacity(0.4))
             .when(enabled, |d| {
                 d.on_click(cx.listener(move |this: &mut T, _, w, cx| pager_action(this, a, w, cx)))
@@ -753,18 +754,18 @@ pub fn render_pager<T: PagedView>(
         .flex_none()
         .flex()
         .flex_col()
-        .gap(px(4.))
-        .px(px(10.))
-        .py(px(5.))
+        .gap(rpx(4.))
+        .px(rpx(10.))
+        .py(rpx(5.))
         .border_b_1()
         .border_color(p.bd)
         .bg(p.panel)
-        .text_size(px(11.5))
+        .text_size(ts::LABEL)
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(rpx(6.))
                 .child(
                     div()
                         .font_family(MONO)
@@ -776,10 +777,10 @@ pub fn render_pager<T: PagedView>(
                     div()
                         .flex_1()
                         .min_w_0()
-                        .h(px(24.))
+                        .h(rpx(24.))
                         .flex()
                         .items_center()
-                        .px(px(6.))
+                        .px(rpx(6.))
                         .border_1()
                         .border_color(if status.is_some() { p.prod } else { p.bd })
                         .rounded(px(5.))
@@ -788,7 +789,7 @@ pub fn render_pager<T: PagedView>(
                         .child(
                             Input::new(&pager.where_input)
                                 .appearance(false)
-                                .text_size(px(11.5)),
+                                .text_size(ts::LABEL),
                         ),
                 )
                 .child(act(
@@ -812,7 +813,7 @@ pub fn render_pager<T: PagedView>(
             div()
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(rpx(6.))
                 .child(
                     div()
                         .flex_1()
@@ -834,9 +835,9 @@ pub fn render_pager<T: PagedView>(
                 .children(PAGE_SIZES.into_iter().enumerate().map(|(i, n)| {
                     let on = pager.page_size == n;
                     ui::button(("pager-size", i), n.to_string(), Kind::Ghost, p)
-                        .h(px(22.))
-                        .px(px(6.))
-                        .text_size(px(11.5))
+                        .h(rpx(22.))
+                        .px(rpx(6.))
+                        .text_size(ts::LABEL)
                         .when(on, |d| d.bg(p.sel).text_color(p.fg))
                         .when(!on && !busy, |d| {
                             d.on_click(cx.listener(move |this: &mut T, _, w, cx| {
@@ -846,7 +847,7 @@ pub fn render_pager<T: PagedView>(
                 }))
                 .child(
                     div()
-                        .min_w(px(110.))
+                        .min_w(rpx(110.))
                         .text_color(p.fg2)
                         .font_family(MONO)
                         .flex()
@@ -986,7 +987,7 @@ impl TableDelegate for GridDelegate {
             .size_full()
             .flex()
             .items_center()
-            .gap(px(6.))
+            .gap(rpx(6.))
             .when(meta.data_type.is_numeric(), |d| d.justify_end())
             .whitespace_nowrap()
             .overflow_hidden()
@@ -1112,10 +1113,10 @@ impl TableDelegate for GridDelegate {
             .flex()
             .flex_col()
             .items_center()
-            .pt(px(40.))
-            .gap(px(4.))
+            .pt(rpx(40.))
+            .gap(rpx(4.))
             .text_color(p.fg2)
-            .text_size(px(13.))
+            .text_size(ts::BASE)
             .child("Query returned no rows")
     }
 

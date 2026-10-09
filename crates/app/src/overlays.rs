@@ -13,6 +13,7 @@ use switchyard_core::remote::ssh::ForwardKind;
 use switchyard_core::store::{EnvironmentLabel, HistoryStatus, ProfileId};
 
 use crate::actions::{MenuCloseSub, MenuConfirm, MenuDown, MenuOpenSub, MenuUp};
+use crate::appearance::{rpx, ts};
 use crate::conn_editor::{ConnEditor, ConnKind};
 use crate::palette::PaletteView;
 use crate::sidebar::{CtxMenu, CtxTarget};
@@ -117,7 +118,7 @@ fn scrim(p: &Palette, top: bool) -> gpui_kit::Stateful<gpui_kit::Div> {
         .bg(p.scrim)
         .flex()
         .justify_center()
-        .when(top, |d| d.items_start().pt(px(72.)))
+        .when(top, |d| d.items_start().pt(rpx(72.)))
         .when(!top, |d| d.items_center())
         .occlude()
 }
@@ -125,7 +126,7 @@ fn scrim(p: &Palette, top: bool) -> gpui_kit::Stateful<gpui_kit::Div> {
 fn dialog(p: &Palette, width: f32) -> gpui_kit::Stateful<gpui_kit::Div> {
     div()
         .id("dialog")
-        .w(px(width))
+        .w(rpx(width))
         .bg(p.elev)
         .rounded(px(10.))
         .shadow(ui::shadow(p))
@@ -280,7 +281,7 @@ impl Workspace {
             Some(Overlay::ConnEditor(ed)) => Some(
                 scrim(p, false)
                     .key_context("Overlay")
-                    .p(px(20.))
+                    .p(rpx(20.))
                     .child(ed.clone())
                     .into_any_element(),
             ),
@@ -310,17 +311,17 @@ impl Workspace {
             out.push(
                 div()
                     .absolute()
-                    .right(px(16.))
-                    .bottom(px(36.))
+                    .right(rpx(16.))
+                    .bottom(rpx(36.))
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .px(px(14.))
-                    .py(px(10.))
+                    .gap(rpx(10.))
+                    .px(rpx(14.))
+                    .py(rpx(10.))
                     .bg(p.elev)
                     .rounded(px(8.))
                     .shadow(ui::shadow(p))
-                    .text_size(px(12.5))
+                    .text_size(ts::UI)
                     .child(ui::dot(p.dev, 7.))
                     .child(t)
                     .into_any_element(),
@@ -348,10 +349,10 @@ impl Workspace {
         div()
             .id("tunnels")
             .absolute()
-            .left(px(250.))
-            .bottom(px(30.))
-            .w(px(540.))
-            .max_h(px(480.))
+            .left(rpx(250.))
+            .bottom(rpx(30.))
+            .w(rpx(540.))
+            .max_h(rpx(480.))
             .overflow_y_scroll()
             .bg(p.elev)
             .rounded(px(8.))
@@ -363,11 +364,11 @@ impl Workspace {
                     .flex()
                     .justify_between()
                     .items_center()
-                    .px(px(12.))
-                    .py(px(10.))
+                    .px(rpx(12.))
+                    .py(rpx(10.))
                     .border_b_1()
                     .border_color(p.bd)
-                    .text_size(px(12.))
+                    .text_size(ts::BODY)
                     .child(div().font_weight(FontWeight::SEMIBOLD).child("Tunnels"))
                     .child(
                         div()
@@ -383,9 +384,9 @@ impl Workspace {
             .when(self.tunnels.is_empty(), |d| {
                 d.child(
                     div()
-                        .px(px(12.))
-                        .py(px(14.))
-                        .text_size(px(12.))
+                        .px(rpx(12.))
+                        .py(rpx(14.))
+                        .text_size(ts::BODY)
                         .text_color(p.fg2)
                         .child("No active tunnels. Start a saved forward below, add forwards in a Host's settings, or connect a database “via Host”."),
                 )
@@ -411,23 +412,23 @@ impl Workspace {
                 let id = t.id;
                 div()
                     .id(("tunnel", id as usize))
-                    .h(px(32.))
+                    .h(rpx(32.))
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .px(px(12.))
+                    .gap(rpx(8.))
+                    .px(rpx(12.))
                     .border_b_1()
                     .border_color(p.line)
                     .font_family(MONO)
-                    .text_size(px(11.5))
+                    .text_size(ts::LABEL)
                     .child(
                         div()
-                            .w(px(16.))
+                            .w(rpx(16.))
                             .flex_none()
                             .text_color(p.fg3)
                             .child(t.kind.flag()),
                     )
-                    .child(div().w(px(54.)).flex_none().child(format!(":{}", t.local_port)))
+                    .child(div().w(rpx(54.)).flex_none().child(format!(":{}", t.local_port)))
                     .child(
                         div()
                             .flex_1()
@@ -443,11 +444,11 @@ impl Workspace {
                     .child(
                         div()
                             .id(("tunnel-status", id as usize))
-                            .w(px(92.))
+                            .w(rpx(92.))
                             .flex_none()
                             .flex()
                             .items_center()
-                            .gap(px(5.))
+                            .gap(rpx(5.))
                             .font_family(SANS)
                             .text_color(color)
                             .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()).build(w, cx))
@@ -456,7 +457,7 @@ impl Workspace {
                     )
                     .child(
                         div()
-                            .w(px(60.))
+                            .w(rpx(60.))
                             .flex_none()
                             .flex()
                             .justify_end()
@@ -466,7 +467,7 @@ impl Workspace {
                     .child(
                         div()
                             .id(("tunnel-stop", id as usize))
-                            .w(px(36.))
+                            .w(rpx(36.))
                             .flex_none()
                             .flex()
                             .justify_end()
@@ -483,10 +484,10 @@ impl Workspace {
             .when(!saved.is_empty(), |d| {
                 d.child(
                     div()
-                        .px(px(12.))
-                        .pt(px(10.))
-                        .pb(px(4.))
-                        .text_size(px(11.))
+                        .px(rpx(12.))
+                        .pt(rpx(10.))
+                        .pb(rpx(4.))
+                        .text_size(ts::SMALL)
                         .text_color(p.fg3)
                         .child("Saved forwards"),
                 )
@@ -499,14 +500,14 @@ impl Workspace {
                     };
                     div()
                         .id(("saved-forward", i))
-                        .h(px(30.))
+                        .h(rpx(30.))
                         .flex()
                         .items_center()
-                        .gap(px(8.))
-                        .px(px(12.))
+                        .gap(rpx(8.))
+                        .px(rpx(12.))
                         .border_b_1()
                         .border_color(p.line)
-                        .text_size(px(11.5))
+                        .text_size(ts::LABEL)
                         .child(
                             div()
                                 .flex_1()
@@ -521,7 +522,7 @@ impl Workspace {
                         .child(
                             div()
                                 .id(("saved-forward-start", i))
-                                .w(px(36.))
+                                .w(rpx(36.))
                                 .flex_none()
                                 .flex()
                                 .justify_end()
@@ -684,11 +685,11 @@ impl Workspace {
                          highlighted: bool| {
             div()
                 .id(id)
-                .h(px(ITEM_H))
+                .h(rpx(ITEM_H))
                 .flex()
                 .items_center()
                 .justify_between()
-                .px(px(8.))
+                .px(rpx(8.))
                 .rounded(px(4.))
                 .text_color(if danger { p.prod } else { p.fg })
                 .when(highlighted, |d| d.bg(p.sel))
@@ -697,7 +698,7 @@ impl Workspace {
                 .child(
                     div()
                         .font_family(MONO)
-                        .text_size(px(10.5))
+                        .text_size(ts::CAPTION_PLUS)
                         .text_color(p.fg3)
                         .child(key),
                 )
@@ -706,22 +707,22 @@ impl Workspace {
             div()
                 .id(id)
                 .absolute()
-                .w(px(MENU_W))
-                .p(px(4.))
+                .w(rpx(MENU_W))
+                .p(rpx(4.))
                 .bg(p.elev)
                 .rounded(px(7.))
                 .shadow(ui::shadow(p))
-                .text_size(px(12.5))
+                .text_size(ts::UI)
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         };
         let sub_panel = sub.map(|(sub_items, top)| {
             panel("ctx-submenu")
-                .left(ctx.at.x + px(MENU_W - 2.))
-                .top(ctx.at.y + px(top))
+                .left(ctx.at.x + crate::appearance::scaled(MENU_W - 2., cx))
+                .top(ctx.at.y + crate::appearance::scaled(top, cx))
                 .children(sub_items.into_iter().enumerate().map(
                     |(j, (action, label, danger, key))| {
                         if action == "-" {
-                            return div().h(px(1.)).bg(p.bd).my(px(4.)).into_any_element();
+                            return div().h(rpx(1.)).bg(p.bd).my(rpx(4.)).into_any_element();
                         }
                         let target = target.clone();
                         menu_item(
@@ -782,7 +783,7 @@ impl Workspace {
                         .enumerate()
                         .map(|(i, (action, label, danger, key))| {
                             if action == "-" {
-                                return div().h(px(1.)).bg(p.bd).my(px(4.)).into_any_element();
+                                return div().h(rpx(1.)).bg(p.bd).my(rpx(4.)).into_any_element();
                             }
                             let target = target.clone();
                             let has_sub = submenu(&target, action).is_some();
@@ -995,26 +996,26 @@ impl Workspace {
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(8.))
-                            .px(px(20.))
-                            .pt(px(16.))
-                            .pb(px(12.))
+                            .gap(rpx(8.))
+                            .px(rpx(20.))
+                            .pt(rpx(16.))
+                            .pb(rpx(12.))
                             .child(
                                 div()
-                                    .text_size(px(15.))
+                                    .text_size(ts::TITLE_PLUS)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(format!("Disconnect {name}?")),
                             )
                             .child(
                                 div()
-                                    .text_size(px(12.5))
+                                    .text_size(ts::UI)
                                     .text_color(p.fg2)
                                     .child("Closing its sessions loses:"),
                             )
                             .children(reasons.iter().map(|r| {
                                 div()
                                     .font_family(MONO)
-                                    .text_size(px(12.))
+                                    .text_size(ts::BODY)
                                     .text_color(p.fg)
                                     .child(format!("· {r}"))
                             })),
@@ -1023,9 +1024,9 @@ impl Workspace {
                         div()
                             .flex()
                             .justify_end()
-                            .gap(px(8.))
-                            .px(px(20.))
-                            .py(px(12.))
+                            .gap(rpx(8.))
+                            .px(rpx(20.))
+                            .py(rpx(12.))
                             .border_t_1()
                             .border_color(p.bd)
                             .child(
@@ -1095,47 +1096,47 @@ impl Workspace {
                     .border_color(p.prod)
                     .child(
                         div()
-                            .px(px(20.))
-                            .pt(px(16.))
+                            .px(rpx(20.))
+                            .pt(rpx(16.))
                             .flex()
                             .flex_col()
-                            .gap(px(4.))
+                            .gap(rpx(4.))
                             .child(
                                 div()
                                     .font_family(MONO)
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_size(px(10.))
+                                    .text_size(ts::CAPTION)
                                     .text_color(p.prod)
                                     .child(conn_label),
                             )
                             .child(
                                 div()
-                                    .text_size(px(16.))
+                                    .text_size(ts::HEADING)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(first.headline.clone()),
                             )
                             .child(
                                 div()
-                                    .text_size(px(12.5))
+                                    .text_size(ts::UI)
                                     .text_color(p.fg2)
                                     .child(first.explanation.clone()),
                             ),
                     )
                     .child(
                         div()
-                            .mx(px(20.))
-                            .my(px(14.))
-                            .px(px(12.))
-                            .py(px(10.))
+                            .mx(rpx(20.))
+                            .my(rpx(14.))
+                            .px(rpx(12.))
+                            .py(rpx(10.))
                             .border_1()
                             .border_color(p.bd)
                             .rounded(px(6.))
                             .bg(p.bg)
                             .flex()
                             .items_center()
-                            .gap(px(8.))
+                            .gap(rpx(8.))
                             .font_family(MONO)
-                            .text_size(px(12.5))
+                            .text_size(ts::UI)
                             .child(div().text_color(p.fg3).child(first.line.to_string()))
                             .child(
                                 div()
@@ -1146,7 +1147,7 @@ impl Workspace {
                             )
                             .child(
                                 div()
-                                    .px(px(3.))
+                                    .px(rpx(3.))
                                     .rounded(px(3.))
                                     .bg(p.prod_bg)
                                     .text_color(p.prod)
@@ -1155,11 +1156,11 @@ impl Workspace {
                     )
                     .child(
                         div()
-                            .px(px(20.))
+                            .px(rpx(20.))
                             .flex()
                             .flex_col()
-                            .gap(px(6.))
-                            .text_size(px(12.5))
+                            .gap(rpx(6.))
+                            .text_size(ts::UI)
                             .child(kv("Object", &first.object, true, p))
                             .child(kv(
                                 "Transaction",
@@ -1182,16 +1183,16 @@ impl Workspace {
                     )
                     .child(
                         div()
-                            .px(px(20.))
-                            .pt(px(16.))
+                            .px(rpx(20.))
+                            .pt(rpx(16.))
                             .flex()
                             .flex_col()
-                            .gap(px(6.))
+                            .gap(rpx(6.))
                             .child(
                                 div()
                                     .flex()
-                                    .gap(px(4.))
-                                    .text_size(px(12.))
+                                    .gap(rpx(4.))
+                                    .text_size(ts::BODY)
                                     .text_color(p.fg2)
                                     .child("Type")
                                     .child(
@@ -1204,35 +1205,33 @@ impl Workspace {
                             )
                             .child(
                                 div()
-                                    .h(px(30.))
+                                    .h(rpx(30.))
                                     .flex()
                                     .items_center()
-                                    .px(px(10.))
+                                    .px(rpx(10.))
                                     .border_1()
                                     .border_color(p.bd2)
                                     .rounded(px(6.))
                                     .bg(p.bg)
                                     .font_family(MONO)
-                                    .child(
-                                        Input::new(&input).appearance(false).text_size(px(12.5)),
-                                    ),
+                                    .child(Input::new(&input).appearance(false).text_size(ts::UI)),
                             ),
                     )
                     .child(
                         div()
                             .flex()
                             .justify_end()
-                            .gap(px(6.))
-                            .px(px(20.))
-                            .py(px(16.))
+                            .gap(rpx(6.))
+                            .px(rpx(20.))
+                            .py(rpx(16.))
                             .child(
                                 ui::button("safety-cancel", "Cancel", Kind::Secondary, p)
-                                    .h(px(30.))
+                                    .h(rpx(30.))
                                     .on_click(cx.listener(|this, _, w, cx| this.dismiss(w, cx))),
                             )
                             .child(
                                 ui::button("safety-run", action_label, Kind::Destructive, p)
-                                    .h(px(30.))
+                                    .h(rpx(30.))
                                     .opacity(if ok { 1.0 } else { 0.4 })
                                     .on_click(cx.listener(move |this, _, w, cx| {
                                         if !ok {
@@ -1262,27 +1261,27 @@ impl Workspace {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
+                    .gap(rpx(10.))
                     .child(
                         div()
-                            .w(px(120.))
+                            .w(rpx(120.))
                             .font_family(MONO)
-                            .text_size(px(12.5))
+                            .text_size(ts::UI)
                             .text_color(p.fg)
                             .child(name.clone()),
                     )
                     .child(
                         div()
                             .flex_1()
-                            .h(px(28.))
+                            .h(rpx(28.))
                             .flex()
                             .items_center()
-                            .px(px(9.))
+                            .px(rpx(9.))
                             .border_1()
                             .border_color(p.bd2)
                             .rounded(px(6.))
                             .bg(p.bg)
-                            .child(Input::new(input).appearance(false).text_size(px(12.5))),
+                            .child(Input::new(input).appearance(false).text_size(ts::UI)),
                     )
                     .into_any_element()
             })
@@ -1293,20 +1292,20 @@ impl Workspace {
                 dialog(p, 480.)
                     .child(
                         div()
-                            .px(px(20.))
-                            .pt(px(16.))
-                            .pb(px(10.))
-                            .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child("Parameter values"))
-                            .child(div().text_size(px(12.5)).text_color(p.fg2).child("Values are sent as typed parameters, never spliced into the SQL. Type NULL for null.")),
+                            .px(rpx(20.))
+                            .pt(rpx(16.))
+                            .pb(rpx(10.))
+                            .child(div().text_size(ts::TITLE).font_weight(FontWeight::SEMIBOLD).child("Parameter values"))
+                            .child(div().text_size(ts::UI).text_color(p.fg2).child("Values are sent as typed parameters, never spliced into the SQL. Type NULL for null.")),
                     )
-                    .child(div().px(px(20.)).flex().flex_col().gap(px(8.)).children(fields))
+                    .child(div().px(rpx(20.)).flex().flex_col().gap(rpx(8.)).children(fields))
                     .child(
                         div()
                             .flex()
                             .justify_end()
-                            .gap(px(6.))
-                            .px(px(20.))
-                            .py(px(16.))
+                            .gap(rpx(6.))
+                            .px(rpx(20.))
+                            .py(rpx(16.))
                             .child(ui::button("params-cancel", "Cancel", Kind::Ghost, p).on_click(cx.listener(|this, _, w, cx| this.dismiss(w, cx))))
                             .child(ui::button("params-run", "Run", Kind::Primary, p).on_click(cx.listener(move |this, _, w, cx| {
                                 let values: Vec<(String, String)> =
@@ -1350,9 +1349,9 @@ impl Workspace {
                     .id(("hist", i))
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .h(px(30.))
-                    .px(px(10.))
+                    .gap(rpx(10.))
+                    .h(rpx(30.))
+                    .px(rpx(10.))
                     .rounded(px(6.))
                     .hover(|s| s.bg(p.sel))
                     .on_click(cx.listener(move |this, _, w, cx| {
@@ -1368,23 +1367,23 @@ impl Workspace {
                             .min_w_0()
                             .truncate()
                             .font_family(MONO)
-                            .text_size(px(12.))
+                            .text_size(ts::BODY)
                             .child(first_line),
                     )
                     .child(
                         div()
-                            .text_size(px(11.))
+                            .text_size(ts::SMALL)
                             .text_color(p.fg3)
                             .whitespace_nowrap()
                             .child(h.connection_name.clone()),
                     )
                     .child(
                         div()
-                            .w(px(90.))
+                            .w(rpx(90.))
                             .flex()
                             .justify_end()
                             .font_family(MONO)
-                            .text_size(px(11.))
+                            .text_size(ts::SMALL)
                             .text_color(p.fg2)
                             .child(match h.rows {
                                 Some(r) if r > 0 => format!("{} rows", ui::thousands(r as u64)),
@@ -1395,7 +1394,7 @@ impl Workspace {
                         d.child(
                             div()
                                 .font_family(MONO)
-                                .text_size(px(10.))
+                                .text_size(ts::CAPTION)
                                 .text_color(p.acc)
                                 .child(h.tags.join(" ")),
                         )
@@ -1404,9 +1403,9 @@ impl Workspace {
                         let (id, sql) = (h.id, h.sql.clone());
                         d.child(
                             ui::button(("hist-plan", i), "Plan", Kind::Secondary, p)
-                                .h(px(20.))
-                                .px(px(7.))
-                                .text_size(px(11.))
+                                .h(rpx(20.))
+                                .px(rpx(7.))
+                                .text_size(ts::SMALL)
                                 .on_click(cx.listener(move |this, _, w, cx| {
                                     cx.stop_propagation();
                                     this.open_saved_plan(id, &sql, w, cx);
@@ -1425,35 +1424,35 @@ impl Workspace {
                 dialog(p, 760.)
                     .child(
                         div()
-                            .h(px(46.))
+                            .h(rpx(46.))
                             .flex()
                             .items_center()
-                            .gap(px(10.))
-                            .px(px(14.))
+                            .gap(rpx(10.))
+                            .px(rpx(14.))
                             .border_b_1()
                             .border_color(p.bd)
                             .child(
                                 div()
-                                    .px(px(6.))
-                                    .py(px(2.))
+                                    .px(rpx(6.))
+                                    .py(rpx(2.))
                                     .rounded(px(4.))
                                     .bg(p.hover)
                                     .font_family(MONO)
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_size(px(10.))
+                                    .text_size(ts::CAPTION)
                                     .text_color(p.fg2)
                                     .child("HISTORY"),
                             )
-                            .child(div().flex_1().child(Input::new(&input).appearance(false).text_size(px(14.)))),
+                            .child(div().flex_1().child(Input::new(&input).appearance(false).text_size(ts::TITLE))),
                     )
                     .child(
                         div()
                             .id("hist-list")
-                            .max_h(px(440.))
+                            .max_h(rpx(440.))
                             .overflow_y_scroll()
-                            .p(px(4.))
+                            .p(rpx(4.))
                             .children(rows)
-                            .when(empty, |d| d.child(div().p(px(24.)).text_color(p.fg3).text_size(px(12.5)).child("No history yet. Every executed statement is recorded here."))),
+                            .when(empty, |d| d.child(div().p(rpx(24.)).text_color(p.fg3).text_size(ts::UI).child("No history yet. Every executed statement is recorded here."))),
                     ),
             )
             .into_any_element()
@@ -1479,9 +1478,9 @@ impl Workspace {
                     .id(("ssh-import", i))
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .h(px(34.))
-                    .px(px(12.))
+                    .gap(rpx(10.))
+                    .h(rpx(34.))
+                    .px(rpx(12.))
                     .rounded(px(6.))
                     .when(!h.exists, |d| {
                         d.hover(|s| s.bg(p.sel))
@@ -1498,10 +1497,10 @@ impl Workspace {
                     .child(ui::checkbox(("ssh-import-check", i), on, "", p))
                     .child(
                         div()
-                            .w(px(150.))
+                            .w(rpx(150.))
                             .flex_none()
                             .truncate()
-                            .text_size(px(12.5))
+                            .text_size(ts::UI)
                             .font_weight(FontWeight::MEDIUM)
                             .child(h.alias.clone()),
                     )
@@ -1511,7 +1510,7 @@ impl Workspace {
                             .min_w_0()
                             .truncate()
                             .font_family(MONO)
-                            .text_size(px(11.5))
+                            .text_size(ts::LABEL)
                             .text_color(p.fg2)
                             .child(h.address.clone()),
                     )
@@ -1520,17 +1519,17 @@ impl Workspace {
                             div()
                                 .flex_none()
                                 .font_family(MONO)
-                                .text_size(px(11.))
+                                .text_size(ts::SMALL)
                                 .text_color(p.acc)
                                 .child(v),
                         )
                     })
                     .child(
                         div()
-                            .w(px(150.))
+                            .w(rpx(150.))
                             .flex_none()
                             .truncate()
-                            .text_size(px(11.5))
+                            .text_size(ts::LABEL)
                             .text_color(p.fg3)
                             .child(if h.exists {
                                 "already saved".to_owned()
@@ -1560,21 +1559,21 @@ impl Workspace {
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(2.))
-                            .px(px(16.))
-                            .py(px(12.))
+                            .gap(rpx(2.))
+                            .px(rpx(16.))
+                            .py(rpx(12.))
                             .border_b_1()
                             .border_color(p.bd)
                             .child(
                                 div()
-                                    .text_size(px(14.))
+                                    .text_size(ts::TITLE)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child("Import Hosts"),
                             )
                             .child(
                                 div()
                                     .font_family(MONO)
-                                    .text_size(px(11.))
+                                    .text_size(ts::SMALL)
                                     .text_color(p.fg3)
                                     .child(format!(
                                         "{} · {} entries, {new_count} new",
@@ -1586,16 +1585,16 @@ impl Workspace {
                     .child(
                         div()
                             .id("ssh-import-list")
-                            .max_h(px(420.))
+                            .max_h(rpx(420.))
                             .overflow_y_scroll()
-                            .p(px(4.))
+                            .p(rpx(4.))
                             .children(rows)
                             .when(preview.hosts.is_empty(), |d| {
                                 d.child(
                                     div()
-                                        .p(px(24.))
+                                        .p(rpx(24.))
                                         .text_color(p.fg3)
-                                        .text_size(px(12.5))
+                                        .text_size(ts::UI)
                                         .child("No Host entries (wildcard patterns are skipped)."),
                                 )
                             }),
@@ -1604,9 +1603,9 @@ impl Workspace {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(8.))
-                            .px(px(16.))
-                            .py(px(12.))
+                            .gap(rpx(8.))
+                            .px(rpx(16.))
+                            .py(rpx(12.))
                             .border_t_1()
                             .border_color(p.bd)
                             .child(
@@ -1728,21 +1727,21 @@ impl Workspace {
             SettingsPage::Appearance => div()
                 .flex()
                 .flex_col()
-                .gap(px(18.))
-                .p(px(18.))
+                .gap(rpx(18.))
+                .p(rpx(18.))
                 .child(
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(8.))
+                        .gap(rpx(8.))
                         .child(
                             div()
-                                .text_size(px(12.))
+                                .text_size(ts::BODY)
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(p.fg2)
                                 .child("Theme"),
                         )
-                        .child(div().flex().flex_wrap().gap(px(10.)).children(
+                        .child(div().flex().flex_wrap().gap(rpx(10.)).children(
                             ThemeId::ALL.into_iter().map(|id| {
                                 theme_card(id, id == p.id, p).on_click(
                                     cx.listener(move |this, _, w, cx| this.set_theme(id, w, cx)),
@@ -1755,8 +1754,8 @@ impl Workspace {
             SettingsPage::General => div()
                 .flex()
                 .flex_col()
-                .gap(px(10.))
-                .p(px(18.))
+                .gap(rpx(10.))
+                .p(rpx(18.))
                 .child(setting_row("Workspace", &self.workspace_name, false, p))
                 .child(setting_row(
                     "Default fetch limit",
@@ -1780,7 +1779,7 @@ impl Workspace {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(12.))
+                        .gap(rpx(12.))
                         .child(
                             ui::checkbox(
                                 "set-update-check",
@@ -1801,8 +1800,8 @@ impl Workspace {
                 .child(
                     div()
                         .flex()
-                        .gap(px(8.))
-                        .pt(px(8.))
+                        .gap(rpx(8.))
+                        .pt(rpx(8.))
                         .child(
                             ui::button("set-export", "Export profiles…", Kind::Secondary, p)
                                 .on_click(cx.listener(|this, _, w, cx| {
@@ -1833,8 +1832,8 @@ impl Workspace {
             SettingsPage::Editor => div()
                 .flex()
                 .flex_col()
-                .gap(px(10.))
-                .p(px(18.))
+                .gap(rpx(10.))
+                .p(rpx(18.))
                 .child(setting_row(
                     "Highlighting",
                     "tree-sitter SQL · PostgreSQL / T-SQL keywords",
@@ -1875,16 +1874,16 @@ impl Workspace {
                 div()
                     .flex()
                     .flex_col()
-                    .p(px(18.))
+                    .p(rpx(18.))
                     .children(rows.into_iter().map(|(l, k)| {
                         div()
                             .flex()
                             .items_center()
                             .justify_between()
-                            .h(px(32.))
+                            .h(rpx(32.))
                             .border_b_1()
                             .border_color(p.line)
-                            .text_size(px(12.5))
+                            .text_size(ts::UI)
                             .child(l)
                             .child(ui::kbd(k, p))
                     }))
@@ -1895,8 +1894,8 @@ impl Workspace {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(10.))
-                    .p(px(18.))
+                    .gap(rpx(10.))
+                    .p(rpx(18.))
                     .child(setting_row(
                         "Secret storage",
                         if backend.is_empty() {
@@ -1947,38 +1946,38 @@ impl Workspace {
             )
             .child(
                 dialog(p, 920.)
-                    .h(px(600.))
+                    .h(rpx(600.))
                     .flex()
                     .child(
                         div()
-                            .w(px(190.))
+                            .w(rpx(190.))
                             .flex_none()
                             .bg(p.panel)
                             .border_r_1()
                             .border_color(p.bd)
-                            .px(px(8.))
-                            .py(px(14.))
+                            .px(rpx(8.))
+                            .py(rpx(14.))
                             .flex()
                             .flex_col()
-                            .gap(px(2.))
+                            .gap(rpx(2.))
                             .child(
                                 div()
-                                    .px(px(8.))
-                                    .pb(px(10.))
+                                    .px(rpx(8.))
+                                    .pb(rpx(10.))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_size(px(14.))
+                                    .text_size(ts::TITLE)
                                     .child("Settings"),
                             )
                             .children(SettingsPage::ALL.into_iter().map(|pg| {
                                 let active = pg == page;
                                 div()
                                     .id(pg.label())
-                                    .h(px(28.))
+                                    .h(rpx(28.))
                                     .flex()
                                     .items_center()
-                                    .px(px(8.))
+                                    .px(rpx(8.))
                                     .rounded(px(6.))
-                                    .text_size(px(12.5))
+                                    .text_size(ts::UI)
                                     .text_color(if active { p.fg } else { p.fg2 })
                                     .when(active, |d| d.bg(p.sel))
                                     .hover(|s| s.bg(p.hover))
@@ -1997,25 +1996,25 @@ impl Workspace {
                             .flex_col()
                             .child(
                                 div()
-                                    .h(px(46.))
+                                    .h(rpx(46.))
                                     .flex_none()
                                     .flex()
                                     .items_center()
-                                    .px(px(18.))
+                                    .px(rpx(18.))
                                     .border_b_1()
                                     .border_color(p.bd)
                                     .child(
                                         div()
                                             .font_weight(FontWeight::SEMIBOLD)
-                                            .text_size(px(14.))
+                                            .text_size(ts::TITLE)
                                             .child(page.label()),
                                     )
                                     .child(div().flex_1())
                                     .child(
                                         div()
                                             .id("settings-close")
-                                            .px(px(8.))
-                                            .py(px(2.))
+                                            .px(rpx(8.))
+                                            .py(rpx(2.))
                                             .rounded(px(4.))
                                             .text_color(p.fg3)
                                             .hover(|s| s.bg(p.hover))
@@ -2042,15 +2041,15 @@ impl Workspace {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(12.))
-                .p(px(14.))
+                .gap(rpx(12.))
+                .p(rpx(14.))
                 .border_1()
                 .border_color(p.bd)
                 .rounded(px(8.))
                 .bg(p.surface)
                 .child(
                     div()
-                        .text_size(px(11.))
+                        .text_size(ts::SMALL)
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(p.fg3)
                         .child(title),
@@ -2060,27 +2059,27 @@ impl Workspace {
             div()
                 .flex()
                 .items_center()
-                .gap(px(12.))
+                .gap(rpx(12.))
                 .child(ui::dot(p.env(*e), 8.))
                 .child(ui::env_badge_solid(*e, p))
                 .child(ui::env_badge(*e, p))
                 .child(
                     div()
-                        .w(px(60.))
-                        .h(px(22.))
+                        .w(rpx(60.))
+                        .h(rpx(22.))
                         .rounded_t(px(4.))
                         .bg(p.panel)
                         .border_t_2()
                         .border_color(p.env(*e)),
                 )
-                .child(div().text_size(px(12.)).text_color(p.fg2).child(e.name()))
+                .child(div().text_size(ts::BODY).text_color(p.fg2).child(e.name()))
         }));
         let buttons = card("BUTTONS")
             .child(
                 div()
                     .flex()
                     .flex_wrap()
-                    .gap(px(8.))
+                    .gap(rpx(8.))
                     .child(ui::button_with_key(
                         "c-run",
                         "Run",
@@ -2100,39 +2099,39 @@ impl Workspace {
             .child(
                 div()
                     .flex()
-                    .gap(px(8.))
+                    .gap(rpx(8.))
                     .child(
                         div()
                             .flex_1()
-                            .h(px(28.))
+                            .h(rpx(28.))
                             .flex()
                             .items_center()
-                            .px(px(9.))
+                            .px(rpx(9.))
                             .border_1()
                             .border_color(p.bd2)
                             .rounded(px(6.))
                             .bg(p.bg)
-                            .text_size(px(12.5))
+                            .text_size(ts::UI)
                             .child("Input value"),
                     )
                     .child(
                         div()
                             .flex_1()
-                            .h(px(28.))
+                            .h(rpx(28.))
                             .flex()
                             .items_center()
-                            .px(px(9.))
+                            .px(rpx(9.))
                             .border_1()
                             .border_color(p.acc)
                             .rounded(px(6.))
                             .bg(p.bg)
-                            .text_size(px(12.5))
+                            .text_size(ts::UI)
                             .text_color(p.fg3)
                             .child("Focused"),
                     ),
             )
             .child(
-                div().flex().flex_wrap().gap(px(6.)).children(
+                div().flex().flex_wrap().gap(rpx(6.)).children(
                     [
                         ui::keys("⇧⌘P", "Ctrl+Shift+P"),
                         ui::keys("⌘P", "Ctrl+P"),
@@ -2145,7 +2144,7 @@ impl Workspace {
             );
         let types = card("CONNECTION TYPES")
             .child(
-                div().flex().flex_wrap().gap(px(10.)).children(
+                div().flex().flex_wrap().gap(rpx(10.)).children(
                     [
                         ("PG", "PostgreSQL"),
                         ("MS", "SQL Server"),
@@ -2158,8 +2157,8 @@ impl Workspace {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(7.))
-                            .text_size(px(12.))
+                            .gap(rpx(7.))
+                            .text_size(ts::BODY)
                             .child(ui::monogram(b, 32., p))
                             .child(l)
                     }),
@@ -2167,7 +2166,7 @@ impl Workspace {
             )
             .child(
                 div()
-                    .text_size(px(11.5))
+                    .text_size(ts::LABEL)
                     .text_color(p.fg3)
                     .child("Monogram placeholders — swap for the final line-icon set."),
             );
@@ -2178,7 +2177,7 @@ impl Workspace {
                 .border_t_1()
                 .border_color(p.bd)
                 .font_family(MONO)
-                .text_size(px(12.))
+                .text_size(ts::BODY)
                 .child(cell("text value", false, p))
                 .child(cell("4,812.40", true, p))
                 .child(cell("NULL", false, p).italic().text_color(p.fg3))
@@ -2199,15 +2198,15 @@ impl Workspace {
         let rows = card("TREE ROWS · 26 PX")
             .child(
                 div()
-                    .h(px(26.))
+                    .h(rpx(26.))
                     .flex()
                     .items_center()
-                    .gap(px(7.))
-                    .text_size(px(12.5))
+                    .gap(rpx(7.))
+                    .text_size(ts::UI)
                     .child(
                         div()
-                            .w(px(10.))
-                            .text_size(px(9.))
+                            .w(rpx(10.))
+                            .text_size(ts::TINY)
                             .text_color(p.fg3)
                             .child("▾"),
                     )
@@ -2222,35 +2221,35 @@ impl Workspace {
             )
             .child(
                 div()
-                    .h(px(26.))
-                    .pl(px(18.))
+                    .h(rpx(26.))
+                    .pl(rpx(18.))
                     .flex()
                     .items_center()
-                    .gap(px(7.))
+                    .gap(rpx(7.))
                     .bg(p.sel)
-                    .text_size(px(12.5))
+                    .text_size(ts::UI)
                     .child(ui::monogram("PG", 28., p))
                     .child(div().flex_1().child("Selected leaf"))
                     .child(
                         div()
                             .font_family(MONO)
-                            .text_size(px(11.))
+                            .text_size(ts::SMALL)
                             .text_color(p.fg3)
                             .child(":54012"),
                     ),
             )
             .child(
                 div()
-                    .h(px(26.))
-                    .pl(px(18.))
+                    .h(rpx(26.))
+                    .pl(rpx(18.))
                     .flex()
                     .items_center()
-                    .gap(px(7.))
-                    .text_size(px(12.5))
+                    .gap(rpx(7.))
+                    .text_size(ts::UI)
                     .child(
                         div()
-                            .w(px(10.))
-                            .text_size(px(9.))
+                            .w(rpx(10.))
+                            .text_size(ts::TINY)
                             .text_color(p.fg3)
                             .child("▾"),
                     )
@@ -2268,34 +2267,34 @@ impl Workspace {
             .track_focus(&self.overlay_focus)
             .child(
                 div()
-                    .max_w(px(1120.))
+                    .max_w(rpx(1120.))
                     .mx_auto()
-                    .px(px(32.))
-                    .pt(px(28.))
-                    .pb(px(60.))
+                    .px(rpx(32.))
+                    .pt(rpx(28.))
+                    .pb(rpx(60.))
                     .flex()
                     .flex_col()
-                    .gap(px(28.))
+                    .gap(rpx(28.))
                     .font_family(SANS)
                     .child(
                         div()
                             .flex()
                             .items_baseline()
-                            .gap(px(12.))
+                            .gap(rpx(12.))
                             .child(
                                 div()
-                                    .text_size(px(20.))
+                                    .text_size(ts::DISPLAY_S)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child("Component sheet"),
                             )
-                            .child(div().text_size(px(12.5)).text_color(p.fg3).child(format!(
+                            .child(div().text_size(ts::UI).text_color(p.fg3).child(format!(
                                 "gpui-component vocabulary · {} theme",
                                 if p.dark { "dark" } else { "light" }
                             )))
                             .child(div().flex_1())
                             .child(
                                 ui::button("comp-close", "Close", Kind::Secondary, p)
-                                    .h(px(28.))
+                                    .h(rpx(28.))
                                     .on_click(cx.listener(|this, _, w, cx| this.dismiss(w, cx))),
                             ),
                     )
@@ -2303,7 +2302,7 @@ impl Workspace {
                         div()
                             .grid()
                             .grid_cols(3)
-                            .gap(px(16.))
+                            .gap(rpx(16.))
                             .child(envs)
                             .child(buttons)
                             .child(types)
@@ -2317,11 +2316,11 @@ impl Workspace {
 
 fn cell(text: &'static str, right: bool, p: &Palette) -> gpui_kit::Div {
     div()
-        .h(px(26.))
+        .h(rpx(26.))
         .flex()
         .items_center()
         .when(right, |d| d.justify_end())
-        .px(px(10.))
+        .px(rpx(10.))
         .border_r_1()
         .border_b_1()
         .border_color(p.line)
@@ -2331,10 +2330,10 @@ fn cell(text: &'static str, right: bool, p: &Palette) -> gpui_kit::Div {
 fn kv(k: &str, v: &str, mono: bool, p: &Palette) -> AnyElement {
     div()
         .flex()
-        .gap(px(12.))
+        .gap(rpx(12.))
         .child(
             div()
-                .w(px(120.))
+                .w(rpx(120.))
                 .flex_none()
                 .text_color(p.fg3)
                 .child(k.to_owned()),
@@ -2354,15 +2353,15 @@ impl Workspace {
         let cur = ap::current(cx);
         let families = ap::mono_choices(ap::installed_fonts(cx), &cur.editor_font_family);
         let label =
-            |text: &'static str| div().w(px(200.)).flex_none().text_color(p.fg2).child(text);
+            |text: &'static str| div().w(rpx(200.)).flex_none().text_color(p.fg2).child(text);
         let value = |text: String, mono: bool| {
             div()
-                .min_w(px(72.))
-                .h(px(28.))
+                .min_w(rpx(72.))
+                .h(rpx(28.))
                 .flex()
                 .items_center()
                 .justify_center()
-                .px(px(9.))
+                .px(rpx(9.))
                 .border_1()
                 .border_color(p.bd2)
                 .rounded(px(6.))
@@ -2370,7 +2369,7 @@ impl Workspace {
                 .when(mono, |d| d.font_family(MONO))
                 .child(text)
         };
-        let row = || div().flex().items_center().gap(px(8.)).text_size(px(12.5));
+        let row = || div().flex().items_center().gap(rpx(8.)).text_size(ts::UI);
         let set = |f: fn(&mut AppearanceSettings)| {
             cx.listener(
                 move |this: &mut Workspace, _: &gpui_kit::ClickEvent, w, cx| {
@@ -2381,16 +2380,16 @@ impl Workspace {
             )
         };
         let font_row = row().child(label("Editor font")).child(
-            div().flex_1().flex().flex_wrap().gap(px(6.)).children(
+            div().flex_1().flex().flex_wrap().gap(rpx(6.)).children(
                 families.into_iter().enumerate().map(|(i, fam)| {
                     let on = fam == cur.editor_font_family;
                     let pick = fam.clone();
                     div()
                         .id(("set-font", i))
-                        .h(px(28.))
+                        .h(rpx(28.))
                         .flex()
                         .items_center()
-                        .px(px(10.))
+                        .px(rpx(10.))
                         .rounded(px(6.))
                         .border_1()
                         .border_color(if on { p.acc } else { p.bd2 })
@@ -2447,7 +2446,7 @@ impl Workspace {
         div()
             .flex()
             .flex_col()
-            .gap(px(10.))
+            .gap(rpx(10.))
             .child(font_row)
             .child(size_row)
             .child(zoom_row)
@@ -2465,11 +2464,11 @@ fn setting_row(label: &str, value: &str, mono: bool, p: &Palette) -> AnyElement 
     div()
         .flex()
         .items_center()
-        .gap(px(12.))
-        .text_size(px(12.5))
+        .gap(rpx(12.))
+        .text_size(ts::UI)
         .child(
             div()
-                .w(px(200.))
+                .w(rpx(200.))
                 .flex_none()
                 .text_color(p.fg2)
                 .child(label.to_owned()),
@@ -2477,10 +2476,10 @@ fn setting_row(label: &str, value: &str, mono: bool, p: &Palette) -> AnyElement 
         .child(
             div()
                 .flex_1()
-                .h(px(28.))
+                .h(rpx(28.))
                 .flex()
                 .items_center()
-                .px(px(9.))
+                .px(rpx(9.))
                 .border_1()
                 .border_color(p.bd2)
                 .rounded(px(6.))
@@ -2494,21 +2493,21 @@ fn setting_row(label: &str, value: &str, mono: bool, p: &Palette) -> AnyElement 
 /// A theme preview: its own background, text, a selected line and syntax colors.
 fn theme_card(id: ThemeId, current: bool, p: &Palette) -> gpui_kit::Stateful<gpui_kit::Div> {
     let t = id.palette();
-    let line = |w: f32, color: gpui_kit::Hsla| div().h(px(5.)).w(px(w)).rounded(px(2.)).bg(color);
+    let line = |w: f32, color: gpui_kit::Hsla| div().h(rpx(5.)).w(px(w)).rounded(px(2.)).bg(color);
     div()
         .id(SharedString::from(format!("theme-{}", id.key())))
-        .w(px(168.))
-        .p(px(6.))
+        .w(rpx(168.))
+        .p(rpx(6.))
         .flex()
         .flex_col()
-        .gap(px(6.))
+        .gap(rpx(6.))
         .border_1()
         .border_color(if current { p.acc } else { p.bd })
         .rounded(px(8.))
         .hover(|s| s.bg(p.hover))
         .child(
             div()
-                .h(px(78.))
+                .h(rpx(78.))
                 .rounded(px(5.))
                 .overflow_hidden()
                 .border_1()
@@ -2516,7 +2515,7 @@ fn theme_card(id: ThemeId, current: bool, p: &Palette) -> gpui_kit::Stateful<gpu
                 .flex()
                 .child(
                     div()
-                        .w(px(34.))
+                        .w(rpx(34.))
                         .h_full()
                         .bg(t.panel)
                         .border_r_1()
@@ -2529,12 +2528,12 @@ fn theme_card(id: ThemeId, current: bool, p: &Palette) -> gpui_kit::Stateful<gpu
                         .bg(t.surface)
                         .flex()
                         .flex_col()
-                        .gap(px(5.))
-                        .p(px(7.))
+                        .gap(rpx(5.))
+                        .p(rpx(7.))
                         .child(
                             div()
                                 .flex()
-                                .gap(px(4.))
+                                .gap(rpx(4.))
                                 .child(line(22., t.sx_kw))
                                 .child(line(30., t.fg)),
                         )
@@ -2542,11 +2541,11 @@ fn theme_card(id: ThemeId, current: bool, p: &Palette) -> gpui_kit::Stateful<gpu
                             div()
                                 .flex()
                                 .items_center()
-                                .h(px(13.))
-                                .px(px(3.))
+                                .h(rpx(13.))
+                                .px(rpx(3.))
                                 .rounded(px(2.))
                                 .bg(t.sel)
-                                .text_size(px(9.))
+                                .text_size(ts::TINY)
                                 .font_family(MONO)
                                 .text_color(t.fg)
                                 .child("selected"),
@@ -2554,7 +2553,7 @@ fn theme_card(id: ThemeId, current: bool, p: &Palette) -> gpui_kit::Stateful<gpu
                         .child(
                             div()
                                 .flex()
-                                .gap(px(4.))
+                                .gap(rpx(4.))
                                 .child(line(18., t.sx_fn))
                                 .child(line(26., t.sx_str)),
                         )
@@ -2563,7 +2562,7 @@ fn theme_card(id: ThemeId, current: bool, p: &Palette) -> gpui_kit::Stateful<gpu
                             div()
                                 .flex()
                                 .justify_end()
-                                .child(div().h(px(8.)).w(px(22.)).rounded(px(3.)).bg(t.acc)),
+                                .child(div().h(rpx(8.)).w(rpx(22.)).rounded(px(3.)).bg(t.acc)),
                         ),
                 ),
         )
@@ -2571,8 +2570,8 @@ fn theme_card(id: ThemeId, current: bool, p: &Palette) -> gpui_kit::Stateful<gpu
             div()
                 .flex()
                 .items_center()
-                .gap(px(6.))
-                .text_size(px(12.))
+                .gap(rpx(6.))
+                .text_size(ts::BODY)
                 .when(current, |d| d.child(ui::dot(p.acc, 6.)))
                 .child(id.label()),
         )

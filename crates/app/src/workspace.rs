@@ -25,6 +25,7 @@ use switchyard_core::{Command, Event, EventReceiver, FsRef, RuntimeHandle, TermI
 
 use crate::actions::{self, CommandId};
 use crate::app_state::{Profiles, SessionState, badge_of, describe, next_id};
+use crate::appearance::{rpx, ts};
 use crate::conn_editor::{ConnEditor, ConnEditorEvent};
 use crate::editor_tab::EditorTab;
 use crate::explorer::Explorer;
@@ -533,9 +534,12 @@ impl Workspace {
                 self.explorer.restore(ids);
             }
             Event::Setting { key, value } if key == crate::appearance::APPEARANCE_KEY => {
-                if let Some(s) = value.and_then(|v| {
+                if let Some(mut s) = value.and_then(|v| {
                     serde_json::from_value::<crate::appearance::AppearanceSettings>(v).ok()
                 }) {
+                    if let Some(z) = crate::appearance::env_zoom() {
+                        s.zoom = z;
+                    }
                     crate::appearance::set(s, cx);
                     theme::apply_fonts(Some(window), cx);
                 }
@@ -1209,7 +1213,7 @@ impl Workspace {
                         .top_0()
                         .left_0()
                         .right_0()
-                        .h(px(2.))
+                        .h(rpx(2.))
                         .when(focused, |d| d.bg(p.acc)),
                 )
         };
@@ -1221,8 +1225,8 @@ impl Workspace {
             .bg(p.bd)
             .hover(|s| s.bg(p.acc))
             .map(|d| match dir {
-                SplitDir::Right => d.w(px(4.)).h_full().cursor_col_resize(),
-                SplitDir::Down => d.h(px(4.)).w_full().cursor_row_resize(),
+                SplitDir::Right => d.w(rpx(4.)).h_full().cursor_col_resize(),
+                SplitDir::Down => d.h(rpx(4.)).w_full().cursor_row_resize(),
             })
             .on_mouse_down(
                 gpui_kit::MouseButton::Left,
@@ -2257,8 +2261,8 @@ impl Workspace {
                 .id(id)
                 .flex()
                 .flex_col()
-                .px(px(10.))
-                .py(px(6.))
+                .px(rpx(10.))
+                .py(rpx(6.))
                 .rounded(px(5.))
                 .cursor_pointer()
                 .when(active, |d| d.bg(p.sel))
@@ -2268,22 +2272,22 @@ impl Workspace {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
-                        .text_size(px(12.5))
+                        .gap(rpx(6.))
+                        .text_size(ts::UI)
                         .font_weight(FontWeight::MEDIUM)
                         .child(title)
                         .when(active, |d| d.child(div().text_color(p.acc).child("✓"))),
                 )
-                .child(div().text_size(px(11.)).text_color(p.fg3).child(sub))
+                .child(div().text_size(ts::SMALL).text_color(p.fg3).child(sub))
         };
         gpui_kit::deferred(
             div()
                 .id("mode-menu")
                 .absolute()
-                .top(px(34.))
-                .left(px(8.))
-                .w(px(280.))
-                .p(px(4.))
+                .top(rpx(34.))
+                .left(rpx(8.))
+                .w(rpx(280.))
+                .p(rpx(4.))
                 .bg(p.elev)
                 .border_1()
                 .border_color(p.bd)
@@ -2306,15 +2310,15 @@ impl Workspace {
                     "API",
                     "Collections, requests, environments and runs",
                 ))
-                .child(div().my(px(4.)).h(px(1.)).bg(p.bd))
+                .child(div().my(rpx(4.)).h(rpx(1.)).bg(p.bd))
                 .child(
                     div()
                         .id("menu-assistant")
                         .flex()
                         .items_center()
-                        .gap(px(6.))
-                        .px(px(10.))
-                        .py(px(6.))
+                        .gap(rpx(6.))
+                        .px(rpx(10.))
+                        .py(rpx(6.))
                         .rounded(px(5.))
                         .cursor_pointer()
                         .hover(|s| s.bg(p.hover))
@@ -2325,7 +2329,7 @@ impl Workspace {
                         .child(
                             div()
                                 .flex_1()
-                                .text_size(px(12.5))
+                                .text_size(ts::UI)
                                 .font_weight(FontWeight::MEDIUM)
                                 .child("Assistant"),
                         )
@@ -2352,18 +2356,18 @@ impl Workspace {
         let left = div()
             .flex()
             .flex_1()
-            .flex_basis(px(0.))
+            .flex_basis(rpx(0.))
             .items_center()
-            .gap(px(6.))
+            .gap(rpx(6.))
             .child(
                 div()
                     .id("tb-workspace")
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(7.))
-                    .h(px(26.))
-                    .px(px(8.))
+                    .gap(rpx(7.))
+                    .h(rpx(26.))
+                    .px(rpx(8.))
                     .rounded(px(6.))
                     .occlude()
                     .cursor_pointer()
@@ -2375,18 +2379,18 @@ impl Workspace {
                     }))
                     .child(
                         div()
-                            .size(px(14.))
+                            .size(rpx(14.))
                             .rounded(px(3.))
                             .bg(p.fg)
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(div().size(px(6.)).rounded(px(1.)).bg(p.panel)),
+                            .child(div().size(rpx(6.)).rounded(px(1.)).bg(p.panel)),
                     )
                     .child(
                         div()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_size(px(12.5))
+                            .text_size(ts::UI)
                             .text_color(p.fg)
                             .whitespace_nowrap()
                             .child(match self.mode {
@@ -2394,7 +2398,7 @@ impl Workspace {
                                 AppMode::Api => "API".into(),
                             }),
                     )
-                    .child(div().text_color(p.fg3).text_size(px(10.)).child("▾")),
+                    .child(div().text_color(p.fg3).text_size(ts::CAPTION).child("▾")),
             )
             // The API workspace has no sidebar; the button is Default-only.
             .when(self.mode == AppMode::Default, |d| {
@@ -2415,19 +2419,19 @@ impl Workspace {
             .id("tb-search")
             .flex_shrink(1.)
             .min_w_0()
-            .w(px(460.))
-            .h(px(26.))
+            .w(rpx(460.))
+            .h(rpx(26.))
             .flex()
             .items_center()
-            .gap(px(8.))
-            .pl(px(10.))
-            .pr(px(6.))
+            .gap(rpx(8.))
+            .pl(rpx(10.))
+            .pr(rpx(6.))
             .border_1()
             .border_color(p.bd)
             .rounded(px(6.))
             .bg(p.bg)
             .text_color(p.fg3)
-            .text_size(px(12.5))
+            .text_size(ts::UI)
             .cursor_text()
             .occlude()
             .hover(|s| s.border_color(p.bd2))
@@ -2447,10 +2451,10 @@ impl Workspace {
         let right = div()
             .flex()
             .flex_1()
-            .flex_basis(px(0.))
+            .flex_basis(rpx(0.))
             .justify_end()
             .items_center()
-            .gap(px(2.))
+            .gap(rpx(2.))
             .child(
                 ui::icon_button("tb-assistant", IconName::Bot, self.assistant_open, p)
                     .occlude()
@@ -2512,7 +2516,7 @@ impl Workspace {
                     window.remove_window();
                 }
             })
-            .h(px(38.))
+            .h(rpx(38.))
             .bg(p.panel)
             .border_color(p.bd)
             .child(
@@ -2520,8 +2524,8 @@ impl Workspace {
                     .flex()
                     .flex_1()
                     .items_center()
-                    .gap(px(12.))
-                    .pr(px(10.))
+                    .gap(rpx(12.))
+                    .pr(rpx(10.))
                     .font_family(SANS)
                     .child(left)
                     .child(search)
@@ -2629,8 +2633,8 @@ impl Workspace {
         let glyph = |dir: SplitDir, on: bool| {
             let c = if on { p.acc } else { p.fg3 };
             div()
-                .w(px(14.))
-                .h(px(11.))
+                .w(rpx(14.))
+                .h(rpx(11.))
                 .flex()
                 .border_1()
                 .border_color(c)
@@ -2641,8 +2645,8 @@ impl Workspace {
                 })
                 .child(div().flex_1())
                 .child(div().flex_none().bg(c).map(|d| match dir {
-                    SplitDir::Right => d.w(px(1.)).h_full(),
-                    SplitDir::Down => d.h(px(1.)).w_full(),
+                    SplitDir::Right => d.w(rpx(1.)).h_full(),
+                    SplitDir::Down => d.h(rpx(1.)).w_full(),
                 }))
                 .child(div().flex_1())
         };
@@ -2655,7 +2659,7 @@ impl Workspace {
                 .id(id)
                 .flex()
                 .items_center()
-                .px(px(6.))
+                .px(rpx(6.))
                 .rounded(px(4.))
                 .hover(|s| s.bg(p.hover))
                 .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip).build(w, cx))
@@ -2666,17 +2670,17 @@ impl Workspace {
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(2.))
-            .px(px(6.))
+            .gap(rpx(2.))
+            .px(rpx(6.))
             .child(split_btn("split-right", SplitDir::Right, "Split right", cx))
             .child(split_btn("split-down", SplitDir::Down, "Split down", cx))
             .when(self.split.is_some(), |d| {
                 d.child(
                     div()
                         .id("unsplit")
-                        .px(px(6.))
+                        .px(rpx(6.))
                         .rounded(px(4.))
-                        .text_size(px(11.5))
+                        .text_size(ts::LABEL)
                         .text_color(p.fg3)
                         .hover(|s| s.bg(p.hover).text_color(p.fg))
                         .tooltip(|w, cx| {
@@ -2738,14 +2742,14 @@ impl Workspace {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(7.))
-                    .pl(px(12.))
-                    .pr(px(8.))
+                    .gap(rpx(7.))
+                    .pl(rpx(12.))
+                    .pr(rpx(8.))
                     .min_w_0()
-                    .max_w(px(230.))
+                    .max_w(rpx(230.))
                     .border_r_1()
                     .border_color(p.bd)
-                    .text_size(px(12.5))
+                    .text_size(ts::UI)
                     .bg(if active {
                         p.surface
                     } else if shown {
@@ -2754,7 +2758,7 @@ impl Workspace {
                         gpui_kit::transparent_black()
                     })
                     .text_color(if active || shown { p.fg } else { p.fg2 })
-                    .when(active, |d| d.mb(px(-1.)))
+                    .when(active, |d| d.mb(rpx(-1.)))
                     // A faint wash of the database color on the active tab.
                     .when_some(db_color.filter(|_| active), |d, c| d.bg(c.opacity(0.08)))
                     .on_click(cx.listener(move |this, _, _, cx| this.activate(i, cx)))
@@ -2774,21 +2778,21 @@ impl Workspace {
                             .left_0()
                             .right_0()
                             .top_0()
-                            .h(px(2.))
+                            .h(rpx(2.))
                             .bg(edge),
                     )
                     .child(
                         div()
                             .flex_none()
-                            .px(px(4.))
+                            .px(rpx(4.))
                             .rounded(px(3.))
                             .border_1()
                             .border_color(p.bd)
                             .text_color(p.fg2)
                             .font_family(MONO)
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_size(px(8.5))
-                            .line_height(px(14.))
+                            .text_size(ts::MICRO)
+                            .line_height(rpx(14.))
                             .child(badge),
                     )
                     // Production keeps its red marker whatever the database color.
@@ -2796,14 +2800,14 @@ impl Workspace {
                         d.child(
                             div()
                                 .flex_none()
-                                .px(px(3.))
+                                .px(rpx(3.))
                                 .rounded(px(3.))
                                 .bg(p.prod)
                                 .text_color(gpui_kit::white())
                                 .font_family(MONO)
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .text_size(px(8.5))
-                                .line_height(px(13.))
+                                .text_size(ts::MICRO)
+                                .line_height(rpx(13.))
                                 .child("P"),
                         )
                     })
@@ -2821,10 +2825,10 @@ impl Workspace {
                         div()
                             .id(("tab-close", i))
                             .flex_none()
-                            .px(px(4.))
+                            .px(rpx(4.))
                             .rounded(px(4.))
                             .text_color(p.fg3)
-                            .text_size(px(11.))
+                            .text_size(ts::SMALL)
                             .hover(|s| s.bg(p.hover).text_color(p.fg))
                             .on_click(cx.listener(move |this, _: &ClickEvent, w, cx| {
                                 cx.stop_propagation();
@@ -2838,17 +2842,17 @@ impl Workspace {
                     .id("tab-new")
                     .flex()
                     .items_center()
-                    .px(px(10.))
+                    .px(rpx(10.))
                     .text_color(p.fg3)
                     .font_family(MONO)
-                    .text_size(px(13.))
+                    .text_size(ts::BASE)
                     .hover(|s| s.text_color(p.fg))
                     .on_click(cx.listener(|this, _, w, cx| this.new_query_tab(w, cx)))
                     .child("+"),
             )
             .child(div().flex_1());
         div()
-            .h(px(34.))
+            .h(rpx(34.))
             .flex_none()
             .flex()
             .items_stretch()
@@ -2870,8 +2874,8 @@ impl Workspace {
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(px(6.))
-                .p(px(14.))
+                .gap(rpx(6.))
+                .p(rpx(14.))
                 .border_1()
                 .border_color(p.bd)
                 .rounded(px(8.))
@@ -2880,20 +2884,20 @@ impl Workspace {
                 .child(
                     div().flex().child(
                         div()
-                            .px(px(4.))
-                            .py(px(1.))
+                            .px(rpx(4.))
+                            .py(rpx(1.))
                             .border_1()
                             .border_color(p.bd2)
                             .rounded(px(3.))
                             .font_family(MONO)
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_size(px(9.))
+                            .text_size(ts::TINY)
                             .text_color(p.fg2)
                             .child(badge),
                     ),
                 )
                 .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
-                .child(div().text_color(p.fg2).text_size(px(12.)).child(body))
+                .child(div().text_color(p.fg2).text_size(ts::BODY).child(body))
         };
         let ssh_hosts = std::env::var_os("HOME")
             .map(|h| std::path::Path::new(&h).join(".ssh/config"))
@@ -2912,24 +2916,24 @@ impl Workspace {
             .overflow_y_scroll()
             .flex()
             .justify_center()
-            .px(px(32.))
-            .py(px(64.))
+            .px(rpx(32.))
+            .py(rpx(64.))
             .child(
                 div()
                     .w_full()
-                    .max_w(px(680.))
+                    .max_w(rpx(680.))
                     .flex()
                     .flex_col()
-                    .gap(px(28.))
+                    .gap(rpx(28.))
                     .child(
                         div()
                             .child(
                                 div()
-                                    .text_size(px(24.))
+                                    .text_size(ts::DISPLAY_L)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(if first { "Welcome to Switchyard" } else { greeting() }),
                             )
-                            .child(div().mt(px(6.)).text_color(p.fg2).text_size(px(13.5)).child(if first {
+                            .child(div().mt(rpx(6.)).text_color(p.fg2).text_size(ts::BASE_PLUS).child(if first {
                                 "Databases, terminals and file transfer behind one connection model. Nothing to install — PostgreSQL, SQL Server, SSH, SFTP and FTP drivers are built in."
                             } else {
                                 "Pick up where you left off, or open something new."
@@ -2938,7 +2942,7 @@ impl Workspace {
                     .child(
                         div()
                             .flex()
-                            .gap(px(10.))
+                            .gap(rpx(10.))
                             .child(
                                 card("w-host", "SSH", "New Host", "A server you reach over SSH. Terminals, files and tunnels reuse it.".into())
                                     .on_click(cx.listener(|this, _, w, cx| this.open_conn_editor(ConnKind::Ssh, None, w, cx))),
@@ -2968,8 +2972,8 @@ impl Workspace {
                                     div()
                                         .flex()
                                         .justify_between()
-                                        .px(px(2.))
-                                        .pb(px(6.))
+                                        .px(rpx(2.))
+                                        .pb(rpx(6.))
                                         .border_b_1()
                                         .border_color(p.bd)
                                         .child(ui::caption("RECENT", p))
@@ -2979,23 +2983,23 @@ impl Workspace {
                                     let id = prof.id().clone();
                                     div()
                                         .id(("recent", i))
-                                        .h(px(32.))
+                                        .h(rpx(32.))
                                         .flex()
                                         .items_center()
-                                        .gap(px(8.))
-                                        .px(px(4.))
+                                        .gap(rpx(8.))
+                                        .px(rpx(4.))
                                         .border_b_1()
                                         .border_color(p.line)
-                                        .text_size(px(12.5))
+                                        .text_size(ts::UI)
                                         .hover(|s| s.bg(p.hover))
                                         .on_click(cx.listener(move |this, _, w, cx| this.open_profile(&id, w, cx)))
-                                        .child(div().w(px(14.)).child(ui::dot(p.env(prof.environment()), 7.)))
+                                        .child(div().w(rpx(14.)).child(ui::dot(p.env(prof.environment()), 7.)))
                                         .child(ui::monogram(badge_of(prof), 34., p))
                                         .child(div().flex_1().font_weight(FontWeight::MEDIUM).child(prof.name().to_owned()))
                                         .child(
                                             div()
                                                 .font_family(MONO)
-                                                .text_size(px(11.5))
+                                                .text_size(ts::LABEL)
                                                 .text_color(p.fg3)
                                                 .child(describe(prof, &self.profiles)),
                                         )
@@ -3008,14 +3012,14 @@ impl Workspace {
                             div()
                                 .flex()
                                 .flex_col()
-                                .gap(px(4.))
-                                .p(px(22.))
+                                .gap(rpx(4.))
+                                .p(rpx(22.))
                                 .border_1()
                                 .border_dashed()
                                 .border_color(p.bd2)
                                 .rounded(px(8.))
                                 .text_color(p.fg2)
-                                .text_size(px(12.5))
+                                .text_size(ts::UI)
                                 .child(div().text_color(p.fg).font_weight(FontWeight::MEDIUM).child("Nothing saved yet"))
                                 .child("Start with a Host. Once it's saved, open a terminal, browse its files or tunnel a database through it with one login."),
                         )
@@ -3023,9 +3027,9 @@ impl Workspace {
                     .child(
                         div()
                             .flex()
-                            .gap(px(18.))
+                            .gap(rpx(18.))
                             .text_color(p.fg3)
-                            .text_size(px(12.))
+                            .text_size(ts::BODY)
                             .child(shortcut_hint("Command palette", ui::keys("⇧⌘P", "Ctrl+Shift+P"), p))
                             .child(shortcut_hint("Quick switch", ui::keys("⌘P", "Ctrl+P"), p))
                             .child(shortcut_hint("Settings", ui::keys("⌘,", "Ctrl+,"), p)),
@@ -3105,15 +3109,15 @@ impl Workspace {
             None => ("NO CONNECTION".into(), p.hover, p.fg2),
         };
         div()
-            .h(px(24.))
+            .h(rpx(24.))
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(14.))
+            .gap(rpx(14.))
             .border_t_1()
             .border_color(p.bd)
             .bg(p.panel)
-            .text_size(px(11.5))
+            .text_size(ts::LABEL)
             .text_color(p.fg2)
             .whitespace_nowrap()
             .overflow_hidden()
@@ -3122,12 +3126,12 @@ impl Workspace {
                     .h_full()
                     .flex()
                     .items_center()
-                    .px(px(10.))
+                    .px(rpx(10.))
                     .bg(env_bg)
                     .text_color(env_fg)
                     .font_family(MONO)
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_size(px(10.))
+                    .text_size(ts::CAPTION)
                     .child(env_label),
             )
             .child(div().text_color(p.fg).child(conn))
@@ -3136,7 +3140,7 @@ impl Workspace {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(5.))
+                        .gap(rpx(5.))
                         .text_color(c)
                         .child(ui::dot(c, 6.))
                         .child(label),
@@ -3176,7 +3180,7 @@ impl Workspace {
             .when_some(pos, |d, pos| {
                 d.child(div().font_family(MONO).text_color(p.fg3).child(pos))
             })
-            .child(div().pr(px(12.)).text_color(p.fg3).child(engine))
+            .child(div().pr(rpx(12.)).text_color(p.fg3).child(engine))
             .into_any_element()
     }
 }
@@ -3198,7 +3202,7 @@ fn greeting_for(hour: u32) -> &'static str {
 fn shortcut_hint(label: &'static str, key: SharedString, p: &Palette) -> AnyElement {
     div()
         .flex()
-        .gap(px(6.))
+        .gap(rpx(6.))
         .child(label)
         .child(div().font_family(MONO).text_color(p.fg2).child(key))
         .into_any_element()
@@ -3231,7 +3235,7 @@ impl Render for Workspace {
         }
         let mut assistant = self.assistant_open.then(|| {
             div()
-                .w(px(400.))
+                .w(rpx(400.))
                 .flex_none()
                 .border_l_1()
                 .border_color(p.bd)
@@ -3336,11 +3340,13 @@ impl Render for Workspace {
             .on_mouse_move(cx.listener(|this, ev: &gpui_kit::MouseMoveEvent, w, cx| {
                 if let Some((x0, w0)) = this.inspector_drag {
                     if ev.pressed_button == Some(gpui_kit::MouseButton::Left) {
+                        // Widths are in 100 % design units (drawn with `rpx`).
+                        let z = crate::appearance::zoom(cx);
                         let x: f32 = ev.position.x.into();
-                        let max = (f32::from(w.bounds().size.width) - 420.)
+                        let max = (f32::from(w.bounds().size.width) / z - 420.)
                             .max(crate::sidebar::INSPECTOR_MIN);
                         this.inspector_width =
-                            (w0 - (x - x0)).clamp(crate::sidebar::INSPECTOR_MIN, max);
+                            (w0 - (x - x0) / z).clamp(crate::sidebar::INSPECTOR_MIN, max);
                         cx.notify();
                     } else {
                         this.end_inspector_drag();
@@ -3348,11 +3354,13 @@ impl Render for Workspace {
                 }
                 if let Some((x0, w0)) = this.sidebar_drag {
                     if ev.pressed_button == Some(gpui_kit::MouseButton::Left) {
+                        // Widths are in 100 % design units (drawn with `rpx`).
+                        let z = crate::appearance::zoom(cx);
                         let x: f32 = ev.position.x.into();
-                        let max = (f32::from(w.bounds().size.width) - 420.)
+                        let max = (f32::from(w.bounds().size.width) / z - 420.)
                             .max(crate::sidebar::SIDEBAR_MIN);
                         this.sidebar_width =
-                            (w0 + (x - x0)).clamp(crate::sidebar::SIDEBAR_MIN, max);
+                            (w0 + (x - x0) / z).clamp(crate::sidebar::SIDEBAR_MIN, max);
                         cx.notify();
                     } else {
                         this.end_sidebar_drag();

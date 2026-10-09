@@ -278,3 +278,10 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
 - Closing a TCP socket with unread received data sends RST and drops unsent data. TLS 1.3
   servers send session tickets after the handshake that a pure upload never reads, so an
   upload must read until the server closes before dropping the socket (`remote::ftp_tls`).
+
+- UI zoom works through the window rem size (13 px × zoom). Write fixed sizes in element
+  styles as `appearance::rpx(v)` and text as `appearance::ts::*`, not `px(..)`, or they stay
+  at 100 %; keep `px` for window coordinates (drags, user-resized panes, canvas painting).
+- GPUI on Linux renders through Vulkan: under Xvfb the window fails with "Failed to create
+  surface" unless a Vulkan driver is installed (`mesa-vulkan-drivers` gives lavapipe).
+  `SWITCHYARD_THEME` and `SWITCHYARD_ZOOM` pin theme and zoom for screenshots.

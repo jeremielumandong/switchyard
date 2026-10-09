@@ -32,6 +32,7 @@ use switchyard_core::{Command, RuntimeHandle, TermId, TermLogState, TermStatus, 
 
 use crate::actions::{TermCopy, TermFind, TermPaste, TermSplit};
 use crate::app_state::next_id;
+use crate::appearance::{rpx, ts};
 use crate::theme::{MONO, Palette, palette};
 use crate::ui::{self, Kind};
 
@@ -692,21 +693,21 @@ impl TerminalTab {
             div()
                 .id("t-macros")
                 .absolute()
-                .top(px(38.))
-                .right(px(10.))
-                .w(px(300.))
-                .max_h(px(360.))
+                .top(rpx(38.))
+                .right(rpx(10.))
+                .w(rpx(300.))
+                .max_h(rpx(360.))
                 .overflow_y_scroll()
-                .p(px(4.))
+                .p(rpx(4.))
                 .bg(p.elev)
                 .rounded(px(7.))
                 .shadow(ui::shadow(p))
-                .text_size(px(12.5))
+                .text_size(ts::UI)
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .when(list.is_empty(), |d| {
                     d.child(
                         div()
-                            .p(px(8.))
+                            .p(rpx(8.))
                             .text_color(p.fg3)
                             .child("No macros yet: press Record, type, then Stop."),
                     )
@@ -715,11 +716,11 @@ impl TerminalTab {
                     let (play, all, id) = (m.input.clone(), m.input.clone(), m.id.clone());
                     div()
                         .id(("t-macro", i))
-                        .h(px(28.))
+                        .h(rpx(28.))
                         .flex()
                         .items_center()
-                        .gap(px(4.))
-                        .px(px(8.))
+                        .gap(rpx(4.))
+                        .px(rpx(8.))
                         .rounded(px(4.))
                         .hover(|s| s.bg(p.sel))
                         .on_click(cx.listener(move |this, _, w, cx| {
@@ -730,7 +731,7 @@ impl TerminalTab {
                         .when(multi, |d| {
                             d.child(
                                 ui::button(("t-macro-all", i), "All panes", Kind::Ghost, p)
-                                    .h(px(22.))
+                                    .h(rpx(22.))
                                     .on_click(cx.listener(move |this, _, w, cx| {
                                         cx.stop_propagation();
                                         this.play_macro(all.clone(), true, w, cx)
@@ -739,7 +740,7 @@ impl TerminalTab {
                         })
                         .child(
                             ui::button(("t-macro-del", i), "×", Kind::Ghost, p)
-                                .h(px(22.))
+                                .h(rpx(22.))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     cx.stop_propagation();
                                     this.core.send(Command::DeleteMacro { id: id.clone() });
@@ -762,26 +763,26 @@ impl TerminalTab {
                 .flex_none()
                 .flex()
                 .items_center()
-                .gap(px(8.))
-                .px(px(12.))
-                .py(px(5.))
+                .gap(rpx(8.))
+                .px(rpx(12.))
+                .py(rpx(5.))
                 .bg(p.surface)
                 .border_b_1()
                 .border_color(p.bd)
-                .text_size(px(12.))
+                .text_size(ts::BODY)
                 .child("Save macro as")
                 .child(
                     div()
-                        .w(px(200.))
-                        .h(px(24.))
+                        .w(rpx(200.))
+                        .h(rpx(24.))
                         .flex()
                         .items_center()
-                        .px(px(6.))
+                        .px(rpx(6.))
                         .border_1()
                         .border_color(p.bd2)
                         .rounded(px(5.))
                         .bg(p.bg)
-                        .child(Input::new(name).appearance(false).text_size(px(12.))),
+                        .child(Input::new(name).appearance(false).text_size(ts::BODY)),
                 )
                 .child(
                     div()
@@ -794,12 +795,12 @@ impl TerminalTab {
                 .child(div().flex_1())
                 .child(
                     ui::button("t-macro-save", "Save", Kind::Primary, p)
-                        .h(px(22.))
+                        .h(rpx(22.))
                         .on_click(cx.listener(|this, _, w, cx| this.finish_recording(true, w, cx))),
                 )
                 .child(
                     ui::button("t-macro-discard", "Discard", Kind::Ghost, p)
-                        .h(px(22.))
+                        .h(rpx(22.))
                         .on_click(
                             cx.listener(|this, _, w, cx| this.finish_recording(false, w, cx)),
                         ),
@@ -1301,23 +1302,23 @@ impl TerminalTab {
             body = body.child(
                 div()
                     .absolute()
-                    .top(px(8.))
-                    .right(px(8.))
+                    .top(rpx(8.))
+                    .right(rpx(8.))
                     .flex()
                     .items_center()
-                    .gap(px(6.))
-                    .pl(px(10.))
-                    .pr(px(4.))
-                    .py(px(4.))
+                    .gap(rpx(6.))
+                    .pl(rpx(10.))
+                    .pr(rpx(4.))
+                    .py(rpx(4.))
                     .bg(p.elev)
                     .rounded(px(6.))
                     .shadow(ui::shadow(&p))
-                    .text_size(px(12.))
+                    .text_size(ts::BODY)
                     .child(
                         div()
-                            .w(px(170.))
+                            .w(rpx(170.))
                             .font_family(MONO)
-                            .child(Input::new(search).appearance(false).text_size(px(12.))),
+                            .child(Input::new(search).appearance(false).text_size(ts::BODY)),
                     )
                     .child(
                         div()
@@ -1331,7 +1332,7 @@ impl TerminalTab {
                     )
                     .child(
                         ui::button("ts-prev", "↑", Kind::Ghost, &p)
-                            .h(px(22.))
+                            .h(rpx(22.))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 if let Some(t) = this.active_terminal() {
                                     t.search_step(false);
@@ -1341,7 +1342,7 @@ impl TerminalTab {
                     )
                     .child(
                         ui::button("ts-next", "↓", Kind::Ghost, &p)
-                            .h(px(22.))
+                            .h(rpx(22.))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 if let Some(t) = this.active_terminal() {
                                     t.search_step(true);
@@ -1351,7 +1352,7 @@ impl TerminalTab {
                     )
                     .child(
                         ui::button("ts-close", "×", Kind::Ghost, &p)
-                            .h(px(22.))
+                            .h(rpx(22.))
                             .on_click(cx.listener(|this, _, w, cx| this.close_search(w, cx))),
                     )
                     .on_key_down(cx.listener(|this, ev: &KeyDownEvent, w, cx| {
@@ -1403,7 +1404,7 @@ impl TerminalTab {
             .justify_center()
             .child(
                 div()
-                    .w(px(540.))
+                    .w(rpx(540.))
                     .border_1()
                     .border_color(p.prod)
                     .rounded(px(10.))
@@ -1411,8 +1412,8 @@ impl TerminalTab {
                     .overflow_hidden()
                     .child(
                         div()
-                            .px(px(20.))
-                            .py(px(14.))
+                            .px(rpx(20.))
+                            .py(rpx(14.))
                             .bg(p.prod_bg)
                             .border_b_1()
                             .border_color(p.bd)
@@ -1420,26 +1421,26 @@ impl TerminalTab {
                                 div()
                                     .font_family(MONO)
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_size(px(10.5))
+                                    .text_size(ts::CAPTION_PLUS)
                                     .text_color(p.prod)
-                                    .mb(px(4.))
+                                    .mb(rpx(4.))
                                     .child("CONNECTION BLOCKED"),
                             )
                             .child(
                                 div()
-                                    .text_size(px(15.))
+                                    .text_size(ts::TITLE_PLUS)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(format!("The host key for {} has changed", key.host)),
                             ),
                     )
                     .child(
                         div()
-                            .px(px(20.))
-                            .py(px(16.))
+                            .px(rpx(20.))
+                            .py(rpx(16.))
                             .flex()
                             .flex_col()
-                            .gap(px(12.))
-                            .child(div().text_size(px(12.5)).text_color(p.fg2).child(format!(
+                            .gap(rpx(12.))
+                            .child(div().text_size(ts::UI).text_color(p.fg2).child(format!(
                                 "The server at {} presented a different key than the one in {}. This can mean the server was rebuilt — or that someone is intercepting the connection.",
                                 key.address, file
                             )))
@@ -1447,30 +1448,30 @@ impl TerminalTab {
                                 div()
                                     .flex()
                                     .flex_col()
-                                    .gap(px(6.))
+                                    .gap(rpx(6.))
                                     .font_family(MONO)
-                                    .text_size(px(12.))
+                                    .text_size(ts::BODY)
                                     .child(
                                         div()
                                             .flex()
-                                            .gap(px(10.))
-                                            .child(div().w(px(72.)).text_color(p.fg3).child("Stored"))
+                                            .gap(rpx(10.))
+                                            .child(div().w(rpx(72.)).text_color(p.fg3).child("Stored"))
                                             .child(div().line_through().text_color(p.fg2).child(key.stored.clone())),
                                     )
                                     .child(
                                         div()
                                             .flex()
-                                            .gap(px(10.))
-                                            .child(div().w(px(72.)).text_color(p.fg3).child("Received"))
+                                            .gap(rpx(10.))
+                                            .child(div().w(rpx(72.)).text_color(p.fg3).child("Received"))
                                             .child(div().text_color(p.prod).child(key.received.clone())),
                                     ),
                             )
                             .child(
                                 div()
                                     .flex()
-                                    .gap(px(6.))
+                                    .gap(rpx(6.))
                                     .justify_end()
-                                    .pt(px(4.))
+                                    .pt(rpx(4.))
                                     .child(
                                         ui::button("hk-replace", "Replace stored key…", Kind::Ghost, p)
                                             .text_color(p.prod)
@@ -1535,19 +1536,19 @@ impl TerminalTab {
                 .child(
                     div()
                         .id("t-paste")
-                        .w(px(480.))
+                        .w(rpx(480.))
                         .flex()
                         .flex_col()
-                        .gap(px(10.))
-                        .p(px(16.))
+                        .gap(rpx(10.))
+                        .p(rpx(16.))
                         .bg(p.elev)
                         .rounded(px(8.))
                         .shadow(ui::shadow(p))
-                        .text_size(px(12.5))
+                        .text_size(ts::UI)
                         .child(
                             div()
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .text_size(px(14.))
+                                .text_size(ts::TITLE)
                                 .child(format!("Paste {} lines?", lines.len().max(1))),
                         )
                         .child(
@@ -1559,11 +1560,11 @@ impl TerminalTab {
                             div()
                                 .flex()
                                 .flex_col()
-                                .p(px(8.))
+                                .p(rpx(8.))
                                 .bg(p.term)
                                 .rounded(px(6.))
                                 .font_family(MONO)
-                                .text_size(px(11.5))
+                                .text_size(ts::LABEL)
                                 .children(preview.into_iter().map(|l| div().truncate().child(l)))
                                 .when(more > 0, |d| {
                                     d.child(div().text_color(p.fg3).child(format!("… {more} more")))
@@ -1573,7 +1574,7 @@ impl TerminalTab {
                             div()
                                 .flex()
                                 .justify_end()
-                                .gap(px(8.))
+                                .gap(rpx(8.))
                                 .child(
                                     ui::button("t-paste-cancel", "Cancel", Kind::Secondary, p)
                                         .on_click(cx.listener(|this, _, w, cx| {
@@ -1630,13 +1631,13 @@ impl TerminalTab {
                 .flex_none()
                 .flex()
                 .items_center()
-                .gap(px(10.))
-                .px(px(12.))
-                .py(px(7.))
+                .gap(rpx(10.))
+                .px(rpx(12.))
+                .py(rpx(7.))
                 .bg(bg)
                 .border_b_1()
                 .border_color(p.bd)
-                .text_size(px(12.))
+                .text_size(ts::BODY)
                 .child(
                     div()
                         .font_weight(FontWeight::SEMIBOLD)
@@ -1647,7 +1648,7 @@ impl TerminalTab {
                 .child(div().flex_1())
                 .child(
                     ui::button("t-reconnect", "Reconnect now", Kind::Secondary, p)
-                        .h(px(22.))
+                        .h(rpx(22.))
                         .on_click(cx.listener(move |this, _, w, cx| {
                             if retry_now {
                                 // Skip the backoff; the scrollback stays.
@@ -2010,15 +2011,15 @@ impl Render for TerminalTab {
             .flex_col()
             .child(
                 div()
-                    .h(px(36.))
+                    .h(rpx(36.))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .px(px(10.))
+                    .gap(rpx(8.))
+                    .px(rpx(10.))
                     .border_b_1()
                     .border_color(p.bd)
-                    .text_size(px(12.))
+                    .text_size(ts::BODY)
                     .child(ui::dot(p.env(self.env), 7.))
                     .child(
                         div()
@@ -2039,7 +2040,7 @@ impl Render for TerminalTab {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(6.))
+                            .gap(rpx(6.))
                             .text_color(p.fg2)
                             .whitespace_nowrap()
                             .child(ui::dot(dot, 6.))
@@ -2048,14 +2049,14 @@ impl Render for TerminalTab {
                     .child(ui::vdivider(&p, 16.))
                     .child(
                         ui::button("t-split", "Split", Kind::Ghost, &p)
-                            .h(px(24.))
+                            .h(rpx(24.))
                             .when(!can_split, |b| b.opacity(0.4))
                             .on_click(cx.listener(|this, _, w, cx| this.split(w, cx))),
                     )
                     .when(n > 1, |d| {
                         d.child(
                             ui::button("t-close-pane", "Close pane", Kind::Ghost, &p)
-                                .h(px(24.))
+                                .h(rpx(24.))
                                 .on_click(cx.listener(|this, _, w, cx| {
                                     let ix = this.active;
                                     this.close_pane(ix, cx);
@@ -2074,7 +2075,7 @@ impl Render for TerminalTab {
                             Kind::Ghost,
                             &p,
                         )
-                        .h(px(24.))
+                        .h(rpx(24.))
                         .when(self.broadcast, |b| b.text_color(p.stg))
                         .on_click(cx.listener(|this, _, w, cx| {
                             this.broadcast = !this.broadcast;
@@ -2090,7 +2091,7 @@ impl Render for TerminalTab {
                             Kind::Ghost,
                             &p,
                         )
-                        .h(px(24.))
+                        .h(rpx(24.))
                         .when(log.is_some(), |b| b.text_color(p.prod))
                         .tooltip(move |window, cx| {
                             let text = match &log {
@@ -2116,13 +2117,13 @@ impl Render for TerminalTab {
                             Kind::Ghost,
                             &p,
                         )
-                        .h(px(24.))
+                        .h(rpx(24.))
                         .when(self.recording.is_some(), |b| b.text_color(p.prod))
                         .on_click(cx.listener(|this, _, w, cx| this.toggle_recording(w, cx))),
                     )
                     .child(
                         ui::button("t-macros", "Macros ▾", Kind::Ghost, &p)
-                            .h(px(24.))
+                            .h(rpx(24.))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.macro_menu = !this.macro_menu;
                                 cx.notify();
@@ -2130,7 +2131,7 @@ impl Render for TerminalTab {
                     )
                     .child(
                         ui::button("t-find", "Find", Kind::Ghost, &p)
-                            .h(px(24.))
+                            .h(rpx(24.))
                             .on_click(cx.listener(|this, _, w, cx| this.open_search(w, cx))),
                     ),
             )
@@ -2140,12 +2141,12 @@ impl Render for TerminalTab {
                 d.child(
                     div()
                         .flex_none()
-                        .px(px(12.))
-                        .py(px(5.))
+                        .px(rpx(12.))
+                        .py(rpx(5.))
                         .bg(p.stg_bg)
                         .border_b_1()
                         .border_color(p.bd)
-                        .text_size(px(11.5))
+                        .text_size(ts::LABEL)
                         .text_color(p.fg2)
                         .child(format!("Typing goes to all {n} panes")),
                 )
@@ -2155,7 +2156,7 @@ impl Render for TerminalTab {
                     .flex_1()
                     .min_h_0()
                     .flex()
-                    .gap(px(1.))
+                    .gap(rpx(1.))
                     .bg(p.bd)
                     .children(panes),
             )

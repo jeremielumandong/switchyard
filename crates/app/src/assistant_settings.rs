@@ -17,6 +17,7 @@ use switchyard_core::agents::custom::{JsonlMapping, McpConfigTemplate, OutputFor
 use switchyard_core::agents::{AgentKind, CustomCli};
 use switchyard_core::drivers::{Component, ComponentStatus};
 
+use crate::appearance::{rpx, ts};
 use crate::theme::{MONO, Palette, palette};
 use crate::ui::{self, Kind};
 
@@ -337,33 +338,33 @@ fn field(label: &str, e: &Entity<InputState>, width: f32, p: &Palette) -> impl I
     div()
         .flex()
         .flex_col()
-        .gap(px(4.))
-        .w(px(width))
+        .gap(rpx(4.))
+        .w(rpx(width))
         .child(
             div()
-                .text_size(px(11.))
+                .text_size(ts::SMALL)
                 .text_color(p.fg3)
                 .child(label.to_owned()),
         )
         .child(
             div()
-                .h(px(28.))
+                .h(rpx(28.))
                 .flex()
                 .items_center()
-                .px(px(8.))
+                .px(rpx(8.))
                 .border_1()
                 .border_color(p.bd2)
                 .rounded(px(6.))
                 .bg(p.bg)
                 .font_family(MONO)
-                .text_size(px(12.))
-                .child(Input::new(e).appearance(false).text_size(px(12.))),
+                .text_size(ts::BODY)
+                .child(Input::new(e).appearance(false).text_size(ts::BODY)),
         )
 }
 
 fn heading(text: &str, p: &Palette) -> impl IntoElement {
     div()
-        .text_size(px(12.))
+        .text_size(ts::BODY)
         .font_weight(FontWeight::MEDIUM)
         .text_color(p.fg2)
         .child(text.to_owned())
@@ -374,7 +375,7 @@ impl Render for AssistantSettingsView {
         let p = palette(cx);
         let picker = div()
             .flex()
-            .gap(px(6.))
+            .gap(rpx(6.))
             .children(AGENTS.into_iter().map(|k| {
                 let active = k == self.default_agent;
                 let status = self.statuses.get(&k).cloned().unwrap_or_else(|| {
@@ -388,10 +389,10 @@ impl Render for AssistantSettingsView {
                     .id(SharedString::from(format!("asst-default-{}", k.id())))
                     .flex()
                     .flex_col()
-                    .gap(px(2.))
-                    .w(px(150.))
-                    .px(px(10.))
-                    .py(px(7.))
+                    .gap(rpx(2.))
+                    .w(rpx(150.))
+                    .px(rpx(10.))
+                    .py(rpx(7.))
                     .border_1()
                     .border_color(if active { p.acc } else { p.bd2 })
                     .rounded(px(6.))
@@ -401,8 +402,8 @@ impl Render for AssistantSettingsView {
                         this.saved = false;
                         cx.notify();
                     }))
-                    .child(div().text_size(px(12.5)).child(k.display_name()))
-                    .child(div().text_size(px(11.)).text_color(p.fg3).child(status))
+                    .child(div().text_size(ts::UI).child(k.display_name()))
+                    .child(div().text_size(ts::SMALL).text_color(p.fg3).child(status))
             }));
         let cli_rows = [AgentKind::ClaudeCode, AgentKind::Codex, AgentKind::Gemini]
             .into_iter()
@@ -411,12 +412,12 @@ impl Render for AssistantSettingsView {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(6.))
+                    .gap(rpx(6.))
                     .child(heading(k.display_name(), &p))
                     .child(
                         div()
                             .flex()
-                            .gap(px(10.))
+                            .gap(rpx(10.))
                             .child(field("Program", &i.path, 220., &p))
                             .child(field("Model", &i.model, 150., &p))
                             .child(field("Extra arguments", &i.extra, 220., &p)),
@@ -426,18 +427,18 @@ impl Render for AssistantSettingsView {
         let custom_section = div()
             .flex()
             .flex_col()
-            .gap(px(8.))
+            .gap(rpx(8.))
             .child(heading("Custom CLI", &p))
             .child(
                 div()
-                    .text_size(px(11.))
+                    .text_size(ts::SMALL)
                     .text_color(p.fg3)
                     .child("Placeholders: {prompt} {model} {session} {workdir} {mcp_config} {system_prompt}; in the MCP template also {command_json} {args_json} {env_json} {env_names_json} {server}."),
             )
             .child(
                 div()
                     .flex()
-                    .gap(px(10.))
+                    .gap(rpx(10.))
                     .child(field("Name", &self.custom_name, 150., &p))
                     .child(field("Program", &self.custom_program, 200., &p))
                     .child(field("Model", &custom.model, 120., &p))
@@ -446,7 +447,7 @@ impl Render for AssistantSettingsView {
             .child(
                 div()
                     .flex()
-                    .gap(px(10.))
+                    .gap(rpx(10.))
                     .child(field("Arguments", &self.custom_args, 300., &p))
                     .child(field("When continuing", &self.custom_resume, 150., &p))
                     .child(field("Interactive (terminal)", &self.custom_interactive, 170., &p)),
@@ -454,7 +455,7 @@ impl Render for AssistantSettingsView {
             .child(
                 div()
                     .flex()
-                    .gap(px(16.))
+                    .gap(rpx(16.))
                     .child(
                         ui::checkbox("asst-stdin", self.prompt_on_stdin, "Prompt on standard input", &p)
                             .on_click(cx.listener(|this, _, _, cx| {
@@ -472,7 +473,7 @@ impl Render for AssistantSettingsView {
             )
             .when(self.jsonl, |d| {
                 d.child(
-                    div().flex().flex_wrap().gap(px(10.)).children(
+                    div().flex().flex_wrap().gap(rpx(10.)).children(
                         self.mapping
                             .iter()
                             .map(|(_, label, e)| field(label, e, 150., &p)),
@@ -482,44 +483,44 @@ impl Render for AssistantSettingsView {
             .child(
                 div()
                     .flex()
-                    .gap(px(10.))
+                    .gap(rpx(10.))
                     .items_start()
                     .child(field("MCP config file", &self.mcp_file, 150., &p))
                     .child(
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(4.))
+                            .gap(rpx(4.))
                             .flex_1()
-                            .child(div().text_size(px(11.)).text_color(p.fg3).child("MCP config template"))
+                            .child(div().text_size(ts::SMALL).text_color(p.fg3).child("MCP config template"))
                             .child(
                                 div()
-                                    .px(px(8.))
-                                    .py(px(5.))
+                                    .px(rpx(8.))
+                                    .py(rpx(5.))
                                     .border_1()
                                     .border_color(p.bd2)
                                     .rounded(px(6.))
                                     .bg(p.bg)
                                     .font_family(MONO)
-                                    .text_size(px(12.))
-                                    .child(Textarea::new(&self.mcp_template).appearance(false).text_size(px(12.))),
+                                    .text_size(ts::BODY)
+                                    .child(Textarea::new(&self.mcp_template).appearance(false).text_size(ts::BODY)),
                             ),
                     ),
             );
         div()
             .flex()
             .flex_col()
-            .gap(px(16.))
-            .p(px(18.))
+            .gap(rpx(16.))
+            .p(rpx(18.))
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(6.))
+                    .gap(rpx(6.))
                     .child(heading("Default CLI", &p))
                     .child(
                         div()
-                            .text_size(px(11.))
+                            .text_size(ts::SMALL)
                             .text_color(p.fg3)
                             .child("Each CLI uses its own sign-in. A connection can choose another in its settings. Its tools are Switchyard's read-only database tools only."),
                     )
@@ -531,13 +532,13 @@ impl Render for AssistantSettingsView {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
+                    .gap(rpx(10.))
                     .child(
                         ui::button("asst-save", "Save", Kind::Primary, &p)
                             .on_click(cx.listener(|this, _, _, cx| this.save(cx))),
                     )
                     .when(self.saved, |d| {
-                        d.child(div().text_size(px(12.)).text_color(p.dev).child("Saved"))
+                        d.child(div().text_size(ts::BODY).text_color(p.dev).child("Saved"))
                     }),
             )
     }
