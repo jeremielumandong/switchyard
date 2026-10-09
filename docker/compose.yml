@@ -21,8 +21,21 @@ services:
       timeout: 3s
       retries: 60
 
+  # Writes a throwaway CA and a localhost certificate to docker/mssql/tls (once), so
+  # clients verify the server against tls/ca.pem (docker/mssql/make-tls.sh).
+  mssql-tls:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    user: root
+    volumes:
+      - ./mssql:/work
+    entrypoint: ["/bin/bash", "/work/make-tls.sh"]
+    restart: "no"
+
   mssql:
     image: mcr.microsoft.com/mssql/server:2022-latest
+    depends_on:
+      mssql-tls:
+        condition: service_completed_successfully
     environment:
       ACCEPT_EULA: "Y"
       MSSQL_SA_PASSWORD: "Switchyard!2026"
@@ -30,6 +43,8 @@ services:
     ports: ["1433:1433"]
     volumes:
       - ./mssql:/seed:ro
+      - ./mssql/tls:/var/opt/mssql/tls:ro
+      - ./mssql/mssql.conf:/var/opt/mssql/mssql.conf:ro
     healthcheck:
       test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'Switchyard!2026' -Q 'select 1' || exit 1"]
       interval: 5s

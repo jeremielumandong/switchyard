@@ -21,6 +21,10 @@ Exit: the app opens with the full layout, profiles save to SQLite, secrets land 
   sample schema including one table with 1,000,000 rows.
   Done when: `docker compose up -d` starts all four and a smoke test connects to each.
   Note: Partial: compose file and seed scripts written (1M-row `orders`); only the PostgreSQL seed was verified (against a local PostgreSQL 16, no Docker in the build environment). No smoke test yet for SQL Server, SSH or FTP.
+  Update: compose `mssql` gets a test CA from `mssql-tls` (`docker/mssql/make-tls.sh`);
+  smoke tests `db/tests/smoke_mssql.rs` (verified TLS login, seeded `shop`) and
+  `remote/tests/smoke_ssh.rs` (password login, command, SFTP) pass against compose and run
+  in CI (`smoke-compose`). FTP smoke test still open.
 - [x] **M0-3 Window and layout.** GPUI app with gpui-component: title bar, collapsible left
   sidebar, center tab area with splits, optional right panel, status bar. Light and dark themes.
   Done when: layout matches SPEC "Main window layout"; theme toggle works; panels collapse.
@@ -775,9 +779,6 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 - SQLite: `EXPLAIN QUERY PLAN` into `PlanNode`; a "New database file" save dialog in the connection editor (today a typed path is created on connect).
 
 - API Workbench: rename and delete workspaces (API-5 only adds and switches them).
-- `core/tests/flow.rs` `cancel_stops_a_running_query_quickly` times out (5 s) when the
-  machine is busy building (seen twice); passes alone. Look at what it waits on before
-  raising the timeout.
 
 - Agent runs on systems with only the fallback vault: `swy mcp` cannot unlock it unless
   `SWITCHYARD_VAULT_PASSWORD` is in the app's environment. Option: let `swy mcp` borrow the
@@ -795,10 +796,9 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   no window-level UI tests for the new Workbench interactions.
 - Assistant panel: GPUI tests for the panel and Assistant settings.
 - Oracle: EXPLAIN PLAN / DBMS_XPLAN → `PlanNode`; V$SQL workload view; arm64 Linux archive;
-  CI job with the `oracle` compose profile + Instant Client; TCPS / wallet sign-in.
+  TCPS / wallet sign-in.
 - MySQL: `EXPLAIN FORMAT=JSON` / `EXPLAIN ANALYZE` → `PlanNode`; performance_schema digest
-  workload view; zero dates (`0000-00-00`) show as NULL in date columns; CI job with the
-  `mysql` compose service.
+  workload view; zero dates (`0000-00-00`) show as NULL in date columns.
 - Snowflake: `EXPLAIN USING JSON` → `PlanNode`; QUERY_HISTORY / ACCESS_HISTORY workload view;
   exercise the driver against a real account; OAuth (external browser) sign-in.
 - API workspace: port AgentOps's Workbench UI tests; persist workbench preferences (they live
@@ -806,7 +806,7 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 - MongoDB: transactions on replica sets, `explain` → `PlanNode`, `$currentOp`
   activity monitor, X.509 / AWS / OIDC sign-in.
 
-- Smoke tests for the SQL Server, SSH and FTP containers (M0-2).
+- Smoke test for the FTP container (M0-2; SQL Server and SSH have theirs).
 - Grid frame-time harness (M1-16).
 - Driver Manager: fetch the signed manifest from the update server.
 - SQL Server: upstream tiberius patches for INFO tokens (notices) and reading the attention
