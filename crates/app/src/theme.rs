@@ -660,7 +660,7 @@ fn highlight_theme(p: &Palette) -> Option<HighlightTheme> {
 }
 
 /// Apply a palette: store it globally and restyle gpui-component to match.
-pub fn apply(p: Palette, window: Option<&mut Window>, cx: &mut App) {
+pub fn apply(p: Palette, mut window: Option<&mut Window>, cx: &mut App) {
     cx.set_global(ActivePalette(p));
     Theme::change(
         if p.dark {
@@ -668,15 +668,13 @@ pub fn apply(p: Palette, window: Option<&mut Window>, cx: &mut App) {
         } else {
             ThemeMode::Light
         },
-        window,
+        window.as_deref_mut(),
         cx,
     );
     let hl = highlight_theme(&p);
     Theme::update(cx, |t| {
         t.font_family = SharedString::from(SANS);
         t.mono_font_family = SharedString::from(MONO);
-        t.font_size = px(13.);
-        t.mono_font_size = px(12.5);
         t.radius = px(6.);
         t.radius_lg = px(10.);
         t.shadow = true;
@@ -724,6 +722,26 @@ pub fn apply(p: Palette, window: Option<&mut Window>, cx: &mut App) {
             t.highlight_theme = Arc::new(hl);
         }
     });
+    apply_fonts(window, cx);
+}
+
+/// Restyle gpui-component's font sizes and the editor font for the active
+/// [`crate::appearance`] settings (zoom, editor font), then redraw.
+pub fn apply_fonts(window: Option<&mut Window>, cx: &mut App) {
+    let (ui, mono_family, mono) = (
+        crate::appearance::ui_font_size(cx),
+        crate::appearance::editor_font_family(cx),
+        crate::appearance::editor_font_size(cx),
+    );
+    Theme::update(cx, |t| {
+        t.font_size = ui;
+        t.mono_font_family = mono_family;
+        t.mono_font_size = mono;
+    });
+    match window {
+        Some(w) => w.refresh(),
+        None => cx.refresh_windows(),
+    }
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@
 use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::PopupMenu;
@@ -23,6 +24,7 @@ use switchyard_core::db::{
     RowBatch, Value,
 };
 
+use crate::appearance::{rpx, ts};
 use crate::theme::{MONO, Palette, palette};
 use crate::ui::{self, Kind, thousands};
 
@@ -66,6 +68,49 @@ pub struct GridDelegate {
     /// Data columns that are part of a foreign key (marked in the header).
     fk_cols: Vec<usize>,
     menu: Option<MenuBuilder>,
+    /// Generation of the latest row filter; a [`FilterJob`] for an older one stops and
+    /// its result is dropped.
+    filter_gen: Arc<AtomicU64>,
+}
+
+/// Loaded rows from which the row filter runs off the UI thread (debounced).
+pub const ASYNC_FILTER_ROWS: usize = 50_000;
+
+/// A row filter over a large result, to run off the UI thread. Holds its own handle on
+/// the loaded batches (shared, not copied); hand its result to
+/// [`GridDelegate::finish_filter`].
+pub struct FilterJob {
+    generation: u64,
+    current: Arc<AtomicU64>,
+    data: BatchList,
+    needle: String,
+}
+
+impl FilterJob {
+    /// Whether a newer filter replaced this one.
+    pub fn is_stale(&self) -> bool {
+        self.current.load(Ordering::Acquire) != self.generation
+    }
+
+    /// Scan the rows. `None` when it was superseded on the way.
+    pub fn run(self) -> Option<FilterResult> {
+        let keep = self
+            .data
+            .rows_containing_until(&self.needle, &|| self.is_stale())?;
+        Some(FilterResult {
+            generation: self.generation,
+            scanned: self.data.len(),
+            keep,
+        })
+    }
+}
+
+/// The rows a [`FilterJob`] kept.
+pub struct FilterResult {
+    generation: u64,
+    /// Rows loaded when the job started; rows streamed in since join unfiltered.
+    scanned: usize,
+    keep: Vec<u32>,
 }
 
 /// Most cells one copy may take.
@@ -105,6 +150,7 @@ impl GridDelegate {
             server_sort: None,
             fk_cols: Vec::new(),
             menu: None,
+            filter_gen: Arc::default(),
         }
     }
 
@@ -134,10 +180,18 @@ impl GridDelegate {
         self.deleted = rows.into_iter().collect();
     }
 
-    /// Width of the pinned row-number column; it grows with the row count.
-    pub fn row_number_width(&self) -> Pixels {
+    /// Width of the pinned row-number column; it grows with the row count and the zoom.
+    pub fn row_number_width(&self, cx: &App) -> Pixels {
         let digits = thousands(self.data.len().max(1) as u64).len() as f32;
-        px((digits * 7.5 + 22.0).max(44.0))
+        px((digits * 7.5 + 22.0).max(44.0) * crate::appearance::zoom(cx))
+    }
+
+    /// Scale the initial column widths for zoom `z` (call before building the table).
+    pub fn zoomed(mut self, z: f32) -> Self {
+        for w in &mut self.widths {
+            *w = px((f32::from(*w) * z).round());
+        }
+        self
     }
 
     /// The data column shown at table column `table_col` (0 is the row-number column).
@@ -281,14 +335,55 @@ impl GridDelegate {
         self.deleted.clear();
     }
 
-    /// Apply a client-side filter: keep rows where any cell contains `needle`.
+    /// Apply a client-side filter now: keep rows where any cell contains `needle`.
+    #[cfg(test)]
     pub fn set_filter(&mut self, needle: &str) {
+        if let Some(job) = self.begin_filter_at(needle, usize::MAX)
+            && let Some(result) = job.run()
+        {
+            self.finish_filter(result);
+        }
+    }
+
+    /// Start a client-side filter. An empty needle or a result under
+    /// [`ASYNC_FILTER_ROWS`] rows is applied now (`None`); a larger one returns the job
+    /// to run off the UI thread. Either way any earlier job becomes stale.
+    pub fn begin_filter(&mut self, needle: &str) -> Option<FilterJob> {
+        self.begin_filter_at(needle, ASYNC_FILTER_ROWS)
+    }
+
+    fn begin_filter_at(&mut self, needle: &str, async_from: usize) -> Option<FilterJob> {
+        let generation = self.filter_gen.fetch_add(1, Ordering::AcqRel) + 1;
         if needle.is_empty() {
             self.view = None;
-            return;
+            return None;
         }
-        let keep = self.data.rows_containing(needle);
+        let job = FilterJob {
+            generation,
+            current: self.filter_gen.clone(),
+            data: self.data.clone(),
+            needle: needle.to_owned(),
+        };
+        if self.data.len() < async_from {
+            if let Some(result) = job.run() {
+                self.finish_filter(result);
+            }
+            return None;
+        }
+        Some(job)
+    }
+
+    /// Apply a [`FilterJob`]'s rows unless a newer filter started since. Returns whether
+    /// the view changed.
+    pub fn finish_filter(&mut self, result: FilterResult) -> bool {
+        if self.filter_gen.load(Ordering::Acquire) != result.generation {
+            return false;
+        }
+        let mut keep = result.keep;
+        // Rows that streamed in during the scan join unfiltered, as in [`Self::push`].
+        keep.extend(result.scanned as u32..self.data.len() as u32);
         self.view = Some(Arc::new(keep));
+        true
     }
 
     fn sort_by(&mut self, col: usize, sort: ColumnSort) {
@@ -630,9 +725,9 @@ pub fn render_pager<T: PagedView>(
 ) -> AnyElement {
     let act = |id: &'static str, label: String, kind: Kind, enabled: bool, a: PagerAction| {
         ui::button(id, label, kind, p)
-            .h(px(22.))
-            .px(px(7.))
-            .text_size(px(11.5))
+            .h(rpx(22.))
+            .px(rpx(7.))
+            .text_size(ts::LABEL)
             .when(!enabled, |d| d.opacity(0.4))
             .when(enabled, |d| {
                 d.on_click(cx.listener(move |this: &mut T, _, w, cx| pager_action(this, a, w, cx)))
@@ -659,18 +754,18 @@ pub fn render_pager<T: PagedView>(
         .flex_none()
         .flex()
         .flex_col()
-        .gap(px(4.))
-        .px(px(10.))
-        .py(px(5.))
+        .gap(rpx(4.))
+        .px(rpx(10.))
+        .py(rpx(5.))
         .border_b_1()
         .border_color(p.bd)
         .bg(p.panel)
-        .text_size(px(11.5))
+        .text_size(ts::LABEL)
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(rpx(6.))
                 .child(
                     div()
                         .font_family(MONO)
@@ -682,10 +777,10 @@ pub fn render_pager<T: PagedView>(
                     div()
                         .flex_1()
                         .min_w_0()
-                        .h(px(24.))
+                        .h(rpx(24.))
                         .flex()
                         .items_center()
-                        .px(px(6.))
+                        .px(rpx(6.))
                         .border_1()
                         .border_color(if status.is_some() { p.prod } else { p.bd })
                         .rounded(px(5.))
@@ -694,7 +789,7 @@ pub fn render_pager<T: PagedView>(
                         .child(
                             Input::new(&pager.where_input)
                                 .appearance(false)
-                                .text_size(px(11.5)),
+                                .text_size(ts::LABEL),
                         ),
                 )
                 .child(act(
@@ -718,7 +813,7 @@ pub fn render_pager<T: PagedView>(
             div()
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(rpx(6.))
                 .child(
                     div()
                         .flex_1()
@@ -740,9 +835,9 @@ pub fn render_pager<T: PagedView>(
                 .children(PAGE_SIZES.into_iter().enumerate().map(|(i, n)| {
                     let on = pager.page_size == n;
                     ui::button(("pager-size", i), n.to_string(), Kind::Ghost, p)
-                        .h(px(22.))
-                        .px(px(6.))
-                        .text_size(px(11.5))
+                        .h(rpx(22.))
+                        .px(rpx(6.))
+                        .text_size(ts::LABEL)
                         .when(on, |d| d.bg(p.sel).text_color(p.fg))
                         .when(!on && !busy, |d| {
                             d.on_click(cx.listener(move |this: &mut T, _, w, cx| {
@@ -752,7 +847,7 @@ pub fn render_pager<T: PagedView>(
                 }))
                 .child(
                     div()
-                        .min_w(px(110.))
+                        .min_w(rpx(110.))
                         .text_color(p.fg2)
                         .font_family(MONO)
                         .flex()
@@ -800,10 +895,10 @@ impl TableDelegate for GridDelegate {
         self.visible_rows() + self.inserted
     }
 
-    fn column(&self, col_ix: usize, _cx: &App) -> Column {
+    fn column(&self, col_ix: usize, cx: &App) -> Column {
         if col_ix == 0 {
             return Column::new("#", "#")
-                .width(self.row_number_width())
+                .width(self.row_number_width(cx))
                 .text_right()
                 .fixed_left()
                 .resizable(false)
@@ -872,7 +967,7 @@ impl TableDelegate for GridDelegate {
                 .items_center()
                 .justify_end()
                 .text_color(p.fg2)
-                .text_size(px(11.5))
+                .text_size(crate::appearance::scaled(11.5, cx))
                 .font_weight(FontWeight::SEMIBOLD)
                 .child("#");
         }
@@ -892,14 +987,14 @@ impl TableDelegate for GridDelegate {
             .size_full()
             .flex()
             .items_center()
-            .gap(px(6.))
+            .gap(rpx(6.))
             .when(meta.data_type.is_numeric(), |d| d.justify_end())
             .whitespace_nowrap()
             .overflow_hidden()
             .child(
                 div()
                     .text_color(p.fg2)
-                    .text_size(px(11.5))
+                    .text_size(crate::appearance::scaled(11.5, cx))
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(meta.name.clone()),
             )
@@ -907,7 +1002,7 @@ impl TableDelegate for GridDelegate {
                 d.child(
                     div()
                         .font_family(MONO)
-                        .text_size(px(10.))
+                        .text_size(crate::appearance::scaled(10., cx))
                         .text_color(p.acc)
                         .child("FK"),
                 )
@@ -915,14 +1010,14 @@ impl TableDelegate for GridDelegate {
             .child(
                 div()
                     .font_family(MONO)
-                    .text_size(px(10.))
+                    .text_size(crate::appearance::scaled(10., cx))
                     .text_color(p.fg3)
                     .child(meta.type_name.clone()),
             )
             .children(sort_mark.map(|m| {
                 div()
                     .font_family(MONO)
-                    .text_size(px(10.5))
+                    .text_size(crate::appearance::scaled(10.5, cx))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(p.acc)
                     .child(m)
@@ -941,8 +1036,8 @@ impl TableDelegate for GridDelegate {
             .size_full()
             .flex()
             .items_center()
-            .font_family(MONO)
-            .text_size(px(12.))
+            .font_family(crate::appearance::editor_font_family(cx))
+            .text_size(crate::appearance::scaled(12., cx))
             .whitespace_nowrap()
             .overflow_hidden();
         let data_row = self.data_row(row_ix);
@@ -1018,10 +1113,10 @@ impl TableDelegate for GridDelegate {
             .flex()
             .flex_col()
             .items_center()
-            .pt(px(40.))
-            .gap(px(4.))
+            .pt(rpx(40.))
+            .gap(rpx(4.))
             .text_color(p.fg2)
-            .text_size(px(13.))
+            .text_size(ts::BASE)
             .child("Query returned no rows")
     }
 
@@ -1111,6 +1206,39 @@ mod tests {
         b.push_null();
         g.push(b.finish());
         g
+    }
+
+    #[test]
+    fn a_background_filter_drops_stale_results() {
+        let mut g = delegate();
+        // Small results filter right away.
+        assert!(g.begin_filter("b").is_none());
+        assert_eq!(g.visible_rows(), 1);
+        // Large ones (threshold forced to 0 here) come back as a job.
+        let old = g.begin_filter_at("a", 0).expect("job");
+        let new = g.begin_filter_at("c", 0).expect("job");
+        assert!(old.is_stale() && !new.is_stale());
+        assert!(old.run().is_none(), "a superseded scan stops");
+        let result = new.run().expect("current");
+        // Rows streamed in during the scan join the view unfiltered.
+        let cols = g.columns();
+        let mut b = RowBatchBuilder::for_columns(&cols, 1);
+        b.push_i64(9);
+        b.push_str("zzz");
+        g.push(b.finish());
+        assert!(g.finish_filter(result));
+        assert_eq!(g.visible_rows(), 2);
+        assert_eq!(g.data_row(0), 0);
+        assert_eq!(g.data_row(1), 4);
+        // A result that finishes after a newer filter started is ignored.
+        let late = g
+            .begin_filter_at("a", 0)
+            .expect("job")
+            .run()
+            .expect("current");
+        g.set_filter("");
+        assert!(!g.finish_filter(late));
+        assert_eq!(g.visible_rows(), 5);
     }
 
     #[test]

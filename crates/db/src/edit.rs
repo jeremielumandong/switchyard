@@ -257,8 +257,12 @@ pub fn page_order(user: &[SortKey], pk: &[String]) -> Vec<SortKey> {
 }
 
 /// Tables that `DELETE` statements among `statements` delete from, found with
-/// `sqlparser` (Production confirms these before a commit).
+/// `sqlparser` (collections of `deleteOne` / `deleteMany` for document dialects).
+/// Production confirms these before a commit.
 pub fn delete_targets(dialect: &dyn Dialect, statements: &[String]) -> Vec<String> {
+    if dialect.edits_documents() {
+        return crate::mongo::edit::delete_targets(statements);
+    }
     let pd = dialect.parser_dialect();
     let mut out = Vec::new();
     for sql in statements {

@@ -27,6 +27,7 @@ use switchyard_core::store::{DbConnection, ProfileId};
 use switchyard_core::{Command, RequestId, RuntimeHandle, SessionId};
 
 use crate::app_state::next_id;
+use crate::appearance::{rpx, ts};
 use crate::plan_view::ms;
 use crate::theme::{MONO, Palette, SANS, palette};
 use crate::ui::{self, Kind};
@@ -315,32 +316,32 @@ impl ActivityTab {
                     .flex_none()
                     .flex()
                     .items_start()
-                    .gap(px(8.))
-                    .mx(px(12.))
-                    .mt(px(8.))
-                    .px(px(10.))
-                    .py(px(6.))
+                    .gap(rpx(8.))
+                    .mx(rpx(12.))
+                    .mt(rpx(8.))
+                    .px(rpx(10.))
+                    .py(rpx(6.))
                     .rounded(px(6.))
                     .bg(p.stg.opacity(0.08))
                     .border_1()
                     .border_color(p.stg.opacity(0.35))
-                    .text_size(px(12.))
+                    .text_size(ts::BODY)
                     .child(div().flex_1().min_w_0().child(h.message.clone()))
                     .when_some(h.fix.clone(), |d, fix| {
                         d.child(
                             div()
                                 .flex_none()
-                                .px(px(6.))
+                                .px(rpx(6.))
                                 .rounded(px(4.))
                                 .bg(p.bg)
                                 .font_family(MONO)
-                                .text_size(px(11.))
+                                .text_size(ts::SMALL)
                                 .child(fix.clone()),
                         )
                         .child(
                             ui::button(("act-hint-copy", i), "Copy", Kind::Ghost, p)
-                                .h(px(20.))
-                                .text_size(px(11.))
+                                .h(rpx(20.))
+                                .text_size(ts::SMALL)
                                 .on_click(cx.listener(move |_, _, _, cx| {
                                     cx.write_to_clipboard(ClipboardItem::new_string(fix.clone()));
                                 })),
@@ -368,16 +369,16 @@ impl ActivityTab {
                 .flex_none()
                 .flex()
                 .flex_col()
-                .gap(px(6.))
-                .mx(px(12.))
-                .mt(px(8.))
-                .px(px(10.))
-                .py(px(8.))
+                .gap(rpx(6.))
+                .mx(rpx(12.))
+                .mt(rpx(8.))
+                .px(rpx(10.))
+                .py(rpx(8.))
                 .rounded(px(6.))
                 .bg(p.prod.opacity(0.08))
                 .border_1()
                 .border_color(p.prod.opacity(0.5))
-                .text_size(px(12.))
+                .text_size(ts::BODY)
                 .child(
                     div()
                         .font_weight(FontWeight::SEMIBOLD)
@@ -392,14 +393,14 @@ impl ActivityTab {
                     )
                     .child(
                         div()
-                            .w(px(260.))
-                            .child(Input::new(&self.confirm_input).text_size(px(12.))),
+                            .w(rpx(260.))
+                            .child(Input::new(&self.confirm_input).text_size(ts::BODY)),
                     )
                 })
                 .child(
                     div()
                         .flex()
-                        .gap(px(8.))
+                        .gap(rpx(8.))
                         .child(
                             ui::button("act-confirm-no", "Keep it", Kind::Secondary, p).on_click(
                                 cx.listener(|t, _, _, cx| {
@@ -429,39 +430,43 @@ impl ActivityTab {
 
     fn render_list(&self, a: &Arc<Activity>, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let cell = |w: f32| {
-            let d = div().min_w_0().px(px(5.)).truncate();
+            let d = div().min_w_0().px(rpx(5.)).truncate();
             if w == 0. {
-                d.flex_1().min_w(px(160.))
+                d.flex_1().min_w(rpx(160.))
             } else {
-                d.w(px(w)).flex_none()
+                d.w(rpx(w)).flex_none()
             }
         };
         let header = div()
             .flex_none()
             .flex()
-            .h(px(ROW_H))
+            .h(rpx(ROW_H))
             .items_center()
-            .px(px(8.))
+            .px(rpx(8.))
             .border_b_1()
             .border_color(p.bd)
-            .text_size(px(10.5))
+            .text_size(ts::CAPTION_PLUS)
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(p.fg3)
             .child(cell(90.).child("ID"))
             .children(COLUMNS.iter().map(|(h, w)| cell(*w).child(*h)))
-            .child(div().w(px(44.)).flex_none());
+            .child(div().w(rpx(44.)).flex_none());
         if a.sessions.is_empty() {
             return div()
                 .flex_1()
                 .flex()
                 .flex_col()
                 .child(header)
-                .child(div().p(px(16.)).text_size(px(12.)).text_color(p.fg3).child(
-                    match a.engine {
-                        Engine::Snowflake => "No running queries.",
-                        _ => "No sessions visible.",
-                    },
-                ))
+                .child(
+                    div()
+                        .p(rpx(16.))
+                        .text_size(ts::BODY)
+                        .text_color(p.fg3)
+                        .child(match a.engine {
+                            Engine::Snowflake => "No running queries.",
+                            _ => "No sessions visible.",
+                        }),
+                )
                 .into_any_element();
         }
         let data = a.clone();
@@ -508,13 +513,13 @@ impl ActivityTab {
                                 let is_sel = selected.as_deref() == Some(s.id.as_str());
                                 div()
                                     .id(("act-row", r))
-                                    .h(px(ROW_H))
+                                    .h(rpx(ROW_H))
                                     .flex()
                                     .items_center()
-                                    .px(px(8.))
+                                    .px(rpx(8.))
                                     .border_b_1()
                                     .border_color(p.line)
-                                    .text_size(px(12.))
+                                    .text_size(ts::BODY)
                                     .text_color(if s.running { p.fg } else { p.fg2 })
                                     .when(is_sel, |d| d.bg(p.sel))
                                     .when(!is_sel, |d| d.hover(|st| st.bg(p.hover)))
@@ -525,14 +530,14 @@ impl ActivityTab {
                                     .child(
                                         cell(90.)
                                             .flex()
-                                            .gap(px(4.))
+                                            .gap(rpx(4.))
                                             .font_family(MONO)
                                             .child(div().min_w_0().truncate().child(s.id.clone()))
                                             .when(s.is_self, |d| {
                                                 d.child(
                                                     div()
                                                         .flex_none()
-                                                        .text_size(px(9.))
+                                                        .text_size(ts::TINY)
                                                         .text_color(p.acc)
                                                         .child("ME"),
                                                 )
@@ -553,9 +558,9 @@ impl ActivityTab {
                                     .child(
                                         div()
                                             .id(("act-copy", r))
-                                            .w(px(44.))
+                                            .w(rpx(44.))
                                             .flex_none()
-                                            .text_size(px(11.))
+                                            .text_size(ts::SMALL)
                                             .text_color(p.fg3)
                                             .hover(|st| st.text_color(p.acc))
                                             .on_click(move |_, _, cx| {
@@ -602,22 +607,22 @@ impl ActivityTab {
         Some(
             div()
                 .flex_none()
-                .h(px(200.))
+                .h(rpx(200.))
                 .flex()
                 .flex_col()
                 .border_t_1()
                 .border_color(p.bd)
                 .child(
                     div()
-                        .h(px(34.))
+                        .h(rpx(34.))
                         .flex_none()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
-                        .px(px(12.))
+                        .gap(rpx(8.))
+                        .px(rpx(12.))
                         .border_b_1()
                         .border_color(p.bd)
-                        .text_size(px(12.))
+                        .text_size(ts::BODY)
                         .child(div().flex_1().min_w_0().truncate().font_family(MONO).child(
                             format!(
                                     "{}{}{}",
@@ -663,7 +668,7 @@ impl ActivityTab {
                             .appearance(false)
                             .h(relative(1.))
                             .font_family(MONO)
-                            .text_size(px(12.)),
+                            .text_size(ts::BODY),
                     ),
                 )
                 .into_any_element(),
@@ -690,27 +695,27 @@ impl Render for ActivityTab {
         let count = self.data.as_ref().map_or(0, |a| a.sessions.len());
         let header = div()
             .flex_none()
-            .h(px(38.))
+            .h(rpx(38.))
             .flex()
             .items_center()
-            .gap(px(10.))
-            .px(px(12.))
+            .gap(rpx(10.))
+            .px(rpx(12.))
             .border_b_1()
             .border_color(p.bd)
             .child(
                 div()
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_size(px(13.))
+                    .text_size(ts::BASE)
                     .child(format!("Activity · {}", self.connection.name)),
             )
             .when(self.connection.environment.is_production(), |d| {
                 d.child(
                     div()
-                        .px(px(5.))
+                        .px(rpx(5.))
                         .rounded(px(3.))
                         .border_1()
                         .border_color(p.prod)
-                        .text_size(px(9.5))
+                        .text_size(ts::TINY_PLUS)
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(p.prod)
                         .child("PRODUCTION"),
@@ -719,7 +724,7 @@ impl Render for ActivityTab {
             .child(
                 div()
                     .font_family(MONO)
-                    .text_size(px(11.))
+                    .text_size(ts::SMALL)
                     .text_color(p.fg3)
                     .child(format!("{count} sessions")),
             )
@@ -737,7 +742,7 @@ impl Render for ActivityTab {
                     Kind::Secondary,
                     &p,
                 )
-                .h(px(24.))
+                .h(rpx(24.))
                 .on_click(cx.listener(|t, _, _, cx| {
                     t.paused = !t.paused;
                     cx.notify();
@@ -747,7 +752,7 @@ impl Render for ActivityTab {
                 ui::shimmer(70., &p)
             } else {
                 ui::button("activity-refresh", "Refresh", Kind::Secondary, &p)
-                    .h(px(24.))
+                    .h(rpx(24.))
                     .when(self.request.is_some(), |b| b.opacity(0.6))
                     .on_click(cx.listener(|t, _, _, cx| {
                         if t.request.is_none() {
@@ -759,18 +764,18 @@ impl Render for ActivityTab {
         let status = self.status.as_ref().map(|(ok, m)| {
             div()
                 .flex_none()
-                .mx(px(12.))
-                .mt(px(8.))
-                .text_size(px(12.))
+                .mx(rpx(12.))
+                .mt(rpx(8.))
+                .text_size(ts::BODY)
                 .text_color(if *ok { p.dev } else { p.prod })
                 .child(m.clone())
         });
         let error = self.error.as_ref().map(|e| {
             div()
                 .flex_none()
-                .mx(px(12.))
-                .mt(px(8.))
-                .text_size(px(12.))
+                .mx(rpx(12.))
+                .mt(rpx(8.))
+                .text_size(ts::BODY)
                 .text_color(p.prod)
                 .child(e.clone())
         });
@@ -783,7 +788,7 @@ impl Render for ActivityTab {
         let list = match &data {
             Some(a) => self.render_list(a, &p, cx),
             None => div()
-                .p(px(16.))
+                .p(rpx(16.))
                 .when(self.error.is_none(), |d| d.child(ui::shimmer(240., &p)))
                 .into_any_element(),
         };
@@ -805,7 +810,7 @@ impl Render for ActivityTab {
                 div()
                     .flex_1()
                     .min_h_0()
-                    .mt(px(6.))
+                    .mt(rpx(6.))
                     .flex()
                     .flex_col()
                     .child(list),

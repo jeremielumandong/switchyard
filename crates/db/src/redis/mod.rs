@@ -17,6 +17,20 @@ pub use resp::Reply;
 
 use crate::error::{DbError, Result};
 
+/// `DbConfig::options` key of the key browser's tree delimiter.
+pub const TREE_DELIMITER_OPTION: &str = "tree_delimiter";
+
+/// The tree delimiter when the connection sets none (Redis Insight's default).
+pub const DEFAULT_TREE_DELIMITER: &str = ":";
+
+/// The tree delimiter set in a connection's options (`None` or blank: [`DEFAULT_TREE_DELIMITER`]).
+pub fn tree_delimiter(option: Option<&str>) -> Vec<u8> {
+    match option {
+        Some(d) if !d.is_empty() => d.as_bytes().to_vec(),
+        _ => DEFAULT_TREE_DELIMITER.as_bytes().to_vec(),
+    }
+}
+
 /// Run one console command (already split with [`command::split`]). Refuses commands the
 /// console can't host, and anything but reads on a read-only connection.
 pub async fn run_console(c: &mut RedisClient, args: &[Vec<u8>]) -> Result<Reply> {

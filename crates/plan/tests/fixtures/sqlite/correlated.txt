@@ -1,0 +1,4 @@
+-- SELECT c.email, (SELECT MAX(total) FROM orders o WHERE o.customer_id = c.id) FROM customers c
+2|0|SCAN c USING COVERING INDEX sqlite_autoindex_customers_1
+6|0|CORRELATED SCALAR SUBQUERY 1
+12|6|SEARCH o USING INDEX ix_orders_customer (customer_id=?)

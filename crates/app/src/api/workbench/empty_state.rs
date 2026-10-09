@@ -13,9 +13,10 @@
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::component::{Disableable, IconName};
-use gpui_kit::{AnyElement, Div, div, px};
+use gpui_kit::{AnyElement, Div, div};
 
 use super::*;
+use crate::appearance::rpx;
 
 /// The public echo endpoint the sample request points at.
 pub(super) const SAMPLE_URL: &str = "https://httpbin.org/get";
@@ -229,7 +230,7 @@ impl WorkbenchPanel {
         };
         div()
             .flex_1()
-            .min_h(px(0.))
+            .min_h(rpx(0.))
             .flex()
             .flex_col()
             .items_center()
@@ -250,7 +251,7 @@ impl WorkbenchPanel {
             .when(!loading, |el| {
                 el.child(
                     div()
-                        .max_w(px(380.))
+                        .max_w(rpx(380.))
                         .text_center()
                         .text_size(text::S11)
                         .text_color(palette::text_secondary(cx))
@@ -338,7 +339,7 @@ impl WorkbenchPanel {
             .child(resizable_panel().child(self.render_compose_empty(cx)));
         div()
             .flex_1()
-            .min_h(px(0.))
+            .min_h(rpx(0.))
             .relative()
             .overflow_hidden()
             .child(div().absolute().inset_0().child(split))
@@ -384,7 +385,7 @@ impl WorkbenchPanel {
             )
             .child(
                 div()
-                    .max_w(px(380.))
+                    .max_w(rpx(380.))
                     .text_center()
                     .text_size(text::S11)
                     .text_color(palette::text_secondary(cx))

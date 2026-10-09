@@ -10,6 +10,7 @@ use tracing::debug;
 
 use crate::error::{Result, StoreError};
 use crate::favorites::{Favorite, kind_from_key, kind_key};
+use crate::macros::Macro;
 use crate::model::{BufferState, Profile, ProfileId, Workspace};
 use crate::snippets::{Snippet, engine_from_key, engine_key};
 
@@ -85,6 +86,14 @@ const MIGRATIONS: &[&str] = &[
         position INTEGER NOT NULL,
         created_at INTEGER NOT NULL,
         UNIQUE (connection_id, database_name, schema_name, name, kind)
+    );",
+    // 5: terminal macros (MX-5); `input` is the escaped keystrokes (`macros::escape_input`)
+    "CREATE TABLE macros (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        input TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
     );",
 ];
 
@@ -629,6 +638,64 @@ impl Store {
             > 0)
     }
 
+    // ---- macros ----
+
+    /// Terminal macros by name.
+    pub fn macros(&self) -> Result<Vec<Macro>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, input, created_at, updated_at FROM macros
+             ORDER BY name COLLATE NOCASE, id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let input: String = r.get(2)?;
+            Ok(Macro {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                input: crate::macros::unescape_input(&input),
+                created_at: r.get(3)?,
+                updated_at: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Insert (empty id) or update a macro after validation; returns it as stored.
+    pub fn save_macro(&mut self, m: &Macro) -> Result<Macro> {
+        m.validate()?;
+        let mut m = m.clone();
+        m.name = m.name.trim().to_owned();
+        let now = now_ms();
+        if m.id.is_empty() {
+            m.id = crate::random::random_hex(12);
+            m.created_at = now;
+        }
+        m.updated_at = now;
+        let created: i64 = self.conn.query_row(
+            "INSERT INTO macros (id, name, input, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET name = ?2, input = ?3, updated_at = ?5
+             RETURNING created_at",
+            params![
+                m.id,
+                m.name,
+                m.escaped(),
+                if m.created_at == 0 { now } else { m.created_at },
+                m.updated_at
+            ],
+            |r| r.get(0),
+        )?;
+        m.created_at = created;
+        Ok(m)
+    }
+
+    /// Delete a macro. Returns whether it existed.
+    pub fn delete_macro(&mut self, id: &str) -> Result<bool> {
+        Ok(self
+            .conn
+            .execute("DELETE FROM macros WHERE id = ?1", [id])?
+            > 0)
+    }
+
     // ---- favorites ----
 
     /// Pinned objects in their saved order. Pins of a kind this build does not know
@@ -1046,7 +1113,7 @@ mod tests {
         }
         let mut s = Store::open(&path).unwrap();
         // Every later migration runs too (4: favorites).
-        assert_eq!(s.schema_version().unwrap(), 4);
+        assert_eq!(s.schema_version().unwrap(), MIGRATIONS.len() as i64);
         assert_eq!(
             s.setting::<String>("theme").unwrap().as_deref(),
             Some("light")
@@ -1161,7 +1228,7 @@ mod tests {
             .unwrap();
         }
         let mut s = Store::open(&path).unwrap();
-        assert_eq!(s.schema_version().unwrap(), 4);
+        assert_eq!(s.schema_version().unwrap(), MIGRATIONS.len() as i64);
         assert_eq!(s.snippets().unwrap().len(), 1);
         assert!(s.favorites().unwrap().is_empty());
         s.add_favorite(&Favorite::schema(ProfileId("c".into()), "", "public"))
@@ -1169,5 +1236,34 @@ mod tests {
         drop(s);
         let s = Store::open(&path).unwrap();
         assert_eq!(s.favorites().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn macros_are_saved_listed_and_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("profiles.db");
+        let mut s = Store::open(&path).unwrap();
+        let input = b"cd /srv\r\x1b[A\x03\xff".to_vec();
+        let saved = s
+            .save_macro(&Macro::new(" deploy ", input.clone()))
+            .unwrap();
+        assert!(!saved.id.is_empty());
+        assert_eq!(saved.name, "deploy");
+        s.save_macro(&Macro::new("a first", b"x".to_vec())).unwrap();
+        assert!(s.save_macro(&Macro::new("", b"x".to_vec())).is_err());
+        drop(s);
+        let mut s = Store::open(&path).unwrap();
+        let list = s.macros().unwrap();
+        assert_eq!(
+            list.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            ["a first", "deploy"]
+        );
+        assert_eq!(list[1].input, input);
+        let mut renamed = list[1].clone();
+        renamed.name = "deploy 2".into();
+        s.save_macro(&renamed).unwrap();
+        assert_eq!(s.macros().unwrap()[1].name, "deploy 2");
+        assert!(s.delete_macro(&saved.id).unwrap());
+        assert_eq!(s.macros().unwrap().len(), 1);
     }
 }

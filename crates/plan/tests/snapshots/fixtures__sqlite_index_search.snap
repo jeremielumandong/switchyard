@@ -1,0 +1,8 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&sqlite(&name))
+---
+Sqlite Estimated
+#0 Covering Index Search on orders.ix_orders_placed est=- act=- loops=-
+  Index Cond: (placed_on>? AND placed_on<?)
+findings:

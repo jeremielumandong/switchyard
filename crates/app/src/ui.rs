@@ -10,6 +10,7 @@ use gpui_kit::{
 };
 use switchyard_core::store::EnvironmentLabel;
 
+use crate::appearance::{rpx, ts};
 use crate::theme::{MONO, Palette, SANS};
 
 /// Button style variants from the design.
@@ -51,18 +52,18 @@ pub fn button(
     let bd3 = p.fg3;
     div()
         .id(id.into())
-        .h(px(26.))
-        .px(px(10.))
+        .h(rpx(26.))
+        .px(rpx(10.))
         .flex()
         .flex_none()
         .items_center()
         .justify_center()
-        .gap(px(8.))
+        .gap(rpx(8.))
         .rounded(px(6.))
         .bg(bg)
         .text_color(fg)
         .font_family(SANS)
-        .text_size(px(12.))
+        .text_size(ts::BODY)
         .font_weight(weight)
         .whitespace_nowrap()
         .when_some(border, |d, b| d.border_1().border_color(b))
@@ -88,8 +89,8 @@ pub fn button_with_key(
     } else {
         p.fg3
     };
-    button(id, label, kind, p).pl(px(10.)).pr(px(8.)).child(
-        mono(key, px(10.5))
+    button(id, label, kind, p).pl(rpx(10.)).pr(rpx(8.)).child(
+        mono(key, ts::CAPTION_PLUS)
             .font_weight(FontWeight::MEDIUM)
             .text_color(key_color),
     )
@@ -108,7 +109,7 @@ pub fn icon_button(
     let fg_hover = p.fg;
     div()
         .id(id.into())
-        .size(px(26.))
+        .size(rpx(26.))
         .flex()
         .flex_none()
         .items_center()
@@ -118,11 +119,11 @@ pub fn icon_button(
         .text_color(if active { p.acc } else { p.fg2 })
         .when(active, |d| d.bg(p.sel))
         .hover(move |s| s.bg(hover).text_color(fg_hover))
-        .child(Icon::new(icon).size(px(15.)))
+        .child(Icon::new(icon).size(rpx(15.)))
 }
 
 /// Monospace text.
-pub fn mono(text: impl Into<SharedString>, size: gpui_kit::Pixels) -> Div {
+pub fn mono(text: impl Into<SharedString>, size: impl Into<gpui_kit::AbsoluteLength>) -> Div {
     div().font_family(MONO).text_size(size).child(text.into())
 }
 
@@ -130,15 +131,15 @@ pub fn mono(text: impl Into<SharedString>, size: gpui_kit::Pixels) -> Div {
 pub fn kbd(text: impl Into<SharedString>, p: &Palette) -> Div {
     div()
         .flex_none()
-        .px(px(5.))
-        .py(px(1.))
+        .px(rpx(5.))
+        .py(rpx(1.))
         .rounded(px(4.))
         .border_1()
         .border_color(p.bd2)
         .text_color(p.fg2)
         .font_family(MONO)
         .font_weight(FontWeight::MEDIUM)
-        .text_size(px(10.5))
+        .text_size(ts::CAPTION_PLUS)
         .child(text.into())
 }
 
@@ -146,8 +147,8 @@ pub fn kbd(text: impl Into<SharedString>, p: &Palette) -> Div {
 pub fn monogram(text: impl Into<SharedString>, width: f32, p: &Palette) -> Div {
     div()
         .flex_none()
-        .w(px(width))
-        .h(px(15.))
+        .w(rpx(width))
+        .h(rpx(15.))
         .flex()
         .items_center()
         .justify_center()
@@ -158,13 +159,13 @@ pub fn monogram(text: impl Into<SharedString>, width: f32, p: &Palette) -> Div {
         .text_color(p.fg2)
         .font_family(MONO)
         .font_weight(FontWeight::SEMIBOLD)
-        .text_size(px(8.5))
+        .text_size(ts::MICRO)
         .child(text.into())
 }
 
 /// A small round dot.
 pub fn dot(color: Hsla, size: f32) -> Div {
-    div().flex_none().size(px(size)).rounded_full().bg(color)
+    div().flex_none().size(rpx(size)).rounded_full().bg(color)
 }
 
 /// An outlined environment badge (`PROD`).
@@ -172,15 +173,15 @@ pub fn env_badge(env: EnvironmentLabel, p: &Palette) -> Div {
     let c = p.env(env);
     div()
         .flex_none()
-        .px(px(6.))
-        .py(px(2.))
+        .px(rpx(6.))
+        .py(rpx(2.))
         .rounded(px(4.))
         .border_1()
         .border_color(c)
         .text_color(c)
         .font_family(MONO)
         .font_weight(FontWeight::SEMIBOLD)
-        .text_size(px(10.))
+        .text_size(ts::CAPTION)
         .child(env.badge())
 }
 
@@ -188,14 +189,14 @@ pub fn env_badge(env: EnvironmentLabel, p: &Palette) -> Div {
 pub fn env_badge_solid(env: EnvironmentLabel, p: &Palette) -> Div {
     div()
         .flex_none()
-        .px(px(7.))
-        .py(px(3.))
+        .px(rpx(7.))
+        .py(rpx(3.))
         .rounded(px(4.))
         .bg(p.env(env))
         .text_color(p.env_on(env))
         .font_family(MONO)
         .font_weight(FontWeight::SEMIBOLD)
-        .text_size(px(10.))
+        .text_size(ts::CAPTION)
         .child(env.name().to_uppercase())
 }
 
@@ -235,8 +236,8 @@ pub fn segmented(
         .id(id)
         .flex()
         .flex_none()
-        .p(px(2.))
-        .gap(px(2.))
+        .p(rpx(2.))
+        .gap(rpx(2.))
         .bg(p.bg)
         .border_1()
         .border_color(p.bd)
@@ -249,15 +250,15 @@ pub fn segmented(
                     div()
                         .id(("seg", i))
                         .flex_1()
-                        .h(px(height))
-                        .px(px(8.))
+                        .h(rpx(height))
+                        .px(rpx(8.))
                         .flex()
                         .items_center()
                         .justify_center()
                         .rounded(px(4.))
                         .font_family(SANS)
                         .font_weight(FontWeight::MEDIUM)
-                        .text_size(px(if height <= 20. { 11.5 } else { 12. }))
+                        .text_size(rpx(if height <= 20. { 11.5 } else { 12. }))
                         .whitespace_nowrap()
                         .when(active, |d| d.bg(p.elev).text_color(p.fg))
                         .when(!active, |d| d.text_color(p.fg2))
@@ -279,12 +280,12 @@ pub fn checkbox(
         .id(id.into())
         .flex()
         .items_center()
-        .gap(px(8.))
-        .text_size(px(12.))
+        .gap(rpx(8.))
+        .text_size(ts::BODY)
         .text_color(p.fg2)
         .child(
             div()
-                .size(px(14.))
+                .size(rpx(14.))
                 .flex()
                 .items_center()
                 .justify_center()
@@ -293,7 +294,7 @@ pub fn checkbox(
                 .rounded(px(3.))
                 .bg(if checked { p.acc } else { p.surface })
                 .text_color(p.acc_fg)
-                .text_size(px(10.))
+                .text_size(ts::CAPTION)
                 .child(if checked { "✓" } else { "" }),
         )
         .child(label.into())
@@ -303,7 +304,7 @@ pub fn checkbox(
 pub fn caption(text: impl Into<SharedString>, p: &Palette) -> Div {
     div()
         .text_color(p.fg3)
-        .text_size(px(11.))
+        .text_size(ts::SMALL)
         .font_weight(FontWeight::MEDIUM)
         .child(text.into())
 }
@@ -312,10 +313,10 @@ pub fn caption(text: impl Into<SharedString>, p: &Palette) -> Div {
 pub fn vdivider(p: &Palette, height: f32) -> Div {
     div()
         .flex_none()
-        .w(px(1.))
-        .h(px(height))
+        .w(rpx(1.))
+        .h(rpx(height))
         .bg(p.bd)
-        .mx(px(4.))
+        .mx(rpx(4.))
 }
 
 /// A shimmering placeholder bar (loading states).
@@ -325,8 +326,8 @@ pub fn shimmer(width: f32, p: &Palette) -> AnyElement {
     let peak = p.bd2;
     div()
         .flex_none()
-        .w(px(width))
-        .h(px(8.))
+        .w(rpx(width))
+        .h(rpx(8.))
         .rounded(px(4.))
         .bg(base)
         .with_animation(

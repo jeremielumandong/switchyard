@@ -6,6 +6,7 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -17,30 +18,37 @@ use gpui_kit::{
     StrikethroughStyle, Styled as _, Subscription, TextAlign, TextRun, UnderlineStyle, WeakEntity,
     Window, canvas, div, fill, font, outline, point, px, size,
 };
+use switchyard_core::store::macros::{MAX_MACRO_BYTES, escape_input};
+use switchyard_core::store::model::parse_hex_color;
 use switchyard_core::store::{EnvironmentLabel, ProfileId};
+use switchyard_core::store::{Macro, TerminalColors};
 use switchyard_core::term::input::{
     Key, Mods, MouseAction, MouseButton as TermButton, encode_key, encode_mouse, encode_paste,
 };
 use switchyard_core::term::links::url_at;
 use switchyard_core::term::{CursorShape, Mark, Snapshot, TermColor, TermSize, Terminal};
-use switchyard_core::{Command, RuntimeHandle, TermId, TermStatus, TermTarget};
+use switchyard_core::term_settings::{HighlightRule, highlight_spans};
+use switchyard_core::{Command, RuntimeHandle, TermId, TermLogState, TermStatus, TermTarget};
 
 use crate::actions::{TermCopy, TermFind, TermPaste, TermSplit};
 use crate::app_state::next_id;
+use crate::appearance::{rpx, ts};
 use crate::theme::{MONO, Palette, palette};
 use crate::ui::{self, Kind};
 
-const FONT_SIZE: f32 = 12.5;
-const LINE_HEIGHT: f32 = 19.;
 const PAD_X: f32 = 12.;
 const PAD_Y: f32 = 10.;
 const MAX_PANES: usize = 4;
+/// Pause in typing before the scrollback search runs.
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(120);
 
 /// Where a pane's cells are on screen, measured during paint.
 #[derive(Clone, Copy, Debug, Default)]
 struct Geom {
     origin: Point<Pixels>,
     cell_w: f32,
+    /// Line height (follows the editor font size and zoom).
+    line_h: f32,
     cols: u16,
     rows: u16,
 }
@@ -84,6 +92,8 @@ struct Pane {
     snapshot: Rc<Snapshot>,
     selecting: bool,
     pressed: Option<TermButton>,
+    /// File the pane's output is logged to (MX-3).
+    log: Option<std::path::PathBuf>,
 }
 
 /// A terminal tab.
@@ -99,8 +109,20 @@ pub struct TerminalTab {
     broadcast: bool,
     search: Option<Entity<InputState>>,
     _search_sub: Option<Subscription>,
+    /// The debounced scrollback scan for the latest keystroke (dropping it cancels it).
+    search_task: Option<gpui_kit::Task<()>>,
     /// Typed into the first pane once its shell is up (e.g. `cd` to a folder).
     startup: Option<Vec<u8>>,
+    /// Multi-line text waiting for the user to confirm the paste: (pane, text).
+    pending_paste: Option<(usize, String)>,
+    /// Keystrokes recorded for a macro (MX-5) while recording.
+    recording: Option<Vec<u8>>,
+    /// A finished recording waiting for its name.
+    macro_save: Option<(Vec<u8>, Entity<InputState>)>,
+    /// The Macros menu is open.
+    macro_menu: bool,
+    /// The Host's terminal colors (text, background) instead of the theme's (MX-6).
+    colors: (Option<Hsla>, Option<Hsla>),
     /// A coding CLI with Switchyard's tools ("Open in terminal"): (CLI, connection).
     agent: Option<(
         Option<switchyard_core::agents::AgentKind>,
@@ -139,7 +161,13 @@ impl TerminalTab {
             broadcast: false,
             search: None,
             _search_sub: None,
+            search_task: None,
             startup: None,
+            pending_paste: None,
+            recording: None,
+            macro_save: None,
+            macro_menu: false,
+            colors: (None, None),
             agent: None,
         };
         this.add_pane(cx);
@@ -166,11 +194,34 @@ impl TerminalTab {
             broadcast: false,
             search: None,
             _search_sub: None,
+            search_task: None,
             startup: None,
+            pending_paste: None,
+            recording: None,
+            macro_save: None,
+            macro_menu: false,
+            colors: (None, None),
             agent: Some((agent, connection)),
         };
         this.add_pane(cx);
         this
+    }
+
+    /// Draw with a Host's own terminal colors.
+    pub fn with_colors(mut self, colors: Option<&TerminalColors>) -> Self {
+        let hex = |v: &Option<String>| {
+            let (r, g, b) = parse_hex_color(v.as_deref()?)?;
+            Some(Hsla::from(gpui_kit::Rgba {
+                r: f32::from(r) / 255.,
+                g: f32::from(g) / 255.,
+                b: f32::from(b) / 255.,
+                a: 1.,
+            }))
+        };
+        if let Some(c) = colors {
+            self.colors = (hex(&c.foreground), hex(&c.background));
+        }
+        self
     }
 
     /// Type `input` into the first shell once it is up.
@@ -256,6 +307,7 @@ impl TerminalTab {
             snapshot: Rc::default(),
             selecting: false,
             pressed: None,
+            log: None,
         });
         self.active = self.panes.len() - 1;
     }
@@ -290,7 +342,43 @@ impl TerminalTab {
         if !remote {
             self.run_startup(term);
         }
+        let settings = crate::terminal_settings::settings(cx);
+        if settings.log.auto && self.owns(term) {
+            self.core.send(Command::StartTerminalLog {
+                term,
+                settings: settings.log,
+            });
+        }
         cx.notify();
+    }
+
+    /// A pane's session log started, stopped or failed.
+    pub fn on_log(&mut self, term: TermId, state: TermLogState, cx: &mut Context<Self>) {
+        if let Some(p) = self.pane_mut(term) {
+            p.log = match state {
+                TermLogState::Started(path) => Some(path),
+                TermLogState::Stopped | TermLogState::Failed(_) => None,
+            };
+        }
+        cx.notify();
+    }
+
+    /// Start or stop logging the active pane (the tab's Log button).
+    fn toggle_log(&mut self, cx: &mut Context<Self>) {
+        let Some(p) = self.panes.get(self.active) else {
+            return;
+        };
+        if p.terminal.is_none() {
+            return;
+        }
+        if p.log.is_some() {
+            self.core.send(Command::StopTerminalLog { term: p.id });
+        } else {
+            self.core.send(Command::StartTerminalLog {
+                term: p.id,
+                settings: crate::terminal_settings::settings(cx).log,
+            });
+        }
     }
 
     /// Connection state of an SSH terminal.
@@ -484,12 +572,241 @@ impl TerminalTab {
         let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) else {
             return;
         };
+        if crate::terminal_settings::settings(cx).confirm_multiline_paste
+            && text.contains(['\n', '\r'])
+        {
+            self.pending_paste = Some((ix, text));
+            cx.notify();
+            return;
+        }
+        self.paste_text(ix, &text);
+    }
+
+    /// Answer the multi-line paste question.
+    fn finish_paste(&mut self, accept: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((ix, text)) = self.pending_paste.take()
+            && accept
+        {
+            self.paste_text(ix, &text);
+        }
+        self.refocus(window, cx);
+        cx.notify();
+    }
+
+    fn paste_text(&mut self, ix: usize, text: &str) {
         let modes = self
             .panes
             .get(ix)
             .map(|p| p.snapshot.modes)
             .unwrap_or_default();
-        self.send_input(ix, encode_paste(&text, modes));
+        let bytes = encode_paste(text, modes);
+        self.record(&bytes);
+        self.send_input(ix, bytes);
+    }
+
+    /// Keep typed input while recording a macro.
+    fn record(&mut self, bytes: &[u8]) {
+        if let Some(rec) = &mut self.recording
+            && rec.len() + bytes.len() <= MAX_MACRO_BYTES
+        {
+            rec.extend_from_slice(bytes);
+        }
+    }
+
+    /// Start recording, or stop and ask for a name.
+    fn toggle_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.recording.take() {
+            None => {
+                self.recording = Some(Vec::new());
+                self.macro_save = None;
+                self.refocus(window, cx);
+            }
+            Some(bytes) if bytes.is_empty() => self.refocus(window, cx),
+            Some(bytes) => {
+                let name = cx.new(|cx| InputState::new(window, cx).placeholder("Macro name"));
+                name.update(cx, |i, cx| i.focus(window, cx));
+                self.macro_save = Some((bytes, name));
+            }
+        }
+        cx.notify();
+    }
+
+    /// Save (`true`) or drop the finished recording.
+    fn finish_recording(&mut self, save: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((bytes, name)) = self.macro_save.take()
+            && save
+        {
+            let name = name.read(cx).value().trim().to_owned();
+            let name = if name.is_empty() {
+                format!("Macro {}", crate::terminal_settings::macros(cx).len() + 1)
+            } else {
+                name
+            };
+            self.core.send(Command::SaveMacro(Macro::new(&name, bytes)));
+        }
+        self.refocus(window, cx);
+        cx.notify();
+    }
+
+    /// Type a macro into the active pane (every live pane when broadcasting), or into
+    /// every live pane when `all`.
+    fn play_macro(
+        &mut self,
+        input: Vec<u8>,
+        all: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.macro_menu = false;
+        if all {
+            let live: Vec<TermId> = self
+                .panes
+                .iter()
+                .filter(|p| p.state == PaneState::Live)
+                .map(|p| p.id)
+                .collect();
+            for term in live {
+                self.core.send(Command::TerminalInput {
+                    term,
+                    bytes: input.clone(),
+                });
+            }
+        } else {
+            self.send_input(self.active, input);
+        }
+        self.refocus(window, cx);
+        cx.notify();
+    }
+
+    /// The Macros menu, under the header.
+    fn render_macro_menu(
+        &self,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui_kit::AnyElement> {
+        if !self.macro_menu {
+            return None;
+        }
+        let list = crate::terminal_settings::macros(cx);
+        let multi = self.panes.len() > 1;
+        Some(
+            div()
+                .id("t-macros")
+                .absolute()
+                .top(rpx(38.))
+                .right(rpx(10.))
+                .w(rpx(300.))
+                .max_h(rpx(360.))
+                .overflow_y_scroll()
+                .p(rpx(4.))
+                .bg(p.elev)
+                .rounded(px(7.))
+                .shadow(ui::shadow(p))
+                .text_size(ts::UI)
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .when(list.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .p(rpx(8.))
+                            .text_color(p.fg3)
+                            .child("No macros yet: press Record, type, then Stop."),
+                    )
+                })
+                .children(list.into_iter().enumerate().map(|(i, m)| {
+                    let (play, all, id) = (m.input.clone(), m.input.clone(), m.id.clone());
+                    div()
+                        .id(("t-macro", i))
+                        .h(rpx(28.))
+                        .flex()
+                        .items_center()
+                        .gap(rpx(4.))
+                        .px(rpx(8.))
+                        .rounded(px(4.))
+                        .hover(|s| s.bg(p.sel))
+                        .on_click(cx.listener(move |this, _, w, cx| {
+                            this.play_macro(play.clone(), false, w, cx)
+                        }))
+                        .child(div().text_color(p.fg3).child("▶"))
+                        .child(div().flex_1().min_w_0().truncate().child(m.name.clone()))
+                        .when(multi, |d| {
+                            d.child(
+                                ui::button(("t-macro-all", i), "All panes", Kind::Ghost, p)
+                                    .h(rpx(22.))
+                                    .on_click(cx.listener(move |this, _, w, cx| {
+                                        cx.stop_propagation();
+                                        this.play_macro(all.clone(), true, w, cx)
+                                    })),
+                            )
+                        })
+                        .child(
+                            ui::button(("t-macro-del", i), "×", Kind::Ghost, p)
+                                .h(rpx(22.))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.core.send(Command::DeleteMacro { id: id.clone() });
+                                })),
+                        )
+                }))
+                .into_any_element(),
+        )
+    }
+
+    /// "Save macro as …" under the header after a recording.
+    fn render_macro_save(
+        &self,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui_kit::AnyElement> {
+        let (bytes, name) = self.macro_save.as_ref()?;
+        Some(
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(rpx(8.))
+                .px(rpx(12.))
+                .py(rpx(5.))
+                .bg(p.surface)
+                .border_b_1()
+                .border_color(p.bd)
+                .text_size(ts::BODY)
+                .child("Save macro as")
+                .child(
+                    div()
+                        .w(rpx(200.))
+                        .h(rpx(24.))
+                        .flex()
+                        .items_center()
+                        .px(rpx(6.))
+                        .border_1()
+                        .border_color(p.bd2)
+                        .rounded(px(5.))
+                        .bg(p.bg)
+                        .child(Input::new(name).appearance(false).text_size(ts::BODY)),
+                )
+                .child(
+                    div()
+                        .font_family(MONO)
+                        .text_color(p.fg3)
+                        .truncate()
+                        .min_w_0()
+                        .child(escape_input(&bytes[..bytes.len().min(80)])),
+                )
+                .child(div().flex_1())
+                .child(
+                    ui::button("t-macro-save", "Save", Kind::Primary, p)
+                        .h(rpx(22.))
+                        .on_click(cx.listener(|this, _, w, cx| this.finish_recording(true, w, cx))),
+                )
+                .child(
+                    ui::button("t-macro-discard", "Discard", Kind::Ghost, p)
+                        .h(rpx(22.))
+                        .on_click(
+                            cx.listener(|this, _, w, cx| this.finish_recording(false, w, cx)),
+                        ),
+                )
+                .into_any_element(),
+        )
     }
 
     fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -506,10 +823,7 @@ impl TerminalTab {
                 match ev {
                     InputEvent::Change => {
                         let q = input.read(cx).value().to_string();
-                        if let Some(t) = this.active_terminal() {
-                            t.search(&q);
-                        }
-                        cx.notify();
+                        this.schedule_search(q, cx);
                     }
                     InputEvent::PressEnter { shift, .. } => {
                         // Enter walks back through older output; Shift+Enter forward.
@@ -529,9 +843,39 @@ impl TerminalTab {
         cx.notify();
     }
 
+    /// Search the active pane's scrollback for `query` after a short pause in typing, on
+    /// a background thread. Each keystroke starts a new search generation, so a scan
+    /// still running for an older query stops and its matches are dropped.
+    fn schedule_search(&mut self, query: String, cx: &mut Context<Self>) {
+        let Some(t) = self.active_terminal().cloned() else {
+            return;
+        };
+        let generation = t.begin_search();
+        if query.is_empty() {
+            self.search_task = None;
+            let _ = t.search_as("", generation);
+            cx.notify();
+            return;
+        }
+        self.search_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SEARCH_DEBOUNCE).await;
+            if !t.search_current(generation) {
+                return;
+            }
+            let found = cx
+                .background_executor()
+                .spawn(async move { t.search_as(&query, generation) })
+                .await;
+            if found.is_some() {
+                let _ = this.update(cx, |_, cx| cx.notify());
+            }
+        }));
+    }
+
     fn close_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search = None;
         self._search_sub = None;
+        self.search_task = None;
         if let Some(p) = self.panes.get(self.active) {
             if let Some(t) = &p.terminal {
                 t.clear_search();
@@ -561,7 +905,7 @@ impl TerminalTab {
         let x = f32::from(pos.x - g.origin.x);
         let y = f32::from(pos.y - g.origin.y);
         let col = (x / g.cell_w).floor().clamp(0., f32::from(g.cols - 1));
-        let row = (y / LINE_HEIGHT)
+        let row = (y / g.line_h.max(1.))
             .floor()
             .clamp(0., f32::from(g.rows.max(1) - 1));
         let right = x - col * g.cell_w > g.cell_w / 2.;
@@ -575,6 +919,16 @@ impl TerminalTab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The paste question takes Enter and Escape; other keys wait for it.
+        if self.pending_paste.is_some() {
+            match ev.keystroke.key.as_str() {
+                "enter" => self.finish_paste(true, window, cx),
+                "escape" => self.finish_paste(false, window, cx),
+                _ => {}
+            }
+            cx.stop_propagation();
+            return;
+        }
         let ks = &ev.keystroke;
         let m = &ks.modifiers;
         // App shortcuts: Cmd+… on macOS, Ctrl+Shift+… elsewhere.
@@ -642,6 +996,7 @@ impl TerminalTab {
         };
         let modes = self.panes[ix].snapshot.modes;
         if let Some(bytes) = encode_key(&key, mods, modes) {
+            self.record(&bytes);
             self.send_input(ix, bytes);
             cx.stop_propagation();
         }
@@ -725,6 +1080,9 @@ impl TerminalTab {
                 cx.notify();
             }
             MouseButton::Middle => self.paste(ix, cx),
+            MouseButton::Right if crate::terminal_settings::settings(cx).right_click_paste => {
+                self.paste(ix, cx)
+            }
             _ => {}
         }
     }
@@ -759,7 +1117,14 @@ impl TerminalTab {
 
     fn mouse_up(&mut self, ix: usize, ev: &MouseUpEvent, cx: &mut Context<Self>) {
         let pane = &mut self.panes[ix];
-        pane.selecting = false;
+        let was_selecting = std::mem::take(&mut pane.selecting);
+        if was_selecting
+            && ev.button == MouseButton::Left
+            && crate::terminal_settings::settings(cx).copy_on_select
+        {
+            self.copy(ix, cx);
+        }
+        let pane = &mut self.panes[ix];
         let modes = pane.snapshot.modes;
         if let Some(b) = pane.pressed.take()
             && let Some((row, col, _)) = self.cell_at(ix, ev.position)
@@ -780,7 +1145,15 @@ impl TerminalTab {
     fn wheel(&mut self, ix: usize, ev: &ScrollWheelEvent, cx: &mut Context<Self>) {
         let lines = match ev.delta {
             ScrollDelta::Lines(p) => p.y.round() as i32,
-            ScrollDelta::Pixels(p) => (f32::from(p.y) / LINE_HEIGHT).round() as i32,
+            ScrollDelta::Pixels(p) => {
+                let line_h = self
+                    .panes
+                    .get(ix)
+                    .map(|pane| pane.geom.get().line_h)
+                    .filter(|h| *h > 0.)
+                    .unwrap_or(19.);
+                (f32::from(p.y) / line_h).round() as i32
+            }
         };
         if lines == 0 {
             return;
@@ -824,7 +1197,13 @@ impl TerminalTab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
-        let p = palette(cx);
+        let mut p = palette(cx);
+        if let Some(fg) = self.colors.0 {
+            p.fg = fg;
+        }
+        if let Some(bg) = self.colors.1 {
+            p.term = bg;
+        }
         let multi = self.panes.len() > 1;
         let is_active = ix == self.active;
         let weak = cx.entity().downgrade();
@@ -841,8 +1220,35 @@ impl TerminalTab {
         let state = pane.state.clone();
         let search_pos = snap.search;
         let pane_empty = snap.lines.iter().all(|l| l.text.trim().is_empty());
+        // Keyword highlighting (MX-4); full-screen programs draw their own colors.
+        let highlights: Vec<(HighlightRule, Hsla)> = {
+            let s = crate::terminal_settings::settings(cx);
+            if s.highlight && !snap.modes.alt_screen {
+                s.highlight_rules
+                    .into_iter()
+                    .map(|r| {
+                        let c = p.ansi(r.color.ansi());
+                        (r, c)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        };
         let grid = canvas(
-            move |bounds, window, cx| prepaint(bounds, &snap, &geom, term_id, weak, &p, window, cx),
+            move |bounds, window, cx| {
+                prepaint(
+                    bounds,
+                    &snap,
+                    &geom,
+                    term_id,
+                    weak,
+                    &highlights,
+                    &p,
+                    window,
+                    cx,
+                )
+            },
             move |_bounds, frame, window, cx| paint(frame, focused, &p, window, cx),
         )
         .size_full();
@@ -896,23 +1302,23 @@ impl TerminalTab {
             body = body.child(
                 div()
                     .absolute()
-                    .top(px(8.))
-                    .right(px(8.))
+                    .top(rpx(8.))
+                    .right(rpx(8.))
                     .flex()
                     .items_center()
-                    .gap(px(6.))
-                    .pl(px(10.))
-                    .pr(px(4.))
-                    .py(px(4.))
+                    .gap(rpx(6.))
+                    .pl(rpx(10.))
+                    .pr(rpx(4.))
+                    .py(rpx(4.))
                     .bg(p.elev)
                     .rounded(px(6.))
                     .shadow(ui::shadow(&p))
-                    .text_size(px(12.))
+                    .text_size(ts::BODY)
                     .child(
                         div()
-                            .w(px(170.))
+                            .w(rpx(170.))
                             .font_family(MONO)
-                            .child(Input::new(search).appearance(false).text_size(px(12.))),
+                            .child(Input::new(search).appearance(false).text_size(ts::BODY)),
                     )
                     .child(
                         div()
@@ -926,7 +1332,7 @@ impl TerminalTab {
                     )
                     .child(
                         ui::button("ts-prev", "↑", Kind::Ghost, &p)
-                            .h(px(22.))
+                            .h(rpx(22.))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 if let Some(t) = this.active_terminal() {
                                     t.search_step(false);
@@ -936,7 +1342,7 @@ impl TerminalTab {
                     )
                     .child(
                         ui::button("ts-next", "↓", Kind::Ghost, &p)
-                            .h(px(22.))
+                            .h(rpx(22.))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 if let Some(t) = this.active_terminal() {
                                     t.search_step(true);
@@ -946,7 +1352,7 @@ impl TerminalTab {
                     )
                     .child(
                         ui::button("ts-close", "×", Kind::Ghost, &p)
-                            .h(px(22.))
+                            .h(rpx(22.))
                             .on_click(cx.listener(|this, _, w, cx| this.close_search(w, cx))),
                     )
                     .on_key_down(cx.listener(|this, ev: &KeyDownEvent, w, cx| {
@@ -966,7 +1372,7 @@ impl TerminalTab {
                     .top(px(PAD_Y))
                     .left(px(PAD_X))
                     .font_family(MONO)
-                    .text_size(px(FONT_SIZE))
+                    .text_size(crate::appearance::editor_font_size(cx))
                     .text_color(p.fg3)
                     .child("Connecting…"),
             ),
@@ -998,7 +1404,7 @@ impl TerminalTab {
             .justify_center()
             .child(
                 div()
-                    .w(px(540.))
+                    .w(rpx(540.))
                     .border_1()
                     .border_color(p.prod)
                     .rounded(px(10.))
@@ -1006,8 +1412,8 @@ impl TerminalTab {
                     .overflow_hidden()
                     .child(
                         div()
-                            .px(px(20.))
-                            .py(px(14.))
+                            .px(rpx(20.))
+                            .py(rpx(14.))
                             .bg(p.prod_bg)
                             .border_b_1()
                             .border_color(p.bd)
@@ -1015,26 +1421,26 @@ impl TerminalTab {
                                 div()
                                     .font_family(MONO)
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_size(px(10.5))
+                                    .text_size(ts::CAPTION_PLUS)
                                     .text_color(p.prod)
-                                    .mb(px(4.))
+                                    .mb(rpx(4.))
                                     .child("CONNECTION BLOCKED"),
                             )
                             .child(
                                 div()
-                                    .text_size(px(15.))
+                                    .text_size(ts::TITLE_PLUS)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(format!("The host key for {} has changed", key.host)),
                             ),
                     )
                     .child(
                         div()
-                            .px(px(20.))
-                            .py(px(16.))
+                            .px(rpx(20.))
+                            .py(rpx(16.))
                             .flex()
                             .flex_col()
-                            .gap(px(12.))
-                            .child(div().text_size(px(12.5)).text_color(p.fg2).child(format!(
+                            .gap(rpx(12.))
+                            .child(div().text_size(ts::UI).text_color(p.fg2).child(format!(
                                 "The server at {} presented a different key than the one in {}. This can mean the server was rebuilt — or that someone is intercepting the connection.",
                                 key.address, file
                             )))
@@ -1042,30 +1448,30 @@ impl TerminalTab {
                                 div()
                                     .flex()
                                     .flex_col()
-                                    .gap(px(6.))
+                                    .gap(rpx(6.))
                                     .font_family(MONO)
-                                    .text_size(px(12.))
+                                    .text_size(ts::BODY)
                                     .child(
                                         div()
                                             .flex()
-                                            .gap(px(10.))
-                                            .child(div().w(px(72.)).text_color(p.fg3).child("Stored"))
+                                            .gap(rpx(10.))
+                                            .child(div().w(rpx(72.)).text_color(p.fg3).child("Stored"))
                                             .child(div().line_through().text_color(p.fg2).child(key.stored.clone())),
                                     )
                                     .child(
                                         div()
                                             .flex()
-                                            .gap(px(10.))
-                                            .child(div().w(px(72.)).text_color(p.fg3).child("Received"))
+                                            .gap(rpx(10.))
+                                            .child(div().w(rpx(72.)).text_color(p.fg3).child("Received"))
                                             .child(div().text_color(p.prod).child(key.received.clone())),
                                     ),
                             )
                             .child(
                                 div()
                                     .flex()
-                                    .gap(px(6.))
+                                    .gap(rpx(6.))
                                     .justify_end()
-                                    .pt(px(4.))
+                                    .pt(rpx(4.))
                                     .child(
                                         ui::button("hk-replace", "Replace stored key…", Kind::Ghost, p)
                                             .text_color(p.prod)
@@ -1101,6 +1507,91 @@ impl TerminalTab {
                     ),
             )
             .into_any_element()
+    }
+
+    /// "Paste N lines?" over the tab (MX-4).
+    fn render_paste_prompt(
+        &self,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui_kit::AnyElement> {
+        let (_, text) = self.pending_paste.as_ref()?;
+        let lines: Vec<&str> = text.lines().collect();
+        let preview: Vec<String> = lines
+            .iter()
+            .take(6)
+            .map(|l| l.chars().take(120).collect())
+            .collect();
+        let more = lines.len().saturating_sub(preview.len());
+        Some(
+            div()
+                .id("t-paste-scrim")
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(gpui_kit::black().opacity(0.25))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(
+                    div()
+                        .id("t-paste")
+                        .w(rpx(480.))
+                        .flex()
+                        .flex_col()
+                        .gap(rpx(10.))
+                        .p(rpx(16.))
+                        .bg(p.elev)
+                        .rounded(px(8.))
+                        .shadow(ui::shadow(p))
+                        .text_size(ts::UI)
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_size(ts::TITLE)
+                                .child(format!("Paste {} lines?", lines.len().max(1))),
+                        )
+                        .child(
+                            div()
+                                .text_color(p.fg2)
+                                .child("Each line may run as a command as soon as it is pasted."),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .p(rpx(8.))
+                                .bg(p.term)
+                                .rounded(px(6.))
+                                .font_family(MONO)
+                                .text_size(ts::LABEL)
+                                .children(preview.into_iter().map(|l| div().truncate().child(l)))
+                                .when(more > 0, |d| {
+                                    d.child(div().text_color(p.fg3).child(format!("… {more} more")))
+                                }),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .justify_end()
+                                .gap(rpx(8.))
+                                .child(
+                                    ui::button("t-paste-cancel", "Cancel", Kind::Secondary, p)
+                                        .on_click(cx.listener(|this, _, w, cx| {
+                                            this.finish_paste(false, w, cx)
+                                        })),
+                                )
+                                .child(
+                                    ui::button("t-paste-ok", "Paste", Kind::Primary, p).on_click(
+                                        cx.listener(|this, _, w, cx| {
+                                            this.finish_paste(true, w, cx)
+                                        }),
+                                    ),
+                                ),
+                        ),
+                )
+                .into_any_element(),
+        )
     }
 
     fn banner(&self, p: &Palette, cx: &mut Context<Self>) -> Option<gpui_kit::AnyElement> {
@@ -1140,13 +1631,13 @@ impl TerminalTab {
                 .flex_none()
                 .flex()
                 .items_center()
-                .gap(px(10.))
-                .px(px(12.))
-                .py(px(7.))
+                .gap(rpx(10.))
+                .px(rpx(12.))
+                .py(rpx(7.))
                 .bg(bg)
                 .border_b_1()
                 .border_color(p.bd)
-                .text_size(px(12.))
+                .text_size(ts::BODY)
                 .child(
                     div()
                         .font_weight(FontWeight::SEMIBOLD)
@@ -1157,7 +1648,7 @@ impl TerminalTab {
                 .child(div().flex_1())
                 .child(
                     ui::button("t-reconnect", "Reconnect now", Kind::Secondary, p)
-                        .h(px(22.))
+                        .h(rpx(22.))
                         .on_click(cx.listener(move |this, _, w, cx| {
                             if retry_now {
                                 // Skip the backoff; the scrollback stays.
@@ -1186,6 +1677,7 @@ impl Focusable for TerminalTab {
 struct Frame {
     origin: Point<Pixels>,
     cell_w: f32,
+    line_h: f32,
     bgs: Vec<(Bounds<Pixels>, Hsla)>,
     lines: Vec<(Point<Pixels>, gpui_kit::ShapedLine)>,
     cursor: Option<(Bounds<Pixels>, CursorShape, Option<gpui_kit::ShapedLine>)>,
@@ -1213,8 +1705,58 @@ fn color(c: TermColor, p: &Palette, fg: bool) -> Hsla {
     }
 }
 
-fn mono(bold: bool, italic: bool) -> Font {
-    let mut f = font(MONO);
+/// Split `runs` at the highlight spans and draw the spans' text in their color, only in
+/// runs drawn in the default foreground (`plain`); program colors are kept.
+fn recolor(
+    runs: Vec<TextRun>,
+    plain: &[bool],
+    spans: &[(std::ops::Range<usize>, Hsla)],
+) -> Vec<TextRun> {
+    let mut out = Vec::with_capacity(runs.len() + spans.len() * 2);
+    let mut start = 0;
+    for (k, run) in runs.into_iter().enumerate() {
+        let end = start + run.len;
+        if !plain.get(k).copied().unwrap_or(false) {
+            out.push(run);
+            start = end;
+            continue;
+        }
+        let mut at = start;
+        for (range, color) in spans {
+            if range.end <= at || range.start >= end {
+                continue;
+            }
+            let (s, e) = (range.start.max(at), range.end.min(end));
+            if s > at {
+                out.push(TextRun {
+                    len: s - at,
+                    ..run.clone()
+                });
+            }
+            out.push(TextRun {
+                len: e - s,
+                color: *color,
+                underline: run.underline.map(|u| UnderlineStyle {
+                    color: Some(*color),
+                    ..u
+                }),
+                ..run.clone()
+            });
+            at = e;
+        }
+        if end > at {
+            out.push(TextRun {
+                len: end - at,
+                ..run
+            });
+        }
+        start = end;
+    }
+    out
+}
+
+fn mono(family: &SharedString, bold: bool, italic: bool) -> Font {
+    let mut f = font(family.clone());
     if bold {
         f.weight = FontWeight::SEMIBOLD;
     }
@@ -1231,26 +1773,32 @@ fn prepaint(
     geom: &Rc<Cell<Geom>>,
     term: TermId,
     view: WeakEntity<TerminalTab>,
+    highlights: &[(HighlightRule, Hsla)],
     p: &Palette,
     window: &mut Window,
     cx: &mut gpui_kit::App,
 ) -> Frame {
-    let font_size = px(FONT_SIZE);
+    let rules: Vec<HighlightRule> = highlights.iter().map(|(r, _)| r.clone()).collect();
+    let metrics = crate::appearance::term_metrics(cx);
+    let family = metrics.family;
+    let line_h = metrics.line_height;
+    let font_size = px(metrics.font_size);
     let ts = window.text_system().clone();
-    let font_id = ts.resolve_font(&mono(false, false));
+    let font_id = ts.resolve_font(&mono(&family, false, false));
     let cell_w = ts
         .advance(font_id, font_size, 'm')
         .map(|s| f32::from(s.width))
-        .unwrap_or(FONT_SIZE * 0.6)
+        .unwrap_or(metrics.font_size * 0.6)
         .max(1.);
     let origin = point(bounds.origin.x + px(PAD_X), bounds.origin.y + px(PAD_Y));
     let avail_w = f32::from(bounds.size.width) - 2. * PAD_X;
     let avail_h = f32::from(bounds.size.height) - 2. * PAD_Y;
     let cols = ((avail_w / cell_w).floor() as u16).max(2);
-    let rows = ((avail_h / LINE_HEIGHT).floor() as u16).max(1);
+    let rows = ((avail_h / line_h).floor() as u16).max(1);
     geom.set(Geom {
         origin,
         cell_w,
+        line_h,
         cols,
         rows,
     });
@@ -1264,10 +1812,12 @@ fn prepaint(
     let mut bgs = Vec::new();
     let mut lines = Vec::new();
     for (row, line) in snap.lines.iter().enumerate() {
-        let y = origin.y + px(row as f32 * LINE_HEIGHT);
+        let y = origin.y + px(row as f32 * line_h);
         let mut col = 0u16;
         let mut runs = Vec::with_capacity(line.runs.len());
+        let mut plain = Vec::with_capacity(line.runs.len());
         for r in &line.runs {
+            plain.push(r.fg == TermColor::Foreground && r.mark == Mark::None);
             let bg = match r.mark {
                 Mark::Selected => Some(p.sel),
                 Mark::Match => Some(p.staged),
@@ -1282,7 +1832,7 @@ fn prepaint(
                 bgs.push((
                     Bounds::new(
                         point(origin.x + px(f32::from(col) * cell_w), y),
-                        size(px(f32::from(r.cells) * cell_w), px(LINE_HEIGHT)),
+                        size(px(f32::from(r.cells) * cell_w), px(line_h)),
                     ),
                     bg,
                 ));
@@ -1293,7 +1843,7 @@ fn prepaint(
             }
             runs.push(TextRun {
                 len: r.len,
-                font: mono(r.attrs.bold, r.attrs.italic),
+                font: mono(&family, r.attrs.bold, r.attrs.italic),
                 color: fg,
                 background_color: None,
                 underline: r.attrs.underline.then(|| UnderlineStyle {
@@ -1323,6 +1873,18 @@ fn prepaint(
             remaining -= r.len;
             trimmed.push(r);
         }
+        if !rules.is_empty() {
+            let spans: Vec<(std::ops::Range<usize>, Hsla)> = highlight_spans(text, &rules)
+                .into_iter()
+                .filter_map(|(range, color)| {
+                    let c = highlights.iter().find(|(r, _)| r.color == color)?.1;
+                    Some((range, c))
+                })
+                .collect();
+            if !spans.is_empty() {
+                trimmed = recolor(trimmed, &plain, &spans);
+            }
+        }
         let shaped = ts.shape_line(
             SharedString::from(text.to_owned()),
             font_size,
@@ -1336,9 +1898,9 @@ fn prepaint(
         let b = Bounds::new(
             point(
                 origin.x + px(f32::from(c.col) * cell_w),
-                origin.y + px(f32::from(c.row) * LINE_HEIGHT),
+                origin.y + px(f32::from(c.row) * line_h),
             ),
-            size(px(cell_w), px(LINE_HEIGHT)),
+            size(px(cell_w), px(line_h)),
         );
         // The glyph under a block cursor is redrawn in the background color.
         let glyph = snap
@@ -1354,7 +1916,7 @@ fn prepaint(
                     font_size,
                     &[TextRun {
                         len,
-                        font: mono(false, false),
+                        font: mono(&family, false, false),
                         color: p.term,
                         background_color: None,
                         underline: None,
@@ -1369,6 +1931,7 @@ fn prepaint(
     Frame {
         origin,
         cell_w,
+        line_h,
         bgs,
         lines,
         cursor,
@@ -1381,7 +1944,7 @@ fn paint(frame: Frame, focused: bool, _p: &Palette, window: &mut Window, cx: &mu
     for (b, c) in &frame.bgs {
         window.paint_quad(fill(*b, *c));
     }
-    let lh = px(LINE_HEIGHT);
+    let lh = px(frame.line_h);
     for (origin, line) in &frame.lines {
         let _ = line.paint(*origin, lh, TextAlign::Left, None, window, cx);
     }
@@ -1429,27 +1992,34 @@ impl Render for TerminalTab {
             Some(PaneState::Blocked(_)) => (p.prod, "Blocked".to_owned()),
             None => (p.fg3, String::new()),
         };
+        let log_path = pane
+            .and_then(|p| p.log.as_ref())
+            .map(|l| l.display().to_string());
         let panes: Vec<gpui_kit::AnyElement> = (0..self.panes.len())
             .map(|i| self.render_pane(i, window, cx))
             .collect();
         let n = panes.len();
         let can_split = n < MAX_PANES;
         let banner = self.banner(&p, cx);
+        let paste_prompt = self.render_paste_prompt(&p, cx);
+        let macro_menu = self.render_macro_menu(&p, cx);
+        let macro_save = self.render_macro_save(&p, cx);
         div()
+            .relative()
             .size_full()
             .flex()
             .flex_col()
             .child(
                 div()
-                    .h(px(36.))
+                    .h(rpx(36.))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .px(px(10.))
+                    .gap(rpx(8.))
+                    .px(rpx(10.))
                     .border_b_1()
                     .border_color(p.bd)
-                    .text_size(px(12.))
+                    .text_size(ts::BODY)
                     .child(ui::dot(p.env(self.env), 7.))
                     .child(
                         div()
@@ -1470,7 +2040,7 @@ impl Render for TerminalTab {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(6.))
+                            .gap(rpx(6.))
                             .text_color(p.fg2)
                             .whitespace_nowrap()
                             .child(ui::dot(dot, 6.))
@@ -1479,14 +2049,14 @@ impl Render for TerminalTab {
                     .child(ui::vdivider(&p, 16.))
                     .child(
                         ui::button("t-split", "Split", Kind::Ghost, &p)
-                            .h(px(24.))
+                            .h(rpx(24.))
                             .when(!can_split, |b| b.opacity(0.4))
                             .on_click(cx.listener(|this, _, w, cx| this.split(w, cx))),
                     )
                     .when(n > 1, |d| {
                         d.child(
                             ui::button("t-close-pane", "Close pane", Kind::Ghost, &p)
-                                .h(px(24.))
+                                .h(rpx(24.))
                                 .on_click(cx.listener(|this, _, w, cx| {
                                     let ix = this.active;
                                     this.close_pane(ix, cx);
@@ -1505,7 +2075,7 @@ impl Render for TerminalTab {
                             Kind::Ghost,
                             &p,
                         )
-                        .h(px(24.))
+                        .h(rpx(24.))
                         .when(self.broadcast, |b| b.text_color(p.stg))
                         .on_click(cx.listener(|this, _, w, cx| {
                             this.broadcast = !this.broadcast;
@@ -1513,23 +2083,70 @@ impl Render for TerminalTab {
                             cx.notify();
                         })),
                     )
+                    .child({
+                        let log = log_path.clone();
+                        ui::button(
+                            "t-log",
+                            if log.is_some() { "● Log" } else { "Log" },
+                            Kind::Ghost,
+                            &p,
+                        )
+                        .h(rpx(24.))
+                        .when(log.is_some(), |b| b.text_color(p.prod))
+                        .tooltip(move |window, cx| {
+                            let text = match &log {
+                                Some(path) => format!("Logging to {path} · click to stop"),
+                                None => "Log this session's output to a file (Settings → Terminal)"
+                                    .into(),
+                            };
+                            gpui_kit::component::tooltip::Tooltip::new(text).build(window, cx)
+                        })
+                        .on_click(cx.listener(|this, _, w, cx| {
+                            this.toggle_log(cx);
+                            this.refocus(w, cx);
+                        }))
+                    })
+                    .child(
+                        ui::button(
+                            "t-record",
+                            if self.recording.is_some() {
+                                "■ Stop"
+                            } else {
+                                "Record"
+                            },
+                            Kind::Ghost,
+                            &p,
+                        )
+                        .h(rpx(24.))
+                        .when(self.recording.is_some(), |b| b.text_color(p.prod))
+                        .on_click(cx.listener(|this, _, w, cx| this.toggle_recording(w, cx))),
+                    )
+                    .child(
+                        ui::button("t-macros", "Macros ▾", Kind::Ghost, &p)
+                            .h(rpx(24.))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.macro_menu = !this.macro_menu;
+                                cx.notify();
+                            })),
+                    )
                     .child(
                         ui::button("t-find", "Find", Kind::Ghost, &p)
-                            .h(px(24.))
+                            .h(rpx(24.))
                             .on_click(cx.listener(|this, _, w, cx| this.open_search(w, cx))),
                     ),
             )
             .when_some(banner, |d, b| d.child(b))
+            .when_some(macro_save, |d, b| d.child(b))
             .when(self.broadcast && n > 1, |d| {
                 d.child(
                     div()
                         .flex_none()
-                        .px(px(12.))
-                        .py(px(5.))
+                        .px(rpx(12.))
+                        .py(rpx(5.))
                         .bg(p.stg_bg)
                         .border_b_1()
                         .border_color(p.bd)
-                        .text_size(px(11.5))
+                        .text_size(ts::LABEL)
                         .text_color(p.fg2)
                         .child(format!("Typing goes to all {n} panes")),
                 )
@@ -1539,9 +2156,11 @@ impl Render for TerminalTab {
                     .flex_1()
                     .min_h_0()
                     .flex()
-                    .gap(px(1.))
+                    .gap(rpx(1.))
                     .bg(p.bd)
                     .children(panes),
             )
+            .when_some(macro_menu, |d, e| d.child(e))
+            .when_some(paste_prompt, |d, e| d.child(e))
     }
 }

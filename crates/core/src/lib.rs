@@ -15,12 +15,14 @@ pub mod prompts;
 pub mod runtime;
 pub mod service;
 pub mod ssh_import;
+pub mod term_settings;
 pub mod terminals;
+pub mod update;
 
 pub use bus::{
-    AgentApproval, Command, Event, FetchLimit, FsOp, FsRef, OnConflict, PromptAnswer, QueryEvent,
-    QueryId, RequestId, SaveError, SessionContext, SessionId, StatementRequest, TermId, TermStatus,
-    TermTarget, TextFile, TransferError,
+    AgentApproval, ApprovalKind, Command, Event, FetchLimit, FsOp, FsRef, OnConflict, PromptAnswer,
+    QueryEvent, QueryId, RequestId, SaveError, SessionContext, SessionId, StatementRequest, TermId,
+    TermLogState, TermStatus, TermTarget, TextFile, TransferError,
 };
 pub use error::{CoreError, Result};
 pub use runtime::{Core, EventReceiver, EventSender, RuntimeHandle};

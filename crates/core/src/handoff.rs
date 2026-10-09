@@ -8,7 +8,9 @@
 //! `swy mcp` also asks the app to run a coding agent's shell command on a Host
 //! ([`ask_agent_command`]): the app checks the run's session token, shows the command for
 //! approval, runs it over the Host's SSH session and answers with one JSON line. Closing
-//! the connection (the agent's run ended) withdraws the request.
+//! the connection (the agent's run ended) withdraws the request. It asks the same way for
+//! an actual plan ([`ask_agent_plan`]): the app checks the token and the connection, shows
+//! the statement for approval and answers whether `swy mcp` may capture it.
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::net::{SocketAddr, TcpStream};
@@ -74,15 +76,58 @@ pub struct AgentCommandOutput {
     pub timed_out: bool,
 }
 
+/// A coding agent's actual plan (`EXPLAIN ANALYZE`, `STATISTICS XML`), sent by `swy mcp`
+/// for the user's approval before it captures the plan.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentPlan {
+    /// The run's session token (see [`crate::agent_run`]); proves the app started the run.
+    pub session_token: String,
+    /// Connection name, as the agent was shown it.
+    pub connection: String,
+    /// The statement.
+    pub sql: String,
+}
+
+impl std::fmt::Debug for AgentPlan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentPlan")
+            .field("connection", &self.connection)
+            .field("sql", &self.sql)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Answers [`AgentCommand`]s in the app (approval, then the command).
 pub type AgentResponder = std::sync::Arc<
     dyn Fn(AgentCommand) -> BoxFuture<'static, Result<AgentCommandOutput, String>> + Send + Sync,
 >;
 
+/// Answers [`AgentPlan`]s in the app: `Ok` once the user approved, else why not.
+pub type PlanApprover =
+    std::sync::Arc<dyn Fn(AgentPlan) -> BoxFuture<'static, Result<(), String>> + Send + Sync>;
+
+/// The app's answers to coding agents' requests.
+#[derive(Clone)]
+pub struct AgentResponders {
+    /// Shell commands on Hosts.
+    pub command: AgentResponder,
+    /// Actual plans.
+    pub plan: PlanApprover,
+}
+
+/// What `swy mcp` asks the app for.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum AgentAsk {
+    AgentCommand(AgentCommand),
+    AgentPlan(AgentPlan),
+}
+
 #[derive(Serialize, Deserialize)]
 struct AgentEnvelope {
     token: String,
-    agent_command: AgentCommand,
+    #[serde(flatten)]
+    ask: AgentAsk,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -123,7 +168,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 /// Start listening (the app). Requests arrive as [`Event::Handoff`].
-pub(crate) async fn serve(file: PathBuf, events: EventSender, agent: Option<AgentResponder>) {
+pub(crate) async fn serve(file: PathBuf, events: EventSender, agent: Option<AgentResponders>) {
     let listener = match tokio::net::TcpListener::bind(("127.0.0.1", 0)).await {
         Ok(l) => l,
         Err(e) => return warn!(error = %e, "handoff listener failed"),
@@ -152,19 +197,33 @@ pub(crate) async fn serve(file: PathBuf, events: EventSender, agent: Option<Agen
                 return;
             }
             if let Ok(env) = serde_json::from_str::<AgentEnvelope>(&line) {
-                let result = if !constant_eq(env.token.as_bytes(), token.as_bytes()) {
-                    Err("bad token".to_owned())
+                let refuse = |e: &str| serde_json::to_string(&Err::<(), _>(e)).unwrap_or_default();
+                let mut reply = if !constant_eq(env.token.as_bytes(), token.as_bytes()) {
+                    refuse("bad token")
                 } else if let Some(agent) = agent {
+                    let answer: BoxFuture<'static, String> = match env.ask {
+                        AgentAsk::AgentCommand(c) => {
+                            let f = (agent.command)(c);
+                            Box::pin(
+                                async move { serde_json::to_string(&f.await).unwrap_or_default() },
+                            )
+                        }
+                        AgentAsk::AgentPlan(p) => {
+                            let f = (agent.plan)(p);
+                            Box::pin(
+                                async move { serde_json::to_string(&f.await).unwrap_or_default() },
+                            )
+                        }
+                    };
                     let mut probe = [0u8; 1];
                     tokio::select! {
-                        r = agent(env.agent_command) => r,
+                        r = answer => r,
                         // `swy` hung up (its run ended): drop the request.
                         _ = reader.read(&mut probe) => return,
                     }
                 } else {
-                    Err("this Switchyard does not run agent commands".to_owned())
+                    refuse("this Switchyard does not answer agent requests")
                 };
-                let mut reply = serde_json::to_string(&result).unwrap_or_default();
                 reply.push('\n');
                 let _ = write.write_all(reply.as_bytes()).await;
                 return;
@@ -230,6 +289,24 @@ pub fn ask_agent_command(
     request: AgentCommand,
     wait: Duration,
 ) -> Result<AgentCommandOutput, HandoffError> {
+    ask_app(data_dir, AgentAsk::AgentCommand(request), wait)
+}
+
+/// Ask the running app whether a coding agent may capture an actual plan (`swy mcp`): the
+/// user approves the exact statement there. Waits up to `wait`. Blocking.
+pub fn ask_agent_plan(
+    data_dir: &Path,
+    request: AgentPlan,
+    wait: Duration,
+) -> Result<(), HandoffError> {
+    ask_app(data_dir, AgentAsk::AgentPlan(request), wait)
+}
+
+fn ask_app<R: serde::de::DeserializeOwned>(
+    data_dir: &Path,
+    ask: AgentAsk,
+    wait: Duration,
+) -> Result<R, HandoffError> {
     let raw =
         std::fs::read_to_string(handoff_file(data_dir)).map_err(|_| HandoffError::NotRunning)?;
     let file: HandoffFile = serde_json::from_str(&raw).map_err(|_| HandoffError::NotRunning)?;
@@ -239,7 +316,7 @@ pub fn ask_agent_command(
     let _ = sock.set_read_timeout(Some(wait));
     let line = serde_json::to_string(&AgentEnvelope {
         token: file.token,
-        agent_command: request,
+        ask,
     })
     .map_err(|e| HandoffError::Failed(e.to_string()))?;
     sock.write_all(format!("{line}\n").as_bytes())
@@ -253,7 +330,7 @@ pub fn ask_agent_command(
             _ => e.to_string(),
         })
     })?;
-    let result: Result<AgentCommandOutput, String> = serde_json::from_str(reply.trim())
+    let result: Result<R, String> = serde_json::from_str(reply.trim())
         .map_err(|_| HandoffError::Failed("Switchyard closed the request".to_owned()))?;
     result.map_err(HandoffError::Failed)
 }
@@ -334,7 +411,20 @@ mod tests {
                 })
             })
         });
-        tokio::spawn(serve(file.clone(), EventSender::new(tx), Some(responder)));
+        let plan: PlanApprover = std::sync::Arc::new(|req: AgentPlan| {
+            Box::pin(async move {
+                if req.connection == "shop" && req.sql.starts_with("select") {
+                    Ok(())
+                } else {
+                    Err(format!("declined {}", req.sql))
+                }
+            })
+        });
+        let responders = AgentResponders {
+            command: responder,
+            plan,
+        };
+        tokio::spawn(serve(file.clone(), EventSender::new(tx), Some(responders)));
         for _ in 0..100 {
             if file.exists() {
                 break;
@@ -363,6 +453,29 @@ mod tests {
             host: "web".into(),
             command: "ls".into(),
             timeout_secs: 1,
+        };
+        assert!(!format!("{req:?}").contains("secret-token"));
+
+        // Actual plans ask the same listener.
+        let ask_plan = |sql: &str| {
+            let data = dir.path().to_owned();
+            let req = AgentPlan {
+                session_token: "secret-token".into(),
+                connection: "shop".into(),
+                sql: sql.into(),
+            };
+            tokio::task::spawn_blocking(move || ask_agent_plan(&data, req, Duration::from_secs(5)))
+        };
+        ask_plan("select 1").await.expect("join").expect("approved");
+        let err = ask_plan("delete from t")
+            .await
+            .expect("join")
+            .expect_err("declined");
+        assert_eq!(err.to_string(), "declined delete from t");
+        let req = AgentPlan {
+            session_token: "secret-token".into(),
+            connection: "shop".into(),
+            sql: "select 1".into(),
         };
         assert!(!format!("{req:?}").contains("secret-token"));
     }

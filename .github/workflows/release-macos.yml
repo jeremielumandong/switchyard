@@ -1,0 +1,170 @@
+name: macOS release package
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload_unsigned:
+        description: Upload the DMG to the draft release even when it is not signed and notarized
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # Shared with Linux and Windows: serialize draft creation and asset uploads.
+  group: shared-release
+  cancel-in-progress: false
+
+jobs:
+  package:
+    if: github.ref == 'refs/heads/main'
+    # Apple Silicon runner; the x86_64 half is cross-compiled and merged with lipo.
+    runs-on: macos-15
+    timeout-minutes: 150
+    environment: macos-release
+    permissions:
+      contents: write
+      actions: read
+    env:
+      CARGO_BUILD_JOBS: '3'
+      CARGO_INCREMENTAL: '0'
+      MIN_MACOS: '11.0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require passing CI for this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          gh api "repos/$REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&branch=main&event=push&per_page=1" > "$RUNNER_TEMP/ci-runs.json"
+          python3 - "$RUNNER_TEMP/ci-runs.json" <<'PY'
+          import json, sys
+          runs = json.load(open(sys.argv[1]))['workflow_runs']
+          if not runs or runs[0]['conclusion'] != 'success':
+              raise SystemExit('Release blocked: the latest main-branch CI run for this commit must pass first.')
+          PY
+      - name: Check shared draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/upload-release-assets.py macos --check
+      # Signing runs only when every secret is present; otherwise the DMG is ad-hoc signed.
+      - name: Detect signing secrets
+        id: signing
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          missing=()
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+                      APPLE_ID APPLE_TEAM_ID APPLE_APP_PASSWORD; do
+            [[ -n "${!name}" ]] || missing+=("$name")
+          done
+          if [[ ${#missing[@]} -eq 0 ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "Signing and notarization enabled."
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Building an unsigned DMG; missing secrets: ${missing[*]}"
+          fi
+      - name: Import the Developer ID certificate and notary credentials
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/switchyard-signing.keychain-db"
+          password="$(openssl rand -base64 32)"
+          certificate="$RUNNER_TEMP/certificate.p12"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$certificate"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$certificate" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$certificate"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" >/dev/null
+          # Put the temporary keychain first in the search list so codesign finds the identity.
+          existing=()
+          while IFS= read -r line; do
+            line="${line#"${line%%[![:space:]]*}"}"; line="${line%\"}"; line="${line#\"}"
+            [[ -n "$line" ]] && existing+=("$line")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s "$keychain" "${existing[@]}"
+          security find-identity -v -p codesigning "$keychain" | grep -F "$APPLE_SIGNING_IDENTITY" >/dev/null \
+            || { echo "::error::APPLE_SIGNING_IDENTITY is not in the imported certificate"; exit 1; }
+          xcrun notarytool store-credentials switchyard-notary --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --keychain "$keychain"
+          {
+            echo "MACOS_SIGN_IDENTITY=$APPLE_SIGNING_IDENTITY"
+            echo "MACOS_NOTARY_PROFILE=switchyard-notary"
+            echo "MACOS_NOTARY_KEYCHAIN=$keychain"
+          } >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: '1.98.1'
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          prefix-key: v1-macos-release
+          cache-on-failure: true
+      - name: Build the universal app and DMG
+        env:
+          # Baked into the build (empty when the repository variable is unset).
+          SWITCHYARD_ENTRA_CLIENT_ID: ${{ vars.SWITCHYARD_ENTRA_CLIENT_ID }}
+          # minisign public key for in-app update verification (empty: notify only).
+          SWITCHYARD_UPDATE_PUBKEY: ${{ vars.SWITCHYARD_UPDATE_PUBKEY }}
+        run: bash packaging/macos/build-macos.sh --arch universal --no-pkg
+      - name: Check the bundle
+        env:
+          SIGNED: ${{ steps.signing.outputs.enabled }}
+        run: |
+          set -euo pipefail
+          dmg=$(ls dist/Switchyard-*-macos-universal.dmg)
+          mount=$(mktemp -d)
+          hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mount" >/dev/null
+          app="$mount/Switchyard.app"
+          lipo -info "$app/Contents/MacOS/switchyard" | grep -q 'x86_64 arm64'
+          lipo -info "$app/Contents/MacOS/swy" | grep -q 'x86_64 arm64'
+          "$app/Contents/MacOS/swy" --version
+          plutil -lint "$app/Contents/Info.plist"
+          test -s "$app/Contents/Resources/Switchyard.icns"
+          if [[ "$SIGNED" == 'true' ]]; then
+            codesign --verify --deep --strict --verbose=2 "$app"
+            spctl --assess --type execute --verbose "$app"
+            xcrun stapler validate "$dmg"
+          fi
+          hdiutil detach "$mount" >/dev/null
+      - name: Write checksum
+        run: |
+          cd dist
+          for f in Switchyard-*-macos-universal.dmg; do shasum -a 256 "$f" > "$f.sha256"; done
+      - name: Keep the DMG as a workflow artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Switchyard-macos-universal-${{ steps.signing.outputs.enabled == 'true' && 'signed' || 'unsigned' }}-${{ github.run_number }}-${{ github.run_attempt }}
+          path: |
+            dist/Switchyard-*-macos-universal.dmg
+            dist/Switchyard-*-macos-universal.dmg.sha256
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+      - name: Upload macOS assets to shared draft release
+        if: steps.signing.outputs.enabled == 'true' || inputs.upload_unsigned
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/upload-release-assets.py macos
+      - name: Remove the temporary keychain
+        if: always() && steps.signing.outputs.enabled == 'true'
+        run: security delete-keychain "$RUNNER_TEMP/switchyard-signing.keychain-db" || true

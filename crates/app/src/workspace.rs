@@ -25,6 +25,7 @@ use switchyard_core::{Command, Event, EventReceiver, FsRef, RuntimeHandle, TermI
 
 use crate::actions::{self, CommandId};
 use crate::app_state::{Profiles, SessionState, badge_of, describe, next_id};
+use crate::appearance::{rpx, ts};
 use crate::conn_editor::{ConnEditor, ConnEditorEvent};
 use crate::editor_tab::EditorTab;
 use crate::explorer::Explorer;
@@ -106,6 +107,8 @@ pub struct Workspace {
     pub(crate) sidebar_drag: Option<(f32, f32)>,
     pub(crate) overlay: Option<Overlay>,
     pub(crate) toast: Option<SharedString>,
+    /// Update checks and the newer release, if any (M6-4).
+    pub(crate) updates: crate::updates::Updates,
     toast_task: Option<Task<()>>,
     /// Keeps relative times ("Cached 3 min ago") current under retained rendering.
     _clock: Task<()>,
@@ -118,6 +121,8 @@ pub struct Workspace {
     pub(crate) assistant: switchyard_core::agent_run::AssistantSettings,
     /// The Assistant settings page, once opened.
     pub(crate) assistant_view: Option<Entity<crate::assistant_settings::AssistantSettingsView>>,
+    /// The Terminal settings page, once opened.
+    pub(crate) terminal_view: Option<Entity<crate::terminal_settings::TerminalSettingsView>>,
     /// The assistant panel (right side).
     pub(crate) assistant_panel: Entity<crate::assistant_panel::AssistantPanel>,
     pub(crate) assistant_open: bool,
@@ -135,8 +140,8 @@ pub struct Workspace {
     pending_editor: Option<(FsRef, PathBuf)>,
     /// The shared transfer queue (Files tab drawer, sidebar panel, status bar).
     pub(crate) transfers: Entity<Transfers>,
-    /// An editor tab with unsaved changes whose close was clicked once.
-    close_confirm: Option<gpui_kit::EntityId>,
+    /// Unsaved-changes dialog state (`crate::unsaved`).
+    pub(crate) unsaved: crate::unsaved::UnsavedState,
     /// The sidebar asked for the Files tab with this Host.
     pending_files: Option<Option<ProfileId>>,
     rebind: Vec<(Entity<SqlTab>, Option<ProfileId>)>,
@@ -182,6 +187,9 @@ impl Workspace {
             key: "theme".into(),
         });
         core.send(Command::LoadSetting {
+            key: crate::appearance::APPEARANCE_KEY.into(),
+        });
+        core.send(Command::LoadSetting {
             key: "inspector.width".into(),
         });
         core.send(Command::LoadSetting {
@@ -190,11 +198,23 @@ impl Workspace {
         core.send(Command::LoadSetting {
             key: switchyard_core::agent_run::ASSISTANT_SETTINGS_KEY.into(),
         });
+        core.send(Command::LoadSetting {
+            key: switchyard_core::term_settings::TERMINAL_SETTINGS_KEY.into(),
+        });
+        core.send(Command::LoadMacros);
         core.send(Command::DetectComponents);
+        crate::updates::load_setting(&core);
         // Pins and the explorer's connection nodes (DBX-5e).
         core.send(Command::LoadFavorites);
         core.send(Command::LoadSetting {
             key: crate::explorer::SAVED_NODES_KEY.into(),
+        });
+        // Closing the window with unsaved files asks first (native close buttons).
+        let close_weak = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |window, cx| {
+            close_weak
+                .update(cx, |w, cx| w.request_close_window(window, cx))
+                .unwrap_or(true)
         });
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
@@ -259,6 +279,7 @@ impl Workspace {
             sidebar_drag: None,
             overlay: None,
             toast: None,
+            updates: crate::updates::Updates::default(),
             toast_task: None,
             _clock: cx.spawn(async move |this, cx| {
                 loop {
@@ -277,6 +298,7 @@ impl Workspace {
             components: Vec::new(),
             assistant: Default::default(),
             assistant_view: None,
+            terminal_view: None,
             assistant_panel,
             assistant_open: false,
             drivers: Default::default(),
@@ -290,7 +312,7 @@ impl Workspace {
             pending_open: None,
             pending_editor: None,
             transfers,
-            close_confirm: None,
+            unsaved: Default::default(),
             pending_files: None,
             rebind: Vec::new(),
             split: None,
@@ -412,6 +434,18 @@ impl Workspace {
                 // OSC 52 copy: allowed (it only writes); reading the clipboard is never offered.
                 cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
             }
+            Event::Macros(list) => {
+                crate::terminal_settings::set_macros(list, cx);
+                cx.notify();
+            }
+            Event::TerminalLog { term, state } => {
+                if let switchyard_core::TermLogState::Failed(m) = &state {
+                    self.toast(format!("Terminal log: {m}"), cx);
+                }
+                if let Some(t) = self.terminal_tab(term, cx) {
+                    t.update(cx, |t, cx| t.on_log(term, state, cx));
+                }
+            }
             Event::TerminalExited {
                 term,
                 code,
@@ -433,10 +467,10 @@ impl Workspace {
                     .collect();
                 let core = self.core.clone();
                 self.explorer.set_profiles(dbs, &core);
-                let hosts = self.host_list();
+                let sources = self.file_sources();
                 for t in &self.tabs {
                     if let Tab::Files(f) = t {
-                        f.update(cx, |f, cx| f.set_hosts(hosts.clone(), cx));
+                        f.update(cx, |f, cx| f.set_sources(sources.clone(), cx));
                     }
                 }
                 // Refresh connection details held by tabs.
@@ -499,10 +533,33 @@ impl Workspace {
                     .collect();
                 self.explorer.restore(ids);
             }
+            Event::Setting { key, value } if key == crate::appearance::APPEARANCE_KEY => {
+                if let Some(mut s) = value.and_then(|v| {
+                    serde_json::from_value::<crate::appearance::AppearanceSettings>(v).ok()
+                }) {
+                    if let Some(z) = crate::appearance::env_zoom() {
+                        s.zoom = z;
+                    }
+                    crate::appearance::set(s, cx);
+                    theme::apply_fonts(Some(window), cx);
+                }
+            }
+            Event::Setting { key, value } if key == switchyard_core::update::CHECK_SETTING => {
+                self.on_update_setting(value);
+            }
+            Event::UpdateStatus { manual, status } => self.on_update_status(manual, status, cx),
             Event::Setting { key, value } if key == "sidebar.width" => {
                 if let Some(w) = value.as_ref().and_then(|v| v.as_f64()) {
                     self.sidebar_width = (w as f32).max(crate::sidebar::SIDEBAR_MIN);
                 }
+            }
+            Event::Setting { key, value }
+                if key == switchyard_core::term_settings::TERMINAL_SETTINGS_KEY =>
+            {
+                let s = value
+                    .and_then(|v| serde_json::from_value(v).ok())
+                    .unwrap_or_default();
+                crate::terminal_settings::apply(s, cx);
             }
             Event::Setting { key, value }
                 if key == switchyard_core::agent_run::ASSISTANT_SETTINGS_KEY =>
@@ -656,11 +713,19 @@ impl Workspace {
                 self.explorer.set_favorites(list, &core);
             }
             Event::History { request, entries } => {
-                match self.plan_tab(cx, |v| v.owns_history(request)) {
-                    Some(tab) => tab.update(cx, |t, cx| {
-                        t.plan_view().update(cx, |v, cx| v.on_history(entries, cx))
-                    }),
-                    None => self.history = entries,
+                let redis = self.tabs.iter().find_map(|t| match t {
+                    Tab::Redis(r) if r.read(cx).owns_history(request) => Some(r.clone()),
+                    _ => None,
+                });
+                if let Some(tab) = redis {
+                    tab.update(cx, |t, _| t.on_history(&entries));
+                } else {
+                    match self.plan_tab(cx, |v| v.owns_history(request)) {
+                        Some(tab) => tab.update(cx, |t, cx| {
+                            t.plan_view().update(cx, |v, cx| v.on_history(entries, cx))
+                        }),
+                        None => self.history = entries,
+                    }
                 }
             }
             Event::Plan {
@@ -737,6 +802,7 @@ impl Workspace {
                         e.update(cx, |e, cx| e.on_event(&ev, window, cx));
                     }
                 }
+                self.finish_saved_closes(window, cx);
                 // A saved file's size and time changed in the Files panel.
                 if matches!(ev, Event::TextFileSaved { result: Ok(_), .. }) {
                     for panel in self.remote_files.values() {
@@ -1147,7 +1213,7 @@ impl Workspace {
                         .top_0()
                         .left_0()
                         .right_0()
-                        .h(px(2.))
+                        .h(rpx(2.))
                         .when(focused, |d| d.bg(p.acc)),
                 )
         };
@@ -1159,8 +1225,8 @@ impl Workspace {
             .bg(p.bd)
             .hover(|s| s.bg(p.acc))
             .map(|d| match dir {
-                SplitDir::Right => d.w(px(4.)).h_full().cursor_col_resize(),
-                SplitDir::Down => d.h(px(4.)).w_full().cursor_row_resize(),
+                SplitDir::Right => d.w(rpx(4.)).h_full().cursor_col_resize(),
+                SplitDir::Down => d.h(rpx(4.)).w_full().cursor_row_resize(),
             })
             .on_mouse_down(
                 gpui_kit::MouseButton::Left,
@@ -1326,7 +1392,13 @@ impl Workspace {
     /// Close a group of tabs from the tab menu: `close`, `close_others`, `close_right`,
     /// `close_left` or `close_all`, relative to tab `ix`. Each goes through
     /// [`Self::close_tab`], so open transactions and unsaved files still hold their tab.
-    pub(crate) fn close_tabs(&mut self, action: &str, ix: usize, cx: &mut Context<Self>) {
+    pub(crate) fn close_tabs(
+        &mut self,
+        action: &str,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let n = self.tabs.len();
         if ix >= n {
             return;
@@ -1339,9 +1411,18 @@ impl Workspace {
             "close_all" => (0..n).collect(),
             _ => return,
         };
-        // Highest first, so the remaining indices stay valid.
+        // Highest first, so the remaining indices stay valid. Files with unsaved changes
+        // wait for one Save / Discard / Cancel question.
+        let mut dirty = Vec::new();
         for i in doomed.into_iter().rev() {
-            self.close_tab(i, cx);
+            match self.tabs.get(i) {
+                Some(Tab::Editor(e)) if e.read(cx).dirty => dirty.push(e.clone()),
+                _ => self.close_tab_now(i, cx),
+            }
+        }
+        if !dirty.is_empty() {
+            dirty.reverse();
+            self.confirm_unsaved(dirty, crate::unsaved::AfterUnsaved::CloseTabs, window, cx);
         }
         cx.notify();
     }
@@ -1390,7 +1471,21 @@ impl Workspace {
         out
     }
 
-    fn close_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
+    /// Close tab `ix`; a file with unsaved changes asks Save / Discard / Cancel first.
+    fn close_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(Tab::Editor(e)) = self.tabs.get(ix)
+            && e.read(cx).dirty
+        {
+            let e = e.clone();
+            self.confirm_unsaved(vec![e], crate::unsaved::AfterUnsaved::CloseTabs, window, cx);
+            return;
+        }
+        self.close_tab_now(ix, cx);
+    }
+
+    /// Close tab `ix` without asking about unsaved files (an open transaction still
+    /// keeps the tab).
+    pub(crate) fn close_tab_now(&mut self, ix: usize, cx: &mut Context<Self>) {
         if ix >= self.tabs.len() {
             return;
         }
@@ -1425,16 +1520,6 @@ impl Workspace {
         if let Tab::Redis(r) = &self.tabs[ix] {
             r.update(cx, |r, _| r.shutdown());
         }
-        if let Tab::Editor(e) = &self.tabs[ix] {
-            let e = e.entity_id();
-            let dirty = matches!(&self.tabs[ix], Tab::Editor(t) if t.read(cx).dirty);
-            if dirty && self.close_confirm != Some(e) {
-                self.close_confirm = Some(e);
-                self.toast("Unsaved changes · close again to discard them", cx);
-                return;
-            }
-        }
-        self.close_confirm = None;
         if let Tab::Editor(e) = &self.tabs[ix] {
             e.update(cx, |e, cx| e.shutdown(cx));
         }
@@ -1485,8 +1570,13 @@ impl Workspace {
             .and_then(|h| self.profiles.host(h))
             .map(|h| h.environment)
             .unwrap_or_default();
+        let colors = host
+            .as_ref()
+            .and_then(|h| self.profiles.host(h))
+            .and_then(|h| h.terminal_colors.clone());
         let core = self.core.clone();
-        let t = cx.new(|cx| TerminalTab::new(core, name, env, host, cx));
+        let t =
+            cx.new(|cx| TerminalTab::new(core, name, env, host, cx).with_colors(colors.as_ref()));
         self.tabs.push(Tab::Terminal(t));
         self.active = self.tabs.len() - 1;
         cx.notify();
@@ -1498,7 +1588,7 @@ impl Workspace {
             Some(Tab::Terminal(t)) => t.read(cx).host().cloned(),
             Some(Tab::Editor(e)) => match &e.read(cx).fs {
                 FsRef::Host(h) => Some(h.clone()),
-                FsRef::Local => None,
+                FsRef::Local | FsRef::Ftp(_) => None,
             },
             Some(Tab::Files(f)) => f.read(cx).right_host().cloned(),
             _ => None,
@@ -1555,6 +1645,13 @@ impl Workspace {
                 .host(h)
                 .map(|h| (h.name.clone(), h.environment))
                 .unwrap_or_default(),
+            FsRef::Ftp(id) => self
+                .profiles
+                .all
+                .iter()
+                .find(|p| p.id() == id)
+                .map(|p| (p.name().to_owned(), p.environment()))
+                .unwrap_or_default(),
             FsRef::Local => ("this computer".into(), Default::default()),
         };
         let core = self.core.clone();
@@ -1569,20 +1666,36 @@ impl Workspace {
         self.open_files_for(host, cx);
     }
 
-    fn host_list(&self) -> Vec<(ProfileId, String)> {
-        self.profiles
+    /// What the Files tab's right pane can show: Hosts (SFTP) and FTP connections.
+    fn file_sources(&self) -> Vec<(FsRef, String)> {
+        let hosts = self
+            .profiles
             .hosts()
-            .map(|h| (h.id.clone(), h.name.clone()))
-            .collect()
+            .map(|h| (FsRef::Host(h.id.clone()), h.name.clone()));
+        let ftp = self.profiles.all.iter().filter_map(|p| match p {
+            Profile::File(f)
+                if matches!(f.protocol, switchyard_core::store::FileProtocol::Ftp { .. }) =>
+            {
+                Some((FsRef::Ftp(f.id.clone()), f.name.clone()))
+            }
+            _ => None,
+        });
+        hosts.chain(ftp).collect()
     }
 
     /// The Files tab, with `host` on the right (or what it already shows).
     pub(crate) fn open_files_for(&mut self, host: Option<ProfileId>, cx: &mut Context<Self>) {
+        self.open_files_on(host.map(FsRef::Host), cx);
+    }
+
+    /// The Files tab, with `right` (a Host or an FTP connection) on the right, or what it
+    /// already shows.
+    pub(crate) fn open_files_on(&mut self, right: Option<FsRef>, cx: &mut Context<Self>) {
         if let Some(ix) = self.tabs.iter().position(|t| matches!(t, Tab::Files(_))) {
-            if let (Some(h), Tab::Files(f)) = (host, &self.tabs[ix]) {
+            if let (Some(fs), Tab::Files(f)) = (right, &self.tabs[ix]) {
                 f.update(cx, |f, cx| {
-                    if f.right_host() != Some(&h) {
-                        f.show_host(Some(h), cx)
+                    if *f.right_source() != fs {
+                        f.show(fs, cx)
                     }
                 });
             }
@@ -1590,8 +1703,9 @@ impl Workspace {
         }
         let core = self.core.clone();
         let transfers = self.transfers.clone();
-        let hosts = self.host_list();
-        let f = cx.new(|cx| FilesTab::new(core, transfers, hosts, host, cx));
+        let sources = self.file_sources();
+        let right = right.unwrap_or(FsRef::Local);
+        let f = cx.new(|cx| FilesTab::new(core, transfers, sources, right, cx));
         let sub = cx.subscribe(&f, |this, _, ev: &FilesTabEvent, cx| match ev {
             FilesTabEvent::Open { fs, path } => {
                 this.pending_editor = Some((fs.clone(), path.clone()));
@@ -1676,7 +1790,9 @@ impl Workspace {
                 switchyard_core::store::FileProtocol::Sftp { host_id } => {
                     self.open_files_for(Some(host_id.clone()), cx)
                 }
-                _ => self.open_files(window, cx),
+                switchyard_core::store::FileProtocol::Ftp { .. } => {
+                    self.open_files_on(Some(FsRef::Ftp(f.id.clone())), cx)
+                }
             },
             Some(Profile::Terminal(t)) => self.open_terminal(t.host_id, cx),
             None => {}
@@ -1943,6 +2059,40 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Apply and save new text-size settings (zoom, editor font).
+    pub(crate) fn set_appearance(
+        &mut self,
+        s: crate::appearance::AppearanceSettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        crate::appearance::set(s, cx);
+        theme::apply_fonts(Some(window), cx);
+        let saved = crate::appearance::current(cx);
+        match serde_json::to_value(&saved) {
+            Ok(value) => self.core.send(Command::SetSetting {
+                key: crate::appearance::APPEARANCE_KEY.into(),
+                value,
+            }),
+            Err(e) => tracing::warn!(error = %e, "could not save the appearance settings"),
+        }
+        cx.notify();
+    }
+
+    /// Change the zoom level with `f` (zoom in, out, or reset) and say where it landed.
+    pub(crate) fn zoom_by(
+        &mut self,
+        f: impl FnOnce(f32) -> f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut s = crate::appearance::current(cx);
+        s.zoom = crate::appearance::clamp_zoom(f(s.zoom));
+        let pct = crate::appearance::percent(s.zoom);
+        self.set_appearance(s, window, cx);
+        self.toast(format!("Zoom {pct} %"), cx);
+    }
+
     /// Execute a palette command.
     pub(crate) fn run_command(
         &mut self,
@@ -2064,6 +2214,11 @@ impl Workspace {
             CommandId::Unsplit => self.split = None,
             CommandId::SwitchToDefault => self.set_mode(AppMode::Default, window, cx),
             CommandId::SwitchToApi => self.set_mode(AppMode::Api, window, cx),
+            CommandId::ZoomIn => self.zoom_by(crate::appearance::zoom_in, window, cx),
+            CommandId::ZoomOut => self.zoom_by(crate::appearance::zoom_out, window, cx),
+            CommandId::ResetZoom => self.zoom_by(|_| 1.0, window, cx),
+            CommandId::CheckForUpdates => self.check_for_updates(cx),
+            CommandId::OpenLogFolder => self.open_log_folder(cx),
         }
         cx.notify();
     }
@@ -2106,8 +2261,8 @@ impl Workspace {
                 .id(id)
                 .flex()
                 .flex_col()
-                .px(px(10.))
-                .py(px(6.))
+                .px(rpx(10.))
+                .py(rpx(6.))
                 .rounded(px(5.))
                 .cursor_pointer()
                 .when(active, |d| d.bg(p.sel))
@@ -2117,22 +2272,22 @@ impl Workspace {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
-                        .text_size(px(12.5))
+                        .gap(rpx(6.))
+                        .text_size(ts::UI)
                         .font_weight(FontWeight::MEDIUM)
                         .child(title)
                         .when(active, |d| d.child(div().text_color(p.acc).child("✓"))),
                 )
-                .child(div().text_size(px(11.)).text_color(p.fg3).child(sub))
+                .child(div().text_size(ts::SMALL).text_color(p.fg3).child(sub))
         };
         gpui_kit::deferred(
             div()
                 .id("mode-menu")
                 .absolute()
-                .top(px(34.))
-                .left(px(8.))
-                .w(px(280.))
-                .p(px(4.))
+                .top(rpx(34.))
+                .left(rpx(8.))
+                .w(rpx(280.))
+                .p(rpx(4.))
                 .bg(p.elev)
                 .border_1()
                 .border_color(p.bd)
@@ -2155,15 +2310,15 @@ impl Workspace {
                     "API",
                     "Collections, requests, environments and runs",
                 ))
-                .child(div().my(px(4.)).h(px(1.)).bg(p.bd))
+                .child(div().my(rpx(4.)).h(rpx(1.)).bg(p.bd))
                 .child(
                     div()
                         .id("menu-assistant")
                         .flex()
                         .items_center()
-                        .gap(px(6.))
-                        .px(px(10.))
-                        .py(px(6.))
+                        .gap(rpx(6.))
+                        .px(rpx(10.))
+                        .py(rpx(6.))
                         .rounded(px(5.))
                         .cursor_pointer()
                         .hover(|s| s.bg(p.hover))
@@ -2174,7 +2329,7 @@ impl Workspace {
                         .child(
                             div()
                                 .flex_1()
-                                .text_size(px(12.5))
+                                .text_size(ts::UI)
                                 .font_weight(FontWeight::MEDIUM)
                                 .child("Assistant"),
                         )
@@ -2201,18 +2356,18 @@ impl Workspace {
         let left = div()
             .flex()
             .flex_1()
-            .flex_basis(px(0.))
+            .flex_basis(rpx(0.))
             .items_center()
-            .gap(px(6.))
+            .gap(rpx(6.))
             .child(
                 div()
                     .id("tb-workspace")
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(7.))
-                    .h(px(26.))
-                    .px(px(8.))
+                    .gap(rpx(7.))
+                    .h(rpx(26.))
+                    .px(rpx(8.))
                     .rounded(px(6.))
                     .occlude()
                     .cursor_pointer()
@@ -2224,18 +2379,18 @@ impl Workspace {
                     }))
                     .child(
                         div()
-                            .size(px(14.))
+                            .size(rpx(14.))
                             .rounded(px(3.))
                             .bg(p.fg)
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(div().size(px(6.)).rounded(px(1.)).bg(p.panel)),
+                            .child(div().size(rpx(6.)).rounded(px(1.)).bg(p.panel)),
                     )
                     .child(
                         div()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_size(px(12.5))
+                            .text_size(ts::UI)
                             .text_color(p.fg)
                             .whitespace_nowrap()
                             .child(match self.mode {
@@ -2243,7 +2398,7 @@ impl Workspace {
                                 AppMode::Api => "API".into(),
                             }),
                     )
-                    .child(div().text_color(p.fg3).text_size(px(10.)).child("▾")),
+                    .child(div().text_color(p.fg3).text_size(ts::CAPTION).child("▾")),
             )
             // The API workspace has no sidebar; the button is Default-only.
             .when(self.mode == AppMode::Default, |d| {
@@ -2264,19 +2419,19 @@ impl Workspace {
             .id("tb-search")
             .flex_shrink(1.)
             .min_w_0()
-            .w(px(460.))
-            .h(px(26.))
+            .w(rpx(460.))
+            .h(rpx(26.))
             .flex()
             .items_center()
-            .gap(px(8.))
-            .pl(px(10.))
-            .pr(px(6.))
+            .gap(rpx(8.))
+            .pl(rpx(10.))
+            .pr(rpx(6.))
             .border_1()
             .border_color(p.bd)
             .rounded(px(6.))
             .bg(p.bg)
             .text_color(p.fg3)
-            .text_size(px(12.5))
+            .text_size(ts::UI)
             .cursor_text()
             .occlude()
             .hover(|s| s.border_color(p.bd2))
@@ -2296,10 +2451,10 @@ impl Workspace {
         let right = div()
             .flex()
             .flex_1()
-            .flex_basis(px(0.))
+            .flex_basis(rpx(0.))
             .justify_end()
             .items_center()
-            .gap(px(2.))
+            .gap(rpx(2.))
             .child(
                 ui::icon_button("tb-assistant", IconName::Bot, self.assistant_open, p)
                     .occlude()
@@ -2350,8 +2505,18 @@ impl Workspace {
                         cx.listener(|this, _, w, cx| this.run_command(CommandId::Settings, w, cx)),
                     ),
             );
+        let close_weak = cx.entity().downgrade();
         TitleBar::new()
-            .h(px(38.))
+            // Linux draws its own close button: ask about unsaved files there too.
+            .on_close_window(move |_, window, cx| {
+                let close = close_weak
+                    .update(cx, |w, cx| w.request_close_window(window, cx))
+                    .unwrap_or(true);
+                if close {
+                    window.remove_window();
+                }
+            })
+            .h(rpx(38.))
             .bg(p.panel)
             .border_color(p.bd)
             .child(
@@ -2359,8 +2524,8 @@ impl Workspace {
                     .flex()
                     .flex_1()
                     .items_center()
-                    .gap(px(12.))
-                    .pr(px(10.))
+                    .gap(rpx(12.))
+                    .pr(rpx(10.))
                     .font_family(SANS)
                     .child(left)
                     .child(search)
@@ -2396,11 +2561,15 @@ impl Workspace {
                 )
             }
             Tab::Files(f) => {
-                let right = f
-                    .read(cx)
-                    .right_host()
-                    .and_then(|h| self.profiles.host(h))
-                    .map_or("local".to_owned(), |h| h.name.clone());
+                let right = match f.read(cx).right_source() {
+                    FsRef::Local => "local".to_owned(),
+                    FsRef::Host(id) | FsRef::Ftp(id) => self
+                        .profiles
+                        .all
+                        .iter()
+                        .find(|p| p.id() == id)
+                        .map_or("local".to_owned(), |p| p.name().to_owned()),
+                };
                 ("FS".into(), format!("Files · {right}").into(), None, false)
             }
             Tab::Editor(e) => {
@@ -2464,8 +2633,8 @@ impl Workspace {
         let glyph = |dir: SplitDir, on: bool| {
             let c = if on { p.acc } else { p.fg3 };
             div()
-                .w(px(14.))
-                .h(px(11.))
+                .w(rpx(14.))
+                .h(rpx(11.))
                 .flex()
                 .border_1()
                 .border_color(c)
@@ -2476,8 +2645,8 @@ impl Workspace {
                 })
                 .child(div().flex_1())
                 .child(div().flex_none().bg(c).map(|d| match dir {
-                    SplitDir::Right => d.w(px(1.)).h_full(),
-                    SplitDir::Down => d.h(px(1.)).w_full(),
+                    SplitDir::Right => d.w(rpx(1.)).h_full(),
+                    SplitDir::Down => d.h(rpx(1.)).w_full(),
                 }))
                 .child(div().flex_1())
         };
@@ -2490,7 +2659,7 @@ impl Workspace {
                 .id(id)
                 .flex()
                 .items_center()
-                .px(px(6.))
+                .px(rpx(6.))
                 .rounded(px(4.))
                 .hover(|s| s.bg(p.hover))
                 .tooltip(move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip).build(w, cx))
@@ -2501,17 +2670,17 @@ impl Workspace {
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(2.))
-            .px(px(6.))
+            .gap(rpx(2.))
+            .px(rpx(6.))
             .child(split_btn("split-right", SplitDir::Right, "Split right", cx))
             .child(split_btn("split-down", SplitDir::Down, "Split down", cx))
             .when(self.split.is_some(), |d| {
                 d.child(
                     div()
                         .id("unsplit")
-                        .px(px(6.))
+                        .px(rpx(6.))
                         .rounded(px(4.))
-                        .text_size(px(11.5))
+                        .text_size(ts::LABEL)
                         .text_color(p.fg3)
                         .hover(|s| s.bg(p.hover).text_color(p.fg))
                         .tooltip(|w, cx| {
@@ -2573,14 +2742,14 @@ impl Workspace {
                     .flex()
                     .flex_none()
                     .items_center()
-                    .gap(px(7.))
-                    .pl(px(12.))
-                    .pr(px(8.))
+                    .gap(rpx(7.))
+                    .pl(rpx(12.))
+                    .pr(rpx(8.))
                     .min_w_0()
-                    .max_w(px(230.))
+                    .max_w(rpx(230.))
                     .border_r_1()
                     .border_color(p.bd)
-                    .text_size(px(12.5))
+                    .text_size(ts::UI)
                     .bg(if active {
                         p.surface
                     } else if shown {
@@ -2589,7 +2758,7 @@ impl Workspace {
                         gpui_kit::transparent_black()
                     })
                     .text_color(if active || shown { p.fg } else { p.fg2 })
-                    .when(active, |d| d.mb(px(-1.)))
+                    .when(active, |d| d.mb(rpx(-1.)))
                     // A faint wash of the database color on the active tab.
                     .when_some(db_color.filter(|_| active), |d, c| d.bg(c.opacity(0.08)))
                     .on_click(cx.listener(move |this, _, _, cx| this.activate(i, cx)))
@@ -2609,21 +2778,21 @@ impl Workspace {
                             .left_0()
                             .right_0()
                             .top_0()
-                            .h(px(2.))
+                            .h(rpx(2.))
                             .bg(edge),
                     )
                     .child(
                         div()
                             .flex_none()
-                            .px(px(4.))
+                            .px(rpx(4.))
                             .rounded(px(3.))
                             .border_1()
                             .border_color(p.bd)
                             .text_color(p.fg2)
                             .font_family(MONO)
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_size(px(8.5))
-                            .line_height(px(14.))
+                            .text_size(ts::MICRO)
+                            .line_height(rpx(14.))
                             .child(badge),
                     )
                     // Production keeps its red marker whatever the database color.
@@ -2631,21 +2800,22 @@ impl Workspace {
                         d.child(
                             div()
                                 .flex_none()
-                                .px(px(3.))
+                                .px(rpx(3.))
                                 .rounded(px(3.))
                                 .bg(p.prod)
                                 .text_color(gpui_kit::white())
                                 .font_family(MONO)
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .text_size(px(8.5))
-                                .line_height(px(13.))
+                                .text_size(ts::MICRO)
+                                .line_height(rpx(13.))
                                 .child("P"),
                         )
                     })
                     .child(div().truncate().child(label))
+                    // Unsaved marker (editor files, SQL text not yet autosaved).
                     .child(ui::dot(
                         if dirty {
-                            p.fg2
+                            p.stg
                         } else {
                             gpui_kit::transparent_black()
                         },
@@ -2655,14 +2825,14 @@ impl Workspace {
                         div()
                             .id(("tab-close", i))
                             .flex_none()
-                            .px(px(4.))
+                            .px(rpx(4.))
                             .rounded(px(4.))
                             .text_color(p.fg3)
-                            .text_size(px(11.))
+                            .text_size(ts::SMALL)
                             .hover(|s| s.bg(p.hover).text_color(p.fg))
-                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            .on_click(cx.listener(move |this, _: &ClickEvent, w, cx| {
                                 cx.stop_propagation();
-                                this.close_tab(i, cx);
+                                this.close_tab(i, w, cx);
                             }))
                             .child("×"),
                     )
@@ -2672,17 +2842,17 @@ impl Workspace {
                     .id("tab-new")
                     .flex()
                     .items_center()
-                    .px(px(10.))
+                    .px(rpx(10.))
                     .text_color(p.fg3)
                     .font_family(MONO)
-                    .text_size(px(13.))
+                    .text_size(ts::BASE)
                     .hover(|s| s.text_color(p.fg))
                     .on_click(cx.listener(|this, _, w, cx| this.new_query_tab(w, cx)))
                     .child("+"),
             )
             .child(div().flex_1());
         div()
-            .h(px(34.))
+            .h(rpx(34.))
             .flex_none()
             .flex()
             .items_stretch()
@@ -2704,8 +2874,8 @@ impl Workspace {
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap(px(6.))
-                .p(px(14.))
+                .gap(rpx(6.))
+                .p(rpx(14.))
                 .border_1()
                 .border_color(p.bd)
                 .rounded(px(8.))
@@ -2714,20 +2884,20 @@ impl Workspace {
                 .child(
                     div().flex().child(
                         div()
-                            .px(px(4.))
-                            .py(px(1.))
+                            .px(rpx(4.))
+                            .py(rpx(1.))
                             .border_1()
                             .border_color(p.bd2)
                             .rounded(px(3.))
                             .font_family(MONO)
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_size(px(9.))
+                            .text_size(ts::TINY)
                             .text_color(p.fg2)
                             .child(badge),
                     ),
                 )
                 .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
-                .child(div().text_color(p.fg2).text_size(px(12.)).child(body))
+                .child(div().text_color(p.fg2).text_size(ts::BODY).child(body))
         };
         let ssh_hosts = std::env::var_os("HOME")
             .map(|h| std::path::Path::new(&h).join(".ssh/config"))
@@ -2746,24 +2916,24 @@ impl Workspace {
             .overflow_y_scroll()
             .flex()
             .justify_center()
-            .px(px(32.))
-            .py(px(64.))
+            .px(rpx(32.))
+            .py(rpx(64.))
             .child(
                 div()
                     .w_full()
-                    .max_w(px(680.))
+                    .max_w(rpx(680.))
                     .flex()
                     .flex_col()
-                    .gap(px(28.))
+                    .gap(rpx(28.))
                     .child(
                         div()
                             .child(
                                 div()
-                                    .text_size(px(24.))
+                                    .text_size(ts::DISPLAY_L)
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(if first { "Welcome to Switchyard" } else { greeting() }),
                             )
-                            .child(div().mt(px(6.)).text_color(p.fg2).text_size(px(13.5)).child(if first {
+                            .child(div().mt(rpx(6.)).text_color(p.fg2).text_size(ts::BASE_PLUS).child(if first {
                                 "Databases, terminals and file transfer behind one connection model. Nothing to install — PostgreSQL, SQL Server, SSH, SFTP and FTP drivers are built in."
                             } else {
                                 "Pick up where you left off, or open something new."
@@ -2772,7 +2942,7 @@ impl Workspace {
                     .child(
                         div()
                             .flex()
-                            .gap(px(10.))
+                            .gap(rpx(10.))
                             .child(
                                 card("w-host", "SSH", "New Host", "A server you reach over SSH. Terminals, files and tunnels reuse it.".into())
                                     .on_click(cx.listener(|this, _, w, cx| this.open_conn_editor(ConnKind::Ssh, None, w, cx))),
@@ -2802,8 +2972,8 @@ impl Workspace {
                                     div()
                                         .flex()
                                         .justify_between()
-                                        .px(px(2.))
-                                        .pb(px(6.))
+                                        .px(rpx(2.))
+                                        .pb(rpx(6.))
                                         .border_b_1()
                                         .border_color(p.bd)
                                         .child(ui::caption("RECENT", p))
@@ -2813,23 +2983,23 @@ impl Workspace {
                                     let id = prof.id().clone();
                                     div()
                                         .id(("recent", i))
-                                        .h(px(32.))
+                                        .h(rpx(32.))
                                         .flex()
                                         .items_center()
-                                        .gap(px(8.))
-                                        .px(px(4.))
+                                        .gap(rpx(8.))
+                                        .px(rpx(4.))
                                         .border_b_1()
                                         .border_color(p.line)
-                                        .text_size(px(12.5))
+                                        .text_size(ts::UI)
                                         .hover(|s| s.bg(p.hover))
                                         .on_click(cx.listener(move |this, _, w, cx| this.open_profile(&id, w, cx)))
-                                        .child(div().w(px(14.)).child(ui::dot(p.env(prof.environment()), 7.)))
+                                        .child(div().w(rpx(14.)).child(ui::dot(p.env(prof.environment()), 7.)))
                                         .child(ui::monogram(badge_of(prof), 34., p))
                                         .child(div().flex_1().font_weight(FontWeight::MEDIUM).child(prof.name().to_owned()))
                                         .child(
                                             div()
                                                 .font_family(MONO)
-                                                .text_size(px(11.5))
+                                                .text_size(ts::LABEL)
                                                 .text_color(p.fg3)
                                                 .child(describe(prof, &self.profiles)),
                                         )
@@ -2842,14 +3012,14 @@ impl Workspace {
                             div()
                                 .flex()
                                 .flex_col()
-                                .gap(px(4.))
-                                .p(px(22.))
+                                .gap(rpx(4.))
+                                .p(rpx(22.))
                                 .border_1()
                                 .border_dashed()
                                 .border_color(p.bd2)
                                 .rounded(px(8.))
                                 .text_color(p.fg2)
-                                .text_size(px(12.5))
+                                .text_size(ts::UI)
                                 .child(div().text_color(p.fg).font_weight(FontWeight::MEDIUM).child("Nothing saved yet"))
                                 .child("Start with a Host. Once it's saved, open a terminal, browse its files or tunnel a database through it with one login."),
                         )
@@ -2857,9 +3027,9 @@ impl Workspace {
                     .child(
                         div()
                             .flex()
-                            .gap(px(18.))
+                            .gap(rpx(18.))
                             .text_color(p.fg3)
-                            .text_size(px(12.))
+                            .text_size(ts::BODY)
                             .child(shortcut_hint("Command palette", ui::keys("⇧⌘P", "Ctrl+Shift+P"), p))
                             .child(shortcut_hint("Quick switch", ui::keys("⌘P", "Ctrl+P"), p))
                             .child(shortcut_hint("Settings", ui::keys("⌘,", "Ctrl+,"), p)),
@@ -2939,15 +3109,15 @@ impl Workspace {
             None => ("NO CONNECTION".into(), p.hover, p.fg2),
         };
         div()
-            .h(px(24.))
+            .h(rpx(24.))
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(14.))
+            .gap(rpx(14.))
             .border_t_1()
             .border_color(p.bd)
             .bg(p.panel)
-            .text_size(px(11.5))
+            .text_size(ts::LABEL)
             .text_color(p.fg2)
             .whitespace_nowrap()
             .overflow_hidden()
@@ -2956,12 +3126,12 @@ impl Workspace {
                     .h_full()
                     .flex()
                     .items_center()
-                    .px(px(10.))
+                    .px(rpx(10.))
                     .bg(env_bg)
                     .text_color(env_fg)
                     .font_family(MONO)
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_size(px(10.))
+                    .text_size(ts::CAPTION)
                     .child(env_label),
             )
             .child(div().text_color(p.fg).child(conn))
@@ -2970,7 +3140,7 @@ impl Workspace {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(5.))
+                        .gap(rpx(5.))
                         .text_color(c)
                         .child(ui::dot(c, 6.))
                         .child(label),
@@ -2990,6 +3160,7 @@ impl Workspace {
                     }),
             )
             .child(div().flex_1())
+            .children(self.render_update_notice(p, cx))
             .child(
                 div()
                     .id("sb-transfers")
@@ -3009,7 +3180,7 @@ impl Workspace {
             .when_some(pos, |d, pos| {
                 d.child(div().font_family(MONO).text_color(p.fg3).child(pos))
             })
-            .child(div().pr(px(12.)).text_color(p.fg3).child(engine))
+            .child(div().pr(rpx(12.)).text_color(p.fg3).child(engine))
             .into_any_element()
     }
 }
@@ -3031,7 +3202,7 @@ fn greeting_for(hour: u32) -> &'static str {
 fn shortcut_hint(label: &'static str, key: SharedString, p: &Palette) -> AnyElement {
     div()
         .flex()
-        .gap(px(6.))
+        .gap(rpx(6.))
         .child(label)
         .child(div().font_family(MONO).text_color(p.fg2).child(key))
         .into_any_element()
@@ -3064,7 +3235,7 @@ impl Render for Workspace {
         }
         let mut assistant = self.assistant_open.then(|| {
             div()
-                .w(px(400.))
+                .w(rpx(400.))
                 .flex_none()
                 .border_l_1()
                 .border_color(p.bd)
@@ -3114,7 +3285,7 @@ impl Render for Workspace {
             .bg(p.bg)
             .text_color(p.fg)
             .font_family(SANS)
-            .text_size(px(13.))
+            .text_size(crate::appearance::ui_font_size(cx))
             .on_action(cx.listener(|this, _: &actions::OpenPalette, w, cx| {
                 this.open_palette(PaletteMode::Commands, w, cx)
             }))
@@ -3146,7 +3317,9 @@ impl Render for Workspace {
                 this.run_command(CommandId::NewQueryTab, w, cx)
             }))
             .on_action(
-                cx.listener(|this, _: &actions::CloseTab, _, cx| this.close_tab(this.active, cx)),
+                cx.listener(|this, _: &actions::CloseTab, w, cx| {
+                    this.close_tab(this.active, w, cx)
+                }),
             )
             .on_action(cx.listener(|this, _: &actions::OpenSettings, w, cx| {
                 this.open_settings(SettingsPage::General, w, cx)
@@ -3167,11 +3340,13 @@ impl Render for Workspace {
             .on_mouse_move(cx.listener(|this, ev: &gpui_kit::MouseMoveEvent, w, cx| {
                 if let Some((x0, w0)) = this.inspector_drag {
                     if ev.pressed_button == Some(gpui_kit::MouseButton::Left) {
+                        // Widths are in 100 % design units (drawn with `rpx`).
+                        let z = crate::appearance::zoom(cx);
                         let x: f32 = ev.position.x.into();
-                        let max = (f32::from(w.bounds().size.width) - 420.)
+                        let max = (f32::from(w.bounds().size.width) / z - 420.)
                             .max(crate::sidebar::INSPECTOR_MIN);
                         this.inspector_width =
-                            (w0 - (x - x0)).clamp(crate::sidebar::INSPECTOR_MIN, max);
+                            (w0 - (x - x0) / z).clamp(crate::sidebar::INSPECTOR_MIN, max);
                         cx.notify();
                     } else {
                         this.end_inspector_drag();
@@ -3179,11 +3354,13 @@ impl Render for Workspace {
                 }
                 if let Some((x0, w0)) = this.sidebar_drag {
                     if ev.pressed_button == Some(gpui_kit::MouseButton::Left) {
+                        // Widths are in 100 % design units (drawn with `rpx`).
+                        let z = crate::appearance::zoom(cx);
                         let x: f32 = ev.position.x.into();
-                        let max = (f32::from(w.bounds().size.width) - 420.)
+                        let max = (f32::from(w.bounds().size.width) / z - 420.)
                             .max(crate::sidebar::SIDEBAR_MIN);
                         this.sidebar_width =
-                            (w0 + (x - x0)).clamp(crate::sidebar::SIDEBAR_MIN, max);
+                            (w0 + (x - x0) / z).clamp(crate::sidebar::SIDEBAR_MIN, max);
                         cx.notify();
                     } else {
                         this.end_sidebar_drag();
@@ -3205,6 +3382,15 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &actions::Unsplit, w, cx| {
                 this.run_command(CommandId::Unsplit, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::ZoomIn, w, cx| {
+                this.run_command(CommandId::ZoomIn, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::ZoomOut, w, cx| {
+                this.run_command(CommandId::ZoomOut, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::ZoomReset, w, cx| {
+                this.run_command(CommandId::ResetZoom, w, cx)
             }))
             .child(title)
             .when_some(mode_menu, |d, menu| d.child(menu))

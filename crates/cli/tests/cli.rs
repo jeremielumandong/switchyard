@@ -455,6 +455,105 @@ async fn mcp_lists_only_agent_enabled_connections() {
     }
 }
 
+/// An agent's actual plan waits for the user's approval in the app (a core with the
+/// handoff listener stands in for it): approved, it runs; declined, the agent is told so;
+/// Production stays estimated only. Every call is in history, tagged with the run's CLI.
+#[tokio::test]
+#[ignore = "needs docker"]
+async fn mcp_actual_plan_needs_approval_in_the_app() {
+    let home = Home::new().await;
+    let paths = AppPaths::under(home.dir.path().to_owned(), false);
+    let mut cfg = ServiceConfig::from_paths(&paths);
+    cfg.secrets = SecretBackendChoice::Memory;
+    let (core, mut rx) = Core::start(cfg).unwrap();
+    core.handle().send(Command::StartHandoff {
+        data_dir: paths.data.clone(),
+    });
+    let file = switchyard_core::handoff::handoff_file(&paths.data);
+    let start = Instant::now();
+    while !file.exists() && start.elapsed() < Duration::from_secs(5) {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let token = SessionToken::issue(
+        &home.data_dir(),
+        &[home.id("shop"), home.id("prod-agents")],
+        AgentKind::Codex,
+        TOKEN_TTL,
+    )
+    .unwrap();
+    let m = home.mcp_env(&[(TOKEN_ENV, token.expose())]);
+    let call = |mut m: Mcp, args: Value| {
+        tokio::task::spawn_blocking(move || {
+            let r = m.call("explain", args);
+            (m, r)
+        })
+    };
+    let sql = "select count(*) from orders where total > 10";
+
+    // Approved: the actual plan comes back.
+    let pending = call(
+        m,
+        json!({"connection": "shop", "sql": sql, "analyze": true}),
+    );
+    let approval = wait(&mut rx, |e| match e {
+        Event::AgentApproval(a) => Some(a),
+        _ => None,
+    })
+    .await;
+    assert_eq!(approval.target_name, "shop");
+    assert_eq!(approval.text, sql);
+    assert_eq!(approval.agent, AgentKind::Codex);
+    assert_eq!(
+        approval.kind,
+        switchyard_core::ApprovalKind::ActualPlan { writes: false }
+    );
+    core.handle().send(Command::AnswerAgentApproval {
+        id: approval.id,
+        approve: true,
+    });
+    let (m, (err, text)) = pending.await.unwrap();
+    assert!(!err, "{text}");
+    assert!(text.starts_with("Actual plan"), "{text}");
+
+    // Declined: the agent is told, nothing runs.
+    let pending = call(
+        m,
+        json!({"connection": "shop", "sql": "select 2", "analyze": true}),
+    );
+    let approval = wait(&mut rx, |e| match e {
+        Event::AgentApproval(a) => Some(a),
+        _ => None,
+    })
+    .await;
+    core.handle().send(Command::AnswerAgentApproval {
+        id: approval.id,
+        approve: false,
+    });
+    let (m, (err, text)) = pending.await.unwrap();
+    assert!(err && text.contains("declined"), "{text}");
+
+    // Production: refused without asking.
+    let (_m, (err, text)) = call(
+        m,
+        json!({"connection": "prod-agents", "sql": sql, "analyze": true}),
+    )
+    .await
+    .unwrap();
+    assert!(err && text.contains("estimated plans only"), "{text}");
+
+    let entries = home
+        .store()
+        .search_history("agent:codex", None, 20)
+        .unwrap();
+    assert!(
+        entries
+            .iter()
+            .any(|e| e.sql.contains("select 2") && e.error.is_some()),
+        "{entries:?}"
+    );
+    assert!(entries.iter().any(|e| e.sql.contains(sql)));
+}
+
 #[tokio::test]
 #[ignore = "needs docker"]
 async fn mcp_rejects_writes() {

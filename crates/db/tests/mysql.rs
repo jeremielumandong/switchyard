@@ -392,8 +392,15 @@ async fn catalog_of_the_sample_schema() {
         panic!()
     };
     let names: Vec<&str> = tables.iter().map(|t| t.name.as_str()).collect();
-    assert_eq!(names, ["customers", "orders"]);
-    assert_eq!(tables[0].detail.as_deref(), Some("People who order"));
+    // Other suites (plans) may add their own tables to `shop`; the seeded ones come sorted.
+    let seeded: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|n| ["customers", "orders"].contains(n))
+        .collect();
+    assert_eq!(seeded, ["customers", "orders"], "{names:?}");
+    let customers = tables.iter().find(|t| t.name == "customers").unwrap();
+    assert_eq!(customers.detail.as_deref(), Some("People who order"));
     let CatalogChunk::Objects(views) = introspect(s.as_mut(), objects(ObjectKind::View)).await
     else {
         panic!()

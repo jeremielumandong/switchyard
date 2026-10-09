@@ -21,6 +21,10 @@ Exit: the app opens with the full layout, profiles save to SQLite, secrets land 
   sample schema including one table with 1,000,000 rows.
   Done when: `docker compose up -d` starts all four and a smoke test connects to each.
   Note: Partial: compose file and seed scripts written (1M-row `orders`); only the PostgreSQL seed was verified (against a local PostgreSQL 16, no Docker in the build environment). No smoke test yet for SQL Server, SSH or FTP.
+  Update: compose `mssql` gets a test CA from `mssql-tls` (`docker/mssql/make-tls.sh`);
+  smoke tests `db/tests/smoke_mssql.rs` (verified TLS login, seeded `shop`) and
+  `remote/tests/smoke_ssh.rs` (password login, command, SFTP) pass against compose and run
+  in CI (`smoke-compose`). FTP smoke test still open.
 - [x] **M0-3 Window and layout.** GPUI app with gpui-component: title bar, collapsible left
   sidebar, center tab area with splits, optional right panel, status bar. Light and dark themes.
   Done when: layout matches SPEC "Main window layout"; theme toggle works; panels collapse.
@@ -260,7 +264,7 @@ Exit: integrated auth works on a Linux machine that started without Kerberos lib
   approved for the store), one worker thread per session, streamed batches, cancel via
   `sqlite3_interrupt`, transactions, catalog over attached databases, inline editing,
   connection editor with a file picker. See DECISIONS 2026-10-08.
-  Note: no query plans (`EXPLAIN QUERY PLAN` into `PlanNode` is a follow-up), no activity
+  Note: query plans (`EXPLAIN QUERY PLAN`, estimated) landed later with MySQL/MongoDB; no activity
   monitor or workload stats (nothing to show for an in-process engine).
 
 ## M4 — File transfer
@@ -271,9 +275,10 @@ Exit: resume an interrupted 1 GB upload.
   implementations for local and SFTP (`russh-sftp` on the Host session).
   Done when: shared test suite passes for local and SFTP.
   Note: `RemoteFs` gained stat, read/write streams and whole-file read/write; `SftpFs` (russh-sftp) runs on the Host's shared session. Shared suite: local unit test + SFTP integration test (listing, overwrite, size cap, 3 MB stream, rename, delete). chmod deferred.
-- [ ] **M4-2 FTP/FTPS.** `suppaftp` implementation of `RemoteFs`; explicit and implicit TLS;
+- [x] **M4-2 FTP/FTPS.** `suppaftp` implementation of `RemoteFs`; explicit and implicit TLS;
   passive and active modes.
   Done when: shared test suite passes against the docker FTP server.
+  Note: `remote::ftp::FtpFs` (suppaftp + rustls/ring): plain, explicit and implicit TLS (verification on, optional per-connection PEM), passive (NAT-safe, EPSV on IPv6) and active; one browsing connection, one connection per transfer stream; resume via REST+RETR and APPE (REST+STOR). FTP connections show in the Files tab source picker (`FsRef::Ftp`), open from the sidebar, and the editor tests them and has a default path. Suite (`remote/tests/ftp.rs`) passes for explicit, implicit, plain passive and plain active against three vsftpd services; CI runs it. Trusted-cert UI deferred.
 - [x] **M4-3 Transfer queue.** Parallel transfers (default 4), pause, resume, retry; resume from
   offset (SFTP) and REST (FTP); progress, speed, ETA events.
   Done when: a killed 1 GB upload resumes from its last byte.
@@ -465,7 +470,7 @@ faster, and no agent call ever performed a write.
   lexer flavour (backticks, `#` comments, backslash escapes, `DELIMITER` scripts); activity
   monitor on the process list; connection editor kind; docker `mysql` service. MariaDB works
   through the same driver (integration tests pass on MySQL 8.4 and MariaDB 11.4).
-  Note: plans (`EXPLAIN FORMAT=JSON`) and workload stats not done (Follow-ups).
+  Note: workload stats not done (Follow-ups); plans landed later (EXPLAIN FORMAT=JSON / ANALYZE).
 
 ## M7 — MobaXterm parity, Tier 1 (user request)
 
@@ -504,16 +509,43 @@ server or bundled Unix tools on Windows (Tier 3).
   XWayland hints). Test servers allow agent and X11 forwarding. Tests: forwarded agent signs
   a nested `ssh` on the server (and fails without forwarding); an X client on the server
   reaches a fake local display with the fake cookie stripped; X11 unit tests.
-- [ ] **MX-3 Terminal logging.** Per-session "log to file" (plain text, ANSI stripped, or
+- [x] **MX-3 Terminal logging.** Per-session "log to file" (plain text, ANSI stripped, or
   raw), file name template with host and timestamp, started from settings or the tab menu.
-- [ ] **MX-4 Terminal conveniences.** Copy on select, right-click paste (settings, default
+  Note: `term::log::SessionLog` is fed on the I/O side with the bytes the terminal parses
+  (plain: escape sequences stripped, `\r` redraws and backspaces resolved per line, optional
+  timestamps; raw: every byte). `Command::StartTerminalLog`/`StopTerminalLog` open/finish the
+  file on a blocking task; `Event::TerminalLog`. Settings → Terminal: log every session,
+  format, timestamps, folder (default `<data>/terminal-logs`), file name template
+  (`{host}` `{date}` `{time}` `{datetime}`; never overwrites). Tab header "Log" button per pane.
+- [x] **MX-4 Terminal conveniences.** Copy on select, right-click paste (settings, default
   off like today), paste confirmation for multi-line text, keyword highlighting of output
   (error/warning/fail/ok… with user rules), font zoom per tab.
-- [ ] **MX-5 Macros.** Record keystrokes in a terminal, save with a name, replay into the
+  Note: Settings → Terminal: copy on select, right-click paste (both off), "ask before
+  pasting more than one line" (on; Enter/Escape answer it), keyword highlighting (off by
+  default) with comma-separated words per color (`term_settings::highlight_spans`: whole
+  words, ASCII case-insensitive, only default-colored text, never on the alternate screen).
+  Deferred: font zoom per tab (UI zoom/font settings were being reworked in parallel;
+  Follow-ups).
+- [x] **MX-5 Macros.** Record keystrokes in a terminal, save with a name, replay into the
   current terminal or all broadcast panes, run one on connect.
-- [ ] **MX-6 Session folders and per-session settings.** Folders and favorites in the
+  Note: tab header Record / ■ Stop records encoded keys and pastes (not mouse reports, 64 KB
+  cap), then asks for a name. `store::Macro` in the new `macros` table (migration 5), input
+  kept as an escaped string (`\r`, `\e`, `\xHH`). Macros ▾ menu: play into the active pane
+  (all panes when broadcasting), "All panes", delete. Host "Macro on connect" is typed into
+  every new shell (reconnects too). Replay sends everything at once (no per-key delays).
+- [x] **MX-6 Session folders and per-session settings.** Folders and favorites in the
   sidebar; per-Host startup command, remote start directory, terminal font/colors override,
   environment variables; duplicate and bulk edit.
+  Note: Host gains `favorite`, `startup_command`, `start_directory`, `env`,
+  `terminal_colors` (editor fields; `folder` now editable). Sidebar: "★ Favorites" group (one
+  click opens a terminal), then Hosts outside folders, then collapsible folders (by name).
+  New shells get `cd -- '<dir>'`, the startup command and the connect macro typed in; env
+  goes as SSH `env` requests (server `AcceptEnv`). Host menu: Duplicate (copies the stored
+  secret under the new id), Add/Remove Favorites, "Folder and session settings…"; folder
+  menu: "Edit Hosts in folder…" (bulk edit: folder, user, start folder, startup command,
+  environment, favorite; only changed fields, `Command::UpdateHosts` + `store::HostPatch`),
+  "Open all terminals". Deferred: terminal font override (font settings were being reworked
+  in parallel), multi-select bulk edit outside a folder.
 - [ ] **MX-7 Session import.** PuTTY sessions (Windows registry, `~/.putty/sessions`) and
   MobaXterm bookmarks (`MobaXterm.ini` / `.mxtsessions`) into Hosts, with the same preview
   as the `~/.ssh/config` import.
@@ -578,6 +610,19 @@ server or bundled Unix tools on Windows (Tier 3).
   (Run / Deny) and runs it on the Host's shared SSH session (`SshConn::run_command`: 64 KB per
   stream, timeout); every request is in history tagged `agent`, `agent:<cli>`, `ssh`.
   Note: integration test for `run_command` needs the docker SSH server (not run here).
+- [x] UX-13 Text size and unsaved tabs (user request, 2026-10-09): Zoom In / Out / Reset
+  (Cmd/Ctrl + `=`/`+`, `-`, `0`, palette under View, 70–200 %) scales the UI font (gpui-component
+  `font_size` = rem), editors, result-grid text and row heights, and terminal font and cell
+  metrics. Settings → Appearance: editor font family (bundled + installed monospace), editor
+  font size, zoom; saved under `appearance` in the settings store, restored on launch
+  (`app/src/appearance.rs`). Dirty tabs show an amber dot; closing an editor tab with unsaved
+  changes (alone, a tab-menu group, or the window) asks Save / Discard / Cancel in a
+  gpui-component dialog, Save only when every file can be saved now (`app/src/unsaved.rs`).
+  Whole-UI follow-up: every fixed size in element styles (~2,000 sites: text, row heights,
+  paddings, gaps, fixed widths in the sidebar, tab strip, title/status bars, dialogs, settings,
+  plan view, workbench, Redis, Files, assistant, terminal chrome) goes through
+  `appearance::rpx` (rem-relative, no context needed) and text through the named `ts::*`
+  steps, so the whole chrome zooms. `SWITCHYARD_ZOOM` overrides the zoom for screenshots.
 
 ## Extra — Redis (user request, 2026-10-08)
 
@@ -594,6 +639,22 @@ server or bundled Unix tools on Windows (Tier 3).
   full-value viewer with copy for the selected hash/list/set/zset/stream row; console
   transcript and values in read-only editors so all text selects and copies.
   Note: the delimiter is fixed to `:`; TTLs in the list are as of the scan.
+- [x] RD-4 Key type filter, tree delimiter, console history (follow-up, 2026-10-09): type
+  dropdown next to the pattern (All / String / List / Set / Sorted set / Hash / Stream /
+  JSON) scans with `SCAN … TYPE` (filtered client-side on servers before 6.0); "Key tree
+  delimiter" in the Redis connection form (`DbConnection::options["tree_delimiter"]`, any
+  string, `:` by default); Up / Down in the console recall commands, seeded from this
+  connection's stored history (agent lines and secret-bearing lines left out).
+  Note: a changed delimiter applies to key browser tabs opened afterwards. Integration test
+  for TYPE added to `db --test redis` but not run here (no redis image in this container).
+- [x] MG-1 MongoDB document edits from the grid (follow-up, 2026-10-09): `find` results with
+  `_id` edit like SQL results (staged cells, add / duplicate / delete rows, Production
+  confirmation for deletes) and commit as `updateOne({ _id }, { $set })`, `deleteOne({ _id })`
+  and `insertOne` (`db::mongo::edit`). `_id` comes from the document column, so its BSON
+  type is kept; new values keep their column's type (or, in `mixed` columns, the replaced
+  value's). Other results are read-only with a hint. Updates count matched documents.
+  Note: no transactions, so edits apply in order and a failure reports how many were saved;
+  the document column itself is read-only (no `replaceOne` editing yet).
 
 ## DBX — Database explorer and editors at DBeaver / SSMS level (user request)
 
@@ -718,6 +779,9 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 - [ ] **M6-1 macOS.** Universal binary, app bundle, signing, notarization, DMG, Homebrew cask.
   Partial: `packaging/macos/build-macos.sh` builds the universal app, `.dmg` and `.pkg`, with optional
   signing/notarization via env vars (not yet exercised with a real Developer ID). Cask pending.
+  `release-macos.yml` builds the universal DMG on macos-15 and signs + notarizes it only when the
+  `APPLE_*` secrets exist (else an unsigned DMG, uploaded only on request). Not run yet: no macOS
+  runner or certificate was available to test it; signing untested.
 - [ ] **M6-2 Windows.** Signed MSI, winget manifest.
   Partial: NSIS installer via `packaging/windows/build-windows.ps1` (optional signtool signing).
   `release-windows.yml` builds it with a static CRT, signs the exes, uninstaller and installer
@@ -729,6 +793,10 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   SHA-256); `release.yml` builds it on Ubuntu 22.04 and uploads to the draft release.
   `.deb`, `.rpm`, AUR pending.
 - [ ] **M6-4 Auto-update.** Signed updates on macOS and Windows; Linux defers to package managers.
+  Partial: `core::update` checks GitHub Releases (startup in release builds, Settings toggle,
+  "Check for Updates"), shows a status-bar notice linking the release; with a build-time
+  `SWITCHYARD_UPDATE_PUBKEY` it downloads the installer and keeps it only if its minisign
+  signature verifies. No key configured yet (notify only); no in-place replace.
 - [ ] **M6-5 Performance gates.** CI jobs that fail when a budget from CLAUDE.md is exceeded.
 - [ ] **M6-6 Crash reporting.** Opt-in, scrubbed of SQL text, hostnames and credentials;
   telemetry off by default.
@@ -740,58 +808,83 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 
 ## Follow-ups
 
-- SQLite: `EXPLAIN QUERY PLAN` into `PlanNode`; a "New database file" save dialog in the connection editor (today a typed path is created on connect).
+- SQLite: a "New database file" save dialog in the connection editor (today a typed path is created on connect).
 
 - API Workbench: rename and delete workspaces (API-5 only adds and switches them).
-- `core/tests/flow.rs` `cancel_stops_a_running_query_quickly` times out (5 s) when the
-  machine is busy building (seen twice); passes alone. Look at what it waits on before
-  raising the timeout.
 
 - Agent runs on systems with only the fallback vault: `swy mcp` cannot unlock it unless
   `SWITCHYARD_VAULT_PASSWORD` is in the app's environment. Option: let `swy mcp` borrow the
   running app's unlocked secrets over the loopback handoff, scoped by the session token.
 
 (Add items here instead of doing them mid-task.)
-- Redis: configurable tree delimiter and key type filter (SCAN TYPE); Pub/Sub and MONITOR viewers;
-  Cluster and Sentinel; per-element pagination past 1,000 items; console up/down history;
+- Redis: Pub/Sub and MONITOR viewers;
+  Cluster and Sentinel; per-element pagination past 1,000 items;
   RESP3 (`HELLO 3`) types; integration test for TLS.
 - `db --test pg` integration tests share one database: run in parallel, `introspection_snapshots`
   can see another test's scratch objects. CI runs them with `--test-threads 1`; isolate them in
   per-test schemas if they need to run in parallel.
 - UX pass: Headers/Console/Trace/Tests response tabs copy via buttons only (no drag-select);
   `pm.sendRequest` inside runs skips the Production check; env dropdown doesn't show labels;
-  no window-level UI tests for the new Workbench interactions; "Unsaved changes" on tab
-  close could be a tab marker instead of a toast.
-- Agent actual plans: approval prompt in the app for `explain` with ANALYZE / STATISTICS XML
-  from an agent (the MCP server refuses them until then).
-- Assistant panel: markdown is prose + code blocks only (no bold/lists/tables); GPUI tests
-  for the panel and Assistant settings.
+  no window-level UI tests for the new Workbench interactions.
+- Assistant panel: GPUI tests for the panel and Assistant settings.
 - Oracle: EXPLAIN PLAN / DBMS_XPLAN → `PlanNode`; V$SQL workload view; arm64 Linux archive;
-  CI job with the `oracle` compose profile + Instant Client; TCPS / wallet sign-in.
+  TCPS / wallet sign-in.
 - MySQL: `EXPLAIN FORMAT=JSON` / `EXPLAIN ANALYZE` → `PlanNode`; performance_schema digest
+  workload view; zero dates (`0000-00-00`) show as NULL in date columns.
+
+  CI job with the `oracle` compose profile + Instant Client; TCPS / wallet sign-in.
+- MySQL: performance_schema digest
   workload view; zero dates (`0000-00-00`) show as NULL in date columns; CI job with the
   `mysql` compose service.
 - Snowflake: `EXPLAIN USING JSON` → `PlanNode`; QUERY_HISTORY / ACCESS_HISTORY workload view;
   exercise the driver against a real account; OAuth (external browser) sign-in.
 - API workspace: port AgentOps's Workbench UI tests; persist workbench preferences (they live
   in session memory for now); per-project collections (`current_project()` returns None).
-- MongoDB: transactions on replica sets, `explain` → `PlanNode`, document edits from the grid (by `_id`), `$currentOp`
-  activity monitor, X.509 / AWS / OIDC sign-in.
-- Release workflow for macOS (`build-macos.sh` + notarization) next to the Linux and Windows ones.
-- Log file for release builds (Windows GUI subsystem hides stdout).
-- Real app icon to replace the generated placeholder in `packaging/icons/`.
+- MongoDB: transactions on replica sets, `explain` → `PlanNode`, `$currentOp`
 
-- Smoke tests for the SQL Server, SSH and FTP containers (M0-2).
+- MongoDB: transactions on replica sets, document edits from the grid (by `_id`), `$currentOp`
+  activity monitor, X.509 / AWS / OIDC sign-in.
+
+- Smoke test for the FTP container (M0-2; SQL Server and SSH have theirs).
 - Grid frame-time harness (M1-16).
 - Driver Manager: fetch the signed manifest from the update server.
 - SQL Server: upstream tiberius patches for INFO tokens (notices) and reading the attention
   acknowledgement across a message boundary (would remove the reconnect after cancel).
 - Approval pending for `tokio-postgres-rustls`/`rustls-native-certs` and `lsp-types` (see DECISIONS).
-- Performance (found in the 2026-10 pass, not done): the schema tree rebuilds every `TreeRow`
-  (and fuzzy-matches every object while filtering) on each workspace render, which every core
-  event triggers; cache `Explorer::rows()` behind a change counter. The API workbench body tab
-  parses and reformats the JSON body on every render; the collection rail and history are not
-  virtualized. Terminal search rescans the whole scrollback on the UI thread per keystroke.
-  The grid row filter still runs on the UI thread per keystroke (now allocation-free).
+- Performance (2026-10 pass, remaining): terminal search rescans from scratch per (debounced)
+  query rather than narrowing the previous matches, and holds the terminal lock for the scan;
+  the API History page's "Saved examples" table is not virtualized (the history rows are).
 - Assistant on Hosts: "always allow this command on this Host" for repeat read-only commands;
   approvals from an interactive "Open in terminal" run show in the panel, not the terminal.
+- Zoom: grid column widths scale only for results opened after a zoom change; user-resized
+  panes (sidebar, inspector, editor/terminal splits) keep their px size; gpui-component popup
+  menus keep their px minimum widths. No quit (Cmd+Q) action exists yet to hook the
+  unsaved-files dialog into; window close is covered.
+- Agent actual plans (done: approval card in the app, `swy mcp` captures after approval): the
+  approved plan is not opened in the app's plan view; no "always allow" per statement.
+- Assistant markdown (done: bold, italic, inline code, headings, lists, tables, quotes,
+  links): answers are re-parsed on every render (cache per item if long transcripts lag);
+  images show their alt text; wide tables wrap cells instead of scrolling sideways.
+
+- Release readiness leftovers: X11 window icon (`WindowOptions::icon` needs the `image` crate as
+  a direct dependency); hicolor PNGs (`packaging/icons/png/`) into the AppImage / future `.deb`;
+  sign release installers with minisign and set `SWITCHYARD_UPDATE_PUBKEY` so M6-4 can offer
+  verified installers; run `release-macos.yml` once with real Apple secrets; Windows icon
+  resource (`app/build.rs`) only checked with `llvm-cvtres`, not linked on Windows yet.
+
+- Terminal (MX-4/MX-6): font zoom per tab and a per-Host terminal font override, once the
+  UI zoom / font-size settings land; multi-select in the sidebar for bulk edit outside a
+  folder; per-key delays when replaying macros (some programs drop fast input).
+
+- FTP: store a per-connection trusted certificate (`FtpConfig::trusted_ca_pem`, like
+  `DbConfig::trusted_ca_pem`, also not in profiles) and offer "trust this certificate" when
+  verification fails; FTP through a Host tunnel; chmod (`SITE CHMOD`); reuse idle transfer
+  connections instead of logging in per file; a cancelled browse command can leave the
+  shared control connection mid-reply (reconnect then).
+
+- Plans for MySQL / SQLite / MongoDB landed (estimated + actual; SQLite estimated only). Not
+  done: Cloudflare D1 `EXPLAIN QUERY PLAN` over the HTTP API (`Dialect::plans` is NONE for
+  D1); MariaDB `ANALYZE FORMAT=JSON` is parsed but untested against a real MariaDB (no
+  compose service); MySQL 8.4 cannot `EXPLAIN ANALYZE` a single-table DELETE (Analyze
+  reports it and points to Explain); MongoDB SBE (`slotBasedPlan`) execution stages are
+  only summarized on the root; What-if and the workload view stay PostgreSQL / SQL Server.

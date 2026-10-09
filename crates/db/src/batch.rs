@@ -770,10 +770,24 @@ impl BatchList {
     /// Rows (in order) where any cell's display text contains `needle`, ignoring case;
     /// NULL reads as `NULL`. Walks batch by batch and formats no text cell.
     pub fn rows_containing(&self, needle: &str) -> Vec<u32> {
+        self.rows_containing_until(needle, &|| false)
+            .unwrap_or_default()
+    }
+
+    /// [`Self::rows_containing`] that checks `cancelled` before each batch and returns
+    /// `None` once it says so (a newer filter replaced this one).
+    pub fn rows_containing_until(
+        &self,
+        needle: &str,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Option<Vec<u32>> {
         let needle = needle.to_lowercase();
         let mut keep = Vec::new();
         let mut buf = String::new();
         for (batch, &start) in self.batches.iter().zip(&self.starts) {
+            if cancelled() {
+                return None;
+            }
             for r in 0..batch.len() {
                 let hit = (0..batch.column_count()).any(|c| match batch.cell(r, c) {
                     CellRef::Text(s) => contains_ignore_case(s, &needle),
@@ -788,7 +802,7 @@ impl BatchList {
                 }
             }
         }
-        keep
+        Some(keep)
     }
 
     /// Sort `rows` (global row numbers) by column `col` in [`CellRef::sort_cmp`] order,
@@ -974,6 +988,15 @@ mod tests {
         assert_eq!(list.rows_containing("null"), [2]);
         assert_eq!(list.rows_containing("B"), [3]);
         assert_eq!(list.rows_containing("").len(), 4);
+        // Cancelled before the first batch: no result; checked again per batch.
+        assert_eq!(list.rows_containing_until("b", &|| true), None);
+        let calls = std::cell::Cell::new(0);
+        let second = || {
+            calls.set(calls.get() + 1);
+            calls.get() > 1
+        };
+        assert_eq!(list.rows_containing_until("b", &second), None);
+        assert_eq!(list.rows_containing_until("b", &|| false), Some(vec![3]));
     }
 
     #[test]

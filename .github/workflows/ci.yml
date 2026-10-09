@@ -65,7 +65,7 @@ jobs:
           }
 
   integration:
-    name: integration (PostgreSQL, SSH, tunnels)
+    name: integration (PostgreSQL, SSH, tunnels, FTP)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -79,6 +79,22 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y openssh-server
       - name: Start SSH test servers
         run: sudo DIR=/tmp/switchyard-ssh scripts/ssh-test-servers.sh
+      # Explicit TLS, implicit TLS and plain FTP (host network, for active mode), with a
+      # certificate from a throwaway CA so verification stays on.
+      - name: Start FTP test servers
+        run: |
+          scripts/ftp-test-certs.sh
+          docker compose -f docker/compose.yml up -d ftp ftp-implicit ftp-plain
+          for port in 2120 2121 2990; do
+            for _ in $(seq 1 30); do
+              (exec 3<>/dev/tcp/127.0.0.1/$port) 2>/dev/null && break
+              sleep 1
+            done
+            (exec 3<>/dev/tcp/127.0.0.1/$port) || { echo "FTP port $port is not listening"; exit 1; }
+          done
+      - run: cargo test -p switchyard-remote --test ftp -- --ignored --test-threads 1
+        env:
+          SWITCHYARD_FTP_CA: docker/ftp/ca.pem
       - run: cargo test -p switchyard-db --lib --test pg --test d1 -- --ignored --test-threads 1
       - run: cargo test -p switchyard-db --test activity -- --ignored --test-threads 1 postgres
       - run: cargo test -p switchyard-plan --test capture -- --ignored --test-threads 1 postgres
@@ -88,11 +104,16 @@ jobs:
       # so it runs in the SQL Server job.
       - run: >-
           cargo test -p switchyard-core -p switchyard-remote --lib
-          --test flow --test pg_edits --test session_context --test ssh_files --test ssh_forwards
+          --test flow --test ftp_files --test pg_edits --test session_context --test ssh_files --test ssh_forwards
           --test ssh_terminal --test tunnel_pg --test ssh
           -- --ignored --test-threads 1
         env:
           SWITCHYARD_SSH_KEYS: /tmp/switchyard-ssh
+      - name: FTP server state and logs
+        if: failure()
+        run: |
+          docker compose -f docker/compose.yml ps -a
+          docker compose -f docker/compose.yml logs --no-color --timestamps ftp ftp-implicit ftp-plain | tail -n 300
 
   integration-other:
     name: integration (MySQL, MongoDB, Redis)
@@ -134,6 +155,22 @@ jobs:
         env:
           LD_LIBRARY_PATH: ${{ env.IC }}
           SWITCHYARD_ORACLE_CLIENT: ${{ env.IC }}
+
+  smoke-compose:
+    name: smoke (compose SQL Server, SSH)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+      # `mssql-tls` writes the test CA first; the seed is a one-shot container.
+      - name: Start SQL Server and OpenSSH
+        run: |
+          docker compose -f docker/compose.yml up -d --wait mssql
+          docker compose -f docker/compose.yml up -d ssh
+          docker compose -f docker/compose.yml run --rm mssql-seed
+      - run: cargo test -p switchyard-db --test smoke_mssql -- --ignored
+      - run: cargo test -p switchyard-remote --test smoke_ssh -- --ignored
 
   integration-mssql:
     name: integration (SQL Server)

@@ -1,0 +1,10 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&mysql_tree(&name))
+---
+MySql Actual
+#0 Filter est=50 act=50 loops=1 self=0.0ms (9%)
+  Filter: (orders.placed_on between '2026-02-01' and '2026-02-10')
+  #1 Covering index range scan on orders.ix_orders_placed est=50 act=50 loops=1 self=0.3ms (91%)
+    Index Range: ('2026-02-01' <= placed_on <= '2026-02-10')
+findings:

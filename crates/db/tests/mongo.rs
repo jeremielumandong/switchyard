@@ -262,3 +262,75 @@ async fn wrong_password_is_a_connect_error() {
         .expect("refused");
     assert!(matches!(e, DbError::Connect(_)), "{e:?}");
 }
+
+#[tokio::test]
+#[ignore = "needs the docker mongo service"]
+async fn grid_edits_by_id() {
+    use switchyard_db::mongo::edit::{edit_target, row_delete, row_insert, row_update};
+    let mut s = session().await;
+    run(s.as_mut(), "db.edits.drop()").await;
+    run(
+        s.as_mut(),
+        "db.edits.insertMany([
+          { _id: ObjectId('507f1f77bcf86cd799439011'), name: 'Ada', n: NumberLong(5), zip: '02139', address: { city: 'London' } },
+          { _id: 7, name: 'Bob', n: NumberLong(1), zip: '10001' }
+        ])",
+    )
+    .await;
+    let find = "db.edits.find({}).sort({ name: 1 })";
+    let (sets, _) = run(s.as_mut(), find).await;
+    let set = &sets[0];
+    let table = edit_target(find, &set.0).unwrap();
+    let doc = |row: usize| match cell(set, row, DOCUMENT_COLUMN) {
+        Value::Json(s) => s,
+        other => panic!("{other:?}"),
+    };
+    let text = |s: &str| Value::Text(s.into());
+
+    // Ada: nested path, a long stays a long, a string of digits stays a string.
+    let upd = row_update(
+        &table,
+        &set.0,
+        &doc(0),
+        &[
+            ("address.city".into(), text("Paris")),
+            ("n".into(), text("6")),
+            ("zip".into(), text("94105")),
+        ],
+    )
+    .unwrap();
+    let (_, done) = run(s.as_mut(), &upd).await;
+    assert_eq!(done.affected, Some(1));
+    // The same update again matches its document though nothing changes.
+    let (_, done) = run(s.as_mut(), &upd).await;
+    assert_eq!(done.affected, Some(1));
+    let (sets, _) = run(
+        s.as_mut(),
+        "db.edits.countDocuments({ _id: ObjectId('507f1f77bcf86cd799439011'), 'address.city': 'Paris', n: { $type: 'long' }, zip: { $type: 'string' } })",
+    )
+    .await;
+    assert_eq!(cell(&sets[0], 0, "count"), Value::Int(1));
+
+    // Bob (a numeric _id) is deleted, and a new document is inserted.
+    let del = row_delete(&table, &doc(1)).unwrap();
+    let (_, done) = run(s.as_mut(), &del).await;
+    assert_eq!(done.affected, Some(1));
+    let ins = row_insert(
+        &table,
+        &set.0,
+        &[
+            ("name".into(), text("Cy")),
+            ("address.city".into(), text("Rome")),
+        ],
+    )
+    .unwrap();
+    let (_, done) = run(s.as_mut(), &ins).await;
+    assert_eq!(done.affected, Some(1));
+    let (sets, _) = run(s.as_mut(), "db.edits.find({}).sort({ name: 1 })").await;
+    let names: Vec<Value> = (0..sets[0].1.len())
+        .map(|r| cell(&sets[0], r, "name"))
+        .collect();
+    assert_eq!(names, [text("Ada"), text("Cy")]);
+    assert_eq!(cell(&sets[0], 1, "address.city"), text("Rome"));
+    run(s.as_mut(), "db.edits.drop()").await;
+}

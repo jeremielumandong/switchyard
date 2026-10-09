@@ -10,6 +10,7 @@ use gpui_kit::{
 };
 use switchyard_core::store::{ForwardDirection, PortForward};
 
+use crate::appearance::{rpx, ts};
 use crate::theme::{MONO, Palette};
 use crate::ui;
 
@@ -105,19 +106,19 @@ pub(crate) enum RowAction {
 
 fn small_input(e: &Entity<InputState>, w: f32, p: &Palette) -> gpui_kit::Div {
     div()
-        .w(px(w))
+        .w(rpx(w))
         .flex_none()
-        .h(px(26.))
+        .h(rpx(26.))
         .flex()
         .items_center()
-        .px(px(7.))
+        .px(rpx(7.))
         .border_1()
         .border_color(p.bd2)
         .rounded(px(5.))
         .bg(p.bg)
         .font_family(MONO)
-        .text_size(px(12.))
-        .child(Input::new(e).appearance(false).text_size(px(12.)))
+        .text_size(ts::BODY)
+        .child(Input::new(e).appearance(false).text_size(ts::BODY))
 }
 
 /// The forwards section. `on` turns a row action into an editor update.
@@ -130,17 +131,17 @@ pub(crate) fn render<T: 'static>(
     let header = div()
         .flex()
         .items_center()
-        .gap(px(8.))
+        .gap(rpx(8.))
         .child(
             div()
-                .text_size(px(11.5))
+                .text_size(ts::LABEL)
                 .text_color(p.fg2)
                 .font_weight(FontWeight::MEDIUM)
                 .child("Port forwarding"),
         )
         .child(
             div()
-                .text_size(px(11.))
+                .text_size(ts::SMALL)
                 .text_color(p.fg3)
                 .child("L: listen here · R: listen on the Host · D: SOCKS proxy here"),
         )
@@ -149,10 +150,10 @@ pub(crate) fn render<T: 'static>(
             let on = on.clone();
             div()
                 .id("fwd-add")
-                .px(px(8.))
-                .py(px(2.))
+                .px(rpx(8.))
+                .py(rpx(2.))
                 .rounded(px(5.))
-                .text_size(px(12.))
+                .text_size(ts::BODY)
                 .text_color(p.acc)
                 .hover(|s| s.bg(p.hover))
                 .on_click(cx.listener(move |this, _, w, cx| on(this, RowAction::Add, w, cx)))
@@ -165,13 +166,13 @@ pub(crate) fn render<T: 'static>(
                 let on = on.clone();
                 div()
                     .id(SharedString::from(format!("fwd-{i}-{label}")))
-                    .w(px(22.))
-                    .h(px(24.))
+                    .w(rpx(22.))
+                    .h(rpx(24.))
                     .flex()
                     .items_center()
                     .justify_center()
                     .font_family(MONO)
-                    .text_size(px(11.5))
+                    .text_size(ts::LABEL)
                     .when(active, |d| d.bg(p.sel).text_color(p.fg))
                     .when(!active, |d| d.text_color(p.fg3).hover(|s| s.bg(p.hover)))
                     .on_click(cx.listener(move |this, _, w, cx| {
@@ -188,7 +189,7 @@ pub(crate) fn render<T: 'static>(
             div()
                 .flex()
                 .items_center()
-                .gap(px(6.))
+                .gap(rpx(6.))
                 .child(
                     div()
                         .flex()
@@ -205,7 +206,7 @@ pub(crate) fn render<T: 'static>(
                 .child(div().text_color(p.fg3).child(":"))
                 .child(small_input(&r.bind_port, 58., p))
                 .when(r.direction != ForwardDirection::Dynamic, |d| {
-                    d.child(div().w(px(12.)).text_color(p.fg3).child(arrow))
+                    d.child(div().w(rpx(12.)).text_color(p.fg3).child(arrow))
                         .child(small_input(&r.target_host, 110., p))
                         .child(div().text_color(p.fg3).child(":"))
                         .child(small_input(&r.target_port, 58., p))
@@ -225,7 +226,7 @@ pub(crate) fn render<T: 'static>(
                 .child(
                     div()
                         .id(SharedString::from(format!("fwd-{i}-remove")))
-                        .px(px(6.))
+                        .px(rpx(6.))
                         .text_color(p.fg3)
                         .hover(|s| s.text_color(p.prod))
                         .on_click(cx.listener(move |this, _, w, cx| {
@@ -237,12 +238,12 @@ pub(crate) fn render<T: 'static>(
     div()
         .flex()
         .flex_col()
-        .gap(px(6.))
+        .gap(rpx(6.))
         .child(header)
         .when(rows.is_empty(), |d| {
             d.child(
                 div()
-                    .text_size(px(11.5))
+                    .text_size(ts::LABEL)
                     .text_color(p.fg3)
                     .child("No forwards. Running ones show in the Tunnels panel, where saved ones can be started."),
             )

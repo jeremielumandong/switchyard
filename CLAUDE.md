@@ -269,3 +269,19 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
   text sits beside an input focuses itself on mouse down (`assistant_panel.rs` transcript).
 - Pageant comes with russh on Windows (`AgentClient::connect_pageant`, `pageant` crate,
   Apache-2.0); no feature flag.
+- suppaftp 12: `connect_secure_implicit` sends no `PBSZ 0` / `PROT P` but still wraps data
+  connections in TLS, so the server waits in clear text and the handshake hangs; `ftp.rs`
+  sends both itself. Awaiting `QUIT` after a TLS transfer can stall until the server's idle
+  timeout: it is best effort with a 2 s limit.
+- vsftpd applies `-o` options and the config file in argument order: put the file first or
+  its `background=YES` overrides `-obackground=NO` and the container exits.
+- Closing a TCP socket with unread received data sends RST and drops unsent data. TLS 1.3
+  servers send session tickets after the handshake that a pure upload never reads, so an
+  upload must read until the server closes before dropping the socket (`remote::ftp_tls`).
+
+- UI zoom works through the window rem size (13 px × zoom). Write fixed sizes in element
+  styles as `appearance::rpx(v)` and text as `appearance::ts::*`, not `px(..)`, or they stay
+  at 100 %; keep `px` for window coordinates (drags, user-resized panes, canvas painting).
+- GPUI on Linux renders through Vulkan: under Xvfb the window fails with "Failed to create
+  surface" unless a Vulkan driver is installed (`mesa-vulkan-drivers` gives lavapipe).
+  `SWITCHYARD_THEME` and `SWITCHYARD_ZOOM` pin theme and zoom for screenshots.

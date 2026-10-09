@@ -9,8 +9,8 @@
 //! Workbench. Those runs reach no database connection.
 //!
 //! The database conversation follows the active tab: a SQL editor, a Redis browser or an
-//! SSH terminal. Commands an agent wants to run on a Host show here as approval cards and
-//! run only when the user clicks Run.
+//! SSH terminal. Commands an agent wants to run on a Host, and actual plans it asks for, show
+//! here as approval cards and run only when the user clicks Run.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -23,11 +23,14 @@ use gpui_kit::{
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 use switchyard_core::agents::{AgentEvent, AgentKind, RunSummary};
-use switchyard_core::db::Engine;
+use switchyard_core::db::{Engine, dialect_for};
 use switchyard_core::store::{DbConnection, EnvironmentLabel, Host, ProfileId};
-use switchyard_core::{AgentApproval, Command, RuntimeHandle};
+use switchyard_core::{AgentApproval, ApprovalKind, Command, RuntimeHandle};
 
 use crate::api::generated::{GeneratedRequest, http_requests};
+use crate::appearance::{rpx, ts};
+use crate::chat_markdown::{self, Block, Inline};
+use crate::rich_text::RichText;
 use crate::theme::{MONO, palette};
 use crate::ui::{self, Kind};
 
@@ -94,6 +97,28 @@ fn classify(sql: &str) -> SuggestionKind {
     }
 }
 
+/// The line above an approval card's command or statement.
+fn approval_title(a: &AgentApproval) -> String {
+    let prod = if a.environment == EnvironmentLabel::Production {
+        " (Production)"
+    } else {
+        ""
+    };
+    let agent = a.agent.display_name();
+    match a.kind {
+        ApprovalKind::SshCommand => format!("{agent} wants to run on {}{prod}:", a.target_name),
+        ApprovalKind::ActualPlan { writes } => format!(
+            "{agent} wants an actual plan on {}{prod}. It runs the statement{}:",
+            a.target_name,
+            if writes {
+                " and rolls it back (triggers and sequences still fire)"
+            } else {
+                ""
+            }
+        ),
+    }
+}
+
 /// The ```sql blocks of `text` (also unlabelled blocks that look like SQL).
 pub fn suggestions(text: &str) -> Vec<Suggestion> {
     let mut out = Vec::new();
@@ -127,46 +152,160 @@ pub fn suggestions(text: &str) -> Vec<Suggestion> {
     out
 }
 
-/// A run of an answer: prose, or the body of a fenced code block (fences dropped).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Segment {
-    /// Text outside code fences, trimmed.
-    Prose(String),
-    /// The lines between a pair of fences.
-    Code(String),
-}
-
-/// Splits `text` at its code fences; an unclosed fence runs to the end (still streaming).
-pub fn segments(text: &str) -> Vec<Segment> {
-    let mut out = Vec::new();
-    let mut buf: Vec<&str> = Vec::new();
-    let mut in_code = false;
-    let flush = |buf: &mut Vec<&str>, code: bool, out: &mut Vec<Segment>| {
-        let joined = buf.join("\n");
-        let body = if code {
-            joined.trim_end()
-        } else {
-            joined.trim()
-        };
-        if !body.is_empty() {
-            out.push(if code {
-                Segment::Code(body.to_owned())
-            } else {
-                Segment::Prose(body.to_owned())
+/// One selectable run of styled markdown text.
+fn rich(id: String, text: Inline, order: u64, p: &crate::theme::Palette) -> RichText {
+    use gpui_kit::{FontStyle, HighlightStyle, StrikethroughStyle, UnderlineStyle};
+    let mut highlights = Vec::new();
+    let mut fonts = Vec::new();
+    let mut links = Vec::new();
+    for (range, m) in text.spans {
+        let mut h = HighlightStyle::default();
+        if m.bold {
+            h.font_weight = Some(FontWeight::BOLD);
+        }
+        if m.italic {
+            h.font_style = Some(FontStyle::Italic);
+        }
+        if m.strike {
+            h.strikethrough = Some(StrikethroughStyle {
+                thickness: px(1.),
+                color: Some(p.fg2),
             });
         }
-        buf.clear();
-    };
-    for l in text.lines() {
-        if l.trim_start().starts_with("```") {
-            flush(&mut buf, in_code, &mut out);
-            in_code = !in_code;
-        } else {
-            buf.push(l);
+        if m.code {
+            h.background_color = Some(p.surface);
+            fonts.push((range.clone(), SharedString::from(MONO)));
         }
+        if let Some(url) = m.link {
+            h.color = Some(p.acc);
+            h.underline = Some(UnderlineStyle {
+                thickness: px(1.),
+                color: Some(p.acc),
+                wavy: false,
+            });
+            links.push((range.clone(), url));
+        }
+        highlights.push((range, h));
     }
-    flush(&mut buf, in_code, &mut out);
-    out
+    RichText::new(SharedString::from(id), text.text, highlights, fonts, links).document_order(order)
+}
+
+/// One block of an answer, its text selectable in reading order (`next` numbers the runs).
+fn markdown_block(
+    block: Block,
+    id: &str,
+    next: &dyn Fn() -> u64,
+    p: &crate::theme::Palette,
+) -> gpui_kit::AnyElement {
+    use gpui_kit::IntoElement as _;
+    match block {
+        Block::Paragraph(text) => div()
+            .text_size(ts::UI)
+            .whitespace_normal()
+            .child(rich(id.to_owned(), text, next(), p))
+            .into_any_element(),
+        Block::Heading { level, text } => div()
+            .pt(rpx(if level <= 2 { 4. } else { 2. }))
+            .text_size(rpx(match level {
+                1 => 15.,
+                2 => 14.,
+                _ => 13.,
+            }))
+            .font_weight(FontWeight::SEMIBOLD)
+            .whitespace_normal()
+            .child(rich(id.to_owned(), text, next(), p))
+            .into_any_element(),
+        Block::Item {
+            depth,
+            marker,
+            text,
+        } => div()
+            .flex()
+            .gap(rpx(6.))
+            .pl(rpx(4. + 16. * depth as f32))
+            .text_size(ts::UI)
+            .child(
+                div()
+                    .flex_none()
+                    .min_w(rpx(12.))
+                    .text_color(p.fg2)
+                    .child(marker),
+            )
+            .child(div().flex_1().min_w_0().whitespace_normal().child(rich(
+                id.to_owned(),
+                text,
+                next(),
+                p,
+            )))
+            .into_any_element(),
+        Block::Code { body, .. } => div()
+            .px(rpx(8.))
+            .py(rpx(6.))
+            .rounded(px(6.))
+            .bg(p.surface)
+            .font_family(MONO)
+            .text_size(ts::LABEL)
+            .whitespace_normal()
+            .child(
+                SelectableText::new(SharedString::from(id.to_owned()), body).document_order(next()),
+            )
+            .into_any_element(),
+        Block::Table { head, rows } => {
+            let cols = head
+                .len()
+                .max(rows.iter().map(Vec::len).max().unwrap_or(0))
+                .max(1);
+            let row = |cells: Vec<Inline>, r: usize, header: bool| {
+                let mut line = div().flex().w_full().border_color(p.bd);
+                if r > 0 {
+                    line = line.border_t_1();
+                }
+                if header {
+                    line = line.bg(p.surface).font_weight(FontWeight::SEMIBOLD);
+                }
+                let mut cells = cells.into_iter();
+                for c in 0..cols {
+                    let cell = cells.next().unwrap_or_default();
+                    let mut d = div()
+                        .flex_1()
+                        .min_w_0()
+                        .px(rpx(6.))
+                        .py(rpx(4.))
+                        .whitespace_normal()
+                        .border_color(p.bd)
+                        .child(rich(format!("{id}-{r}-{c}"), cell, next(), p));
+                    if c > 0 {
+                        d = d.border_l_1();
+                    }
+                    line = line.child(d);
+                }
+                line
+            };
+            let mut table = div()
+                .flex()
+                .flex_col()
+                .rounded(px(6.))
+                .border_1()
+                .border_color(p.bd)
+                .overflow_hidden()
+                .text_size(ts::BODY)
+                .child(row(head, 0, true));
+            for (r, cells) in rows.into_iter().enumerate() {
+                table = table.child(row(cells, r + 1, false));
+            }
+            table.into_any_element()
+        }
+        Block::Quote(text) => div()
+            .pl(rpx(8.))
+            .border_l_2()
+            .border_color(p.bd2)
+            .text_color(p.fg2)
+            .text_size(ts::UI)
+            .whitespace_normal()
+            .child(rich(id.to_owned(), text, next(), p))
+            .into_any_element(),
+        Block::Rule => div().h(rpx(1.)).bg(p.bd).into_any_element(),
+    }
 }
 
 /// What the assistant is asked about: a database connection or an SSH Host.
@@ -361,8 +500,9 @@ to look at the keys and the server before you answer. Give any change as redis-c
 a ```redis block for the user to run.";
 
 const MONGO_RULES: &str = "Use list_tables for the collections and run_query with read-only \
-mongosh statements (find, aggregate, countDocuments) to look at the data before you answer. \
-Give any change as mongosh in a ```js block for the user to run.";
+mongosh statements (find, aggregate, countDocuments) to look at the data before you answer; \
+explain shows a find or aggregate's plan. Give any change as mongosh in a ```js block for the \
+user to run.";
 
 const SQL_RULES: &str = "Use Switchyard's tools to look at the tables and plans before you answer. \
 Give every suggested index, statistics change or rewritten query as SQL in its own ```sql block \
@@ -523,15 +663,24 @@ impl AssistantPanel {
 
     /// Optimize `sql` (from the editor, or the plan view with its findings).
     pub fn optimize(&mut self, sql: String, findings: Vec<String>, cx: &mut Context<Self>) {
+        // SQL engines, and document stores whose plans Switchyard reads (MongoDB).
         let Some(conn) = self
             .connection
             .as_ref()
-            .filter(|t| t.is_sql())
             .and_then(AssistantTarget::db)
+            .filter(|c| {
+                c.engine.is_sql()
+                    && (!c.engine.is_document_store() || dialect_for(c.engine).plans().estimated)
+            })
             .cloned()
             .filter(|_| !self.api)
         else {
             return;
+        };
+        let (fence, rules) = if conn.engine.is_document_store() {
+            ("js", MONGO_RULES)
+        } else {
+            ("sql", SQL_RULES)
         };
         self.mode = Mode::Optimize;
         self.session = None;
@@ -539,7 +688,7 @@ impl AssistantPanel {
         let mut prompt = format!(
             "Optimize this {} statement on the connection named \"{}\". Explain its plan \
              (explain tool), look at the tables it uses, and suggest what would make it faster.\n\n\
-             ```sql\n{sql}\n```\n",
+             ```{fence}\n{sql}\n```\n",
             conn.engine.display_name(),
             conn.name
         );
@@ -550,7 +699,7 @@ impl AssistantPanel {
             }
         }
         prompt.push('\n');
-        prompt.push_str(SQL_RULES);
+        prompt.push_str(rules);
         let first_line = sql.lines().next().unwrap_or_default();
         let asked = format!("Optimize: {}", ellipsis(first_line, 70));
         self.start(asked, prompt, false, cx);
@@ -610,7 +759,7 @@ impl AssistantPanel {
         cx.notify();
     }
 
-    /// A command an agent wants to run on a Host.
+    /// A command an agent wants to run on a Host, or an actual plan it asks for.
     pub fn on_approval(&mut self, approval: AgentApproval, cx: &mut Context<Self>) {
         self.approvals.retain(|a| a.id != approval.id);
         self.approvals.push(approval);
@@ -641,9 +790,9 @@ impl AssistantPanel {
             .flex_none()
             .flex()
             .flex_col()
-            .gap(px(8.))
-            .px(px(12.))
-            .py(px(8.))
+            .gap(rpx(8.))
+            .px(rpx(12.))
+            .py(rpx(8.))
             .border_t_1()
             .border_color(p.bd);
         for a in &self.approvals {
@@ -653,32 +802,32 @@ impl AssistantPanel {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(6.))
-                    .p(px(9.))
+                    .gap(rpx(6.))
+                    .p(rpx(9.))
                     .rounded(px(6.))
                     .border_1()
                     .border_color(if prod { p.prod } else { p.acc })
                     .bg(if prod { p.prod_bg } else { p.surface })
-                    .child(div().text_size(px(11.5)).text_color(p.fg2).child(format!(
-                        "{} wants to run on {}{}:",
-                        a.agent.display_name(),
-                        a.host_name,
-                        if prod { " (Production)" } else { "" }
-                    )))
                     .child(
                         div()
-                            .px(px(7.))
-                            .py(px(5.))
+                            .text_size(ts::LABEL)
+                            .text_color(p.fg2)
+                            .child(approval_title(a)),
+                    )
+                    .child(
+                        div()
+                            .px(rpx(7.))
+                            .py(rpx(5.))
                             .rounded(px(4.))
                             .bg(p.bg)
                             .font_family(MONO)
-                            .text_size(px(12.))
-                            .child(a.command.clone()),
+                            .text_size(ts::BODY)
+                            .child(a.text.clone()),
                     )
                     .child(
                         div()
                             .flex()
-                            .gap(px(6.))
+                            .gap(rpx(6.))
                             .child(
                                 ui::button(
                                     SharedString::from(format!("asst-run-{id}")),
@@ -907,20 +1056,20 @@ impl Render for AssistantPanel {
             .flex_none()
             .flex()
             .items_center()
-            .gap(px(8.))
-            .px(px(12.))
-            .h(px(40.))
+            .gap(rpx(8.))
+            .px(rpx(12.))
+            .h(rpx(40.))
             .border_b_1()
             .border_color(p.bd)
             .child(
                 div()
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_size(px(13.))
+                    .text_size(ts::BASE)
                     .child("Assistant"),
             )
             .child(
                 div()
-                    .text_size(px(11.5))
+                    .text_size(ts::LABEL)
                     .text_color(p.fg3)
                     .truncate()
                     .child(conn_name),
@@ -929,12 +1078,12 @@ impl Render for AssistantPanel {
             .child(
                 div()
                     .id("asst-agent")
-                    .px(px(7.))
-                    .py(px(2.))
+                    .px(rpx(7.))
+                    .py(rpx(2.))
                     .rounded(px(5.))
                     .border_1()
                     .border_color(p.bd2)
-                    .text_size(px(11.5))
+                    .text_size(ts::LABEL)
                     .hover(|s| s.bg(p.hover))
                     .tooltip(|w, cx| {
                         gpui_kit::component::tooltip::Tooltip::new(
@@ -964,8 +1113,8 @@ impl Render for AssistantPanel {
             .child(
                 div()
                     .id("asst-terminal")
-                    .px(px(6.))
-                    .text_size(px(11.5))
+                    .px(rpx(6.))
+                    .text_size(ts::LABEL)
                     .text_color(p.fg2)
                     .hover(|s| s.text_color(p.fg))
                     .tooltip(|w, cx| {
@@ -982,7 +1131,7 @@ impl Render for AssistantPanel {
             .child(
                 div()
                     .id("asst-close")
-                    .px(px(4.))
+                    .px(rpx(4.))
                     .text_color(p.fg3)
                     .hover(|s| s.text_color(p.fg))
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(AssistantPanelEvent::Close)))
@@ -991,9 +1140,9 @@ impl Render for AssistantPanel {
         let modes = div()
             .flex_none()
             .flex()
-            .gap(px(6.))
-            .px(px(12.))
-            .py(px(8.))
+            .gap(rpx(6.))
+            .px(rpx(12.))
+            .py(rpx(8.))
             .when(
                 !self.api && self.connection.as_ref().is_none_or(AssistantTarget::is_sql),
                 |d| {
@@ -1050,15 +1199,15 @@ impl Render for AssistantPanel {
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| window.focus(&this.transcript_focus, cx)),
             )
-            .px(px(12.))
-            .pb(px(12.))
+            .px(rpx(12.))
+            .pb(rpx(12.))
             .flex()
             .flex_col()
-            .gap(px(12.));
+            .gap(rpx(12.));
         if empty {
             transcript = transcript.child(
                 div()
-                    .text_size(px(12.))
+                    .text_size(ts::BODY)
                     .text_color(p.fg2)
                     .child(match (self.api, self.mode) {
                         (false, _) if matches!(self.connection, Some(AssistantTarget::Host(_))) => "Ask about this host below. The assistant uses your coding CLI and asks you to approve every command it wants to run here; nothing runs until you click Run.",
@@ -1072,21 +1221,24 @@ impl Render for AssistantPanel {
         }
         // Every transcript string is one run of the window's text selection: a drag can cross
         // runs and the copy (Ctrl/Cmd+C) joins them in reading order.
-        let mut order = 0u64;
-        let mut sel = |id: String, text: String| {
-            order += 1;
-            SelectableText::new(SharedString::from(id), text).document_order(order)
+        let order = std::cell::Cell::new(0u64);
+        let next = || {
+            order.set(order.get() + 1);
+            order.get()
+        };
+        let sel = |id: String, text: String| {
+            SelectableText::new(SharedString::from(id), text).document_order(next())
         };
         let turns = self.turns.len();
         for (ti, turn) in self.turns.iter().enumerate() {
             let last = ti + 1 == turns;
-            let mut t = div().flex().flex_col().gap(px(8.)).child(
+            let mut t = div().flex().flex_col().gap(rpx(8.)).child(
                 div()
-                    .px(px(9.))
-                    .py(px(6.))
+                    .px(rpx(9.))
+                    .py(rpx(6.))
                     .rounded(px(6.))
                     .bg(p.sel)
-                    .text_size(px(12.))
+                    .text_size(ts::BODY)
                     .child(sel(format!("asst-q-{ti}"), turn.asked.clone())),
             );
             let tools: Vec<&Item> = turn
@@ -1096,10 +1248,10 @@ impl Render for AssistantPanel {
                 .collect();
             if !tools.is_empty() {
                 let expanded = turn.expanded_tools;
-                let mut list = div().flex().flex_col().gap(px(3.)).child(
+                let mut list = div().flex().flex_col().gap(rpx(3.)).child(
                     div()
                         .id(SharedString::from(format!("asst-tools-{ti}")))
-                        .text_size(px(11.))
+                        .text_size(ts::SMALL)
                         .text_color(p.fg3)
                         .hover(|s| s.text_color(p.fg2))
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -1130,8 +1282,8 @@ impl Render for AssistantPanel {
                     };
                     let mut row = div()
                         .flex()
-                        .gap(px(6.))
-                        .text_size(px(11.5))
+                        .gap(rpx(6.))
+                        .text_size(ts::LABEL)
                         .font_family(MONO)
                         .child(div().text_color(color).child(mark))
                         .child(
@@ -1150,7 +1302,7 @@ impl Render for AssistantPanel {
                         row = row.flex_wrap().child(
                             div()
                                 .w_full()
-                                .pl(px(14.))
+                                .pl(rpx(14.))
                                 .text_color(p.fg3)
                                 .whitespace_normal()
                                 .child(sel(format!("asst-tr-{k}"), ellipsis(text, 1200))),
@@ -1163,29 +1315,15 @@ impl Render for AssistantPanel {
             for (ii, item) in turn.items.iter().enumerate() {
                 match item {
                     Item::Text(s) => {
-                        for (si, seg) in segments(s).into_iter().enumerate() {
+                        for (si, block) in chat_markdown::parse(s).into_iter().enumerate() {
                             let id = format!("asst-x-{ti}-{ii}-{si}");
-                            t = t.child(match seg {
-                                Segment::Prose(s) => div()
-                                    .text_size(px(12.5))
-                                    .whitespace_normal()
-                                    .child(sel(id, s)),
-                                Segment::Code(s) => div()
-                                    .px(px(8.))
-                                    .py(px(6.))
-                                    .rounded(px(6.))
-                                    .bg(p.surface)
-                                    .font_family(MONO)
-                                    .text_size(px(11.5))
-                                    .whitespace_normal()
-                                    .child(sel(id, s)),
-                            });
+                            t = t.child(markdown_block(block, &id, &next, &p));
                         }
                     }
                     Item::Thinking(s) if last && turn.done.is_none() => {
                         t = t.child(
                             div()
-                                .text_size(px(11.5))
+                                .text_size(ts::LABEL)
                                 .text_color(p.fg3)
                                 .italic()
                                 .child(sel(format!("asst-th-{ti}-{ii}"), ellipsis(s, 300))),
@@ -1194,18 +1332,18 @@ impl Render for AssistantPanel {
                     Item::Error(e) => {
                         t = t.child(
                             div()
-                                .px(px(9.))
-                                .py(px(6.))
+                                .px(rpx(9.))
+                                .py(rpx(6.))
                                 .rounded(px(6.))
                                 .bg(p.prod_bg)
-                                .text_size(px(12.))
+                                .text_size(ts::BODY)
                                 .child(sel(format!("asst-e-{ti}-{ii}"), e.clone())),
                         );
                     }
                     Item::Note(n) => {
                         t = t.child(
                             div()
-                                .text_size(px(11.5))
+                                .text_size(ts::LABEL)
                                 .text_color(p.fg3)
                                 .child(sel(format!("asst-n-{ti}-{ii}"), n.clone())),
                         );
@@ -1227,14 +1365,14 @@ impl Render for AssistantPanel {
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(6.))
-                        .p(px(8.))
+                        .gap(rpx(6.))
+                        .p(rpx(8.))
                         .rounded(px(6.))
                         .border_1()
                         .border_color(p.bd2)
                         .child(
                             div()
-                                .text_size(px(10.5))
+                                .text_size(ts::CAPTION_PLUS)
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(p.fg3)
                                 .child(s.kind.label().to_uppercase()),
@@ -1242,14 +1380,14 @@ impl Render for AssistantPanel {
                         .child(
                             div()
                                 .font_family(MONO)
-                                .text_size(px(11.5))
+                                .text_size(ts::LABEL)
                                 .whitespace_normal()
                                 .child(sel(format!("asst-s-{ti}-{si}"), s.sql.clone())),
                         )
                         .child(
                             div()
                                 .flex()
-                                .gap(px(6.))
+                                .gap(rpx(6.))
                                 .child(
                                     ui::button(
                                         SharedString::from(format!("asst-cmp-{ti}-{si}")),
@@ -1302,14 +1440,14 @@ impl Render for AssistantPanel {
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(6.))
-                        .p(px(8.))
+                        .gap(rpx(6.))
+                        .p(rpx(8.))
                         .rounded(px(6.))
                         .border_1()
                         .border_color(p.bd2)
                         .child(
                             div()
-                                .text_size(px(10.5))
+                                .text_size(ts::CAPTION_PLUS)
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(p.fg3)
                                 .child(format!("REQUEST · {}", r.name)),
@@ -1317,17 +1455,17 @@ impl Render for AssistantPanel {
                         .child(
                             div()
                                 .font_family(MONO)
-                                .text_size(px(11.5))
+                                .text_size(ts::LABEL)
                                 .whitespace_normal()
                                 .child(sel(format!("asst-r-{ti}-{ri}"), line)),
                         )
-                        .child(div().text_size(px(11.)).text_color(p.fg3).child(format!(
+                        .child(div().text_size(ts::SMALL).text_color(p.fg3).child(format!(
                             "{} header{}{body_note}",
                             r.headers.len(),
                             if r.headers.len() == 1 { "" } else { "s" }
                         )))
                         .child(
-                            div().flex().gap(px(6.)).child(
+                            div().flex().gap(rpx(6.)).child(
                                 ui::button(
                                     SharedString::from(format!("asst-req-{ti}-{ri}")),
                                     "Open in Workbench",
@@ -1362,7 +1500,7 @@ impl Render for AssistantPanel {
             if last && running {
                 t = t.child(
                     div()
-                        .text_size(px(11.5))
+                        .text_size(ts::LABEL)
                         .text_color(p.acc)
                         .child("Working…"),
                 );
@@ -1373,28 +1511,24 @@ impl Render for AssistantPanel {
         let footer = div()
             .flex_none()
             .flex()
-            .gap(px(6.))
+            .gap(rpx(6.))
             .items_center()
-            .p(px(10.))
+            .p(rpx(10.))
             .border_t_1()
             .border_color(p.bd)
             .child(
                 div()
                     .flex_1()
-                    .h(px(30.))
+                    .h(rpx(30.))
                     .flex()
                     .items_center()
-                    .px(px(8.))
+                    .px(rpx(8.))
                     .border_1()
                     .border_color(p.bd2)
                     .rounded(px(6.))
                     .bg(p.bg)
-                    .text_size(px(12.5))
-                    .child(
-                        Input::new(&self.input)
-                            .appearance(false)
-                            .text_size(px(12.5)),
-                    ),
+                    .text_size(ts::UI)
+                    .child(Input::new(&self.input).appearance(false).text_size(ts::UI)),
             )
             .child(
                 ui::button("asst-send", "Send", Kind::Primary, &p)
@@ -1472,18 +1606,27 @@ mod tests {
 
     #[test]
     fn splits_prose_and_code() {
-        let s = segments(
-            "Add an index:\n\n```sql\nCREATE INDEX i ON t (a);\n```\nThen\n```\nANALYZE t;",
-        );
+        let text = "Add an index:\n\n```sql\nCREATE INDEX i ON t (a);\n```\nThen\n```\nANALYZE t;";
+        let blocks = chat_markdown::parse(text);
         assert_eq!(
-            s,
+            blocks,
             [
-                Segment::Prose("Add an index:".into()),
-                Segment::Code("CREATE INDEX i ON t (a);".into()),
-                Segment::Prose("Then".into()),
-                Segment::Code("ANALYZE t;".into()),
+                Block::Paragraph(Inline::plain("Add an index:")),
+                Block::Code {
+                    lang: "sql".into(),
+                    body: "CREATE INDEX i ON t (a);".into()
+                },
+                Block::Paragraph(Inline::plain("Then")),
+                Block::Code {
+                    lang: String::new(),
+                    body: "ANALYZE t;".into()
+                },
             ]
         );
+        // The suggestion cards read the same fences.
+        let s = suggestions(text);
+        assert_eq!(s.len(), 2);
+        assert_eq!(s[0].sql, "CREATE INDEX i ON t (a);");
     }
 
     #[test]

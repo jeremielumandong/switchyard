@@ -29,8 +29,9 @@ use switchyard_remote::ssh::{
 };
 use switchyard_remote::{LocalFs, RemoteFs};
 use switchyard_store::{
-    AppPaths, DbConnection, HistoryEntry, HistoryStatus, Host, KeychainStore, MemoryStore, Profile,
-    ProfileId, SecretRef, SecretStore, SshAuth, Store, StoreError, VaultStore, now_ms,
+    AppPaths, DbConnection, FileConnection, HistoryEntry, HistoryStatus, Host, HostPatch,
+    KeychainStore, MemoryStore, Profile, ProfileId, SecretRef, SecretStore, SshAuth, Store,
+    StoreError, VaultStore, now_ms,
 };
 use switchyard_term::{LocalShell, TermSize};
 use tokio::sync::mpsc;
@@ -45,6 +46,7 @@ use crate::runtime::EventSender;
 
 mod activity;
 pub mod agent;
+pub mod agent_plan;
 pub mod agent_ssh;
 mod assistant;
 mod redis;
@@ -388,7 +390,10 @@ impl Service {
                     tokio::spawn(crate::handoff::serve(
                         crate::handoff::handoff_file(&data_dir),
                         self.events.clone(),
-                        Some(self.agent_responder()),
+                        Some(crate::handoff::AgentResponders {
+                            command: self.agent_responder(),
+                            plan: self.plan_approver(),
+                        }),
                     ));
                     continue;
                 }
@@ -419,6 +424,14 @@ impl Service {
             .await
             .map_err(|e| CoreError::Internal(e.to_string()))?
             .map_err(CoreError::from)
+    }
+
+    /// Emit the terminal macros ([`Event::Macros`]).
+    async fn emit_macros(&self) {
+        match self.with_store(|s| s.macros()).await {
+            Ok(list) => self.emit(Event::Macros(list)),
+            Err(e) => self.error("Macros", e),
+        }
     }
 
     /// Emit the user's snippets ([`Event::Snippets`]).
@@ -486,6 +499,7 @@ impl Service {
                 let removed = self.with_store(move |s| s.delete_profile(&id)).await;
                 match removed {
                     Ok(Some(p)) => {
+                        self.files.ftp.lock().await.remove(&p.id().0);
                         if let Some(key) = p.secret().cloned() {
                             let _ = self.with_secrets(move |s| s.delete(&key)).await;
                         }
@@ -498,6 +512,23 @@ impl Service {
                     }
                     Ok(None) => {}
                     Err(e) => self.error("Delete", e),
+                }
+                self.emit_profiles().await;
+            }
+            Command::DuplicateProfile { id } => {
+                match self.duplicate_profile(id).await {
+                    Ok(name) => self.emit(Event::Toast(format!("Saved {name}"))),
+                    Err(e) => self.error("Duplicate", e),
+                }
+                self.emit_profiles().await;
+            }
+            Command::UpdateHosts { ids, patch } => {
+                match self.update_hosts(ids, patch).await {
+                    Ok(n) => self.emit(Event::Toast(format!(
+                        "Updated {n} Host{}",
+                        if n == 1 { "" } else { "s" }
+                    ))),
+                    Err(e) => self.error("Bulk edit", e),
                 }
                 self.emit_profiles().await;
             }
@@ -558,6 +589,17 @@ impl Service {
                     result: result.map_err(|e| e.to_string()),
                 });
             }
+            Command::TestFiles {
+                request,
+                connection,
+                secret,
+            } => {
+                let result = self.test_files(connection, secret).await;
+                self.emit(Event::TestResult {
+                    request,
+                    result: result.map_err(|e| e.to_string()),
+                });
+            }
             Command::TestHost {
                 request,
                 host,
@@ -594,6 +636,27 @@ impl Service {
             Command::CloseTerminal { term } => self.terminals.close(term),
             Command::ReconnectTerminal { term } => {
                 self.terminals.send(term, TermInput::Reconnect);
+            }
+            Command::StartTerminalLog { term, settings } => {
+                let terminals = self.terminals.clone();
+                let dir = self.data_dir.join("terminal-logs");
+                let started =
+                    tokio::task::spawn_blocking(move || terminals.start_log(term, &settings, &dir))
+                        .await;
+                let state = match started {
+                    Ok(Ok(path)) => crate::bus::TermLogState::Started(path),
+                    Ok(Err(message)) => crate::bus::TermLogState::Failed(message),
+                    Err(e) => crate::bus::TermLogState::Failed(e.to_string()),
+                };
+                self.emit(Event::TerminalLog { term, state });
+            }
+            Command::StopTerminalLog { term } => {
+                let terminals = self.terminals.clone();
+                let _ = tokio::task::spawn_blocking(move || terminals.stop_log(term)).await;
+                self.emit(Event::TerminalLog {
+                    term,
+                    state: crate::bus::TermLogState::Stopped,
+                });
             }
             Command::AnswerPrompt { request, answer } => self.prompter.answer(request, answer),
             Command::AcceptChangedHostKey { host, fingerprint } => {
@@ -655,8 +718,12 @@ impl Service {
                 session,
                 request,
                 pattern,
+                kind,
                 cursor,
-            } => self.redis_scan(session, request, pattern, cursor).await,
+            } => {
+                self.redis_scan(session, request, pattern, kind, cursor)
+                    .await
+            }
             Command::RedisLoad {
                 session,
                 request,
@@ -823,6 +890,17 @@ impl Service {
                 match self.with_store(move |s| s.delete_snippet(&id)).await {
                     Ok(_) => self.emit_snippets().await,
                     Err(e) => self.error("Snippets", e),
+                }
+            }
+            Command::LoadMacros => self.emit_macros().await,
+            Command::SaveMacro(m) => match self.with_store(move |s| s.save_macro(&m)).await {
+                Ok(_) => self.emit_macros().await,
+                Err(e) => self.error("Macros", e),
+            },
+            Command::DeleteMacro { id } => {
+                match self.with_store(move |s| s.delete_macro(&id)).await {
+                    Ok(_) => self.emit_macros().await,
+                    Err(e) => self.error("Macros", e),
                 }
             }
             Command::LoadFavorites => self.emit_favorites().await,
@@ -1023,6 +1101,10 @@ impl Service {
                 });
             }
             Command::DetectComponents => self.emit_components().await,
+            Command::CheckForUpdates { manual } => {
+                let status = crate::update::check(&self.data_dir.join("updates")).await;
+                self.emit(Event::UpdateStatus { manual, status });
+            }
             Command::InstallComponent { id, accept_license } => {
                 let r = crate::components::install(
                     &self.components,
@@ -1103,6 +1185,7 @@ impl Service {
         let id = match fs {
             crate::bus::FsRef::Local => return Ok((Arc::new(LocalFs), cfg!(unix))),
             crate::bus::FsRef::Host(id) => id,
+            crate::bus::FsRef::Ftp(id) => return Ok((self.ftp_fs(id).await?, true)),
         };
         let mut open = self.files.sftp.lock().await;
         if let Some(f) = open.get(&id.0)
@@ -1124,6 +1207,89 @@ impl Service {
         );
         open.insert(id.0.clone(), f.clone());
         Ok((f, true))
+    }
+
+    /// The FTP file system of a saved file connection, logged in once and reused.
+    async fn ftp_fs(&self, id: &ProfileId) -> Result<Arc<dyn switchyard_remote::RemoteFs>> {
+        let mut open = self.files.ftp.lock().await;
+        if let Some(f) = open.get(&id.0) {
+            return Ok(f.clone());
+        }
+        let id2 = id.clone();
+        let Some(Profile::File(conn)) = self.with_store(move |s| s.profile(&id2)).await? else {
+            return Err(CoreError::NotFound(format!("file connection {}", id.0)));
+        };
+        let f = Arc::new(self.ftp_connect(&conn, None).await?);
+        open.insert(id.0.clone(), f.clone());
+        Ok(f)
+    }
+
+    /// Log in to an FTP file connection (`secret` overrides the stored password).
+    async fn ftp_connect(
+        &self,
+        c: &FileConnection,
+        secret: Option<SecretString>,
+    ) -> Result<switchyard_remote::FtpFs> {
+        use switchyard_remote::{FtpConfig, FtpDataMode, FtpSecurity};
+        use switchyard_store::{FileProtocol, FtpMode, FtpTls};
+        let FileProtocol::Ftp {
+            server,
+            port,
+            tls,
+            mode,
+            user,
+        } = &c.protocol
+        else {
+            return Err(CoreError::Unsupported(format!(
+                "{} is an SFTP connection",
+                c.name
+            )));
+        };
+        let password = match secret {
+            Some(s) => Some(s),
+            None => match c.secret.clone() {
+                Some(key) => self.with_secrets(move |s| s.get(&key)).await?,
+                None => None,
+            },
+        };
+        let mut cfg = FtpConfig::new(
+            server.trim(),
+            *port,
+            user.trim(),
+            password.unwrap_or_else(|| SecretString::from(String::new())),
+        );
+        cfg.security = match tls {
+            FtpTls::None => FtpSecurity::None,
+            FtpTls::Explicit => FtpSecurity::Explicit,
+            FtpTls::Implicit => FtpSecurity::Implicit,
+        };
+        cfg.mode = match mode {
+            FtpMode::Passive => FtpDataMode::Passive,
+            FtpMode::Active => FtpDataMode::Active,
+        };
+        let mut fs = switchyard_remote::FtpFs::connect(cfg, c.name.clone())
+            .await
+            .map_err(|e| CoreError::Unsupported(format!("FTP {}: {e}", c.name)))?;
+        if let Some(dir) = &c.default_path {
+            fs.set_home(dir);
+        }
+        Ok(fs)
+    }
+
+    async fn test_files(&self, c: FileConnection, secret: Option<SecretString>) -> Result<String> {
+        let started = Instant::now();
+        let fs = self.ftp_connect(&c, secret).await?;
+        let listed = fs
+            .list(&fs.home())
+            .await
+            .map_err(|e| CoreError::Unsupported(format!("Listing {}: {e}", fs.home().display())))?;
+        Ok(format!(
+            "Connected · {} · {} entries in {} · {} ms",
+            fs.describe(),
+            listed.len(),
+            fs.home().display(),
+            started.elapsed().as_millis()
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1269,10 +1435,27 @@ impl Service {
             ));
         }
         let mut inner = slot.inner.lock().await;
-        let own_txn = !inner.session.in_transaction();
+        let mut own_txn = !inner.session.in_transaction();
         if own_txn {
-            inner.session.begin().await?;
+            match inner.session.begin().await {
+                Ok(()) => {}
+                // No transactions (MongoDB here): apply one statement at a time and say
+                // how many went through if one fails.
+                Err(switchyard_db::DbError::Unsupported(_)) => own_txn = false,
+                Err(e) => return Err(e.into()),
+            }
         }
+        let atomic = own_txn || inner.session.in_transaction();
+        let partial = |total: u64, msg: String| {
+            if atomic || total == 0 {
+                msg
+            } else {
+                format!(
+                    "{msg} ({total} earlier change{} already saved)",
+                    if total == 1 { " was" } else { "s were" }
+                )
+            }
+        };
         let mut total = 0u64;
         for sql in &statements {
             let outcome: Result<u64> = async {
@@ -1292,13 +1475,19 @@ impl Service {
                     if own_txn {
                         let _ = inner.session.rollback().await;
                     }
-                    return Err(CoreError::Unsupported(format!(
-                        "expected to change 1 row but changed {n}; nothing was saved"
-                    )));
+                    let msg = if atomic {
+                        format!("expected to change 1 row but changed {n}; nothing was saved")
+                    } else {
+                        format!("expected to change 1 row but changed {n}")
+                    };
+                    return Err(CoreError::Unsupported(partial(total, msg)));
                 }
                 Err(e) => {
                     if own_txn {
                         let _ = inner.session.rollback().await;
+                    }
+                    if !atomic && total > 0 {
+                        return Err(CoreError::Unsupported(partial(total, e.to_string())));
                     }
                     return Err(e);
                 }
@@ -1359,7 +1548,11 @@ impl Service {
         }
         let id = profile.id().clone();
         match self.with_store(move |s| s.save_profile(&profile)).await {
-            Ok(()) => self.emit(Event::ProfileSaved { request, id }),
+            Ok(()) => {
+                // An edited FTP connection logs in again with its new settings.
+                self.files.ftp.lock().await.remove(&id.0);
+                self.emit(Event::ProfileSaved { request, id })
+            }
             Err(CoreError::Store(StoreError::Validation(v))) => self.emit(Event::ProfileError {
                 request,
                 field: Some(v.field),
@@ -1418,6 +1611,7 @@ impl Service {
             }
             TermTarget::Host(host_id) => match self.ssh_target(&host_id).await {
                 Ok(target) => {
+                    let (startup, env) = self.shell_startup(&host_id).await;
                     let description = format!("{}@{}", target.user, target.address);
                     let terminal = self.terminals.open_ssh(
                         SshTerminalSpec {
@@ -1425,6 +1619,8 @@ impl Service {
                             host_id,
                             target,
                             size,
+                            startup,
+                            env,
                         },
                         self.ssh.clone(),
                         self.events.clone(),
@@ -1487,6 +1683,96 @@ impl Service {
             .await
             .map_err(|e| CoreError::Unsupported(e.to_string()))?;
         Ok(format!("Connected · {}", conn.description))
+    }
+
+    /// What to type into each new shell on a Host (start folder, startup command,
+    /// connect macro) and the environment variables to send.
+    async fn shell_startup(&self, id: &ProfileId) -> (Vec<u8>, Vec<(String, String)>) {
+        let Ok(host) = self.host(id).await else {
+            return (Vec::new(), Vec::new());
+        };
+        let input = match host.connect_macro.clone() {
+            Some(mid) => match self.with_store(|s| s.macros()).await {
+                Ok(list) => list.into_iter().find(|m| m.id == mid).map(|m| m.input),
+                Err(e) => {
+                    warn!(error = %e, "connect macro not loaded");
+                    None
+                }
+            },
+            None => None,
+        };
+        let startup = crate::terminals::shell_startup(
+            host.start_directory.as_deref(),
+            host.startup_command.as_deref(),
+            input.as_deref(),
+        );
+        (startup, host.env)
+    }
+
+    /// Save a copy of a profile under a new id, with a copy of its stored secret.
+    async fn duplicate_profile(&self, id: ProfileId) -> Result<String> {
+        let id2 = id.clone();
+        let Some(profile) = self.with_store(move |s| s.profile(&id2)).await? else {
+            return Err(CoreError::NotFound(format!("profile {}", id.0)));
+        };
+        let old_secret = profile.secret().cloned();
+        let mut copy = match profile {
+            Profile::Host(h) => Profile::Host(h.duplicate()),
+            Profile::Db(mut d) => {
+                d.id = ProfileId::new();
+                d.name = format!("{} copy", d.name);
+                d.secret = None;
+                Profile::Db(d)
+            }
+            Profile::File(mut f) => {
+                f.id = ProfileId::new();
+                f.name = format!("{} copy", f.name);
+                f.secret = None;
+                Profile::File(f)
+            }
+            Profile::Terminal(mut t) => {
+                t.id = ProfileId::new();
+                t.name = format!("{} copy", t.name);
+                Profile::Terminal(t)
+            }
+        };
+        if let Some(old) = old_secret
+            && let Some(value) = self.with_secrets(move |s| s.get(&old)).await?
+        {
+            let purpose = if matches!(copy, Profile::Host(_)) {
+                "passphrase"
+            } else {
+                "password"
+            };
+            let key = SecretRef::for_profile(copy.id(), purpose);
+            let k = key.clone();
+            self.with_secrets(move |s| s.set(&k, &value)).await?;
+            match &mut copy {
+                Profile::Host(h) => h.secret = Some(key),
+                Profile::Db(d) => d.secret = Some(key),
+                Profile::File(f) => f.secret = Some(key),
+                Profile::Terminal(_) => {}
+            }
+        }
+        let name = copy.name().to_owned();
+        self.with_store(move |s| s.save_profile(&copy)).await?;
+        Ok(name)
+    }
+
+    /// Apply one change to several Hosts.
+    async fn update_hosts(&self, ids: Vec<ProfileId>, patch: HostPatch) -> Result<usize> {
+        self.with_store(move |s| {
+            let mut n = 0;
+            for id in &ids {
+                if let Some(Profile::Host(mut h)) = s.profile(id)? {
+                    patch.apply(&mut h);
+                    s.save_profile(&Profile::Host(h))?;
+                    n += 1;
+                }
+            }
+            Ok(n)
+        })
+        .await
     }
 
     async fn host(&self, id: &ProfileId) -> Result<Host> {

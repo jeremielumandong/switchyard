@@ -36,6 +36,7 @@ mod tab_session;
 mod transport;
 mod ux;
 mod view;
+mod virtual_rows;
 mod workspaces;
 
 use std::collections::HashSet;

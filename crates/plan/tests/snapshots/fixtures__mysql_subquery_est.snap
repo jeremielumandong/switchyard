@@ -1,0 +1,14 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&mysql_json(&name))
+---
+MySql Estimated
+#0 Remove Duplicates est=166 act=- loops=-
+  ! Uses a temporary table
+  #1 Nested Loop est=166 act=- loops=-
+    #2 Table scan on orders est=333 act=- loops=-
+      Filter: (`shop`.`orders`.`total` > 400.00)
+    #3 Single-row index lookup on customers.PRIMARY est=0 act=- loops=-
+      Index Cond: id = shop.orders.customer_id
+      Filter: (`shop`.`customers`.`segment` = 'vip')
+findings:
