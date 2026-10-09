@@ -106,6 +106,8 @@ pub struct Workspace {
     pub(crate) sidebar_drag: Option<(f32, f32)>,
     pub(crate) overlay: Option<Overlay>,
     pub(crate) toast: Option<SharedString>,
+    /// Update checks and the newer release, if any (M6-4).
+    pub(crate) updates: crate::updates::Updates,
     toast_task: Option<Task<()>>,
     /// Keeps relative times ("Cached 3 min ago") current under retained rendering.
     _clock: Task<()>,
@@ -194,6 +196,7 @@ impl Workspace {
             key: switchyard_core::agent_run::ASSISTANT_SETTINGS_KEY.into(),
         });
         core.send(Command::DetectComponents);
+        crate::updates::load_setting(&core);
         // Pins and the explorer's connection nodes (DBX-5e).
         core.send(Command::LoadFavorites);
         core.send(Command::LoadSetting {
@@ -269,6 +272,7 @@ impl Workspace {
             sidebar_drag: None,
             overlay: None,
             toast: None,
+            updates: crate::updates::Updates::default(),
             toast_task: None,
             _clock: cx.spawn(async move |this, cx| {
                 loop {
@@ -517,6 +521,10 @@ impl Workspace {
                     theme::apply_fonts(Some(window), cx);
                 }
             }
+            Event::Setting { key, value } if key == switchyard_core::update::CHECK_SETTING => {
+                self.on_update_setting(value);
+            }
+            Event::UpdateStatus { manual, status } => self.on_update_status(manual, status, cx),
             Event::Setting { key, value } if key == "sidebar.width" => {
                 if let Some(w) = value.as_ref().and_then(|v| v.as_f64()) {
                     self.sidebar_width = (w as f32).max(crate::sidebar::SIDEBAR_MIN);
@@ -2147,6 +2155,8 @@ impl Workspace {
             CommandId::ZoomIn => self.zoom_by(crate::appearance::zoom_in, window, cx),
             CommandId::ZoomOut => self.zoom_by(crate::appearance::zoom_out, window, cx),
             CommandId::ResetZoom => self.zoom_by(|_| 1.0, window, cx),
+            CommandId::CheckForUpdates => self.check_for_updates(cx),
+            CommandId::OpenLogFolder => self.open_log_folder(cx),
         }
         cx.notify();
     }
@@ -3084,6 +3094,7 @@ impl Workspace {
                     }),
             )
             .child(div().flex_1())
+            .children(self.render_update_notice(p, cx))
             .child(
                 div()
                     .id("sb-transfers")

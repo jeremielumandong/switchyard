@@ -114,6 +114,8 @@ jobs:
         env:
           # Baked into the build (empty when the repository variable is unset).
           SWITCHYARD_ENTRA_CLIENT_ID: ${{ vars.SWITCHYARD_ENTRA_CLIENT_ID }}
+          # minisign public key for in-app update verification (empty: notify only).
+          SWITCHYARD_UPDATE_PUBKEY: ${{ vars.SWITCHYARD_UPDATE_PUBKEY }}
         run: ./packaging/windows/build-windows.ps1
       # Sign in after compiling and don't rebuild afterwards: the GitHub OIDC assertion can
       # expire before SignTool exchanges it for a signing token.

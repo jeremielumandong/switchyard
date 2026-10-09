@@ -82,7 +82,7 @@ pub fn open_manager(core: RuntimeHandle, cx: &mut App) {
             title: Some("Snippets".into()),
             ..Default::default()
         }),
-        app_id: Some("dev.switchyard.Switchyard".into()),
+        app_id: Some("switchyard".into()),
         ..Default::default()
     };
     match gpui_kit::open_window(options, cx, |window, cx| {

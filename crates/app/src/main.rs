@@ -24,6 +24,7 @@ mod files_tab;
 mod folds;
 mod forwards_editor;
 mod grid;
+mod log_file;
 mod object_search;
 mod object_tab;
 mod overlays;
@@ -43,6 +44,7 @@ mod theme;
 mod transfers;
 mod ui;
 mod unsaved;
+mod updates;
 mod viewer;
 mod workload_tab;
 mod workspace;
@@ -55,6 +57,7 @@ use gpui_kit::{App, AppContext as _, Bounds, Global, WindowBounds, WindowOptions
 use switchyard_core::store::AppPaths;
 use switchyard_core::{Command, Core, ServiceConfig};
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::prelude::*;
 
 /// Keeps the core runtime alive for the life of the app.
 struct CoreHolder(#[allow(dead_code)] Core);
@@ -78,6 +81,46 @@ fn load_fonts(cx: &mut App) {
     }
 }
 
+/// Log to stdout and to `<data>/logs/switchyard.log` (rotated; see [`log_file`]). Release
+/// builds on Windows have no console, so the file is the only record there. Panics are
+/// logged too, then reported as usual.
+fn init_logging(paths: &AppPaths) {
+    let filter =
+        EnvFilter::try_from_env("SWITCHYARD_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
+    let file = match log_file::LogFile::start(&paths.logs_dir()) {
+        Ok(f) => Some(f),
+        Err(e) => {
+            eprintln!(
+                "switchyard: no log file in {}: {e}",
+                paths.logs_dir().display()
+            );
+            None
+        }
+    };
+    let file_layer = file.map(|f| {
+        tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(f)
+    });
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stdout))
+        .with(file_layer)
+        .init();
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!(panic = %info, "the app panicked");
+        default_hook(info);
+    }));
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        os = std::env::consts::OS,
+        arch = std::env::consts::ARCH,
+        portable = paths.portable,
+        "Switchyard starting"
+    );
+}
+
 fn main() -> Result<()> {
     // The API workspace runs `pm.*` scripts in a sandbox process: this binary with a hidden
     // argument, talking JSON over stdin/stdout. It must not start logging or the UI.
@@ -92,11 +135,7 @@ fn main() -> Result<()> {
     // Oracle Instant Client needs its folder on the loader path from process start.
     #[cfg(target_os = "linux")]
     switchyard_core::drivers::registry::reexec_with_loader_path(&paths.drivers_dir());
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_env("SWITCHYARD_LOG").unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
+    init_logging(&paths);
 
     let (core, events) = Core::start(ServiceConfig::from_paths(&paths))?;
     let handle = core.handle();
@@ -112,6 +151,7 @@ fn main() -> Result<()> {
             load_fonts(cx);
             api::compat::init(cx, paths.data.join("api"), handle.clone());
             cx.set_global(CoreHolder(core));
+            cx.set_global(updates::LogDir(paths.logs_dir()));
             actions::init(cx);
             editor_tab::init(cx);
             // The saved theme arrives from the store once the workspace loads.
@@ -123,7 +163,8 @@ fn main() -> Result<()> {
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_min_size: Some(size(px(900.), px(560.))),
-                app_id: Some("dev.switchyard.Switchyard".into()),
+                // Matches switchyard.desktop (and its StartupWMClass), so Wayland and X11 docks show its icon.
+                app_id: Some("switchyard".into()),
                 ..TitleBar::window_options()
             };
             let opened = gpui_kit::open_window(options, cx, |window, cx| {
