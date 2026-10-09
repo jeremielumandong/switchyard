@@ -264,6 +264,8 @@ pub enum Command {
         request: RequestId,
         /// Glob pattern (`user:*`); empty for all keys.
         pattern: String,
+        /// Only keys of this type (`SCAN … TYPE`); `None` for every type.
+        kind: Option<switchyard_db::redis::KeyKind>,
         /// Cursor from the previous page; 0 starts over.
         cursor: u64,
     },
@@ -648,7 +650,8 @@ pub enum Command {
         only: Option<Vec<String>>,
     },
     /// Apply staged inline edits in one transaction. Each statement must change exactly
-    /// one row; otherwise everything is rolled back.
+    /// one row; otherwise everything is rolled back. Sessions without transactions
+    /// (MongoDB) apply them in order and stop at the first failure.
     ApplyEdits {
         /// Session.
         session: SessionId,

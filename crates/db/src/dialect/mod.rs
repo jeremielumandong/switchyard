@@ -216,6 +216,12 @@ pub trait Dialect: Send + Sync {
         true
     }
 
+    /// Whether grid edits are document statements matched by `_id`
+    /// ([`crate::mongo::edit`]) rather than SQL matched by primary key ([`crate::edit`]).
+    fn edits_documents(&self) -> bool {
+        false
+    }
+
     /// The unit containing byte `offset` (statement at cursor). Falls back to the closest
     /// preceding unit, then the following one.
     fn statement_at(&self, sql: &str, offset: usize) -> Option<StatementSpan> {

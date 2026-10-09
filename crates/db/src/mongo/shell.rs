@@ -219,6 +219,19 @@ pub fn parse_document(text: &str) -> PResult<Document> {
     Ok(d)
 }
 
+/// Parse one relaxed-JSON value (`42`, `"x"`, `ObjectId("…")`, `[1, 2]`, `{ a: 1 }`):
+/// what a grid cell edit is typed in.
+pub fn parse_value(text: &str) -> PResult<Bson> {
+    let mut p = Parser { s: text, i: 0 };
+    p.ws();
+    let v = p.value()?;
+    p.ws();
+    if p.i < p.s.len() {
+        return Err(p.err("Unexpected text after the value"));
+    }
+    Ok(v)
+}
+
 /// One link of a `db…` call chain.
 #[derive(Debug)]
 enum Link {
@@ -653,7 +666,7 @@ fn arg_str(args: &[Bson], ix: usize) -> Option<&str> {
 }
 
 /// A date from ISO-8601 text (`2024-05-01`, `2024-05-01T10:00`, with or without zone).
-fn parse_date(s: &str) -> Option<DateTime> {
+pub(crate) fn parse_date(s: &str) -> Option<DateTime> {
     let s = s.trim();
     let candidates = [
         s.to_owned(),
