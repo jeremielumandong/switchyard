@@ -541,6 +541,10 @@ server or bundled Unix tools on Windows (Tier 3).
   request), empty Compose state with quick actions; request tabs open only on demand.
 - [x] UX-8 Workbench restores each project's open request tabs (saved requests only; order and
   active tab) from `workbench_tab_sessions` (store schema 7); no session opens with no tabs.
+- [x] UX-9 Connection dialog: one "Database" entry in the type rail with an engine picker
+  (tiles) above the form; each engine's form is its own `EngineForm` in
+  `app/src/conn_editor/engines/` (fields, layout, apply, required Driver Manager component),
+  registered in `engines.rs`. Switching engines keeps Name, Host and User.
 
 ## DBX — Database explorer and editors at DBeaver / SSMS level (user request)
 

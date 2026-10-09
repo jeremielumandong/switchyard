@@ -1856,7 +1856,12 @@ impl Workspace {
     ) {
         use crate::conn_editor::ConnKind;
         match id {
-            CommandId::NewConnection => self.open_conn_editor(ConnKind::Postgres, None, window, cx),
+            CommandId::NewConnection => self.open_conn_editor(
+                ConnKind::Db(switchyard_core::db::Engine::Postgres),
+                None,
+                window,
+                cx,
+            ),
             CommandId::NewHost => self.open_conn_editor(ConnKind::Ssh, None, window, cx),
             CommandId::NewTerminal => self.open_terminal(None, cx),
             CommandId::NewQueryTab => self.new_query_tab(window, cx),
@@ -2664,7 +2669,7 @@ impl Workspace {
                             )
                             .child(
                                 card("w-conn", "DB", "New Connection", "PostgreSQL, SQL Server, SFTP or FTP — direct or via a Host.".into())
-                                    .on_click(cx.listener(|this, _, w, cx| this.open_conn_editor(ConnKind::Postgres, None, w, cx))),
+                                    .on_click(cx.listener(|this, _, w, cx| this.open_conn_editor(ConnKind::Db(switchyard_core::db::Engine::Postgres), None, w, cx))),
                             )
                             .child(
                                 card(
