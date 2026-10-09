@@ -521,8 +521,13 @@ server or bundled Unix tools on Windows (Tier 3).
   words, ASCII case-insensitive, only default-colored text, never on the alternate screen).
   Deferred: font zoom per tab (UI zoom/font settings were being reworked in parallel;
   Follow-ups).
-- [ ] **MX-5 Macros.** Record keystrokes in a terminal, save with a name, replay into the
+- [x] **MX-5 Macros.** Record keystrokes in a terminal, save with a name, replay into the
   current terminal or all broadcast panes, run one on connect.
+  Note: tab header Record / ■ Stop records encoded keys and pastes (not mouse reports, 64 KB
+  cap), then asks for a name. `store::Macro` in the new `macros` table (migration 5), input
+  kept as an escaped string (`\r`, `\e`, `\xHH`). Macros ▾ menu: play into the active pane
+  (all panes when broadcasting), "All panes", delete. Host "Macro on connect" is typed into
+  every new shell (reconnects too). Replay sends everything at once (no per-key delays).
 - [ ] **MX-6 Session folders and per-session settings.** Folders and favorites in the
   sidebar; per-Host startup command, remote start directory, terminal font/colors override,
   environment variables; duplicate and bulk edit.

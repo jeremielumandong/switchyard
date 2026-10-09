@@ -399,6 +399,16 @@ impl ConnEditor {
                     "jump",
                     sel(jumps, h.jump_hosts.first().map_or("", |j| j.0.as_str())),
                 );
+                let mut macros = vec![("None".to_owned(), String::new())];
+                macros.extend(
+                    crate::terminal_settings::macros(cx)
+                        .into_iter()
+                        .map(|m| (m.name, m.id)),
+                );
+                self.selects.insert(
+                    "connect_macro",
+                    sel(macros, h.connect_macro.as_deref().unwrap_or("")),
+                );
             }
             ConnKind::Sftp => {
                 let (name, host, path) = match existing {
@@ -631,6 +641,7 @@ impl ConnEditor {
                 h.forward_x11 = self.forward_x11;
                 h.x11_display = opt(self.value("x11_display", cx));
                 let jump = self.chosen("jump");
+                h.connect_macro = Some(self.chosen("connect_macro")).filter(|m| !m.is_empty());
                 h.jump_hosts = if jump.is_empty() {
                     vec![]
                 } else {
@@ -1107,6 +1118,11 @@ impl ConnEditor {
                 }
                 v.push(Field::new("jump", "Jump host").span(4).mono());
                 v.push(Field::new("keepalive", "Keepalive (s)").span(2));
+                v.push(
+                    Field::new("connect_macro", "Macro on connect")
+                        .span(3)
+                        .hint("Typed into each new shell (record one in a terminal)"),
+                );
                 if self.forward_x11 {
                     v.push(
                         Field::new("x11_display", "X display")

@@ -186,6 +186,9 @@ pub struct Host {
     /// app. Off by default.
     #[serde(default)]
     pub agent_access: bool,
+    /// Terminal macro (its id) typed into each new shell on this Host (MX-5).
+    #[serde(default)]
+    pub connect_macro: Option<String>,
 }
 
 /// Direction of a saved port forward.
@@ -321,6 +324,7 @@ impl Host {
             forward_x11: false,
             x11_display: None,
             agent_access: false,
+            connect_macro: None,
         }
     }
 }

@@ -13,7 +13,8 @@ use switchyard_drivers::{Component, InstallProgress};
 use switchyard_remote::FileEntry;
 use switchyard_remote::ssh::{HostKeyDecision, HostKeyRequest, InteractiveRequest, TunnelInfo};
 use switchyard_store::{
-    BufferState, DbConnection, Favorite, HistoryEntry, Host, Profile, ProfileId, Snippet, Workspace,
+    BufferState, DbConnection, Favorite, HistoryEntry, Host, Macro, Profile, ProfileId, Snippet,
+    Workspace,
 };
 use switchyard_term::{TermSize, Terminal};
 
@@ -480,6 +481,15 @@ pub enum Command {
     /// Delete a user snippet, then reload.
     DeleteSnippet {
         /// Snippet id.
+        id: String,
+    },
+    /// Load the terminal macros ([`Event::Macros`]).
+    LoadMacros,
+    /// Save a terminal macro (new when its id is empty), then reload.
+    SaveMacro(Macro),
+    /// Delete a terminal macro, then reload.
+    DeleteMacro {
+        /// Macro id.
         id: String,
     },
     /// Load the pinned schema-tree objects ([`Event::Favorites`]).
@@ -1057,6 +1067,8 @@ pub enum Event {
     Snippets(Vec<Snippet>),
     /// The pinned schema-tree objects in order, answering the favorite commands.
     Favorites(Vec<Favorite>),
+    /// The terminal macros by name, answering the macro commands.
+    Macros(Vec<Macro>),
     /// History search results.
     History {
         /// Request id.

@@ -195,6 +195,7 @@ impl Workspace {
         core.send(Command::LoadSetting {
             key: switchyard_core::term_settings::TERMINAL_SETTINGS_KEY.into(),
         });
+        core.send(Command::LoadMacros);
         core.send(Command::DetectComponents);
         // Pins and the explorer's connection nodes (DBX-5e).
         core.send(Command::LoadFavorites);
@@ -417,6 +418,10 @@ impl Workspace {
             Event::TerminalClipboard { text, .. } => {
                 // OSC 52 copy: allowed (it only writes); reading the clipboard is never offered.
                 cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
+            }
+            Event::Macros(list) => {
+                crate::terminal_settings::set_macros(list, cx);
+                cx.notify();
             }
             Event::TerminalLog { term, state } => {
                 if let switchyard_core::TermLogState::Failed(m) = &state {

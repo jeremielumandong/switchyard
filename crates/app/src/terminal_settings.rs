@@ -12,6 +12,7 @@ use switchyard_core::term_settings::{
     DEFAULT_LOG_TEMPLATE, HighlightColor, HighlightRule, LogFormat, TERMINAL_SETTINGS_KEY,
     TerminalSettings,
 };
+use switchyard_core::store::Macro;
 use switchyard_core::{Command, RuntimeHandle};
 
 use crate::theme::{MONO, Palette, palette};
@@ -33,6 +34,24 @@ pub fn settings(cx: &App) -> TerminalSettings {
 /// Replace the settings in effect (loaded or saved).
 pub fn apply(s: TerminalSettings, cx: &mut App) {
     cx.set_global(TermPrefs(s));
+}
+
+/// The saved terminal macros (MX-5), by name.
+#[derive(Default)]
+struct MacroLibrary(Vec<Macro>);
+
+impl Global for MacroLibrary {}
+
+/// The saved terminal macros.
+pub fn macros(cx: &App) -> Vec<Macro> {
+    cx.try_global::<MacroLibrary>()
+        .map(|m| m.0.clone())
+        .unwrap_or_default()
+}
+
+/// Replace the macro list (after [`switchyard_core::Event::Macros`]).
+pub fn set_macros(list: Vec<Macro>, cx: &mut App) {
+    cx.set_global(MacroLibrary(list));
 }
 
 /// The settings page.

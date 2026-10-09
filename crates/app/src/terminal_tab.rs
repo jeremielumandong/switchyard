@@ -23,6 +23,8 @@ use switchyard_core::term::input::{
 };
 use switchyard_core::term::links::url_at;
 use switchyard_core::term::{CursorShape, Mark, Snapshot, TermColor, TermSize, Terminal};
+use switchyard_core::store::Macro;
+use switchyard_core::store::macros::{MAX_MACRO_BYTES, escape_input};
 use switchyard_core::term_settings::{HighlightRule, highlight_spans};
 use switchyard_core::{Command, RuntimeHandle, TermId, TermLogState, TermStatus, TermTarget};
 
@@ -106,6 +108,12 @@ pub struct TerminalTab {
     startup: Option<Vec<u8>>,
     /// Multi-line text waiting for the user to confirm the paste: (pane, text).
     pending_paste: Option<(usize, String)>,
+    /// Keystrokes recorded for a macro (MX-5) while recording.
+    recording: Option<Vec<u8>>,
+    /// A finished recording waiting for its name.
+    macro_save: Option<(Vec<u8>, Entity<InputState>)>,
+    /// The Macros menu is open.
+    macro_menu: bool,
     /// A coding CLI with Switchyard's tools ("Open in terminal"): (CLI, connection).
     agent: Option<(
         Option<switchyard_core::agents::AgentKind>,
@@ -146,6 +154,9 @@ impl TerminalTab {
             _search_sub: None,
             startup: None,
             pending_paste: None,
+            recording: None,
+            macro_save: None,
+            macro_menu: false,
             agent: None,
         };
         this.add_pane(cx);
@@ -174,6 +185,9 @@ impl TerminalTab {
             _search_sub: None,
             startup: None,
             pending_paste: None,
+            recording: None,
+            macro_save: None,
+            macro_menu: false,
             agent: Some((agent, connection)),
         };
         this.add_pane(cx);
@@ -555,7 +569,216 @@ impl TerminalTab {
             .get(ix)
             .map(|p| p.snapshot.modes)
             .unwrap_or_default();
-        self.send_input(ix, encode_paste(text, modes));
+        let bytes = encode_paste(text, modes);
+        self.record(&bytes);
+        self.send_input(ix, bytes);
+    }
+
+    /// Keep typed input while recording a macro.
+    fn record(&mut self, bytes: &[u8]) {
+        if let Some(rec) = &mut self.recording
+            && rec.len() + bytes.len() <= MAX_MACRO_BYTES
+        {
+            rec.extend_from_slice(bytes);
+        }
+    }
+
+    /// Start recording, or stop and ask for a name.
+    fn toggle_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.recording.take() {
+            None => {
+                self.recording = Some(Vec::new());
+                self.macro_save = None;
+                self.refocus(window, cx);
+            }
+            Some(bytes) if bytes.is_empty() => self.refocus(window, cx),
+            Some(bytes) => {
+                let name = cx.new(|cx| InputState::new(window, cx).placeholder("Macro name"));
+                name.update(cx, |i, cx| i.focus(window, cx));
+                self.macro_save = Some((bytes, name));
+            }
+        }
+        cx.notify();
+    }
+
+    /// Save (`true`) or drop the finished recording.
+    fn finish_recording(&mut self, save: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((bytes, name)) = self.macro_save.take()
+            && save
+        {
+            let name = name.read(cx).value().trim().to_owned();
+            let name = if name.is_empty() {
+                format!("Macro {}", crate::terminal_settings::macros(cx).len() + 1)
+            } else {
+                name
+            };
+            self.core.send(Command::SaveMacro(Macro::new(&name, bytes)));
+        }
+        self.refocus(window, cx);
+        cx.notify();
+    }
+
+    /// Type a macro into the active pane (every live pane when broadcasting), or into
+    /// every live pane when `all`.
+    fn play_macro(
+        &mut self,
+        input: Vec<u8>,
+        all: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.macro_menu = false;
+        if all {
+            let live: Vec<TermId> = self
+                .panes
+                .iter()
+                .filter(|p| p.state == PaneState::Live)
+                .map(|p| p.id)
+                .collect();
+            for term in live {
+                self.core.send(Command::TerminalInput {
+                    term,
+                    bytes: input.clone(),
+                });
+            }
+        } else {
+            self.send_input(self.active, input);
+        }
+        self.refocus(window, cx);
+        cx.notify();
+    }
+
+    /// The Macros menu, under the header.
+    fn render_macro_menu(
+        &self,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui_kit::AnyElement> {
+        if !self.macro_menu {
+            return None;
+        }
+        let list = crate::terminal_settings::macros(cx);
+        let multi = self.panes.len() > 1;
+        Some(
+            div()
+                .id("t-macros")
+                .absolute()
+                .top(px(38.))
+                .right(px(10.))
+                .w(px(300.))
+                .max_h(px(360.))
+                .overflow_y_scroll()
+                .p(px(4.))
+                .bg(p.elev)
+                .rounded(px(7.))
+                .shadow(ui::shadow(p))
+                .text_size(px(12.5))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .when(list.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .p(px(8.))
+                            .text_color(p.fg3)
+                            .child("No macros yet: press Record, type, then Stop."),
+                    )
+                })
+                .children(list.into_iter().enumerate().map(|(i, m)| {
+                    let (play, all, id) = (m.input.clone(), m.input.clone(), m.id.clone());
+                    div()
+                        .id(("t-macro", i))
+                        .h(px(28.))
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .px(px(8.))
+                        .rounded(px(4.))
+                        .hover(|s| s.bg(p.sel))
+                        .on_click(cx.listener(move |this, _, w, cx| {
+                            this.play_macro(play.clone(), false, w, cx)
+                        }))
+                        .child(div().text_color(p.fg3).child("▶"))
+                        .child(div().flex_1().min_w_0().truncate().child(m.name.clone()))
+                        .when(multi, |d| {
+                            d.child(
+                                ui::button(("t-macro-all", i), "All panes", Kind::Ghost, p)
+                                    .h(px(22.))
+                                    .on_click(cx.listener(move |this, _, w, cx| {
+                                        cx.stop_propagation();
+                                        this.play_macro(all.clone(), true, w, cx)
+                                    })),
+                            )
+                        })
+                        .child(
+                            ui::button(("t-macro-del", i), "×", Kind::Ghost, p)
+                                .h(px(22.))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.core.send(Command::DeleteMacro { id: id.clone() });
+                                })),
+                        )
+                }))
+                .into_any_element(),
+        )
+    }
+
+    /// "Save macro as …" under the header after a recording.
+    fn render_macro_save(
+        &self,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui_kit::AnyElement> {
+        let (bytes, name) = self.macro_save.as_ref()?;
+        Some(
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .px(px(12.))
+                .py(px(5.))
+                .bg(p.surface)
+                .border_b_1()
+                .border_color(p.bd)
+                .text_size(px(12.))
+                .child("Save macro as")
+                .child(
+                    div()
+                        .w(px(200.))
+                        .h(px(24.))
+                        .flex()
+                        .items_center()
+                        .px(px(6.))
+                        .border_1()
+                        .border_color(p.bd2)
+                        .rounded(px(5.))
+                        .bg(p.bg)
+                        .child(Input::new(name).appearance(false).text_size(px(12.))),
+                )
+                .child(
+                    div()
+                        .font_family(MONO)
+                        .text_color(p.fg3)
+                        .truncate()
+                        .min_w_0()
+                        .child(escape_input(&bytes[..bytes.len().min(80)])),
+                )
+                .child(div().flex_1())
+                .child(
+                    ui::button("t-macro-save", "Save", Kind::Primary, p)
+                        .h(px(22.))
+                        .on_click(
+                            cx.listener(|this, _, w, cx| this.finish_recording(true, w, cx)),
+                        ),
+                )
+                .child(
+                    ui::button("t-macro-discard", "Discard", Kind::Ghost, p)
+                        .h(px(22.))
+                        .on_click(
+                            cx.listener(|this, _, w, cx| this.finish_recording(false, w, cx)),
+                        ),
+                )
+                .into_any_element(),
+        )
     }
 
     fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -718,6 +941,7 @@ impl TerminalTab {
         };
         let modes = self.panes[ix].snapshot.modes;
         if let Some(bytes) = encode_key(&key, mods, modes) {
+            self.record(&bytes);
             self.send_input(ix, bytes);
             cx.stop_propagation();
         }
@@ -1696,6 +1920,8 @@ impl Render for TerminalTab {
         let can_split = n < MAX_PANES;
         let banner = self.banner(&p, cx);
         let paste_prompt = self.render_paste_prompt(&p, cx);
+        let macro_menu = self.render_macro_menu(&p, cx);
+        let macro_save = self.render_macro_save(&p, cx);
         div()
             .relative()
             .size_full()
@@ -1798,12 +2024,36 @@ impl Render for TerminalTab {
                         }))
                     })
                     .child(
+                        ui::button(
+                            "t-record",
+                            if self.recording.is_some() {
+                                "■ Stop"
+                            } else {
+                                "Record"
+                            },
+                            Kind::Ghost,
+                            &p,
+                        )
+                        .h(px(24.))
+                        .when(self.recording.is_some(), |b| b.text_color(p.prod))
+                        .on_click(cx.listener(|this, _, w, cx| this.toggle_recording(w, cx))),
+                    )
+                    .child(
+                        ui::button("t-macros", "Macros ▾", Kind::Ghost, &p)
+                            .h(px(24.))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.macro_menu = !this.macro_menu;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
                         ui::button("t-find", "Find", Kind::Ghost, &p)
                             .h(px(24.))
                             .on_click(cx.listener(|this, _, w, cx| this.open_search(w, cx))),
                     ),
             )
             .when_some(banner, |d, b| d.child(b))
+            .when_some(macro_save, |d, b| d.child(b))
             .when(self.broadcast && n > 1, |d| {
                 d.child(
                     div()
@@ -1827,6 +2077,7 @@ impl Render for TerminalTab {
                     .bg(p.bd)
                     .children(panes),
             )
+            .when_some(macro_menu, |d, e| d.child(e))
             .when_some(paste_prompt, |d, e| d.child(e))
     }
 }
