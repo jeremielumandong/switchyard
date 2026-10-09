@@ -1,0 +1,27 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "2053.25"
+    },
+    "table": {
+      "table_name": "plan_big",
+      "access_type": "ALL",
+      "rows_examined_per_scan": 20290,
+      "rows_produced_per_join": 2029,
+      "filtered": "10.00",
+      "cost_info": {
+        "read_cost": "1850.35",
+        "eval_cost": "202.90",
+        "prefix_cost": "2053.25",
+        "data_read_per_join": "190K"
+      },
+      "used_columns": [
+        "id",
+        "k",
+        "v"
+      ],
+      "attached_condition": "(`shop`.`plan_big`.`v` = 'v77')"
+    }
+  }
+}

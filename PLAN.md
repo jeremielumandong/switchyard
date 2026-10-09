@@ -264,7 +264,7 @@ Exit: integrated auth works on a Linux machine that started without Kerberos lib
   approved for the store), one worker thread per session, streamed batches, cancel via
   `sqlite3_interrupt`, transactions, catalog over attached databases, inline editing,
   connection editor with a file picker. See DECISIONS 2026-10-08.
-  Note: no query plans (`EXPLAIN QUERY PLAN` into `PlanNode` is a follow-up), no activity
+  Note: query plans (`EXPLAIN QUERY PLAN`, estimated) landed later with MySQL/MongoDB; no activity
   monitor or workload stats (nothing to show for an in-process engine).
 
 ## M4 — File transfer
@@ -470,7 +470,7 @@ faster, and no agent call ever performed a write.
   lexer flavour (backticks, `#` comments, backslash escapes, `DELIMITER` scripts); activity
   monitor on the process list; connection editor kind; docker `mysql` service. MariaDB works
   through the same driver (integration tests pass on MySQL 8.4 and MariaDB 11.4).
-  Note: plans (`EXPLAIN FORMAT=JSON`) and workload stats not done (Follow-ups).
+  Note: workload stats not done (Follow-ups); plans landed later (EXPLAIN FORMAT=JSON / ANALYZE).
 
 ## M7 — MobaXterm parity, Tier 1 (user request)
 
@@ -804,7 +804,7 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 
 ## Follow-ups
 
-- SQLite: `EXPLAIN QUERY PLAN` into `PlanNode`; a "New database file" save dialog in the connection editor (today a typed path is created on connect).
+- SQLite: a "New database file" save dialog in the connection editor (today a typed path is created on connect).
 
 - API Workbench: rename and delete workspaces (API-5 only adds and switches them).
 
@@ -827,11 +827,18 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   TCPS / wallet sign-in.
 - MySQL: `EXPLAIN FORMAT=JSON` / `EXPLAIN ANALYZE` → `PlanNode`; performance_schema digest
   workload view; zero dates (`0000-00-00`) show as NULL in date columns.
+
+  CI job with the `oracle` compose profile + Instant Client; TCPS / wallet sign-in.
+- MySQL: performance_schema digest
+  workload view; zero dates (`0000-00-00`) show as NULL in date columns; CI job with the
+  `mysql` compose service.
 - Snowflake: `EXPLAIN USING JSON` → `PlanNode`; QUERY_HISTORY / ACCESS_HISTORY workload view;
   exercise the driver against a real account; OAuth (external browser) sign-in.
 - API workspace: port AgentOps's Workbench UI tests; persist workbench preferences (they live
   in session memory for now); per-project collections (`current_project()` returns None).
 - MongoDB: transactions on replica sets, `explain` → `PlanNode`, `$currentOp`
+
+- MongoDB: transactions on replica sets, document edits from the grid (by `_id`), `$currentOp`
   activity monitor, X.509 / AWS / OIDC sign-in.
 
 - Smoke test for the FTP container (M0-2; SQL Server and SSH have theirs).
@@ -870,3 +877,10 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   verification fails; FTP through a Host tunnel; chmod (`SITE CHMOD`); reuse idle transfer
   connections instead of logging in per file; a cancelled browse command can leave the
   shared control connection mid-reply (reconnect then).
+
+- Plans for MySQL / SQLite / MongoDB landed (estimated + actual; SQLite estimated only). Not
+  done: Cloudflare D1 `EXPLAIN QUERY PLAN` over the HTTP API (`Dialect::plans` is NONE for
+  D1); MariaDB `ANALYZE FORMAT=JSON` is parsed but untested against a real MariaDB (no
+  compose service); MySQL 8.4 cannot `EXPLAIN ANALYZE` a single-table DELETE (Analyze
+  reports it and points to Explain); MongoDB SBE (`slotBasedPlan`) execution stages are
+  only summarized on the root; What-if and the workload view stay PostgreSQL / SQL Server.

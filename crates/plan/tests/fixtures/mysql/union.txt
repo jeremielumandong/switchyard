@@ -1,0 +1,7 @@
+-> Table scan on <union temporary>  (cost=286..299 rows=833) (actual time=0.52..0.562 rows=398 loops=1)
+    -> Union materialize with deduplication  (cost=286..286 rows=833) (actual time=0.518..0.518 rows=398 loops=1)
+        -> Filter: (customers.segment = 'vip')  (cost=101 rows=500) (actual time=0.0421..0.239 rows=333 loops=1)
+            -> Table scan on customers  (cost=101 rows=1000) (actual time=0.037..0.165 rows=1000 loops=1)
+        -> Filter: (orders.total > 450.00)  (cost=101 rows=333) (actual time=0.0282..0.217 rows=98 loops=1)
+            -> Table scan on orders  (cost=101 rows=1000) (actual time=0.0186..0.134 rows=1000 loops=1)
+

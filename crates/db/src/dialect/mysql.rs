@@ -261,6 +261,12 @@ fn split_with_delimiters(sql: &str) -> Vec<StatementSpan> {
 }
 
 impl Dialect for MySqlDialect {
+    /// `EXPLAIN FORMAT=JSON`; `EXPLAIN ANALYZE` (MySQL 8.0.18+) or MariaDB's
+    /// `ANALYZE FORMAT=JSON`.
+    fn plans(&self) -> super::PlanSupport {
+        super::PlanSupport::BOTH
+    }
+
     fn engine(&self) -> Engine {
         Engine::MySql
     }

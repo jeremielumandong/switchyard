@@ -1,0 +1,12 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&sqlite(&name))
+---
+Sqlite Estimated
+#0 Query Plan est=- act=- loops=-
+  #1 Primary Key Search on customers est=- act=- loops=-
+    Index Cond: (rowid=?)
+  #2 LIST SUBQUERY 1 est=- act=- loops=-
+    #3 Table Scan on orders est=- act=- loops=-
+findings:
+  Low FullScan node=Some(3): Table Scan on orders | Reads every row (the plan has no row counts). | Add an index on the filtered or joined columns, or narrow the query.

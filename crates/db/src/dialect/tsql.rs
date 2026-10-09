@@ -122,6 +122,10 @@ fn go_separator(line: &str) -> Option<u32> {
 }
 
 impl Dialect for TSqlDialect {
+    fn plans(&self) -> super::PlanSupport {
+        super::PlanSupport::BOTH
+    }
+
     fn engine(&self) -> Engine {
         Engine::SqlServer
     }

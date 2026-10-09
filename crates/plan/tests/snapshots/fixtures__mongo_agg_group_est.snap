@@ -1,0 +1,14 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&mongo(&name))
+---
+MongoDb Estimated
+#0 $sort est=- act=- loops=-
+  ! Sorts without an index (blocking sort in memory)
+  #1 $group est=- act=- loops=-
+    #2 PROJECTION_SIMPLE est=- act=- loops=-
+      #3 FETCH on orders est=- act=- loops=-
+        #4 IXSCAN on orders.status_1 est=- act=- loops=-
+          Index Bounds: {"status":["[\"C\", \"C\"]"]}
+findings:
+  Low TempStructure node=Some(0): $sort sorts without an index | Sorts without an index (blocking sort in memory). | An index whose order matches the sort lets rows come out already sorted.

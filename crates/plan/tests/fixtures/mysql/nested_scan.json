@@ -1,0 +1,58 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "99455.37"
+    },
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "a",
+          "access_type": "range",
+          "possible_keys": [
+            "PRIMARY"
+          ],
+          "key": "PRIMARY",
+          "used_key_parts": [
+            "id"
+          ],
+          "key_length": "4",
+          "rows_examined_per_scan": 49,
+          "rows_produced_per_join": 49,
+          "filtered": "100.00",
+          "cost_info": {
+            "read_cost": "5.18",
+            "eval_cost": "4.90",
+            "prefix_cost": "10.08",
+            "data_read_per_join": "4K"
+          },
+          "used_columns": [
+            "id",
+            "k"
+          ],
+          "attached_condition": "(`shop`.`a`.`id` < 50)"
+        }
+      },
+      {
+        "table": {
+          "table_name": "b",
+          "access_type": "ALL",
+          "rows_examined_per_scan": 20290,
+          "rows_produced_per_join": 99421,
+          "filtered": "10.00",
+          "using_join_buffer": "hash join",
+          "cost_info": {
+            "read_cost": "24.29",
+            "eval_cost": "9942.10",
+            "prefix_cost": "99455.37",
+            "data_read_per_join": "9M"
+          },
+          "used_columns": [
+            "k"
+          ],
+          "attached_condition": "(`shop`.`b`.`k` = `shop`.`a`.`k`)"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "explainVersion": "1",
+  "queryPlanner": {
+    "namespace": "switchyard_plan.orders",
+    "indexFilterSet": false,
+    "parsedQuery": {
+      "total": {
+        "$gte": 100
+      }
+    },
+    "queryHash": "611BBDA5",
+    "planCacheKey": "D11AEC0F",
+    "optimizationTimeMillis": 0,
+    "maxIndexedOrSolutionsReached": false,
+    "maxIndexedAndSolutionsReached": false,
+    "maxScansToExplodeReached": false,
+    "winningPlan": {
+      "stage": "SORT",
+      "sortPattern": {
+        "total": -1
+      },
+      "memLimit": 104857600,
+      "limitAmount": 5,
+      "type": "simple",
+      "inputStage": {
+        "stage": "COLLSCAN",
+        "filter": {
+          "total": {
+            "$gte": 100
+          }
+        },
+        "direction": "forward"
+      }
+    },
+    "rejectedPlans": []
+  }
+}

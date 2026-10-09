@@ -1232,3 +1232,25 @@ commands.
 - **Tests:** three vsftpd containers (explicit TLS required on 2121, implicit TLS on 2990,
   plain FTP on 127.0.0.1:2120 on the host network so active mode can connect back), with a
   certificate from a throwaway CA made by `scripts/ftp-test-certs.sh`.
+
+## Query plans for MySQL, SQLite and MongoDB (2026-10)
+
+- Capability: `Dialect::plans()` returns `PlanSupport { estimated, actual }`. The SQL tab
+  shows Explain / Analyze from it and `plan::capture` refuses what it does not offer; no
+  engine checks in UI code. SQLite is estimated only (EXPLAIN QUERY PLAN has no counts);
+  D1 is NONE until its HTTP path is wired.
+- MySQL estimated plans use `EXPLAIN FORMAT=JSON`, actual plans `EXPLAIN ANALYZE` (tree
+  text). The two differ in shape, so the JSON's access types are named with the tree's
+  vocabulary (`Table scan`, `Index lookup`, …) and `nested_loop` arrays become left-deep
+  `Nested Loop` nodes, so compare and the join rules line up. MariaDB actual plans use
+  `ANALYZE FORMAT=JSON` (detected with `SELECT VERSION()`), parsed by the same JSON reader.
+  Actual plans run in a rolled-back transaction or savepoint, as on PostgreSQL.
+- MongoDB plans append `.explain("queryPlanner" | "executionStats")` to a find or
+  aggregate statement. Analyze is refused for pipelines that write ($out / $merge), and a
+  statement that already ends in `.explain()` is refused (it would bypass the mode, and an
+  agent could ask for executionStats). MCP `explain` accepts MongoDB with the same rule:
+  one reading find/aggregate, estimated only.
+- New findings rule `TempStructure` (temporary table or index-less sort), engine-neutral:
+  converters tag nodes with the `model::warn` texts and the rule only reads those. Plans
+  with no row counts at all (SQLite, MongoDB estimates) flag every full scan and temp
+  structure at Low severity, since the plan cannot say how large they are.

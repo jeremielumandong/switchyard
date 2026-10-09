@@ -1,0 +1,54 @@
+{
+  "explainVersion": "1",
+  "queryPlanner": {
+    "namespace": "switchyard_plan.orders",
+    "indexFilterSet": false,
+    "parsedQuery": {
+      "total": {
+        "$gt": 490
+      }
+    },
+    "queryHash": "CACA99B3",
+    "planCacheKey": "12DCEA8D",
+    "optimizationTimeMillis": 0,
+    "maxIndexedOrSolutionsReached": false,
+    "maxIndexedAndSolutionsReached": false,
+    "maxScansToExplodeReached": false,
+    "winningPlan": {
+      "stage": "COLLSCAN",
+      "filter": {
+        "total": {
+          "$gt": 490
+        }
+      },
+      "direction": "forward"
+    },
+    "rejectedPlans": []
+  },
+  "executionStats": {
+    "executionSuccess": true,
+    "nReturned": 360,
+    "executionTimeMillis": 11,
+    "totalKeysExamined": 0,
+    "totalDocsExamined": 20000,
+    "executionStages": {
+      "stage": "COLLSCAN",
+      "filter": {
+        "total": {
+          "$gt": 490
+        }
+      },
+      "nReturned": 360,
+      "executionTimeMillisEstimate": 0,
+      "works": 20001,
+      "advanced": 360,
+      "needTime": 19640,
+      "needYield": 0,
+      "saveState": 20,
+      "restoreState": 20,
+      "isEOF": 1,
+      "direction": "forward",
+      "docsExamined": 20000
+    }
+  }
+}
