@@ -94,6 +94,11 @@ impl ConnKind {
         matches!(self, ConnKind::Db(e) if e.is_sql())
     }
 
+    /// Whether coding agents may use it: SQL engines only (MongoDB has no agent tools yet).
+    fn agents_apply(self) -> bool {
+        matches!(self, ConnKind::Db(e) if e.is_sql() && !e.is_document_store())
+    }
+
     fn sub(self) -> &'static str {
         match self {
             ConnKind::Db(e) => e.display_name(),
@@ -592,7 +597,7 @@ impl ConnEditor {
                 d.environment = self.env;
                 d.read_only = self.read_only;
                 d.history_enabled = self.history;
-                d.agent_access = self.agents && engine.is_sql();
+                d.agent_access = self.agents && self.kind.agents_apply();
                 d.assistant_agent = Some(self.chosen("assistant")).filter(|a| !a.is_empty());
                 Profile::Db(d)
             }
@@ -1137,7 +1142,7 @@ impl Render for ConnEditor {
         };
         let layout = self.layout(cx);
         let fields: Vec<AnyElement> = layout.iter().map(|f| self.field(f, &p, cx)).collect();
-        let assistant_field = (self.kind.is_sql() && self.agents).then(|| {
+        let assistant_field = (self.kind.agents_apply() && self.agents).then(|| {
             div()
                 .w(px(300.))
                 .child(self.field(&Field::new("assistant", "Assistant CLI"), &p, cx))
@@ -1432,7 +1437,7 @@ impl Render for ConnEditor {
                                     )),
                                 )
                             })
-                            .when(self.kind.is_sql(), |d| {
+                            .when(self.kind.agents_apply(), |d| {
                                 let label = if self.env.is_production() {
                                     "Allow coding agents (Production: read-only queries and \
                                      estimated plans; every call is recorded in history)"
