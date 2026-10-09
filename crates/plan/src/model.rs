@@ -12,6 +12,23 @@ pub enum PlanSource {
     Postgres,
     /// SQL Server showplan XML.
     SqlServer,
+    /// MySQL / MariaDB `EXPLAIN FORMAT=JSON`, `EXPLAIN ANALYZE` (tree) or MariaDB
+    /// `ANALYZE FORMAT=JSON`.
+    MySql,
+    /// SQLite `EXPLAIN QUERY PLAN` (no row counts or costs).
+    Sqlite,
+    /// MongoDB `explain` (`queryPlanner`, `executionStats`).
+    MongoDb,
+}
+
+/// Warning texts converters put on nodes so engine-neutral rules can find them
+/// ([`crate::Rule::TempStructure`]). Rules match on these prefixes.
+pub mod warn {
+    /// Rows are grouped, deduplicated or materialized through a temporary table.
+    pub const TEMP_TABLE: &str = "Uses a temporary table";
+    /// Rows are sorted because no index supplies the order (filesort, temp B-tree,
+    /// blocking in-memory sort).
+    pub const SORT: &str = "Sorts without an index";
 }
 
 /// Estimated plans come from the optimizer alone; actual plans ran the statement.

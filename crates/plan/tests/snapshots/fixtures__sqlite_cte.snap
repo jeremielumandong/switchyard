@@ -1,0 +1,15 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&sqlite(&name))
+---
+Sqlite Estimated
+#0 Query Plan est=- act=- loops=-
+  #1 Materialize on recent est=- act=- loops=-
+    #2 Index Search on orders.ix_orders_placed est=- act=- loops=-
+      Index Cond: (placed_on>?)
+  #3 Table Scan on recent est=- act=- loops=-
+  #4 Temp B-Tree est=- act=- loops=-
+    ! Uses a temporary table (temp B-tree for GROUP BY)
+findings:
+  Low FullScan node=Some(3): Table Scan on recent | Reads every row (the plan has no row counts). | Add an index on the filtered or joined columns, or narrow the query.
+  Low TempStructure node=Some(4): Temp B-Tree uses a temporary table | Uses a temporary table (temp B-tree for GROUP BY). | An index on the grouped or distinct columns avoids the temporary table.

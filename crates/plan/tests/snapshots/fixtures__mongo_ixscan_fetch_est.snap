@@ -1,0 +1,10 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&mongo(&name))
+---
+MongoDb Estimated
+#0 FETCH on orders est=- act=- loops=-
+  Filter: {"total":{"$lt":10}}
+  #1 IXSCAN on orders.status_1 est=- act=- loops=-
+    Index Bounds: {"status":["[\"B\", \"B\"]"]}
+findings:

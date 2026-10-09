@@ -1,0 +1,13 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&mongo(&name))
+---
+MongoDb Actual
+#0 $sort est=- act=3 loops=- self=0.0ms (0%)
+  ! Sorts without an index (blocking sort in memory)
+  #1 $group est=- act=250 loops=- self=0.0ms (0%)
+    #2 PROJECTION_SIMPLE est=- act=5000 loops=- self=13.0ms (76%)
+      #3 FETCH on orders est=- act=5000 loops=- self=0.0ms (0%)
+        #4 IXSCAN on orders.status_1 est=- act=5000 loops=- self=2.0ms (12%)
+          Index Bounds: {"status":["[\"C\", \"C\"]"]}
+findings:

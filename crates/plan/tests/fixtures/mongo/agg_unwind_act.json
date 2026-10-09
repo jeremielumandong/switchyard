@@ -1,0 +1,116 @@
+{
+  "explainVersion": "1",
+  "stages": [
+    {
+      "$cursor": {
+        "queryPlanner": {
+          "namespace": "switchyard_plan.orders",
+          "indexFilterSet": false,
+          "parsedQuery": {
+            "total": {
+              "$gt": 480
+            }
+          },
+          "queryHash": "AB120C8F",
+          "planCacheKey": "2B79D813",
+          "optimizationTimeMillis": 0,
+          "maxIndexedOrSolutionsReached": false,
+          "maxIndexedAndSolutionsReached": false,
+          "maxScansToExplodeReached": false,
+          "winningPlan": {
+            "stage": "PROJECTION_SIMPLE",
+            "transformBy": {
+              "_id": 1,
+              "tags": 1,
+              "total": 1
+            },
+            "inputStage": {
+              "stage": "COLLSCAN",
+              "filter": {
+                "total": {
+                  "$gt": 480
+                }
+              },
+              "direction": "forward"
+            }
+          },
+          "rejectedPlans": []
+        },
+        "executionStats": {
+          "executionSuccess": true,
+          "nReturned": 760,
+          "executionTimeMillis": 12,
+          "totalKeysExamined": 0,
+          "totalDocsExamined": 20000,
+          "executionStages": {
+            "stage": "PROJECTION_SIMPLE",
+            "nReturned": 760,
+            "executionTimeMillisEstimate": 1,
+            "works": 20001,
+            "advanced": 760,
+            "needTime": 19240,
+            "needYield": 0,
+            "saveState": 21,
+            "restoreState": 21,
+            "isEOF": 1,
+            "transformBy": {
+              "_id": 1,
+              "tags": 1,
+              "total": 1
+            },
+            "inputStage": {
+              "stage": "COLLSCAN",
+              "filter": {
+                "total": {
+                  "$gt": 480
+                }
+              },
+              "nReturned": 760,
+              "executionTimeMillisEstimate": 1,
+              "works": 20001,
+              "advanced": 760,
+              "needTime": 19240,
+              "needYield": 0,
+              "saveState": 21,
+              "restoreState": 21,
+              "isEOF": 1,
+              "direction": "forward",
+              "docsExamined": 20000
+            }
+          }
+        }
+      },
+      "nReturned": 760,
+      "executionTimeMillisEstimate": 12
+    },
+    {
+      "$unwind": {
+        "path": "$tags"
+      },
+      "nReturned": 760,
+      "executionTimeMillisEstimate": 12
+    },
+    {
+      "$project": {
+        "_id": true,
+        "tags": true,
+        "total": true
+      },
+      "nReturned": 760,
+      "executionTimeMillisEstimate": 12
+    },
+    {
+      "$sort": {
+        "sortKey": {
+          "total": 1
+        }
+      },
+      "totalDataSizeSortedBytesEstimate": 216600,
+      "usedDisk": false,
+      "spills": 0,
+      "spilledDataStorageSize": 0,
+      "nReturned": 760,
+      "executionTimeMillisEstimate": 12
+    }
+  ]
+}

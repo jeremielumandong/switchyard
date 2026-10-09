@@ -1,0 +1,4 @@
+-- SELECT c.email, SUM(o.total) t FROM orders o JOIN customers c ON c.id = o.customer_id GROUP BY c.email ORDER BY t DESC LIMIT 10
+10|0|SCAN c USING COVERING INDEX sqlite_autoindex_customers_1
+12|0|SEARCH o USING INDEX ix_orders_customer (customer_id=?)
+52|0|USE TEMP B-TREE FOR ORDER BY

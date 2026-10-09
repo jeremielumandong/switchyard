@@ -238,3 +238,133 @@ fn findings_are_ranked_and_point_at_real_nodes() {
         }
     }
 }
+
+/// Every fixture in `tests/fixtures/<dir>` with extension `ext`, sorted by name.
+fn fixture_names(dir: &str, ext: &str) -> Vec<String> {
+    let path = format!("{}/tests/fixtures/{dir}", env!("CARGO_MANIFEST_DIR"));
+    let mut names: Vec<String> = std::fs::read_dir(&path)
+        .unwrap_or_else(|e| panic!("{path}: {e}"))
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.strip_suffix(ext).map(str::to_owned)
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// MySQL 8.4 (docker `mysql`): `<name>.json` from `EXPLAIN FORMAT=JSON`, `<name>.txt` from
+/// `EXPLAIN ANALYZE`.
+fn mysql_json(name: &str) -> Plan {
+    switchyard_plan::mysql::parse_json(&fixture(&format!("mysql/{name}.json")), name).unwrap()
+}
+
+fn mysql_tree(name: &str) -> Plan {
+    switchyard_plan::mysql::parse_tree(&fixture(&format!("mysql/{name}.txt")), name).unwrap()
+}
+
+/// SQLite 3.45 `EXPLAIN QUERY PLAN` rows as `id|parent|detail` (first line: the query).
+fn sqlite(name: &str) -> Plan {
+    let text = fixture(&format!("sqlite/{name}.txt"));
+    let rows: Vec<switchyard_plan::sqlite::Row> = text
+        .lines()
+        .filter(|l| !l.starts_with("--") && !l.is_empty())
+        .map(|l| {
+            let mut parts = l.splitn(3, '|');
+            switchyard_plan::sqlite::Row {
+                id: parts.next().unwrap().parse().unwrap(),
+                parent: parts.next().unwrap().parse().unwrap(),
+                detail: parts.next().unwrap().to_owned(),
+            }
+        })
+        .collect();
+    switchyard_plan::sqlite::parse(&rows, name).unwrap()
+}
+
+/// MongoDB 7 (docker `mongo`, 20,000 documents): `<case>_est` with `queryPlanner`,
+/// `<case>_act` with `executionStats`.
+fn mongo(name: &str) -> Plan {
+    switchyard_plan::mongo::parse(&fixture(&format!("mongo/{name}.json")), name).unwrap()
+}
+
+#[test]
+fn mysql_snapshots() {
+    for name in fixture_names("mysql", ".json") {
+        insta::assert_snapshot!(format!("mysql_{name}_est"), render(&mysql_json(&name)));
+    }
+    for name in fixture_names("mysql", ".txt") {
+        insta::assert_snapshot!(format!("mysql_{name}_act"), render(&mysql_tree(&name)));
+    }
+}
+
+#[test]
+fn sqlite_snapshots() {
+    for name in fixture_names("sqlite", ".txt") {
+        insta::assert_snapshot!(format!("sqlite_{name}"), render(&sqlite(&name)));
+    }
+}
+
+#[test]
+fn mongo_snapshots() {
+    for name in fixture_names("mongo", ".json") {
+        insta::assert_snapshot!(format!("mongo_{name}"), render(&mongo(&name)));
+    }
+}
+
+#[test]
+fn rules_apply_to_mysql_sqlite_and_mongodb_plans() {
+    use switchyard_plan::{PlanKind, PlanSource, Severity};
+    // MySQL: a 20,000-row table scan, estimated and measured; the measured filter keeps 1.
+    let est = mysql_json("full_scan");
+    assert_eq!(
+        (est.source, est.kind),
+        (PlanSource::MySql, PlanKind::Estimated)
+    );
+    assert!(has(&est, Rule::FullScan));
+    let act = mysql_tree("full_scan");
+    assert_eq!(act.kind, PlanKind::Actual);
+    assert!(has(&act, Rule::FullScan));
+    assert!(has(&act, Rule::RowsRemovedByFilter));
+    assert!(!has(&mysql_tree("index_lookup"), Rule::FullScan));
+    // Filesort and temporary tables over enough rows; none on a lookup.
+    assert!(has(&mysql_json("derived"), Rule::TempStructure));
+    assert!(has(&mysql_tree("derived"), Rule::TempStructure));
+    assert!(!has(&mysql_json("index_lookup"), Rule::TempStructure));
+    // The scan of an internal temporary table is not a full-scan finding.
+    let derived = mysql_tree("derived");
+    let found = rules(&derived);
+    for n in derived.nodes() {
+        if n.object.as_deref() == Some("<temporary>") {
+            assert!(!found.contains(&(Rule::FullScan, Some(n.id))));
+        }
+    }
+    // The DELETE's estimated plan: the write over its scan.
+    assert_eq!(mysql_json("dml_delete").root.operation, "Delete");
+
+    // SQLite has no row counts: every full scan and temp B-tree is flagged, at Low.
+    let scan = sqlite("full_scan");
+    let found = analyze(&scan, &Thresholds::default());
+    assert!(found.iter().any(|f| f.rule == Rule::FullScan));
+    assert!(found.iter().all(|f| f.severity == Severity::Low));
+    assert!(!has(&sqlite("index_search"), Rule::FullScan));
+    assert!(has(&sqlite("join_sort"), Rule::TempStructure));
+    assert!(!has(&sqlite("index_search"), Rule::TempStructure));
+
+    // MongoDB: COLLSCAN over 20,000 documents with an index suggestion; an IXSCAN is fine.
+    let coll = mongo("collscan_act");
+    assert_eq!(
+        (coll.source, coll.kind),
+        (PlanSource::MongoDb, PlanKind::Actual)
+    );
+    let f = analyze(&coll, &Thresholds::default());
+    let full = f.iter().find(|f| f.rule == Rule::FullScan).unwrap();
+    assert_eq!(
+        full.suggestion.as_deref(),
+        Some("db.orders.createIndex({ total: 1 })")
+    );
+    assert!(has(&mongo("collscan_est"), Rule::FullScan));
+    assert!(!has(&mongo("ixscan_fetch_act"), Rule::FullScan));
+    assert!(has(&mongo("sort_limit_act"), Rule::TempStructure));
+    assert!(!has(&mongo("covered_sort_act"), Rule::TempStructure));
+}

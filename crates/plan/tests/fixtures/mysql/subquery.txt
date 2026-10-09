@@ -1,0 +1,7 @@
+-> Remove duplicate customers rows using temporary table (weedout)  (cost=218 rows=167) (actual time=0.0804..0.729 rows=67 loops=1)
+    -> Nested loop inner join  (cost=218 rows=167) (actual time=0.07..0.703 rows=67 loops=1)
+        -> Filter: (orders.total > 400.00)  (cost=101 rows=333) (actual time=0.0546..0.296 rows=198 loops=1)
+            -> Table scan on orders  (cost=101 rows=1000) (actual time=0.0423..0.205 rows=1000 loops=1)
+        -> Filter: (customers.segment = 'vip')  (cost=0.25 rows=0.5) (actual time=0.00187..0.00191 rows=0.338 loops=198)
+            -> Single-row index lookup on customers using PRIMARY (id=orders.customer_id)  (cost=0.25 rows=1) (actual time=963e-6..998e-6 rows=1 loops=198)
+

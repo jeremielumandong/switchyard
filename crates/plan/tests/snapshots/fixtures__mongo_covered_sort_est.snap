@@ -1,0 +1,9 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&mongo(&name))
+---
+MongoDb Estimated
+#0 PROJECTION_COVERED est=- act=- loops=-
+  #1 IXSCAN on orders.customer_1_total_-1 est=- act=- loops=-
+    Index Bounds: {"customer":["[7, 7]"],"total":["[MaxKey, MinKey]"]}
+findings:

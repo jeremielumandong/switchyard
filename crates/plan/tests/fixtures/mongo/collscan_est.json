@@ -1,0 +1,28 @@
+{
+  "explainVersion": "1",
+  "queryPlanner": {
+    "namespace": "switchyard_plan.orders",
+    "indexFilterSet": false,
+    "parsedQuery": {
+      "total": {
+        "$gt": 490
+      }
+    },
+    "queryHash": "CACA99B3",
+    "planCacheKey": "12DCEA8D",
+    "optimizationTimeMillis": 0,
+    "maxIndexedOrSolutionsReached": false,
+    "maxIndexedAndSolutionsReached": false,
+    "maxScansToExplodeReached": false,
+    "winningPlan": {
+      "stage": "COLLSCAN",
+      "filter": {
+        "total": {
+          "$gt": 490
+        }
+      },
+      "direction": "forward"
+    },
+    "rejectedPlans": []
+  }
+}

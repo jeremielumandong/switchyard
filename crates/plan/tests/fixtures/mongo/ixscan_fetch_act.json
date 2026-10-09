@@ -1,0 +1,117 @@
+{
+  "explainVersion": "1",
+  "queryPlanner": {
+    "namespace": "switchyard_plan.orders",
+    "indexFilterSet": false,
+    "parsedQuery": {
+      "$and": [
+        {
+          "status": {
+            "$eq": "B"
+          }
+        },
+        {
+          "total": {
+            "$lt": 10
+          }
+        }
+      ]
+    },
+    "queryHash": "B1B56B57",
+    "planCacheKey": "E61E492D",
+    "optimizationTimeMillis": 0,
+    "maxIndexedOrSolutionsReached": false,
+    "maxIndexedAndSolutionsReached": false,
+    "maxScansToExplodeReached": false,
+    "winningPlan": {
+      "stage": "FETCH",
+      "filter": {
+        "total": {
+          "$lt": 10
+        }
+      },
+      "inputStage": {
+        "stage": "IXSCAN",
+        "keyPattern": {
+          "status": 1
+        },
+        "indexName": "status_1",
+        "isMultiKey": false,
+        "multiKeyPaths": {
+          "status": []
+        },
+        "isUnique": false,
+        "isSparse": false,
+        "isPartial": false,
+        "indexVersion": 2,
+        "direction": "forward",
+        "indexBounds": {
+          "status": [
+            "[\"B\", \"B\"]"
+          ]
+        }
+      }
+    },
+    "rejectedPlans": []
+  },
+  "executionStats": {
+    "executionSuccess": true,
+    "nReturned": 80,
+    "executionTimeMillis": 6,
+    "totalKeysExamined": 5000,
+    "totalDocsExamined": 5000,
+    "executionStages": {
+      "stage": "FETCH",
+      "filter": {
+        "total": {
+          "$lt": 10
+        }
+      },
+      "nReturned": 80,
+      "executionTimeMillisEstimate": 0,
+      "works": 5001,
+      "advanced": 80,
+      "needTime": 4920,
+      "needYield": 0,
+      "saveState": 5,
+      "restoreState": 5,
+      "isEOF": 1,
+      "docsExamined": 5000,
+      "alreadyHasObj": 0,
+      "inputStage": {
+        "stage": "IXSCAN",
+        "nReturned": 5000,
+        "executionTimeMillisEstimate": 0,
+        "works": 5001,
+        "advanced": 5000,
+        "needTime": 0,
+        "needYield": 0,
+        "saveState": 5,
+        "restoreState": 5,
+        "isEOF": 1,
+        "keyPattern": {
+          "status": 1
+        },
+        "indexName": "status_1",
+        "isMultiKey": false,
+        "multiKeyPaths": {
+          "status": []
+        },
+        "isUnique": false,
+        "isSparse": false,
+        "isPartial": false,
+        "indexVersion": 2,
+        "direction": "forward",
+        "indexBounds": {
+          "status": [
+            "[\"B\", \"B\"]"
+          ]
+        },
+        "keysExamined": 5000,
+        "seeks": 1,
+        "dupsTested": 0,
+        "dupsDropped": 0
+      }
+    }
+  }
+}

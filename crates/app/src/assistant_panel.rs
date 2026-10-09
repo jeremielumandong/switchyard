@@ -23,7 +23,7 @@ use gpui_kit::{
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 use switchyard_core::agents::{AgentEvent, AgentKind, RunSummary};
-use switchyard_core::db::Engine;
+use switchyard_core::db::{Engine, dialect_for};
 use switchyard_core::store::{DbConnection, EnvironmentLabel, Host, ProfileId};
 use switchyard_core::{AgentApproval, ApprovalKind, Command, RuntimeHandle};
 
@@ -499,8 +499,9 @@ to look at the keys and the server before you answer. Give any change as redis-c
 a ```redis block for the user to run.";
 
 const MONGO_RULES: &str = "Use list_tables for the collections and run_query with read-only \
-mongosh statements (find, aggregate, countDocuments) to look at the data before you answer. \
-Give any change as mongosh in a ```js block for the user to run.";
+mongosh statements (find, aggregate, countDocuments) to look at the data before you answer; \
+explain shows a find or aggregate's plan. Give any change as mongosh in a ```js block for the \
+user to run.";
 
 const SQL_RULES: &str = "Use Switchyard's tools to look at the tables and plans before you answer. \
 Give every suggested index, statistics change or rewritten query as SQL in its own ```sql block \
@@ -661,15 +662,24 @@ impl AssistantPanel {
 
     /// Optimize `sql` (from the editor, or the plan view with its findings).
     pub fn optimize(&mut self, sql: String, findings: Vec<String>, cx: &mut Context<Self>) {
+        // SQL engines, and document stores whose plans Switchyard reads (MongoDB).
         let Some(conn) = self
             .connection
             .as_ref()
-            .filter(|t| t.is_sql())
             .and_then(AssistantTarget::db)
+            .filter(|c| {
+                c.engine.is_sql()
+                    && (!c.engine.is_document_store() || dialect_for(c.engine).plans().estimated)
+            })
             .cloned()
             .filter(|_| !self.api)
         else {
             return;
+        };
+        let (fence, rules) = if conn.engine.is_document_store() {
+            ("js", MONGO_RULES)
+        } else {
+            ("sql", SQL_RULES)
         };
         self.mode = Mode::Optimize;
         self.session = None;
@@ -677,7 +687,7 @@ impl AssistantPanel {
         let mut prompt = format!(
             "Optimize this {} statement on the connection named \"{}\". Explain its plan \
              (explain tool), look at the tables it uses, and suggest what would make it faster.\n\n\
-             ```sql\n{sql}\n```\n",
+             ```{fence}\n{sql}\n```\n",
             conn.engine.display_name(),
             conn.name
         );
@@ -688,7 +698,7 @@ impl AssistantPanel {
             }
         }
         prompt.push('\n');
-        prompt.push_str(SQL_RULES);
+        prompt.push_str(rules);
         let first_line = sql.lines().next().unwrap_or_default();
         let asked = format!("Optimize: {}", ellipsis(first_line, 70));
         self.start(asked, prompt, false, cx);

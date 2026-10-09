@@ -1,0 +1,53 @@
+{
+  "explainVersion": "1",
+  "queryPlanner": {
+    "namespace": "switchyard_plan.orders",
+    "indexFilterSet": false,
+    "parsedQuery": {
+      "customer": {
+        "$eq": 7
+      }
+    },
+    "queryHash": "F908F9CE",
+    "planCacheKey": "F9A91BB0",
+    "optimizationTimeMillis": 0,
+    "maxIndexedOrSolutionsReached": false,
+    "maxIndexedAndSolutionsReached": false,
+    "maxScansToExplodeReached": false,
+    "winningPlan": {
+      "stage": "PROJECTION_COVERED",
+      "transformBy": {
+        "_id": 0,
+        "customer": 1,
+        "total": 1
+      },
+      "inputStage": {
+        "stage": "IXSCAN",
+        "keyPattern": {
+          "customer": 1,
+          "total": -1
+        },
+        "indexName": "customer_1_total_-1",
+        "isMultiKey": false,
+        "multiKeyPaths": {
+          "customer": [],
+          "total": []
+        },
+        "isUnique": false,
+        "isSparse": false,
+        "isPartial": false,
+        "indexVersion": 2,
+        "direction": "forward",
+        "indexBounds": {
+          "customer": [
+            "[7, 7]"
+          ],
+          "total": [
+            "[MaxKey, MinKey]"
+          ]
+        }
+      }
+    },
+    "rejectedPlans": []
+  }
+}

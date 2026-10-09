@@ -1,0 +1,9 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&mysql_json(&name))
+---
+MySql Estimated
+#0 Delete on orders est=- act=- loops=-
+  #1 Table scan on orders est=1000 act=- loops=-
+    Filter: (`shop`.`orders`.`total` > 450.00)
+findings:
