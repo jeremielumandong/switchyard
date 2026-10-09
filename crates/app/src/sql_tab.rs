@@ -57,6 +57,9 @@ pub type RowValues = Vec<(String, Value, DataType)>;
 /// Default rows fetched before pausing (SPEC: 10,000).
 pub const DEFAULT_FETCH_LIMIT: usize = 10_000;
 
+/// Pause in typing before a large result's row filter runs.
+const FILTER_DEBOUNCE: Duration = Duration::from_millis(150);
+
 /// What the tab asks the workspace to do.
 pub enum SqlTabEvent {
     /// Open the quick switcher to pick a connection for this tab.
@@ -273,6 +276,8 @@ pub struct SqlTab {
     /// rows arrive, and retained rendering only redraws what was notified).
     ticker: Option<Task<()>>,
     lint: Option<Task<()>>,
+    /// The debounced background row filter of a large result (dropping it cancels it).
+    filter_task: Option<Task<()>>,
     position: i64,
     filter: Entity<InputState>,
     completion: Rc<RefCell<CompletionState>>,
@@ -392,6 +397,7 @@ impl SqlTab {
             autosave: None,
             ticker: None,
             lint: None,
+            filter_task: None,
             position,
             filter,
             completion,
@@ -1446,12 +1452,36 @@ impl SqlTab {
         }
     }
 
+    /// Filter the active result's rows. Small results filter at once; large ones after a
+    /// pause in typing, off the UI thread, and a newer keystroke drops a stale scan.
     fn apply_filter(&mut self, needle: &str, cx: &mut Context<Self>) {
+        self.filter_task = None;
         if let Some(r) = self.results.get(self.active_result) {
-            r.table.update(cx, |t, cx| {
-                t.delegate_mut().set_filter(needle);
+            let job = r.table.update(cx, |t, cx| {
+                let job = t.delegate_mut().begin_filter(needle);
                 cx.notify();
+                job
             });
+            if let Some(job) = job {
+                let table = r.table.downgrade();
+                self.filter_task = Some(cx.spawn(async move |_, cx| {
+                    cx.background_executor().timer(FILTER_DEBOUNCE).await;
+                    if job.is_stale() {
+                        return;
+                    }
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move { job.run() })
+                        .await;
+                    if let Some(result) = result {
+                        let _ = table.update(cx, |t, cx| {
+                            if t.delegate_mut().finish_filter(result) {
+                                cx.notify();
+                            }
+                        });
+                    }
+                }));
+            }
         }
         self.selected = None;
         cx.notify();

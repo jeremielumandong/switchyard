@@ -6,6 +6,7 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -35,6 +36,8 @@ const LINE_HEIGHT: f32 = 19.;
 const PAD_X: f32 = 12.;
 const PAD_Y: f32 = 10.;
 const MAX_PANES: usize = 4;
+/// Pause in typing before the scrollback search runs.
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(120);
 
 /// Where a pane's cells are on screen, measured during paint.
 #[derive(Clone, Copy, Debug, Default)]
@@ -99,6 +102,8 @@ pub struct TerminalTab {
     broadcast: bool,
     search: Option<Entity<InputState>>,
     _search_sub: Option<Subscription>,
+    /// The debounced scrollback scan for the latest keystroke (dropping it cancels it).
+    search_task: Option<gpui_kit::Task<()>>,
     /// Typed into the first pane once its shell is up (e.g. `cd` to a folder).
     startup: Option<Vec<u8>>,
     /// A coding CLI with Switchyard's tools ("Open in terminal"): (CLI, connection).
@@ -139,6 +144,7 @@ impl TerminalTab {
             broadcast: false,
             search: None,
             _search_sub: None,
+            search_task: None,
             startup: None,
             agent: None,
         };
@@ -166,6 +172,7 @@ impl TerminalTab {
             broadcast: false,
             search: None,
             _search_sub: None,
+            search_task: None,
             startup: None,
             agent: Some((agent, connection)),
         };
@@ -506,10 +513,7 @@ impl TerminalTab {
                 match ev {
                     InputEvent::Change => {
                         let q = input.read(cx).value().to_string();
-                        if let Some(t) = this.active_terminal() {
-                            t.search(&q);
-                        }
-                        cx.notify();
+                        this.schedule_search(q, cx);
                     }
                     InputEvent::PressEnter { shift, .. } => {
                         // Enter walks back through older output; Shift+Enter forward.
@@ -529,9 +533,39 @@ impl TerminalTab {
         cx.notify();
     }
 
+    /// Search the active pane's scrollback for `query` after a short pause in typing, on
+    /// a background thread. Each keystroke starts a new search generation, so a scan
+    /// still running for an older query stops and its matches are dropped.
+    fn schedule_search(&mut self, query: String, cx: &mut Context<Self>) {
+        let Some(t) = self.active_terminal().cloned() else {
+            return;
+        };
+        let generation = t.begin_search();
+        if query.is_empty() {
+            self.search_task = None;
+            let _ = t.search_as("", generation);
+            cx.notify();
+            return;
+        }
+        self.search_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SEARCH_DEBOUNCE).await;
+            if !t.search_current(generation) {
+                return;
+            }
+            let found = cx
+                .background_executor()
+                .spawn(async move { t.search_as(&query, generation) })
+                .await;
+            if found.is_some() {
+                let _ = this.update(cx, |_, cx| cx.notify());
+            }
+        }));
+    }
+
     fn close_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search = None;
         self._search_sub = None;
+        self.search_task = None;
         if let Some(p) = self.panes.get(self.active) {
             if let Some(t) = &p.terminal {
                 t.clear_search();

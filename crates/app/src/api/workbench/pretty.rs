@@ -296,6 +296,53 @@ fn string_end(bytes: &[u8], open: usize) -> usize {
     bytes.len()
 }
 
+/// What the Body tab shows about a JSON text: whether it parses, and whether
+/// **Format** would change it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JsonCheck {
+    /// The parse error, when the text is not JSON.
+    pub error: Option<String>,
+    /// [`format_json`] would change the text.
+    pub formattable: bool,
+}
+
+impl JsonCheck {
+    /// Parse and format `source` once.
+    pub fn of(source: &str) -> Self {
+        match serde_json::from_str::<serde::de::IgnoredAny>(source) {
+            Err(error) => Self {
+                error: Some(error.to_string()),
+                formattable: false,
+            },
+            Ok(_) => Self {
+                error: None,
+                formattable: format_json(source).is_some_and(|f| f != source),
+            },
+        }
+    }
+}
+
+/// [`JsonCheck`] of the last text seen, so a render that follows an unrelated
+/// change does not parse and reformat the body again. Keyed by content.
+#[derive(Default)]
+pub struct JsonCheckCache {
+    last: std::cell::RefCell<Option<(String, JsonCheck)>>,
+}
+
+impl JsonCheckCache {
+    /// The check of `source`, computed only when it differs from the last text.
+    pub fn check(&self, source: &str) -> JsonCheck {
+        if let Some((text, check)) = self.last.borrow().as_ref()
+            && text == source
+        {
+            return check.clone();
+        }
+        let check = JsonCheck::of(source);
+        *self.last.borrow_mut() = Some((source.to_owned(), check.clone()));
+        check
+    }
+}
+
 /// Re-indent a JSON body with two-space indentation — the Body tab's
 /// **Format** action. `None` when the text is not JSON, so a `{{template}}`
 /// outside a string or a half-typed body is left exactly as the user wrote
@@ -937,6 +984,23 @@ pub fn human_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_check_is_cached_by_content() {
+        let cache = JsonCheckCache::default();
+        let a = cache.check(r#"{"a":1}"#);
+        assert_eq!(a.error, None);
+        assert!(a.formattable);
+        // Same text: served from the cache (the stored key is not replaced).
+        let key = |c: &JsonCheckCache| c.last.borrow().as_ref().map(|(t, _)| t.as_ptr());
+        let before = key(&cache);
+        assert_eq!(cache.check(r#"{"a":1}"#), a);
+        assert_eq!(key(&cache), before);
+        // New text: recomputed.
+        assert!(!cache.check("{\n  \"a\": 1\n}").formattable);
+        let bad = cache.check("{\"a\":");
+        assert!(bad.error.is_some() && !bad.formattable);
+    }
 
     #[test]
     fn format_json_moves_whitespace_and_nothing_else() {

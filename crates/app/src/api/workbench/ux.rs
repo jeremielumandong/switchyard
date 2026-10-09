@@ -22,6 +22,10 @@ pub(super) struct WorkbenchUx {
     pub pending_start: Option<empty_state::StartAction>,
     pub request_settings: BTreeMap<u64, switchyard_api::RequestSettings>,
     pub body_editor: Entity<body_editor::BodyEditor>,
+    /// The Body tab's JSON parse / format check of the last body text.
+    pub body_json: pretty::JsonCheckCache,
+    /// The collection rail's rows, virtualized.
+    pub rail_rows: virtual_rows::VirtualRows<view::RailItem>,
     pub rail_split: Entity<ResizableState>,
     pub response_split: Entity<ResizableState>,
     pub layout: layout::LayoutPreferences,
@@ -49,6 +53,8 @@ impl WorkbenchUx {
             pending_start: None,
             request_settings: BTreeMap::new(),
             body_editor: cx.new(|cx| body_editor::BodyEditor::new(body, window, cx)),
+            body_json: Default::default(),
+            rail_rows: virtual_rows::VirtualRows::new(),
             rail_split: cx.new(|_| ResizableState::default()),
             response_split: cx.new(|_| ResizableState::default()),
             layout: layout::LayoutPreferences::load(),

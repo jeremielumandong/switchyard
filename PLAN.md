@@ -787,11 +787,8 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 - SQL Server: upstream tiberius patches for INFO tokens (notices) and reading the attention
   acknowledgement across a message boundary (would remove the reconnect after cancel).
 - Approval pending for `tokio-postgres-rustls`/`rustls-native-certs` and `lsp-types` (see DECISIONS).
-- Performance (found in the 2026-10 pass, not done): the schema tree rebuilds every `TreeRow`
-  (and fuzzy-matches every object while filtering) on each workspace render, which every core
-  event triggers; cache `Explorer::rows()` behind a change counter. The API workbench body tab
-  parses and reformats the JSON body on every render; the collection rail and history are not
-  virtualized. Terminal search rescans the whole scrollback on the UI thread per keystroke.
-  The grid row filter still runs on the UI thread per keystroke (now allocation-free).
+- Performance (2026-10 pass, remaining): terminal search rescans from scratch per (debounced)
+  query rather than narrowing the previous matches, and holds the terminal lock for the scan;
+  the API History page's "Saved examples" table is not virtualized (the history rows are).
 - Assistant on Hosts: "always allow this command on this Host" for repeat read-only commands;
   approvals from an interactive "Open in terminal" run show in the panel, not the terminal.
