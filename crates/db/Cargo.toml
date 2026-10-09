@@ -33,6 +33,7 @@ base64.workspace = true
 uuid.workspace = true
 flate2.workspace = true
 mongodb.workspace = true
+rusqlite = { workspace = true, features = ["column_decltype", "column_metadata"] }
 
 [dev-dependencies]
 rsa = { workspace = true, features = ["getrandom"] }

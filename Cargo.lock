@@ -9565,6 +9565,7 @@ dependencies = [
  "reqwest",
  "ring",
  "rsa 0.9.10",
+ "rusqlite",
  "rustls",
  "rustls-native-certs",
  "secrecy",

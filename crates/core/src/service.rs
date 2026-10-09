@@ -284,6 +284,10 @@ impl Service {
         drivers.insert(Engine::Postgres, Arc::new(PgDriver));
         drivers.insert(Engine::D1, Arc::new(D1Driver::default()));
         drivers.insert(
+            Engine::Sqlite,
+            Arc::new(switchyard_db::sqlite::SqliteDriver),
+        );
+        drivers.insert(
             Engine::Oracle,
             Arc::new(switchyard_db::oracle::OracleDriver),
         );

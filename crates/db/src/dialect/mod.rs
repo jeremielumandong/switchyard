@@ -356,7 +356,8 @@ pub fn dialect_for(engine: Engine) -> &'static dyn Dialect {
     match engine {
         Engine::Postgres => &postgres::PostgresDialect,
         Engine::SqlServer => &tsql::TSqlDialect,
-        Engine::D1 => &sqlite::SqliteDialect,
+        Engine::D1 => &sqlite::SqliteDialect::D1,
+        Engine::Sqlite => &sqlite::SqliteDialect::LOCAL,
         Engine::Snowflake => &snowflake::SnowflakeDialect,
         Engine::Oracle => &oracle::OracleDialect,
         Engine::MySql => &mysql::MySqlDialect,

@@ -54,6 +54,8 @@ pub(crate) struct Field {
     pub(crate) span: u16,
     pub(crate) mono: bool,
     pub(crate) hint: Option<&'static str>,
+    /// A "Browse…" button beside the input that picks a local file into it.
+    pub(crate) browse: bool,
 }
 
 impl Field {
@@ -65,6 +67,7 @@ impl Field {
             span: 6,
             mono: false,
             hint: None,
+            browse: false,
         }
     }
 
@@ -89,6 +92,12 @@ impl Field {
     /// Help text under the field, if any.
     pub(crate) fn hint_opt(mut self, hint: Option<&'static str>) -> Self {
         self.hint = hint;
+        self
+    }
+
+    /// Adds a "Browse…" button that fills the input with a picked local file.
+    pub(crate) fn browse(mut self) -> Self {
+        self.browse = true;
         self
     }
 
@@ -207,6 +216,11 @@ impl Values<'_> {
             .into_iter()
             .find(|m| m.label() == chosen)
             .unwrap_or_default()
+    }
+
+    /// Whether the connection is set to read-only.
+    pub(crate) fn read_only(&self) -> bool {
+        self.editor.read_only
     }
 
     /// The `via` select.

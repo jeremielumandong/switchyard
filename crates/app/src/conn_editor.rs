@@ -8,8 +8,8 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, AppContext as _, Context, Entity, EventEmitter, FontWeight,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, deferred, div, px,
+    InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Window, deferred, div, px,
 };
 use secrecy::SecretString;
 use switchyard_core::db::Engine;
@@ -807,6 +807,7 @@ impl ConnEditor {
             span,
             mono,
             hint,
+            browse,
         } = *f;
         let err = self
             .error
@@ -826,6 +827,7 @@ impl ConnEditor {
                 .text_size(px(12.5))
                 .when(mono, |d| d.font_family(MONO))
                 .child(Input::new(input).appearance(false).text_size(px(12.5)))
+                .when(browse, |d| d.flex_1().min_w_0())
                 .into_any_element()
         } else if let Some(sel) = self.selects.get(key) {
             let label = sel
@@ -907,6 +909,25 @@ impl ConnEditor {
         } else {
             div().into_any_element()
         };
+        let body = if browse {
+            div()
+                .flex()
+                .gap(px(6.))
+                .child(body)
+                .child(
+                    ui::button(
+                        SharedString::from(format!("browse-{key}")),
+                        "Browse…",
+                        Kind::Secondary,
+                        p,
+                    )
+                    .h(px(28.))
+                    .on_click(cx.listener(move |this, _, w, cx| this.browse_file(key, w, cx))),
+                )
+                .into_any_element()
+        } else {
+            body
+        };
         div()
             .col_span(span)
             .flex()
@@ -931,6 +952,31 @@ impl ConnEditor {
                 )
             })
             .into_any_element()
+    }
+
+    /// Fills the `key` input with a local file the user picks.
+    fn browse_file(&mut self, key: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        let chosen = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Open".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(mut paths))) = chosen.await else {
+                return;
+            };
+            let Some(path) = paths.pop() else { return };
+            let path = path.to_string_lossy().into_owned();
+            let _ = this.update_in(cx, |this, window, cx| {
+                if let Some(input) = this.inputs.get(key) {
+                    input.update(cx, |i, cx| i.set_value(path, window, cx));
+                }
+                this.test = TestState::Idle;
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// The database engines, as a grid of tiles above the form.

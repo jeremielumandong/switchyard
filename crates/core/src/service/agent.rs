@@ -201,7 +201,8 @@ async fn read_only(
                 .await
                 .map_err(|e| e.to_string())?;
         }
-        Engine::SqlServer => s.begin().await.map_err(|e| e.to_string())?,
+        // Rolled back below whatever the statement did.
+        Engine::SqlServer | Engine::Sqlite => s.begin().await.map_err(|e| e.to_string())?,
         // MySQL fixes a transaction's access mode when it starts.
         Engine::MySql => drain(s.execute("START TRANSACTION READ ONLY", &[]).await)
             .await
