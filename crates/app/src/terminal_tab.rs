@@ -23,6 +23,7 @@ use switchyard_core::term::input::{
 };
 use switchyard_core::term::links::url_at;
 use switchyard_core::term::{CursorShape, Mark, Snapshot, TermColor, TermSize, Terminal};
+use switchyard_core::term_settings::{HighlightRule, highlight_spans};
 use switchyard_core::{Command, RuntimeHandle, TermId, TermLogState, TermStatus, TermTarget};
 
 use crate::actions::{TermCopy, TermFind, TermPaste, TermSplit};
@@ -103,6 +104,8 @@ pub struct TerminalTab {
     _search_sub: Option<Subscription>,
     /// Typed into the first pane once its shell is up (e.g. `cd` to a folder).
     startup: Option<Vec<u8>>,
+    /// Multi-line text waiting for the user to confirm the paste: (pane, text).
+    pending_paste: Option<(usize, String)>,
     /// A coding CLI with Switchyard's tools ("Open in terminal"): (CLI, connection).
     agent: Option<(
         Option<switchyard_core::agents::AgentKind>,
@@ -142,6 +145,7 @@ impl TerminalTab {
             search: None,
             _search_sub: None,
             startup: None,
+            pending_paste: None,
             agent: None,
         };
         this.add_pane(cx);
@@ -169,6 +173,7 @@ impl TerminalTab {
             search: None,
             _search_sub: None,
             startup: None,
+            pending_paste: None,
             agent: Some((agent, connection)),
         };
         this.add_pane(cx);
@@ -523,12 +528,34 @@ impl TerminalTab {
         let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) else {
             return;
         };
+        if crate::terminal_settings::settings(cx).confirm_multiline_paste
+            && text.contains(['\n', '\r'])
+        {
+            self.pending_paste = Some((ix, text));
+            cx.notify();
+            return;
+        }
+        self.paste_text(ix, &text);
+    }
+
+    /// Answer the multi-line paste question.
+    fn finish_paste(&mut self, accept: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((ix, text)) = self.pending_paste.take()
+            && accept
+        {
+            self.paste_text(ix, &text);
+        }
+        self.refocus(window, cx);
+        cx.notify();
+    }
+
+    fn paste_text(&mut self, ix: usize, text: &str) {
         let modes = self
             .panes
             .get(ix)
             .map(|p| p.snapshot.modes)
             .unwrap_or_default();
-        self.send_input(ix, encode_paste(&text, modes));
+        self.send_input(ix, encode_paste(text, modes));
     }
 
     fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -614,6 +641,16 @@ impl TerminalTab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The paste question takes Enter and Escape; other keys wait for it.
+        if self.pending_paste.is_some() {
+            match ev.keystroke.key.as_str() {
+                "enter" => self.finish_paste(true, window, cx),
+                "escape" => self.finish_paste(false, window, cx),
+                _ => {}
+            }
+            cx.stop_propagation();
+            return;
+        }
         let ks = &ev.keystroke;
         let m = &ks.modifiers;
         // App shortcuts: Cmd+… on macOS, Ctrl+Shift+… elsewhere.
@@ -764,6 +801,9 @@ impl TerminalTab {
                 cx.notify();
             }
             MouseButton::Middle => self.paste(ix, cx),
+            MouseButton::Right if crate::terminal_settings::settings(cx).right_click_paste => {
+                self.paste(ix, cx)
+            }
             _ => {}
         }
     }
@@ -798,7 +838,14 @@ impl TerminalTab {
 
     fn mouse_up(&mut self, ix: usize, ev: &MouseUpEvent, cx: &mut Context<Self>) {
         let pane = &mut self.panes[ix];
-        pane.selecting = false;
+        let was_selecting = std::mem::take(&mut pane.selecting);
+        if was_selecting
+            && ev.button == MouseButton::Left
+            && crate::terminal_settings::settings(cx).copy_on_select
+        {
+            self.copy(ix, cx);
+        }
+        let pane = &mut self.panes[ix];
         let modes = pane.snapshot.modes;
         if let Some(b) = pane.pressed.take()
             && let Some((row, col, _)) = self.cell_at(ix, ev.position)
@@ -880,8 +927,25 @@ impl TerminalTab {
         let state = pane.state.clone();
         let search_pos = snap.search;
         let pane_empty = snap.lines.iter().all(|l| l.text.trim().is_empty());
+        // Keyword highlighting (MX-4); full-screen programs draw their own colors.
+        let highlights: Vec<(HighlightRule, Hsla)> = {
+            let s = crate::terminal_settings::settings(cx);
+            if s.highlight && !snap.modes.alt_screen {
+                s.highlight_rules
+                    .into_iter()
+                    .map(|r| {
+                        let c = p.ansi(r.color.ansi());
+                        (r, c)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        };
         let grid = canvas(
-            move |bounds, window, cx| prepaint(bounds, &snap, &geom, term_id, weak, &p, window, cx),
+            move |bounds, window, cx| {
+                prepaint(bounds, &snap, &geom, term_id, weak, &highlights, &p, window, cx)
+            },
             move |_bounds, frame, window, cx| paint(frame, focused, &p, window, cx),
         )
         .size_full();
@@ -1142,6 +1206,94 @@ impl TerminalTab {
             .into_any_element()
     }
 
+    /// "Paste N lines?" over the tab (MX-4).
+    fn render_paste_prompt(
+        &self,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui_kit::AnyElement> {
+        let (_, text) = self.pending_paste.as_ref()?;
+        let lines: Vec<&str> = text.lines().collect();
+        let preview: Vec<String> = lines
+            .iter()
+            .take(6)
+            .map(|l| l.chars().take(120).collect())
+            .collect();
+        let more = lines.len().saturating_sub(preview.len());
+        Some(
+            div()
+                .id("t-paste-scrim")
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(gpui_kit::black().opacity(0.25))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(
+                    div()
+                        .id("t-paste")
+                        .w(px(480.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.))
+                        .p(px(16.))
+                        .bg(p.elev)
+                        .rounded(px(8.))
+                        .shadow(ui::shadow(p))
+                        .text_size(px(12.5))
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_size(px(14.))
+                                .child(format!("Paste {} lines?", lines.len().max(1))),
+                        )
+                        .child(
+                            div()
+                                .text_color(p.fg2)
+                                .child("Each line may run as a command as soon as it is pasted."),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .p(px(8.))
+                                .bg(p.term)
+                                .rounded(px(6.))
+                                .font_family(MONO)
+                                .text_size(px(11.5))
+                                .children(preview.into_iter().map(|l| div().truncate().child(l)))
+                                .when(more > 0, |d| {
+                                    d.child(
+                                        div()
+                                            .text_color(p.fg3)
+                                            .child(format!("… {more} more")),
+                                    )
+                                }),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .justify_end()
+                                .gap(px(8.))
+                                .child(
+                                    ui::button("t-paste-cancel", "Cancel", Kind::Secondary, p)
+                                        .on_click(cx.listener(|this, _, w, cx| {
+                                            this.finish_paste(false, w, cx)
+                                        })),
+                                )
+                                .child(
+                                    ui::button("t-paste-ok", "Paste", Kind::Primary, p)
+                                        .on_click(cx.listener(|this, _, w, cx| {
+                                            this.finish_paste(true, w, cx)
+                                        })),
+                                ),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn banner(&self, p: &Palette, cx: &mut Context<Self>) -> Option<gpui_kit::AnyElement> {
         let (title, text, color, bg) = match &self.panes.get(self.active)?.state {
             PaneState::Exited(code) => (
@@ -1252,6 +1404,56 @@ fn color(c: TermColor, p: &Palette, fg: bool) -> Hsla {
     }
 }
 
+/// Split `runs` at the highlight spans and draw the spans' text in their color, only in
+/// runs drawn in the default foreground (`plain`); program colors are kept.
+fn recolor(
+    runs: Vec<TextRun>,
+    plain: &[bool],
+    spans: &[(std::ops::Range<usize>, Hsla)],
+) -> Vec<TextRun> {
+    let mut out = Vec::with_capacity(runs.len() + spans.len() * 2);
+    let mut start = 0;
+    for (k, run) in runs.into_iter().enumerate() {
+        let end = start + run.len;
+        if !plain.get(k).copied().unwrap_or(false) {
+            out.push(run);
+            start = end;
+            continue;
+        }
+        let mut at = start;
+        for (range, color) in spans {
+            if range.end <= at || range.start >= end {
+                continue;
+            }
+            let (s, e) = (range.start.max(at), range.end.min(end));
+            if s > at {
+                out.push(TextRun {
+                    len: s - at,
+                    ..run.clone()
+                });
+            }
+            out.push(TextRun {
+                len: e - s,
+                color: *color,
+                underline: run.underline.map(|u| UnderlineStyle {
+                    color: Some(*color),
+                    ..u
+                }),
+                ..run.clone()
+            });
+            at = e;
+        }
+        if end > at {
+            out.push(TextRun {
+                len: end - at,
+                ..run
+            });
+        }
+        start = end;
+    }
+    out
+}
+
 fn mono(bold: bool, italic: bool) -> Font {
     let mut f = font(MONO);
     if bold {
@@ -1270,10 +1472,12 @@ fn prepaint(
     geom: &Rc<Cell<Geom>>,
     term: TermId,
     view: WeakEntity<TerminalTab>,
+    highlights: &[(HighlightRule, Hsla)],
     p: &Palette,
     window: &mut Window,
     cx: &mut gpui_kit::App,
 ) -> Frame {
+    let rules: Vec<HighlightRule> = highlights.iter().map(|(r, _)| r.clone()).collect();
     let font_size = px(FONT_SIZE);
     let ts = window.text_system().clone();
     let font_id = ts.resolve_font(&mono(false, false));
@@ -1306,7 +1510,9 @@ fn prepaint(
         let y = origin.y + px(row as f32 * LINE_HEIGHT);
         let mut col = 0u16;
         let mut runs = Vec::with_capacity(line.runs.len());
+        let mut plain = Vec::with_capacity(line.runs.len());
         for r in &line.runs {
+            plain.push(r.fg == TermColor::Foreground && r.mark == Mark::None);
             let bg = match r.mark {
                 Mark::Selected => Some(p.sel),
                 Mark::Match => Some(p.staged),
@@ -1361,6 +1567,18 @@ fn prepaint(
             r.len = r.len.min(remaining);
             remaining -= r.len;
             trimmed.push(r);
+        }
+        if !rules.is_empty() {
+            let spans: Vec<(std::ops::Range<usize>, Hsla)> = highlight_spans(text, &rules)
+                .into_iter()
+                .filter_map(|(range, color)| {
+                    let c = highlights.iter().find(|(r, _)| r.color == color)?.1;
+                    Some((range, c))
+                })
+                .collect();
+            if !spans.is_empty() {
+                trimmed = recolor(trimmed, &plain, &spans);
+            }
         }
         let shaped = ts.shape_line(
             SharedString::from(text.to_owned()),
@@ -1477,7 +1695,9 @@ impl Render for TerminalTab {
         let n = panes.len();
         let can_split = n < MAX_PANES;
         let banner = self.banner(&p, cx);
+        let paste_prompt = self.render_paste_prompt(&p, cx);
         div()
+            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -1607,5 +1827,6 @@ impl Render for TerminalTab {
                     .bg(p.bd)
                     .children(panes),
             )
+            .when_some(paste_prompt, |d, e| d.child(e))
     }
 }

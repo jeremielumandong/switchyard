@@ -512,9 +512,15 @@ server or bundled Unix tools on Windows (Tier 3).
   file on a blocking task; `Event::TerminalLog`. Settings → Terminal: log every session,
   format, timestamps, folder (default `<data>/terminal-logs`), file name template
   (`{host}` `{date}` `{time}` `{datetime}`; never overwrites). Tab header "Log" button per pane.
-- [ ] **MX-4 Terminal conveniences.** Copy on select, right-click paste (settings, default
+- [x] **MX-4 Terminal conveniences.** Copy on select, right-click paste (settings, default
   off like today), paste confirmation for multi-line text, keyword highlighting of output
   (error/warning/fail/ok… with user rules), font zoom per tab.
+  Note: Settings → Terminal: copy on select, right-click paste (both off), "ask before
+  pasting more than one line" (on; Enter/Escape answer it), keyword highlighting (off by
+  default) with comma-separated words per color (`term_settings::highlight_spans`: whole
+  words, ASCII case-insensitive, only default-colored text, never on the alternate screen).
+  Deferred: font zoom per tab (UI zoom/font settings were being reworked in parallel;
+  Follow-ups).
 - [ ] **MX-5 Macros.** Record keystrokes in a terminal, save with a name, replay into the
   current terminal or all broadcast panes, run one on connect.
 - [ ] **MX-6 Session folders and per-session settings.** Folders and favorites in the
