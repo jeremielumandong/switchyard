@@ -183,9 +183,21 @@ pub fn find_program(name: &str) -> Option<PathBuf> {
     })
 }
 
+/// Windows `CREATE_NO_WINDOW`: run a console program without opening a console window.
+#[cfg(windows)]
+pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 /// `<program> --version`, given up after 10 s.
 pub fn program_version(program: &Path) -> Option<String> {
-    let mut child = std::process::Command::new(program)
+    let mut command = std::process::Command::new(program);
+    // A GUI app starting a console program (or an npm `.cmd` shim through cmd.exe)
+    // otherwise flashes a console window on Windows.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = command
         .arg("--version")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
