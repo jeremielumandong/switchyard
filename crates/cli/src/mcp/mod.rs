@@ -7,7 +7,9 @@
 //!   token is still live (it is revoked when the run ends);
 //! - `run_query` takes one SELECT/WITH and goes through the core's read-only, rolled-back,
 //!   capped, timed agent query;
-//! - plans are estimated only (an actual plan needs approval in the app); no tool runs DDL;
+//! - plans are estimated unless the user approves an actual plan of that exact statement in
+//!   the app (app-started runs only, never on Production; writes are rolled back); no tool
+//!   runs DDL;
 //! - Redis takes read-only commands only (`redis_command`), MongoDB read-only statements;
 //! - `run_ssh_command` runs on a Host only in a run the app started, and only after the user
 //!   approved that exact command in the app (which runs it and records it);
@@ -26,7 +28,10 @@ use switchyard_core::agent_run::{TokenScope, verify_token};
 use switchyard_core::db::Engine;
 use switchyard_core::db::guard::{is_single_plannable, is_single_select};
 use switchyard_core::db::{CatalogChunk, IntrospectScope, ObjectKind, dialect_for};
-use switchyard_core::handoff::{AgentCommand, AgentCommandOutput, ask_agent_command};
+use switchyard_core::handoff::{
+    AgentCommand, AgentCommandOutput, AgentPlan, HandoffError, ask_agent_command, ask_agent_plan,
+};
+use switchyard_core::service::agent_plan::plan_refusal;
 use switchyard_core::service::agent_ssh::{APPROVAL_WAIT, MAX_COMMAND_TIME};
 use switchyard_core::store::{DbConnection, Host, Profile};
 use switchyard_core::{Command, SessionId};
@@ -184,14 +189,17 @@ fn kind_name(k: ObjectKind) -> &'static str {
 const CONNECTION: &str = "Connection name from list_connections.";
 const HOST: &str = "SSH host name from list_connections (kind \"ssh\").";
 
-/// Tools that need a SQL engine's catalog or planner.
+/// Tools that need a SQL engine's catalog or planner. MongoDB has its collections
+/// (`list_tables`, `describe_table`) and estimated plans (`explain`).
 fn sql_only(conn: &DbConnection, tool: &str) -> Result<(), String> {
     match conn.engine {
         Engine::Redis => Err(format!(
             "{tool} is for SQL connections; {} is Redis: use redis_command",
             conn.name
         )),
-        e if e.is_document_store() && tool != "list_tables" && tool != "describe_table" => {
+        e if e.is_document_store()
+            && !matches!(tool, "list_tables" | "describe_table" | "explain") =>
+        {
             Err(format!(
                 "{tool} is for SQL connections; {} is MongoDB: use run_query with a read-only \
                  mongosh statement (db.coll.find(…), aggregate, countDocuments)",
@@ -501,32 +509,75 @@ impl Tools {
         sql_only(&conn, "explain")?;
         let sql = required(args, "sql")?.to_owned();
         let session = self.session(&conn).await?;
-        if args.get("analyze").and_then(Value::as_bool) == Some(true) {
-            let err = "actual plans (ANALYZE / STATISTICS XML) run the statement and need the \
-                       user's approval in the Switchyard app; ask them to capture it there, or \
-                       use the estimated plan";
-            self.record(session, format!("explain analyze: {sql}"), Some(err.into()));
-            return Err(err.into());
+        let analyze = args.get("analyze").and_then(Value::as_bool) == Some(true);
+        if analyze && let Err(err) = self.approve_actual_plan(&conn, &sql).await {
+            self.record(
+                session,
+                format!("explain analyze: {sql}"),
+                Some(err.clone()),
+            );
+            return Err(err);
         }
         if !is_single_plannable(dialect_for(conn.engine), &sql) {
-            let err = "explain takes one SELECT, INSERT, UPDATE, DELETE or MERGE statement";
+            let err = if conn.engine.is_document_store() {
+                "explain takes one find(…) or aggregate([…]) statement that reads, without \
+                 .explain()"
+            } else {
+                "explain takes one SELECT, INSERT, UPDATE, DELETE or MERGE statement"
+            };
             self.record(session, format!("explain: {sql}"), Some(err.into()));
             return Err(err.into());
         }
         let r = self
             .client
-            .explain(session, &sql, false, false, self.tags.clone())
+            .explain(session, &sql, analyze, false, self.tags.clone())
             .await;
         // The core records plans only where history is on; agent calls are always recorded.
         if !conn.history_enabled || r.is_err() {
+            let what = if analyze {
+                "explain analyze"
+            } else {
+                "explain"
+            };
             self.record(
                 session,
-                format!("explain: {sql}"),
+                format!("{what}: {sql}"),
                 r.as_ref().err().map(ToString::to_string),
             );
         }
         let r = r.map_err(|e| e.to_string())?;
         Ok(render::plan_text(&r.plan, &r.findings))
+    }
+
+    /// Ask the user, in the app, to approve an actual plan of `sql` on `conn`. Only runs the
+    /// app started can ask; Production connections are estimated only.
+    async fn approve_actual_plan(&self, conn: &DbConnection, sql: &str) -> Result<(), String> {
+        let Some(session) = &self.session else {
+            return Err(
+                "actual plans (ANALYZE / STATISTICS XML) run the statement and need the \
+                        user's approval in the Switchyard app, which only assistant runs started \
+                        there can ask for; use the estimated plan"
+                    .into(),
+            );
+        };
+        plan_refusal(conn, sql)?;
+        let req = AgentPlan {
+            session_token: session.token.clone(),
+            connection: conn.name.clone(),
+            sql: sql.to_owned(),
+        };
+        let wait = APPROVAL_WAIT + Duration::from_secs(30);
+        let data = self.client.data_dir().to_owned();
+        tokio::task::spawn_blocking(move || ask_agent_plan(&data, req, wait))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| match e {
+                HandoffError::NotRunning => {
+                    "the Switchyard app is not running; it must be open to approve an actual plan"
+                        .to_owned()
+                }
+                other => other.to_string(),
+            })
     }
 
     async fn workload(&mut self, args: &Value) -> Result<String, String> {
@@ -655,7 +706,7 @@ impl Tools {
             .await
             .map_err(|e| e.to_string())?
             .map_err(|e| match e {
-                switchyard_core::handoff::HandoffError::NotRunning => {
+                HandoffError::NotRunning => {
                     "the Switchyard app is not running; it must be open to approve the command"
                         .to_owned()
                 }
@@ -727,13 +778,16 @@ impl ToolHost for Tools {
             ToolDef {
                 name: "explain",
                 description: "Estimated query plan as an operator tree, with hotspots and \
-                              missing-index suggestions. Does not run the statement.",
+                              missing-index suggestions. Does not run the statement, unless \
+                              analyze asks for an actual plan, which the user must approve in \
+                              Switchyard first. SQL engines take one statement; MongoDB one \
+                              find(…) or aggregate([…]) that reads (queryPlanner).",
                 input_schema: json!({
                     "type": "object",
                     "properties": {
                         "connection": { "type": "string", "description": CONNECTION },
                         "sql": { "type": "string" },
-                        "analyze": { "type": "boolean", "description": "Actual plans need approval in the Switchyard app; refused here." }
+                        "analyze": { "type": "boolean", "description": "Actual plan (runs the statement; writes are rolled back). The user must approve the exact statement in Switchyard; never on Production. Prefer the estimated plan unless timings matter." }
                     },
                     "required": ["connection", "sql"]
                 }),
@@ -852,6 +906,7 @@ mod tests {
         );
         assert!(sql_only(&redis, "list_tables").is_err());
         assert!(sql_only(&mongo, "list_tables").is_ok());
+        assert!(sql_only(&mongo, "explain").is_ok());
         assert!(
             sql_only(&mongo, "workload")
                 .unwrap_err()

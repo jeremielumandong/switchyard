@@ -1,0 +1,12 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&mysql_tree(&name))
+---
+MySql Actual
+#0 Filter est=2029 act=1 loops=1 self=1.4ms (30%)
+  Filter: (plan_big.v = 'v77')
+  #1 Table scan on plan_big est=20290 act=20000 loops=1 self=3.3ms (70%)
+findings:
+  High FullScan node=Some(1): Table scan on plan_big | Reads 20,000 rows. | Add an index on the filtered or joined columns, or narrow the query.
+  Medium RowsRemovedByFilter node=Some(0): Filter discards 100% of rows at Filter | Read 20,000 rows to return 1. | An index on the filtered columns lets the scan skip those rows.
+  Medium BadEstimate node=Some(0): Rows over-estimated 2029× at Filter | Estimated 2,029 rows, got 1 per execution. | Refresh statistics on the tables involved.

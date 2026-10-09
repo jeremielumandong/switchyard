@@ -14,13 +14,14 @@ use switchyard_core::db::{
     CatalogChunk, Engine, IntrospectScope, ObjectDetail, ObjectInfo, ObjectKind, SchemaInfo, Value,
     dialect_for,
 };
-use switchyard_core::store::{DbConnection, Favorite, Profile, ProfileId, now_ms};
+use switchyard_core::store::{DbConnection, Favorite, Host, Profile, ProfileId, now_ms};
 use switchyard_core::{Command, SessionId};
 
 use crate::actions::{
     TreeCollapse, TreeCopy, TreeDown, TreeExpand, TreeOpen, TreePin, TreeRefresh, TreeUp,
 };
 use crate::app_state::{SessionState, badge_of, next_id};
+use crate::appearance::{rpx, ts};
 use crate::conn_editor::ConnKind;
 use crate::ddl_tab::DdlTab;
 pub(crate) use crate::explorer::CoreSink;
@@ -1157,6 +1158,30 @@ struct ConnRow {
     action: ConnAction,
     /// Can be dragged to reorder among the rows of the same group (`group`).
     drag: Option<DraggedProfile>,
+    /// Extra left indent (rows inside a folder).
+    indent: f32,
+    /// A session folder's name (its group row; right click edits its Hosts).
+    folder: Option<String>,
+}
+
+/// Hosts split into those outside any folder (in order) and folders (sorted by name,
+/// ignoring case) with their Hosts in order.
+pub(crate) fn folder_groups<'a>(
+    hosts: impl Iterator<Item = &'a Host>,
+) -> (Vec<&'a Host>, Vec<(String, Vec<&'a Host>)>) {
+    let mut loose = Vec::new();
+    let mut folders: Vec<(String, Vec<&Host>)> = Vec::new();
+    for h in hosts {
+        match h.folder.as_deref().map(str::trim).filter(|f| !f.is_empty()) {
+            None => loose.push(h),
+            Some(f) => match folders.iter_mut().find(|(name, _)| name == f) {
+                Some((_, list)) => list.push(h),
+                None => folders.push((f.to_owned(), vec![h])),
+            },
+        }
+    }
+    folders.sort_by_key(|(name, _)| name.to_lowercase());
+    (loose, folders)
 }
 
 /// A profile being dragged to a new place in the sidebar.
@@ -1208,6 +1233,8 @@ pub enum CtxTarget {
     Profile(ProfileId),
     /// A tab in the tab strip (by index).
     Tab(usize),
+    /// A session folder of Hosts in the sidebar (MX-6).
+    Folder(String),
     /// A schema (its row or one of its folders) on a connection.
     Schema(ProfileId, String),
 }
@@ -1463,6 +1490,47 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Bulk edit `hosts` (MX-6) in a dialog.
+    pub(crate) fn open_bulk_edit(
+        &mut self,
+        ids: &[ProfileId],
+        title: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let hosts: Vec<Host> = ids
+            .iter()
+            .filter_map(|id| self.profiles.host(id).cloned())
+            .collect();
+        if hosts.is_empty() {
+            return;
+        }
+        let core = self.core.clone();
+        let view = cx.new(|cx| {
+            let refs: Vec<&Host> = hosts.iter().collect();
+            crate::bulk_edit::BulkEditView::new(core, title, &refs, window, cx)
+        });
+        cx.subscribe(
+            &view,
+            |this, _, _: &crate::bulk_edit::BulkEditClosed, cx| {
+                this.overlay = None;
+                cx.notify();
+            },
+        )
+        .detach();
+        self.overlay = Some(crate::overlays::Overlay::BulkEdit(view));
+        cx.notify();
+    }
+
+    /// The Hosts in folder `name`.
+    pub(crate) fn folder_hosts(&self, name: &str) -> Vec<ProfileId> {
+        self.profiles
+            .hosts()
+            .filter(|h| h.folder.as_deref().map(str::trim) == Some(name))
+            .map(|h| h.id.clone())
+            .collect()
+    }
+
     /// Move `dragged` onto `target` in the sidebar and save the order.
     fn reorder_profile(&mut self, dragged: &ProfileId, target: &ProfileId, cx: &mut Context<Self>) {
         let order: Vec<ProfileId> = self.profiles.all.iter().map(|p| p.id().clone()).collect();
@@ -1535,43 +1603,117 @@ impl Workspace {
                     group: group.to_owned(),
                     label,
                 }),
+                indent: 0.,
+                folder: None,
             }
         };
-        for h in self.profiles.hosts() {
-            let key = format!("h:{}", h.id);
-            let collapsed = self.collapsed.contains(&key);
-            let kids = self.profiles.host_children(&h.id);
-            let any_live = kids.iter().any(|k| live.contains(k.id()));
+        // Favorite Hosts first (MX-6): one click opens a terminal.
+        let favorites: Vec<&Host> = self.profiles.hosts().filter(|h| h.favorite).collect();
+        if !favorites.is_empty() {
+            let key = "g:fav".to_owned();
             rows.push(ConnRow {
                 is_group: true,
                 key: key.clone(),
                 badge: "",
-                label: h.name.clone().into(),
-                sub: h.address.clone().into(),
-                env: Some(h.environment),
-                live: any_live,
-                profile: Some(h.id.clone()),
+                label: "★ Favorites".into(),
+                sub: "".into(),
+                env: None,
+                live: false,
+                profile: None,
                 action: ConnAction::Toggle,
-                drag: Some(DraggedProfile {
-                    id: h.id.clone(),
-                    group: "hosts".into(),
-                    label: h.name.clone().into(),
-                }),
+                drag: None,
+                indent: 0.,
+                folder: None,
             });
-            if !collapsed {
-                rows.push(ConnRow {
+            if !self.collapsed.contains(&key) {
+                rows.extend(favorites.into_iter().map(|h| ConnRow {
                     is_group: false,
-                    key: format!("{key}:term"),
+                    key: format!("fav:{}", h.id),
                     badge: "SSH",
-                    label: "Terminal".into(),
-                    sub: "".into(),
-                    env: None,
+                    label: h.name.clone().into(),
+                    sub: h.address.clone().into(),
+                    env: Some(h.environment),
                     live: false,
                     profile: Some(h.id.clone()),
                     action: ConnAction::Terminal(Some(h.id.clone())),
                     drag: None,
+                    indent: 0.,
+                    folder: None,
+                }));
+            }
+        }
+        let (loose, folders) = folder_groups(self.profiles.hosts());
+        let mut groups: Vec<(Option<String>, Vec<&Host>)> = vec![(None, loose)];
+        groups.extend(folders.into_iter().map(|(f, hs)| (Some(f), hs)));
+        for (folder, hosts) in groups {
+            let indent = if let Some(name) = &folder {
+                let key = format!("fd:{name}");
+                let count = hosts.len();
+                rows.push(ConnRow {
+                    is_group: true,
+                    key: key.clone(),
+                    badge: "",
+                    label: format!("▣ {name}").into(),
+                    sub: count.to_string().into(),
+                    env: None,
+                    live: false,
+                    profile: None,
+                    action: ConnAction::Toggle,
+                    drag: None,
+                    indent: 0.,
+                    folder: Some(name.clone()),
                 });
-                rows.extend(kids.into_iter().map(|k| leaf(k, &key)));
+                if self.collapsed.contains(&key) {
+                    continue;
+                }
+                14.
+            } else {
+                0.
+            };
+            for h in hosts {
+                let key = format!("h:{}", h.id);
+                let collapsed = self.collapsed.contains(&key);
+                let kids = self.profiles.host_children(&h.id);
+                let any_live = kids.iter().any(|k| live.contains(k.id()));
+                rows.push(ConnRow {
+                    is_group: true,
+                    key: key.clone(),
+                    badge: "",
+                    label: h.name.clone().into(),
+                    sub: h.address.clone().into(),
+                    env: Some(h.environment),
+                    live: any_live,
+                    profile: Some(h.id.clone()),
+                    action: ConnAction::Toggle,
+                    drag: Some(DraggedProfile {
+                        id: h.id.clone(),
+                        group: "hosts".into(),
+                        label: h.name.clone().into(),
+                    }),
+                    indent,
+                    folder: None,
+                });
+                if !collapsed {
+                    rows.push(ConnRow {
+                        is_group: false,
+                        key: format!("{key}:term"),
+                        badge: "SSH",
+                        label: "Terminal".into(),
+                        sub: "".into(),
+                        env: None,
+                        live: false,
+                        profile: Some(h.id.clone()),
+                        action: ConnAction::Terminal(Some(h.id.clone())),
+                        drag: None,
+                        indent,
+                        folder: None,
+                    });
+                    rows.extend(kids.into_iter().map(|k| {
+                        let mut r = leaf(k, &key);
+                        r.indent = indent;
+                        r
+                    }));
+                }
             }
         }
         let direct = self.profiles.direct();
@@ -1587,6 +1729,8 @@ impl Workspace {
             profile: None,
             action: ConnAction::Toggle,
             drag: None,
+            indent: 0.,
+            folder: None,
         });
         if !self.collapsed.contains(&key) {
             rows.push(ConnRow {
@@ -1600,6 +1744,8 @@ impl Workspace {
                 profile: None,
                 action: ConnAction::Terminal(None),
                 drag: None,
+                indent: 0.,
+                folder: None,
             });
             rows.extend(direct.into_iter().map(|p| {
                 let mut r = leaf(p, "g:direct");
@@ -1619,6 +1765,8 @@ impl Workspace {
                 profile: None,
                 action: ConnAction::Files,
                 drag: None,
+                indent: 0.,
+                folder: None,
             });
         }
         rows
@@ -1858,17 +2006,17 @@ impl Workspace {
         };
         let second = if ssh.is_some() { "Files" } else { "Schema" };
         div()
-            .w(px(self.sidebar_width))
+            .w(rpx(self.sidebar_width))
             .relative()
             .child(
                 // Drag the right edge to resize.
                 div()
                     .id("side-resize")
                     .absolute()
-                    .right(px(-3.))
+                    .right(rpx(-3.))
                     .top_0()
                     .bottom_0()
-                    .w(px(6.))
+                    .w(rpx(6.))
                     .cursor_col_resize()
                     .hover(|s| s.bg(p.acc.opacity(0.35)))
                     .on_mouse_down(
@@ -1888,9 +2036,9 @@ impl Workspace {
             .min_h_0()
             .child(
                 div()
-                    .px(px(8.))
-                    .pt(px(8.))
-                    .pb(px(6.))
+                    .px(rpx(8.))
+                    .pt(rpx(8.))
+                    .pb(rpx(6.))
                     .flex_none()
                     .child(ui::segmented(
                         "side-tabs",
@@ -1920,11 +2068,11 @@ impl Workspace {
             .child(
                 div()
                     .flex_none()
-                    .p(px(8.))
+                    .p(rpx(8.))
                     .border_t_1()
                     .border_color(p.bd)
                     .flex()
-                    .gap(px(6.))
+                    .gap(rpx(6.))
                     .child(
                         ui::button("new-conn", "New connection", ui::Kind::Secondary, p)
                             .flex_1()
@@ -1962,9 +2110,9 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .px(px(12.))
-                    .pt(px(6.))
-                    .pb(px(4.))
+                    .px(rpx(12.))
+                    .pt(rpx(6.))
+                    .pb(rpx(4.))
                     .child(ui::caption("HOSTS", &p))
                     .child(ui::caption("by host", &p).font_family(MONO)),
             )
@@ -1979,7 +2127,7 @@ impl Workspace {
                     }),
                 )
                 .flex_1()
-                .pb(px(8.)),
+                .pb(rpx(8.)),
             )
             .into_any_element()
     }
@@ -2001,6 +2149,7 @@ impl Workspace {
         let profile = r.profile.clone();
         let collapsed = self.collapsed.contains(&r.key);
         let ctx_profile = r.profile.clone();
+        let ctx_folder = r.folder.clone();
         let drop_line = p.acc;
         let drop_target = r.drag.clone();
         let over_target = r.drag.clone();
@@ -2026,13 +2175,13 @@ impl Workspace {
                 }
             }))
             .w_full()
-            .h(px(26.))
+            .h(rpx(26.))
             .flex()
             .items_center()
-            .gap(px(7.))
-            .pl(px(if r.is_group { 8. } else { 26. }))
-            .pr(px(10.))
-            .text_size(px(12.5))
+            .gap(rpx(7.))
+            .pl(rpx(r.indent + if r.is_group { 8. } else { 26. }))
+            .pr(rpx(10.))
+            .text_size(ts::UI)
             .when(active, |d| d.bg(p.sel))
             .hover(|s| s.bg(p.hover))
             .on_click(cx.listener(move |this, _, w, cx| {
@@ -2048,7 +2197,11 @@ impl Workspace {
                         }
                     }
                     ConnAction::Terminal(h) => this.open_terminal(h.clone(), cx),
-                    ConnAction::Files => this.open_files(w, cx),
+                    // A saved file connection opens its own server (SFTP Host or FTP).
+                    ConnAction::Files => match &profile {
+                        Some(id) => this.open_profile(id, w, cx),
+                        None => this.open_files(w, cx),
+                    },
                 }
                 cx.notify();
             }))
@@ -2058,15 +2211,18 @@ impl Workspace {
                     if let Some(id) = &ctx_profile {
                         this.ctx = Some(CtxMenu::new(ev.position, CtxTarget::Profile(id.clone())));
                         cx.notify();
+                    } else if let Some(f) = &ctx_folder {
+                        this.ctx = Some(CtxMenu::new(ev.position, CtxTarget::Folder(f.clone())));
+                        cx.notify();
                     }
                 }),
             )
             .child(
                 div()
-                    .w(px(10.))
+                    .w(rpx(10.))
                     .flex_none()
                     .text_color(p.fg3)
-                    .text_size(px(9.))
+                    .text_size(ts::TINY)
                     .child(if r.is_group {
                         if collapsed { "▸" } else { "▾" }
                     } else {
@@ -2091,7 +2247,7 @@ impl Workspace {
             .child(
                 div()
                     .font_family(MONO)
-                    .text_size(px(11.))
+                    .text_size(ts::SMALL)
                     .text_color(p.fg3)
                     .whitespace_nowrap()
                     .child(r.sub.clone()),
@@ -2139,34 +2295,34 @@ impl Workspace {
             .child(
                 div()
                     .flex_none()
-                    .px(px(8.))
-                    .pt(px(2.))
-                    .pb(px(6.))
+                    .px(rpx(8.))
+                    .pt(rpx(2.))
+                    .pb(rpx(6.))
                     .child(
                         div()
                             .id("schema-search")
-                            .h(px(26.))
+                            .h(rpx(26.))
                             .flex()
                             .items_center()
-                            .gap(px(8.))
-                            .px(px(8.))
+                            .gap(rpx(8.))
+                            .px(rpx(8.))
                             .border_1()
                             .border_color(p.bd)
                             .rounded(px(6.))
                             .bg(p.bg)
                             .text_color(p.fg3)
-                            .text_size(px(12.))
+                            .text_size(ts::BODY)
                             .child(
                                 div().flex_1().child(
                                     Input::new(&self.schema_search)
                                         .appearance(false)
-                                        .text_size(px(12.)),
+                                        .text_size(ts::BODY),
                                 ),
                             )
                             .child(
                                 div()
                                     .font_family(MONO)
-                                    .text_size(px(10.5))
+                                    .text_size(ts::CAPTION_PLUS)
                                     .child(ui::keys("⌘P", "Ctrl+P")),
                             ),
                     )
@@ -2174,10 +2330,10 @@ impl Workspace {
                         div()
                             .flex()
                             .justify_between()
-                            .gap(px(8.))
-                            .px(px(2.))
-                            .pt(px(6.))
-                            .text_size(px(11.))
+                            .gap(rpx(8.))
+                            .px(rpx(2.))
+                            .pt(rpx(6.))
+                            .text_size(ts::SMALL)
                             .text_color(p.fg3)
                             .child(
                                 div()
@@ -2202,8 +2358,8 @@ impl Workspace {
                 d.child(
                     div()
                         .flex_1()
-                        .p(px(16.))
-                        .text_size(px(12.5))
+                        .p(rpx(16.))
+                        .text_size(ts::UI)
                         .text_color(p.fg3)
                         .child(
                             "Open a SQL tab, or choose Show in explorer on a database \
@@ -2246,7 +2402,7 @@ impl Workspace {
                             )
                             .track_scroll(&scroll)
                             .flex_1()
-                            .pb(px(8.)),
+                            .pb(rpx(8.)),
                         ),
                 )
             })
@@ -2278,7 +2434,7 @@ impl Workspace {
         let core = self.core.clone();
         match &r.conn {
             None if r.key == "favorites" => {
-                self.explorer.favorites_open = !self.explorer.favorites_open;
+                self.explorer.toggle_favorites();
             }
             Some(id) if r.fav.is_none() && !r.key.starts_with("fav:") => {
                 if let Some(s) = self.explorer.state_mut(id) {
@@ -2322,7 +2478,7 @@ impl Workspace {
         };
         let r = &rows[ix];
         let expanded = match &r.conn {
-            None => self.explorer.favorites_open,
+            None => self.explorer.favorites_open(),
             Some(id) => self
                 .explorer
                 .state(id)
@@ -2451,14 +2607,20 @@ impl Workspace {
     /// A pin was clicked: reveal it in its connection's tree, connecting and expanding
     /// as needed; it is selected once its folder has loaded.
     pub(crate) fn reveal_favorite(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(f) = self.explorer.favorites.iter().find(|f| f.id == id).cloned() else {
+        let Some(f) = self
+            .explorer
+            .favorites()
+            .iter()
+            .find(|f| f.id == id)
+            .cloned()
+        else {
             return;
         };
         let Some(conn) = self.profiles.db(&f.connection_id).cloned() else {
             self.toast("The connection of this pin no longer exists", cx);
             return;
         };
-        if !self.explorer.filter.is_empty() {
+        if !self.explorer.filter().is_empty() {
             self.schema_search
                 .update(cx, |i, cx| i.set_value("", window, cx));
             let core = self.core.clone();
@@ -2527,13 +2689,13 @@ impl Workspace {
                 })
             })
             .w_full()
-            .h(px(26.))
+            .h(rpx(26.))
             .flex()
             .items_center()
-            .gap(px(7.))
-            .pl(px(8. + r.depth as f32 * 14.))
-            .pr(px(10.))
-            .text_size(px(12.5))
+            .gap(rpx(7.))
+            .pl(rpx(8. + r.depth as f32 * 14.))
+            .pr(rpx(10.))
+            .text_size(ts::UI)
             .text_color(if r.dim { p.fg2 } else { p.fg })
             .when(r.depth == 0, |d| d.font_weight(FontWeight::SEMIBOLD))
             .when(active_node, |d| d.border_l_2().border_color(p.acc))
@@ -2588,10 +2750,10 @@ impl Workspace {
             )
             .child(
                 div()
-                    .w(px(10.))
+                    .w(rpx(10.))
                     .flex_none()
                     .text_color(p.fg3)
-                    .text_size(px(9.))
+                    .text_size(ts::TINY)
                     // An object row's caret expands its children; the rest of the row
                     // selects it (double-click opens the data).
                     .when(has_caret && caret_object, |d| {
@@ -2611,11 +2773,11 @@ impl Workspace {
             )
             .child(
                 div()
-                    .w(px(14.))
+                    .w(rpx(14.))
                     .flex_none()
                     .font_family(MONO)
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_size(px(10.))
+                    .text_size(ts::CAPTION)
                     .text_color(p.fg3)
                     .child(r.icon.clone()),
             )
@@ -2627,7 +2789,7 @@ impl Workspace {
                     div()
                         .font_family(MONO)
                         .font_weight(FontWeight::NORMAL)
-                        .text_size(px(11.))
+                        .text_size(ts::SMALL)
                         .text_color(p.fg3)
                         // Long descriptions (job status, role attributes) give way to the name.
                         .flex_shrink(1.)
@@ -2765,17 +2927,17 @@ impl Workspace {
             }
         };
         div()
-            .w(px(self.inspector_width))
+            .w(rpx(self.inspector_width))
             .relative()
             .child(
                 // Drag the left edge to resize.
                 div()
                     .id("insp-resize")
                     .absolute()
-                    .left(px(-3.))
+                    .left(rpx(-3.))
                     .top_0()
                     .bottom_0()
-                    .w(px(6.))
+                    .w(rpx(6.))
                     .cursor_col_resize()
                     .hover(|s| s.bg(p.acc.opacity(0.35)))
                     .on_mouse_down(
@@ -2796,18 +2958,18 @@ impl Workspace {
             .min_h_0()
             .child(
                 div()
-                    .h(px(34.))
+                    .h(rpx(34.))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .pl(px(12.))
-                    .pr(px(10.))
+                    .gap(rpx(8.))
+                    .pl(rpx(12.))
+                    .pr(rpx(10.))
                     .border_b_1()
                     .border_color(p.bd)
                     .child(
                         div()
-                            .text_size(px(12.))
+                            .text_size(ts::BODY)
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("Value viewer"),
                     )
@@ -2815,7 +2977,7 @@ impl Workspace {
                         d.child(
                             div()
                                 .font_family(MONO)
-                                .text_size(px(11.))
+                                .text_size(ts::SMALL)
                                 .text_color(p.fg3)
                                 .child(format!("row {r}")),
                         )
@@ -2825,8 +2987,8 @@ impl Workspace {
                         let wide = self.inspector_width > INSPECTOR_WIDTH + 1.;
                         div()
                             .id("insp-expand")
-                            .px(px(6.))
-                            .py(px(2.))
+                            .px(rpx(6.))
+                            .py(rpx(2.))
                             .rounded(px(4.))
                             .text_color(p.fg3)
                             .hover(|s| s.bg(p.hover).text_color(p.fg))
@@ -2853,8 +3015,8 @@ impl Workspace {
                     .child(
                         div()
                             .id("insp-close")
-                            .px(px(6.))
-                            .py(px(2.))
+                            .px(rpx(6.))
+                            .py(rpx(2.))
                             .rounded(px(4.))
                             .text_color(p.fg3)
                             .hover(|s| s.bg(p.hover))
@@ -2867,8 +3029,8 @@ impl Workspace {
             )
             .child(
                 div()
-                    .px(px(10.))
-                    .py(px(8.))
+                    .px(rpx(10.))
+                    .py(rpx(8.))
                     .flex_none()
                     .child(ui::segmented(
                         "viewer-fmt",
@@ -2910,12 +3072,12 @@ impl Workspace {
                     .min_h_0()
                     // Long XML or text lines scroll sideways instead of being cut.
                     .overflow_scroll()
-                    .px(px(12.))
-                    .pt(px(4.))
-                    .pb(px(12.))
+                    .px(rpx(12.))
+                    .pt(rpx(4.))
+                    .pb(rpx(12.))
                     .font_family(MONO)
-                    .text_size(px(12.))
-                    .line_height(px(19.))
+                    .text_size(ts::BODY)
+                    .line_height(rpx(19.))
                     .children(image)
                     .children(lines.into_iter().map(|segs| {
                         div().flex().whitespace_nowrap().children(
@@ -2929,11 +3091,11 @@ impl Workspace {
                     .flex_none()
                     .flex()
                     .justify_between()
-                    .px(px(12.))
-                    .py(px(8.))
+                    .px(rpx(12.))
+                    .py(rpx(8.))
                     .border_t_1()
                     .border_color(p.bd)
-                    .text_size(px(11.))
+                    .text_size(ts::SMALL)
                     .text_color(p.fg3)
                     .child(size_label)
                     .child(
@@ -3058,13 +3220,13 @@ impl Workspace {
                     };
                     *image = Some(
                         div()
-                            .pt(px(6.))
+                            .pt(rpx(6.))
                             .flex()
                             .justify_center()
                             .child(
                                 gpui_kit::img(img)
-                                    .max_w(px(self.inspector_width - 24.))
-                                    .max_h(px(420.)),
+                                    .max_w(rpx(self.inspector_width - 24.))
+                                    .max_h(rpx(420.)),
                             )
                             .into_any_element(),
                     );
@@ -3492,6 +3654,43 @@ mod tests {
             names(move_to(&ids, &id("x"), &id("b"))),
             "abcd",
             "unknown id"
+        );
+    }
+}
+
+#[cfg(test)]
+mod folder_tests {
+    use super::*;
+
+    #[test]
+    fn hosts_group_by_folder() {
+        let mk = |name: &str, folder: Option<&str>| {
+            let mut h = Host::new(name, "a", "u");
+            h.folder = folder.map(str::to_owned);
+            h
+        };
+        let hosts = [
+            mk("a", None),
+            mk("b", Some("prod")),
+            mk("c", Some(" ")),
+            mk("d", Some("Dev")),
+            mk("e", Some("prod")),
+        ];
+        let (loose, folders) = folder_groups(hosts.iter());
+        assert_eq!(
+            loose.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(),
+            ["a", "c"]
+        );
+        let summary: Vec<(String, Vec<&str>)> = folders
+            .into_iter()
+            .map(|(f, hs)| (f, hs.iter().map(|h| h.name.as_str()).collect()))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("Dev".to_owned(), vec!["d"]),
+                ("prod".to_owned(), vec!["b", "e"])
+            ]
         );
     }
 }

@@ -1,0 +1,10 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&mongo(&name))
+---
+MongoDb Actual
+#0 COLLSCAN on orders est=- act=360 loops=- self=0.0ms (0%)
+  Filter: {"total":{"$gt":490}}
+findings:
+  Low FullScan node=Some(0): COLLSCAN on orders | Reads 20,000 rows. | db.orders.createIndex({ total: 1 })
+  Low RowsRemovedByFilter node=Some(0): Filter discards 98% of rows at orders | Read 20,000 rows to return 360. | An index on the filtered columns lets the scan skip those rows.

@@ -1047,3 +1047,225 @@ commands.
 - Output goes through the MCP scrubber like everything else, so host addresses and user
   names in it read `[redacted]`.
 
+## Text size and zoom (2026-10-09)
+
+- **Zoom through rems, not the scale factor.** GPUI's display scale factor can't be
+  overridden outside test builds. gpui-component already sets the window rem size to the
+  theme's UI font size, so zoom sets that to 13 px × zoom and every fixed size in element
+  styles is written `rpx(v)` (`Rems(v / 13)`): text (named steps `appearance::ts::*`), row
+  heights, paddings, gaps and fixed widths all follow without a context. Values in window
+  coordinates stay `px`: user-resized panes (sidebar, inspector, splits), drag math, canvas
+  painting (terminal cells, plan graph, ER diagram, which have their own zoom), and
+  gpui-component APIs that take `Pixels` (popup menu widths, dialog widths). The result grid
+  and terminal compute their metrics from the zoom (`table_size`, `term_metrics`). Steps 70,
+  80, 90, 100, 110, 125, 150, 175, 190, 200 %.
+- **Editor font family** applies to editors, grid cells and terminals; badges and other chrome
+  keep the bundled Geist Mono.
+- **Unsaved tabs**: SQL tabs autosave their buffer (dirty only until the 400 ms autosave), so
+  they only get the marker; the Save / Discard / Cancel dialog is for file editor tabs.
+
+
+## 2026-10-09 — Agent actual plans approved in the app; markdown in the assistant panel
+
+- **Approval in the app, capture in `swy mcp`.** `explain` with `analyze` from an agent asks
+  the running app over the handoff socket (`handoff::ask_agent_plan`), the same way
+  `run_ssh_command` does. The app checks the run's session token and the connection (agent
+  access, in the token's scope, not Production, PostgreSQL / SQL Server, one plannable
+  statement, no write on a read-only connection) and shows an approval card with the exact
+  statement and connection name. Only the yes / no goes back: `swy mcp` then captures the
+  plan on its own session through the core's `Explain` (writes run in a transaction that is
+  rolled back), renders it, and records the call tagged `agent:<cli>`. This keeps one
+  session per agent run and one renderer; the app never opens a second session for it.
+- **Outside the app** (no session token) actual plans stay refused, and Production
+  connections are estimated only even inside app-started runs.
+- `AgentApproval` became generic (`ApprovalKind::SshCommand` / `ActualPlan { writes }`,
+  `target`, `target_name`, `text`); one approval queue and one card list serve both.
+- **Markdown without `TextView`.** gpui-component's `TextView` renders markdown, but it takes
+  its selection document order from a per-frame global counter, while the transcript's
+  `SelectableText` runs use explicit orders; mixing them scrambles a copy that crosses both.
+  The panel parses answers with the `markdown` crate (already a dependency, GFM) into its
+  own blocks and draws them with `rich_text::RichText`, a copy of gpui-base's
+  `SelectableText` (Apache-2.0) with highlight runs, inline-code font overrides and
+  clickable links (http, https and mailto only). Copy gives the text without markup.
+
+## 2026-10-09 — MongoDB grid edits by `_id`; Redis delimiter and type filter
+
+- **Same edit flow, document statements.** `Dialect::edits_documents` (true for MongoDB)
+  switches the SQL tab's staged edits to `db::mongo::edit`: the target comes from parsing the
+  `find` statement (no catalog detail, no primary key lookup), and each staged row becomes
+  `updateOne({ _id }, { $set: { "a.b": … } })`, `deleteOne({ _id })` or `insertOne({ … })`.
+  Statements are shell text, so they show in the staged panel and in history like SQL.
+- **Types are preserved, not guessed.** `_id` is read from the `(document)` column's
+  Extended JSON, so ObjectId, numbers and strings match exactly. A new value takes its
+  column's type (`int`, `long`, `objectId`, `date`, …); in a `mixed` column it takes the
+  replaced value's type; with neither, the text is read as a shell value and falls back to
+  a string. A digits-only string in a string column stays a string.
+- **NULL means `$set: null`**, not `$unset`: clearing a cell does what it says, and the
+  field stays. New rows leave NULL fields out (the server adds `_id` unless one is typed).
+- **No transaction.** The MongoDB session has none, so `ApplyEdits` applies document edits
+  in order without one and, on a failure, says how many were already saved. Updates report
+  matched documents as their affected count (PostgreSQL semantics), so re-saving an
+  unchanged value is not a failure.
+- **Redis tree delimiter** is a per-connection option (`tree_delimiter` in
+  `DbConnection::options`), any string, `:` when blank. The type filter uses `SCAN … TYPE`
+  and falls back to filtering each page's `TYPE` replies on servers before 6.0.
+- **Console history** for Up / Down comes from the connection's stored query history (the
+  console already records each line, masked), not a separate store; lines that carry a
+  secret and coding-agent lines are not recalled.
+
+
+## 2026-10-09 — UI-thread performance follow-ups
+
+- **Schema tree rows** are cached (`Explorer::rows()` returns a shared `Rc<[TreeRow]>`).
+  The tree-shaping fields are private, so every change goes through a `&mut` method that
+  drops the cache; reading fields like `cursor` or `active` does not rebuild.
+- **Grid row filter**: below 50,000 loaded rows it stays synchronous (it takes a few ms);
+  above, it waits 150 ms after the last keystroke and scans on GPUI's background executor.
+  Each keystroke bumps a generation; the scan checks it per batch and a stale result is
+  dropped. Rows streamed in during the scan join the view unfiltered, like `push` does.
+- **Terminal search** is debounced 120 ms and scans on the background executor with the
+  same generation scheme (`Terminal::begin_search` / `search_as`); it is not incremental.
+- **API workbench**: the collection rail is a `list()` over rows named by identity
+  (`RailItem`) and re-measures only the rows that changed; the History table rows are a
+  `uniform_list` capped at 560 px that scrolls inside the page. The body's JSON check is
+  cached by content.
+
+
+## 2026-10-09 — Release readiness: macOS workflow, icon, log file, update checks
+
+- **macOS release workflow** (`release-macos.yml`) reuses `packaging/macos/build-macos.sh`
+  (universal binary via lipo, `.app`, DMG). Signing and notarization run only when all of
+  `APPLE_CERTIFICATE` (base64 .p12), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`,
+  `APPLE_ID`, `APPLE_TEAM_ID` and `APPLE_APP_PASSWORD` are set in the `macos-release`
+  environment; the certificate goes into a temporary keychain that is deleted afterwards.
+  Without them the DMG is ad-hoc signed, kept as a workflow artifact, and uploaded to the
+  draft release only when the run is started with `upload_unsigned`. Never exercised with a
+  real Developer ID (no macOS runner or certificate here).
+- **App icon**: SVG sources in `packaging/icons/` (a full one and a heavier one for 16-32 px);
+  `generate.py` (cairosvg + Pillow, dev-time only) renders the checked-in PNG set, ICO (DIB
+  entries below 256 px, PNG at 256) and ICNS (Apple's 824/1024 grid), so packaging needs no
+  image tools. Windows: `crates/app/build.rs` writes a `.res` with the ICO as group icon 1
+  (what GPUI loads) and passes it to `link.exe`; no resource-compiler crate. Linux: `app_id`
+  is now `switchyard`, matching `switchyard.desktop`. The X11 `_NET_WM_ICON`
+  (`WindowOptions::icon`) needs the `image` crate as a direct dependency; not added (Follow-ups).
+- **Log file**: `<data>/logs/switchyard.log`, 5 MB cap, 3 rotated copies, always on (release
+  and debug), written by a dedicated thread fed through a bounded channel so the UI thread
+  never touches the disk (lines are dropped if it falls behind). Own small writer instead of
+  `tracing-appender` (not on the approved list). Panics are logged before the default hook.
+- **Update checks (M6-4, scoped)**: the core asks
+  `api.github.com/repos/jeremielumandong/switchyard/releases/latest` with `reqwest` (approved
+  for driver downloads; reused here with the same rustls client as the Driver Manager),
+  ignores drafts and pre-releases, compares semver, and only links to `github.com` pages.
+  Startup checks run in release builds only, can be turned off in Settings → General
+  (`updates.check`) and are skipped with `SWITCHYARD_NO_UPDATE_CHECK`. When a minisign public
+  key is baked in at build time (`SWITCHYARD_UPDATE_PUBKEY`, a repository variable in the
+  release workflows) and the release has `<installer>.minisig`, the platform installer is
+  downloaded to `<data>/updates/<version>/` and kept only if its signature verifies; the
+  notice then opens it. Without a key (today) the app only notifies. Replacing the running
+  app in place is not done: the owner holds the signing key, and Linux defers to package
+  managers.
+
+
+## 2026-10-09 — Compose SQL Server with a test CA; cancel flake already fixed
+
+- **Compose `mssql` TLS.** The driver never skips certificate verification, so the compose
+  SQL Server's self-signed fallback certificate could not be used by any test. A one-shot
+  `mssql-tls` service (the same image, which has openssl) runs `docker/mssql/make-tls.sh`
+  to write a throwaway CA and a localhost certificate to `docker/mssql/tls/` (git-ignored,
+  made once); `mssql` mounts them with `docker/mssql/mssql.conf`. Tests trust
+  `docker/mssql/tls/ca.pem`. `scripts/mssql-test-server.sh` stays for the CI SQL Server job.
+- **`cancel_stops_a_running_query_quickly` flake.** Root cause was a Cancel landing between
+  `StatementStarted` and the driver's `execute`, which clears the cancel flag; fixed in
+  40814b2 (core re-asserts the cancel from the resume channel while `execute` is in flight).
+  The Follow-ups note came from a branch without that commit. Rechecked: no failure in
+  ~120 runs under CPU and disk load, and the test still passes with a forced 200 ms gap
+  before `execute`. No timeout change.
+
+
+## 2026-10-09 — Terminal logging, conveniences, macros and session folders (MX-3 to MX-6)
+
+- **Logs are written where output is parsed.** The session log hangs off the terminal's
+  shared state and is fed by the `Feeder` on the I/O side (PTY reader thread or SSH task),
+  so a busy terminal never writes files from the UI thread. Starting and stopping a log are
+  core commands that open or finish the file on a blocking task.
+- **Plain logs resolve redraws per line.** A carriage return followed by text restarts the
+  line and backspace removes the last character, so progress bars and shell line editing
+  leave their final text, not every frame. Full-screen programs still log their escape-free
+  text, which is noisy; raw mode keeps everything for replay with `cat`.
+- **Defaults.** Copy on select and right-click paste stay off (as before); multi-line paste
+  confirmation is on; keyword highlighting is off until the user turns it on (it recolors
+  output) and never applies on the alternate screen or to text a program colored itself.
+- **Macros are bytes.** A macro records the encoded keys and pastes sent to the program, not
+  key names, so it replays the same in any pane; it is stored as an escaped string so an
+  export stays readable. Replay sends it at once.
+- **Per-Host shell setup is typed, env is requested.** Start folder and startup command are
+  typed into each new shell (after reconnects too), like the macro on connect; environment
+  variables go as SSH `env` requests, which servers drop unless `AcceptEnv` allows them
+  (the editor says so) rather than being typed as `export` lines into the session.
+- **Duplicate copies the secret** under the new profile's own key, so deleting either copy
+  never removes the other's password.
+- Font zoom per tab and a per-Host font override were left for after the parallel UI zoom /
+  font-size work (Follow-ups).
+
+
+## 2026-10-09 — FTP / FTPS (M4-2)
+
+- **Crate:** `suppaftp` 12 (MIT OR Apache-2.0, approved) with `tokio-rustls-ring`, so FTPS
+  uses the same rustls + ring stack as the rest of the tree. Its `deprecated` feature is on
+  only because it gates `connect_secure_implicit` (implicit TLS); nothing else uses it.
+- **Connections:** browsing (list, stat, mkdir, rename, delete) shares one control
+  connection, reopened once when the server dropped it (`421` idle timeout, reset). Each
+  read or write stream opens its own logged-in connection: FTP allows one data transfer per
+  control connection, and the transfer queue runs four at once. A stream checks the
+  server's completion reply at end of file (reads) or on `shutdown` (writes).
+- **Listing:** `MLSD` / `MLST` when `FEAT` offers them; otherwise `CWD` + `LIST -a` (dot
+  files; plain `LIST` if `-a` is refused), parsed as POSIX or DOS lines. `stat` without
+  MLST is `SIZE` + `MDTM` for files and `CWD` for folders (no data connection).
+- **Resume:** downloads `REST` + `RETR`; uploads `APPE` when the partial file is exactly the
+  resume offset (what the transfer queue does), `REST` + `STOR` when it is longer.
+- **Passive mode** connects to the control connection's address with the announced port
+  (servers behind NAT announce private addresses), and uses `EPSV` over IPv6.
+- **Trust:** TLS verification is always on: the OS store (honours `SSL_CERT_FILE`) plus an
+  optional per-connection PEM (`FtpConfig::trusted_ca_pem`), the same model as
+  `DbConfig::trusted_ca_pem`. Like the database one, it is not yet stored in profiles or
+  editable in the UI (Follow-ups).
+- **Files tab:** `FsRef::Ftp(ProfileId)` names a saved FTP connection; the right pane's
+  source picker lists Hosts and FTP connections. The connection editor's Test logs in and
+  lists the start folder (`Command::TestFiles`).
+- **Tests:** three vsftpd containers (explicit TLS required on 2121, implicit TLS on 2990,
+  plain FTP on 127.0.0.1:2120 on the host network so active mode can connect back), with a
+  certificate from a throwaway CA made by `scripts/ftp-test-certs.sh`.
+
+## Query plans for MySQL, SQLite and MongoDB (2026-10)
+
+- Capability: `Dialect::plans()` returns `PlanSupport { estimated, actual }`. The SQL tab
+  shows Explain / Analyze from it and `plan::capture` refuses what it does not offer; no
+  engine checks in UI code. SQLite is estimated only (EXPLAIN QUERY PLAN has no counts);
+  D1 is NONE until its HTTP path is wired.
+- MySQL estimated plans use `EXPLAIN FORMAT=JSON`, actual plans `EXPLAIN ANALYZE` (tree
+  text). The two differ in shape, so the JSON's access types are named with the tree's
+  vocabulary (`Table scan`, `Index lookup`, …) and `nested_loop` arrays become left-deep
+  `Nested Loop` nodes, so compare and the join rules line up. MariaDB actual plans use
+  `ANALYZE FORMAT=JSON` (detected with `SELECT VERSION()`), parsed by the same JSON reader.
+  Actual plans run in a rolled-back transaction or savepoint, as on PostgreSQL.
+- MongoDB plans append `.explain("queryPlanner" | "executionStats")` to a find or
+  aggregate statement. Analyze is refused for pipelines that write ($out / $merge), and a
+  statement that already ends in `.explain()` is refused (it would bypass the mode, and an
+  agent could ask for executionStats). MCP `explain` accepts MongoDB with the same rule:
+  one reading find/aggregate, estimated only.
+- New findings rule `TempStructure` (temporary table or index-less sort), engine-neutral:
+  converters tag nodes with the `model::warn` texts and the rule only reads those. Plans
+  with no row counts at all (SQLite, MongoDB estimates) flag every full scan and temp
+  structure at Low severity, since the plan cannot say how large they are.
+
+- **Graceful TLS close (CI fix).** suppaftp's rustls stream sends `close_notify` and drops
+  the socket at once. A TLS 1.3 server's session tickets are still unread in an upload's
+  socket, so the kernel answers the close with RST and discards unsent data; on a slower
+  machine (GitHub runners, through docker-proxy) vsftpd then lost the tail of the upload and
+  replied `426 Failure reading network stream`. `remote::ftp_tls` plugs its own stream into
+  suppaftp's connector traits: shutdown sends `close_notify` + FIN, then reads until the
+  server closes (at most 10 s), and a second shutdown is a no-op. Reproduced locally by
+  pausing docker-proxy during an upload; `ftp_tls::tests` covers it without docker.
+- **Every resolved address.** `localhost` resolves to `::1` first on the runners, where the
+  host-network test server listens on 127.0.0.1 only; connecting now tries each address
+  until one answers (a TLS or protocol error stops the search).

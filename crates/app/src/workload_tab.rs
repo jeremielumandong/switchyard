@@ -14,6 +14,7 @@ use switchyard_core::plan::access::{Hint, Workload};
 use switchyard_core::{Command, RequestId, RuntimeHandle, SessionId};
 
 use crate::app_state::next_id;
+use crate::appearance::{rpx, ts};
 use crate::plan_view::{count, ms};
 use crate::theme::{MONO, Palette, SANS, palette};
 use crate::ui::{self, Kind};
@@ -100,9 +101,9 @@ impl WorkloadTab {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         ui::button(id, "Copy", Kind::Ghost, p)
-            .h(px(20.))
-            .px(px(6.))
-            .text_size(px(11.))
+            .h(rpx(20.))
+            .px(rpx(6.))
+            .text_size(ts::SMALL)
             .on_click(cx.listener(move |_, _, _, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
             }))
@@ -114,9 +115,9 @@ impl WorkloadTab {
             .flex_none()
             .flex()
             .flex_col()
-            .gap(px(4.))
-            .px(px(10.))
-            .py(px(8.))
+            .gap(rpx(4.))
+            .px(rpx(10.))
+            .py(rpx(8.))
             .rounded(px(6.))
             .bg(p.stg.opacity(0.08))
             .border_1()
@@ -124,7 +125,7 @@ impl WorkloadTab {
             .child(
                 div()
                     .min_w_0()
-                    .text_size(px(12.))
+                    .text_size(ts::BODY)
                     .text_color(p.fg)
                     .child(h.message.clone()),
             )
@@ -133,17 +134,17 @@ impl WorkloadTab {
                     div()
                         .flex()
                         .items_start()
-                        .gap(px(8.))
+                        .gap(rpx(8.))
                         .child(
                             div()
                                 .flex_1()
                                 .min_w_0()
-                                .px(px(8.))
-                                .py(px(5.))
+                                .px(rpx(8.))
+                                .py(rpx(5.))
                                 .rounded(px(4.))
                                 .bg(p.bg)
                                 .font_family(MONO)
-                                .text_size(px(11.5))
+                                .text_size(ts::LABEL)
                                 .child(fix.clone()),
                         )
                         .child(Self::copy_button(("hint-copy", i), fix, p, cx)),
@@ -159,21 +160,21 @@ impl WorkloadTab {
         p: &Palette,
     ) -> AnyElement {
         let cell = |w: f32, first: bool| {
-            let d = div().min_w_0().px(px(6.)).truncate();
+            let d = div().min_w_0().px(rpx(6.)).truncate();
             if first {
                 d.flex_1()
             } else {
-                d.w(px(w)).flex_none()
+                d.w(rpx(w)).flex_none()
             }
         };
         let mut list = div().flex().flex_col().child(
             div()
                 .flex()
-                .h(px(26.))
+                .h(rpx(26.))
                 .items_center()
                 .border_b_1()
                 .border_color(p.bd)
-                .text_size(px(10.5))
+                .text_size(ts::CAPTION_PLUS)
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(p.fg3)
                 .children(
@@ -187,11 +188,11 @@ impl WorkloadTab {
             list = list.child(
                 div()
                     .flex()
-                    .min_h(px(26.))
+                    .min_h(rpx(26.))
                     .items_center()
                     .border_b_1()
                     .border_color(p.bd.opacity(0.5))
-                    .text_size(px(12.))
+                    .text_size(ts::BODY)
                     .children(
                         row.into_iter()
                             .zip(headers.iter())
@@ -206,7 +207,7 @@ impl WorkloadTab {
     fn num(v: Option<f64>, p: &Palette) -> AnyElement {
         div()
             .font_family(MONO)
-            .text_size(px(11.5))
+            .text_size(ts::LABEL)
             .text_color(if v.is_some() { p.fg } else { p.fg3 })
             .child(v.map_or("–".to_owned(), count))
             .into_any_element()
@@ -215,7 +216,7 @@ impl WorkloadTab {
     fn size(v: Option<f64>, p: &Palette) -> AnyElement {
         div()
             .font_family(MONO)
-            .text_size(px(11.5))
+            .text_size(ts::LABEL)
             .text_color(p.fg2)
             .child(v.map_or("–".to_owned(), |b| ui::bytes(b as u64)))
             .into_any_element()
@@ -224,11 +225,11 @@ impl WorkloadTab {
     fn tag(text: &'static str, color: gpui_kit::Hsla) -> AnyElement {
         div()
             .flex_none()
-            .px(px(5.))
+            .px(rpx(5.))
             .rounded(px(3.))
             .border_1()
             .border_color(color.opacity(0.5))
-            .text_size(px(9.5))
+            .text_size(ts::TINY_PLUS)
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(color)
             .child(text)
@@ -238,8 +239,8 @@ impl WorkloadTab {
     fn render_section(&self, w: &Workload, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let empty = |t: &'static str| {
             div()
-                .p(px(16.))
-                .text_size(px(12.))
+                .p(rpx(16.))
+                .text_size(ts::BODY)
                 .text_color(p.fg3)
                 .child(t)
                 .into_any_element()
@@ -258,7 +259,7 @@ impl WorkloadTab {
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(6.))
+                                .gap(rpx(6.))
                                 .min_w_0()
                                 .child(
                                     div()
@@ -266,7 +267,7 @@ impl WorkloadTab {
                                         .min_w_0()
                                         .truncate()
                                         .font_family(MONO)
-                                        .text_size(px(11.5))
+                                        .text_size(ts::LABEL)
                                         .child(
                                             q.query
                                                 .split_whitespace()
@@ -279,12 +280,12 @@ impl WorkloadTab {
                             Self::num(Some(q.calls), p),
                             div()
                                 .font_family(MONO)
-                                .text_size(px(11.5))
+                                .text_size(ts::LABEL)
                                 .child(ms(q.total_ms))
                                 .into_any_element(),
                             div()
                                 .font_family(MONO)
-                                .text_size(px(11.5))
+                                .text_size(ts::LABEL)
                                 .child(ms(q.mean_ms))
                                 .into_any_element(),
                             Self::num(q.rows, p),
@@ -317,7 +318,7 @@ impl WorkloadTab {
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(6.))
+                                .gap(rpx(6.))
                                 .min_w_0()
                                 .child(
                                     div()
@@ -364,7 +365,7 @@ impl WorkloadTab {
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(6.))
+                                .gap(rpx(6.))
                                 .min_w_0()
                                 .child(
                                     div()
@@ -409,7 +410,7 @@ impl WorkloadTab {
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(6.))
+                                .gap(rpx(6.))
                                 .min_w_0()
                                 .child(
                                     div()
@@ -417,14 +418,14 @@ impl WorkloadTab {
                                         .min_w_0()
                                         .truncate()
                                         .font_family(MONO)
-                                        .text_size(px(11.5))
+                                        .text_size(ts::LABEL)
                                         .child(stmt.clone()),
                                 )
                                 .child(Self::copy_button(("mi-copy", n), stmt, p, cx))
                                 .into_any_element(),
                             div()
                                 .font_family(MONO)
-                                .text_size(px(11.5))
+                                .text_size(ts::LABEL)
                                 .child(m.impact.map_or("–".into(), |v| format!("{v:.0}%")))
                                 .into_any_element(),
                         ]
@@ -471,23 +472,23 @@ impl Render for WorkloadTab {
         let (nq, nt, ni, nm) = counts.unwrap_or_default();
         let header = div()
             .flex_none()
-            .h(px(38.))
+            .h(rpx(38.))
             .flex()
             .items_center()
-            .gap(px(10.))
-            .px(px(12.))
+            .gap(rpx(10.))
+            .px(rpx(12.))
             .border_b_1()
             .border_color(p.bd)
             .child(
                 div()
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_size(px(13.))
+                    .text_size(ts::BASE)
                     .child(format!("Workload · {}", self.name)),
             )
             .children(since.map(|s| {
                 div()
                     .font_family(MONO)
-                    .text_size(px(11.))
+                    .text_size(ts::SMALL)
                     .text_color(p.fg3)
                     .child(s)
             }))
@@ -507,7 +508,7 @@ impl Render for WorkloadTab {
                 ui::shimmer(80., &p)
             } else {
                 ui::button("workload-refresh", "Refresh", Kind::Secondary, &p)
-                    .h(px(24.))
+                    .h(rpx(24.))
                     .on_click(cx.listener(|t, _, _, cx| {
                         t.refresh();
                         cx.notify();
@@ -516,13 +517,13 @@ impl Render for WorkloadTab {
             });
         let body = match (&self.data, &self.error) {
             (_, Some(e)) => div()
-                .p(px(16.))
-                .text_size(px(12.5))
+                .p(rpx(16.))
+                .text_size(ts::UI)
                 .text_color(p.prod)
                 .child(e.clone())
                 .into_any_element(),
             (None, None) => div()
-                .p(px(16.))
+                .p(rpx(16.))
                 .child(ui::shimmer(240., &p))
                 .into_any_element(),
             (Some(w), None) => {
@@ -536,8 +537,8 @@ impl Render for WorkloadTab {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(8.))
-                    .p(px(12.))
+                    .gap(rpx(8.))
+                    .p(rpx(12.))
                     .children(hints)
                     .child(self.render_section(&w, &p, cx))
                     .into_any_element()

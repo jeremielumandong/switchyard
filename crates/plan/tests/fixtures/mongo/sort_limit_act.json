@@ -1,0 +1,85 @@
+{
+  "explainVersion": "1",
+  "queryPlanner": {
+    "namespace": "switchyard_plan.orders",
+    "indexFilterSet": false,
+    "parsedQuery": {
+      "total": {
+        "$gte": 100
+      }
+    },
+    "queryHash": "611BBDA5",
+    "planCacheKey": "D11AEC0F",
+    "optimizationTimeMillis": 0,
+    "maxIndexedOrSolutionsReached": false,
+    "maxIndexedAndSolutionsReached": false,
+    "maxScansToExplodeReached": false,
+    "winningPlan": {
+      "stage": "SORT",
+      "sortPattern": {
+        "total": -1
+      },
+      "memLimit": 104857600,
+      "limitAmount": 5,
+      "type": "simple",
+      "inputStage": {
+        "stage": "COLLSCAN",
+        "filter": {
+          "total": {
+            "$gte": 100
+          }
+        },
+        "direction": "forward"
+      }
+    },
+    "rejectedPlans": []
+  },
+  "executionStats": {
+    "executionSuccess": true,
+    "nReturned": 5,
+    "executionTimeMillis": 10,
+    "totalKeysExamined": 0,
+    "totalDocsExamined": 20000,
+    "executionStages": {
+      "stage": "SORT",
+      "nReturned": 5,
+      "executionTimeMillisEstimate": 2,
+      "works": 20007,
+      "advanced": 5,
+      "needTime": 20001,
+      "needYield": 0,
+      "saveState": 20,
+      "restoreState": 20,
+      "isEOF": 1,
+      "sortPattern": {
+        "total": -1
+      },
+      "memLimit": 104857600,
+      "limitAmount": 5,
+      "type": "simple",
+      "totalDataSizeSorted": 530,
+      "usedDisk": false,
+      "spills": 0,
+      "spilledDataStorageSize": 0,
+      "inputStage": {
+        "stage": "COLLSCAN",
+        "filter": {
+          "total": {
+            "$gte": 100
+          }
+        },
+        "nReturned": 16000,
+        "executionTimeMillisEstimate": 2,
+        "works": 20001,
+        "advanced": 16000,
+        "needTime": 4000,
+        "needYield": 0,
+        "saveState": 20,
+        "restoreState": 20,
+        "isEOF": 1,
+        "direction": "forward",
+        "docsExamined": 20000
+      }
+    }
+  }
+}

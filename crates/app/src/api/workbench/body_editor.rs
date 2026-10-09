@@ -108,6 +108,8 @@ pub(super) struct BodyEditor {
     extra: serde_json::Map<String, serde_json::Value>,
     last_source: Option<String>,
     last_fields: (String, String),
+    /// Parse result of the last variables text (not re-parsed on every render).
+    variables_check: super::pretty::JsonCheckCache,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -165,6 +167,7 @@ impl BodyEditor {
             extra: Default::default(),
             last_source: None,
             last_fields: Default::default(),
+            variables_check: Default::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -227,9 +230,9 @@ impl Render for BodyEditor {
                     "Variables support {{templates}}; JSON is validated after substitution."
                         .to_string()
                 } else {
-                    match serde_json::from_str::<serde_json::Value>(&variables) {
-                        Ok(_) => "Variables JSON is valid.".to_string(),
-                        Err(error) => {
+                    match self.variables_check.check(&variables).error {
+                        None => "Variables JSON is valid.".to_string(),
+                        Some(error) => {
                             format!("Invalid variables JSON: {error}. Fix it before sending.")
                         }
                     }

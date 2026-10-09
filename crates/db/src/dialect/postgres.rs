@@ -130,6 +130,10 @@ static KEYWORDS: std::sync::LazyLock<Vec<&'static str>> = std::sync::LazyLock::n
 });
 
 impl Dialect for PostgresDialect {
+    fn plans(&self) -> super::PlanSupport {
+        super::PlanSupport::BOTH
+    }
+
     fn engine(&self) -> Engine {
         Engine::Postgres
     }

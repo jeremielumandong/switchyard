@@ -35,6 +35,11 @@ impl HttpFetcher {
             .map_err(|e| DriverError::Download(e.to_string()))?;
         Ok(Self { http })
     }
+
+    /// The underlying client (update checks reuse its TLS settings).
+    pub(crate) fn client(&self) -> &reqwest::Client {
+        &self.http
+    }
 }
 
 impl Fetcher for HttpFetcher {

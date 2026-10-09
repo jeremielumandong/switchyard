@@ -1,8 +1,9 @@
-//! Query plans (milestone M5): one normalized [`PlanNode`] tree for PostgreSQL JSON plans
-//! and SQL Server showplan XML. Findings rules and the plan UI only ever see `PlanNode`.
+//! Query plans (milestone M5): one normalized [`PlanNode`] tree for PostgreSQL JSON plans,
+//! SQL Server showplan XML, MySQL / MariaDB `EXPLAIN`, SQLite `EXPLAIN QUERY PLAN` and
+//! MongoDB `explain`. Findings rules and the plan UI only ever see `PlanNode`.
 //!
 //! * [`model`]: the tree and plan metadata.
-//! * [`pg`], [`mssql`]: engine output → [`Plan`].
+//! * [`pg`], [`mssql`], [`mysql`], [`sqlite`], [`mongo`]: engine output → [`Plan`].
 //! * [`capture`]: run `EXPLAIN` / showplan on a session (actual plans are rolled back).
 //! * [`findings`]: ranked rules over a plan.
 //! * [`compare`]: totals and per-operator deltas between two plans.
@@ -12,8 +13,11 @@ pub mod capture;
 pub mod compare;
 pub mod findings;
 pub mod model;
+pub mod mongo;
 pub mod mssql;
+pub mod mysql;
 pub mod pg;
+pub mod sqlite;
 pub mod whatif;
 
 pub use compare::{Comparison, NodeDelta, Pair, compare};

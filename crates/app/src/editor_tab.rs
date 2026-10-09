@@ -15,6 +15,7 @@ use switchyard_core::store::EnvironmentLabel;
 use switchyard_core::{Command, Event, FsRef, RequestId, RuntimeHandle, SaveError};
 
 use crate::app_state::next_id;
+use crate::appearance::{rpx, ts};
 use crate::terminal_tab::TerminalTab;
 use crate::theme::{MONO, palette};
 use crate::ui::{self, Kind};
@@ -167,9 +168,10 @@ impl EditorTab {
         if show && self.terminal.is_none() {
             let host = match &self.fs {
                 FsRef::Host(h) => Some(h.clone()),
-                FsRef::Local => None,
+                FsRef::Local | FsRef::Ftp(_) => None,
             };
-            let start = if host.is_some() || cfg!(unix) {
+            // An FTP file has no shell beside it: the terminal starts where it starts.
+            let start = if host.is_some() || (cfg!(unix) && self.fs == FsRef::Local) {
                 posix_parent(&self.path).map(|d| cd_into(&d))
             } else {
                 None
@@ -196,6 +198,27 @@ impl EditorTab {
     /// Whether this tab shows `path` on `fs`.
     pub fn shows(&self, fs: &FsRef, path: &std::path::Path) -> bool {
         &self.fs == fs && self.path == path
+    }
+
+    /// Whether a plain save can start now (the file loaded and no save or conflict is
+    /// pending). A conflict needs the banner's Overwrite / Reload choice first.
+    pub fn can_save(&self) -> bool {
+        matches!(self.state, State::Ready | State::SaveFailed(_))
+    }
+
+    /// Save the file (not over a server-side change).
+    pub fn save_file(&mut self, cx: &mut Context<Self>) {
+        self.save(false, cx);
+    }
+
+    /// After [`Self::save_file`]: `None` while the save runs, `Some(true)` once the file
+    /// is saved, `Some(false)` if it failed or hit a conflict.
+    pub fn save_outcome(&self) -> Option<bool> {
+        match self.state {
+            State::Saving | State::Loading => None,
+            State::Ready => Some(!self.dirty),
+            State::Conflict | State::SaveFailed(_) | State::LoadFailed(_) => Some(false),
+        }
     }
 
     fn save(&mut self, force: bool, cx: &mut Context<Self>) {
@@ -282,11 +305,11 @@ impl Render for EditorTab {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .px(px(12.))
-                    .py(px(6.))
+                    .gap(rpx(8.))
+                    .px(rpx(12.))
+                    .py(rpx(6.))
                     .bg(p.stg_bg)
-                    .text_size(px(12.))
+                    .text_size(ts::BODY)
                     .child(
                         div()
                             .flex_1()
@@ -308,11 +331,11 @@ impl Render for EditorTab {
             ),
             State::SaveFailed(e) | State::LoadFailed(e) => Some(
                 div()
-                    .px(px(12.))
-                    .py(px(6.))
+                    .px(rpx(12.))
+                    .py(rpx(6.))
                     .bg(p.prod_bg)
                     .text_color(p.prod)
-                    .text_size(px(12.))
+                    .text_size(ts::BODY)
                     .child(e.clone())
                     .into_any_element(),
             ),
@@ -336,7 +359,7 @@ impl Render for EditorTab {
                     .child(
                         div()
                             .id("ed-splitter")
-                            .h(px(6.))
+                            .h(rpx(6.))
                             .flex_none()
                             .flex()
                             .items_center()
@@ -353,9 +376,9 @@ impl Render for EditorTab {
                                     cx.stop_propagation();
                                 }),
                             )
-                            .child(div().w(px(28.)).h(px(2.)).rounded(px(2.)).bg(p.bd2)),
+                            .child(div().w(rpx(28.)).h(rpx(2.)).rounded(px(2.)).bg(p.bd2)),
                     )
-                    .child(div().h(px(self.term_height)).child(t))
+                    .child(div().h(rpx(self.term_height)).child(t))
             });
         div()
             .key_context("EditorTab")
@@ -369,8 +392,11 @@ impl Render for EditorTab {
                 if let Some((y0, h0)) = this.drag {
                     if ev.pressed_button == Some(MouseButton::Left) {
                         let y: f32 = ev.position.y.into();
-                        let max = (f32::from(window.viewport_size().height) - 200.).max(TERM_MIN);
-                        this.term_height = (h0 - (y - y0)).clamp(TERM_MIN, max);
+                        // In 100 % design units (drawn with `rpx`).
+                        let z = crate::appearance::zoom(cx);
+                        let max =
+                            (f32::from(window.viewport_size().height) / z - 200.).max(TERM_MIN);
+                        this.term_height = (h0 - (y - y0) / z).clamp(TERM_MIN, max);
                         cx.notify();
                     } else {
                         this.drag = None;
@@ -387,22 +413,22 @@ impl Render for EditorTab {
             .bg(p.surface)
             .child(
                 div()
-                    .h(px(30.))
+                    .h(rpx(30.))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .px(px(12.))
+                    .gap(rpx(8.))
+                    .px(rpx(12.))
                     .border_b_1()
                     .border_color(p.bd)
                     .bg(p.panel)
-                    .text_size(px(12.))
+                    .text_size(ts::BODY)
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .font_family(MONO)
-                            .text_size(px(11.5))
+                            .text_size(ts::LABEL)
                             .text_color(p.fg2)
                             .truncate()
                             .child(self.path.to_string_lossy().into_owned()),
@@ -423,8 +449,8 @@ impl Render for EditorTab {
                             },
                             &p,
                         )
-                        .h(px(22.))
-                        .text_size(px(11.5))
+                        .h(rpx(22.))
+                        .text_size(ts::LABEL)
                         .on_click(cx.listener(|this, _, _, cx| {
                             let show = !this.show_terminal;
                             this.set_terminal(show, cx)
@@ -432,8 +458,8 @@ impl Render for EditorTab {
                     )
                     .child(
                         ui::button("ed-save", "Save", Kind::Primary, &p)
-                            .h(px(22.))
-                            .text_size(px(11.5))
+                            .h(rpx(22.))
+                            .text_size(ts::LABEL)
                             .when(!self.dirty, |b| b.opacity(0.6))
                             .on_click(cx.listener(|this, _, _, cx| this.save(false, cx))),
                     ),
@@ -445,8 +471,8 @@ impl Render for EditorTab {
                         .bordered(false)
                         .appearance(false)
                         .h(relative(1.))
-                        .font_family(MONO)
-                        .text_size(px(12.5)),
+                        .font_family(crate::appearance::editor_font_family(cx))
+                        .text_size(crate::appearance::editor_font_size(cx)),
                 ),
             )
             .children(terminal)
@@ -454,9 +480,9 @@ impl Render for EditorTab {
                 d.child(
                     div()
                         .absolute()
-                        .top(px(40.))
-                        .left(px(16.))
-                        .text_size(px(12.))
+                        .top(rpx(40.))
+                        .left(rpx(16.))
+                        .text_size(ts::BODY)
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(p.fg3)
                         .child("Loading…"),

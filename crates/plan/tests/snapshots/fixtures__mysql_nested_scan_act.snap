@@ -1,0 +1,17 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&mysql_tree(&name))
+---
+MySql Actual
+#0 Aggregate est=1 act=1 loops=1 self=0.1ms (3%)
+  #1 Hash Join est=99421 act=1960 loops=1 self=1.6ms (39%)
+    Hash Cond: (b.k = a.k)
+    #2 Table scan on b est=20290 act=20000 loops=1 self=2.3ms (57%)
+    #3 Hash est=- act=- loops=- self=0.0ms (0%)
+      #4 Filter est=49 act=49 loops=1 self=0.0ms (0%)
+        Filter: (a.id < 50)
+        #5 Index range scan on a.PRIMARY est=49 act=49 loops=1 self=0.0ms (1%)
+          Index Range: (id < 50)
+findings:
+  High FullScan node=Some(2): Table scan on b | Reads 20,000 rows. | Add an index on the filtered or joined columns, or narrow the query.
+  Medium BadEstimate node=Some(1): Rows over-estimated 51× at Hash Join | Estimated 99,421 rows, got 1,960 per execution. | Refresh statistics on the tables involved.

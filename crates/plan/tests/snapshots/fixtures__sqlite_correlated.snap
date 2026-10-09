@@ -1,0 +1,11 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&sqlite(&name))
+---
+Sqlite Estimated
+#0 Query Plan est=- act=- loops=-
+  #1 Covering Index Scan on c.sqlite_autoindex_customers_1 est=- act=- loops=-
+  #2 CORRELATED SCALAR SUBQUERY 1 est=- act=- loops=-
+    #3 Index Search on o.ix_orders_customer est=- act=- loops=-
+      Index Cond: (customer_id=?)
+findings:

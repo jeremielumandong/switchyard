@@ -67,4 +67,9 @@ impl AppPaths {
     pub fn drivers_dir(&self) -> PathBuf {
         self.data.join("drivers")
     }
+
+    /// The app's log files (`switchyard.log` and rotated copies).
+    pub fn logs_dir(&self) -> PathBuf {
+        self.data.join("logs")
+    }
 }

@@ -1,0 +1,5 @@
+-- WITH recent AS MATERIALIZED (SELECT customer_id, total FROM orders WHERE placed_on > '2026-03-01') SELECT customer_id, COUNT(*) FROM recent GROUP BY customer_id
+3|0|MATERIALIZE recent
+7|3|SEARCH orders USING INDEX ix_orders_placed (placed_on>?)
+25|0|SCAN recent
+27|0|USE TEMP B-TREE FOR GROUP BY

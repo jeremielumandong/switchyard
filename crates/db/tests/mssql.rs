@@ -1,7 +1,8 @@
 //! SQL Server integration tests. Need a server with the sample schema (the docker `mssql`
 //! service and its seed, or any SQL Server); configure with `SWITCHYARD_MSSQL_HOST`,
 //! `_PORT`, `_USER`, `_PASSWORD` and `SWITCHYARD_MSSQL_CA` (PEM of the CA that signed the
-//! server's certificate, when it is not publicly trusted). The `shop` database is created
+//! server's certificate, when it is not publicly trusted; for the compose service that is
+//! `docker/mssql/tls/ca.pem`). The `shop` database is created
 //! from `docker/mssql/seed.sql` when missing.
 //! Run with `cargo test -p switchyard-db --test mssql -- --ignored --test-threads 1`.
 

@@ -4838,6 +4838,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "lazy-regex"
+version = "3.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0a2cce8a22920a29fdcc8c9170aa5d29edd9fbcf8bea856e24c2cb1c2419f67"
+dependencies = [
+ "lazy-regex-proc_macros",
+ "once_cell",
+ "regex",
+]
+
+[[package]]
+name = "lazy-regex-proc_macros"
+version = "3.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f1e4b1f1d8c71edb4ff2b2150ec4606445fd2ddf67ddc097655daf59286baa6"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "regex",
+ "syn 3.0.6",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9396,6 +9419,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "suppaftp"
+version = "12.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b161d71217da0cc91bd09c8f98ac5ad2a5e5b2735c6dfe1c6cb08b4471612f35"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "lazy-regex",
+ "log",
+ "pin-project",
+ "rustls-pki-types",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-rustls",
+]
+
+[[package]]
 name = "svg_fmt"
 version = "0.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9502,6 +9542,7 @@ dependencies = [
  "switchyard-core",
  "sxd-document",
  "sxd-xpath",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -9528,6 +9569,7 @@ dependencies = [
 name = "switchyard-core"
 version = "0.1.8"
 dependencies = [
+ "chrono",
  "futures",
  "reqwest",
  "secrecy",
@@ -9630,12 +9672,16 @@ dependencies = [
  "ring",
  "russh",
  "russh-sftp",
+ "rustls",
+ "rustls-native-certs",
  "secrecy",
  "serde",
  "sha1 0.11.0",
+ "suppaftp",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-rustls",
  "tracing",
 ]
 

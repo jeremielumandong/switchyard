@@ -1,0 +1,68 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "252.23"
+    },
+    "duplicates_removal": {
+      "using_temporary_table": true,
+      "nested_loop": [
+        {
+          "table": {
+            "table_name": "orders",
+            "access_type": "ALL",
+            "possible_keys": [
+              "fk_orders_customer"
+            ],
+            "rows_examined_per_scan": 1000,
+            "rows_produced_per_join": 333,
+            "filtered": "33.33",
+            "cost_info": {
+              "read_cost": "67.92",
+              "eval_cost": "33.33",
+              "prefix_cost": "101.25",
+              "data_read_per_join": "13K"
+            },
+            "used_columns": [
+              "customer_id",
+              "total"
+            ],
+            "attached_condition": "(`shop`.`orders`.`total` > 400.00)"
+          }
+        },
+        {
+          "table": {
+            "table_name": "customers",
+            "access_type": "eq_ref",
+            "possible_keys": [
+              "PRIMARY"
+            ],
+            "key": "PRIMARY",
+            "used_key_parts": [
+              "id"
+            ],
+            "key_length": "4",
+            "ref": [
+              "shop.orders.customer_id"
+            ],
+            "rows_examined_per_scan": 1,
+            "rows_produced_per_join": 166,
+            "filtered": "50.00",
+            "cost_info": {
+              "read_cost": "83.32",
+              "eval_cost": "16.66",
+              "prefix_cost": "252.23",
+              "data_read_per_join": "134K"
+            },
+            "used_columns": [
+              "id",
+              "email",
+              "segment"
+            ],
+            "attached_condition": "(`shop`.`customers`.`segment` = 'vip')"
+          }
+        }
+      ]
+    }
+  }
+}

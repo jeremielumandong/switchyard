@@ -224,8 +224,23 @@ pub fn is_single_select(dialect: &dyn Dialect, sql: &str) -> bool {
 }
 
 /// Whether `sql` is one statement an agent may ask an estimated plan for: a query or DML
-/// (INSERT, UPDATE, DELETE, MERGE). Never DDL, never several statements.
+/// (INSERT, UPDATE, DELETE, MERGE). Never DDL, never several statements. On MongoDB: one
+/// `find` or `aggregate` that only reads (no `$out` / `$merge`), without `.explain()`.
 pub fn is_single_plannable(dialect: &dyn Dialect, sql: &str) -> bool {
+    if dialect.engine().is_document_store() {
+        use crate::mongo::shell::{self, Effect, Op};
+        if shell::split(sql).len() != 1 {
+            return false;
+        }
+        return match shell::parse(sql) {
+            Ok(op) if op.effect() == Effect::Read => matches!(
+                &op,
+                Op::Command { command, .. }
+                    if command.keys().next().is_some_and(|k| k == "find" || k == "aggregate")
+            ),
+            _ => false,
+        };
+    }
     let pd = dialect.parser_dialect();
     match Parser::parse_sql(pd.as_ref(), sql) {
         Ok(stmts) => {
@@ -336,5 +351,33 @@ mod tests {
         assert!(!is_single_plannable(d, "create index on t (a)"));
         assert!(!is_single_plannable(d, "select 1; drop table t"));
         assert!(!is_single_plannable(d, "explain analyze delete from t"));
+    }
+
+    #[test]
+    fn plannable_on_mongodb_is_one_reading_find_or_aggregate() {
+        let d = &crate::dialect::mongo::MongoDialect;
+        assert!(is_single_plannable(
+            d,
+            "db.orders.find({ status: 'A' }).sort({ total: -1 })"
+        ));
+        assert!(is_single_plannable(
+            d,
+            "db.orders.aggregate([{ $match: { a: 1 } }])"
+        ));
+        assert!(!is_single_plannable(
+            d,
+            "db.orders.aggregate([{ $out: 'x' }])"
+        ));
+        assert!(!is_single_plannable(
+            d,
+            "db.orders.find().explain('executionStats')"
+        ));
+        assert!(!is_single_plannable(d, "db.orders.countDocuments({})"));
+        assert!(!is_single_plannable(d, "db.orders.deleteMany({})"));
+        assert!(!is_single_plannable(
+            d,
+            "db.orders.find(); db.orders.drop()"
+        ));
+        assert!(!is_single_plannable(d, "use shop"));
     }
 }

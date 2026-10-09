@@ -1,0 +1,14 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&mysql_tree(&name))
+---
+MySql Actual
+#0 Table scan on <union temporary> est=833 act=398 loops=1 self=0.0ms (8%)
+  #1 Union materialize with deduplication est=833 act=398 loops=1 self=0.1ms (11%)
+    #2 Filter est=500 act=333 loops=1 self=0.1ms (13%)
+      Filter: (customers.segment = 'vip')
+      #3 Table scan on customers est=1000 act=1000 loops=1 self=0.2ms (29%)
+    #4 Filter est=333 act=98 loops=1 self=0.1ms (15%)
+      Filter: (orders.total > 450.00)
+      #5 Table scan on orders est=1000 act=1000 loops=1 self=0.1ms (24%)
+findings:

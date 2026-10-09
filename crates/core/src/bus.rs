@@ -13,7 +13,8 @@ use switchyard_drivers::{Component, InstallProgress};
 use switchyard_remote::FileEntry;
 use switchyard_remote::ssh::{HostKeyDecision, HostKeyRequest, InteractiveRequest, TunnelInfo};
 use switchyard_store::{
-    BufferState, DbConnection, Favorite, HistoryEntry, Host, Profile, ProfileId, Snippet, Workspace,
+    BufferState, DbConnection, Favorite, FileConnection, HistoryEntry, Host, HostPatch, Macro,
+    Profile, ProfileId, Snippet, Workspace,
 };
 use switchyard_term::{TermSize, Terminal};
 
@@ -27,6 +28,15 @@ pub enum FsRef {
     Local,
     /// A saved Host, over SFTP on its shared SSH session.
     Host(ProfileId),
+    /// A saved FTP / FTPS file connection, with its own login.
+    Ftp(ProfileId),
+}
+
+impl FsRef {
+    /// Whether this is a remote file system (SFTP or FTP): its paths are POSIX.
+    pub fn is_remote(&self) -> bool {
+        !matches!(self, FsRef::Local)
+    }
 }
 
 /// A file operation.
@@ -106,6 +116,17 @@ pub enum PromptAnswer {
     Interactive(Option<Vec<SecretString>>),
     /// Stop waiting (a Microsoft Entra sign-in dialog was cancelled).
     Cancel,
+}
+
+/// Session logging state of a terminal (MX-3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TermLogState {
+    /// Output is being written to this file.
+    Started(std::path::PathBuf),
+    /// Logging stopped.
+    Stopped,
+    /// Logging could not start or stopped after a write error.
+    Failed(String),
 }
 
 /// Connection state of an SSH terminal.
@@ -197,6 +218,18 @@ pub enum Command {
         /// Profile id.
         id: ProfileId,
     },
+    /// Save a copy of a profile (and its stored secret) named "<name> copy".
+    DuplicateProfile {
+        /// Profile id.
+        id: ProfileId,
+    },
+    /// Apply one change to several Hosts (sidebar bulk edit).
+    UpdateHosts {
+        /// Hosts.
+        ids: Vec<ProfileId>,
+        /// Fields to change.
+        patch: HostPatch,
+    },
     /// Persist sidebar order.
     ReorderProfiles {
         /// Ids in order.
@@ -236,6 +269,16 @@ pub enum Command {
         /// Password or passphrase typed in the form (falls back to the stored one).
         secret: Option<SecretString>,
     },
+    /// Log in to an FTP / FTPS file connection under edit (not necessarily saved) and
+    /// report the result as [`Event::TestResult`].
+    TestFiles {
+        /// Request id.
+        request: RequestId,
+        /// File connection under edit.
+        connection: FileConnection,
+        /// Password typed in the form (falls back to the stored one).
+        secret: Option<SecretString>,
+    },
     /// Open a session for a saved connection.
     OpenSession {
         /// New session id chosen by the UI.
@@ -264,6 +307,8 @@ pub enum Command {
         request: RequestId,
         /// Glob pattern (`user:*`); empty for all keys.
         pattern: String,
+        /// Only keys of this type (`SCAN … TYPE`); `None` for every type.
+        kind: Option<switchyard_db::redis::KeyKind>,
         /// Cursor from the previous page; 0 starts over.
         cursor: u64,
     },
@@ -471,6 +516,15 @@ pub enum Command {
         /// Snippet id.
         id: String,
     },
+    /// Load the terminal macros ([`Event::Macros`]).
+    LoadMacros,
+    /// Save a terminal macro (new when its id is empty), then reload.
+    SaveMacro(Macro),
+    /// Delete a terminal macro, then reload.
+    DeleteMacro {
+        /// Macro id.
+        id: String,
+    },
     /// Load the pinned schema-tree objects ([`Event::Favorites`]).
     LoadFavorites,
     /// Pin an object at the end of the Favorites (a pin it already has is kept), then reload.
@@ -648,7 +702,8 @@ pub enum Command {
         only: Option<Vec<String>>,
     },
     /// Apply staged inline edits in one transaction. Each statement must change exactly
-    /// one row; otherwise everything is rolled back.
+    /// one row; otherwise everything is rolled back. Sessions without transactions
+    /// (MongoDB) apply them in order and stop at the first failure.
     ApplyEdits {
         /// Session.
         session: SessionId,
@@ -687,6 +742,18 @@ pub enum Command {
     },
     /// Retry a dropped SSH terminal now instead of waiting for the backoff.
     ReconnectTerminal {
+        /// Terminal.
+        term: TermId,
+    },
+    /// Log a terminal's output to a new file ([`Event::TerminalLog`]).
+    StartTerminalLog {
+        /// Terminal.
+        term: TermId,
+        /// Format, folder and file name.
+        settings: crate::term_settings::LogSettings,
+    },
+    /// Stop logging a terminal ([`Event::TerminalLog`]).
+    StopTerminalLog {
         /// Terminal.
         term: TermId,
     },
@@ -776,6 +843,11 @@ pub enum Command {
         /// The new key's fingerprint, as shown to the user.
         fingerprint: String,
     },
+    /// Ask GitHub Releases for a newer version ([`Event::UpdateStatus`]).
+    CheckForUpdates {
+        /// The user asked (show "up to date" and failures, not only a newer version).
+        manual: bool,
+    },
 }
 
 /// Events from a running query.
@@ -834,6 +906,13 @@ pub enum QueryEvent {
 /// Events for the UI.
 #[derive(Clone, Debug)]
 pub enum Event {
+    /// Answer to [`Command::CheckForUpdates`].
+    UpdateStatus {
+        /// Echoes the command's `manual`.
+        manual: bool,
+        /// What the check found.
+        status: crate::update::UpdateStatus,
+    },
     /// What importing `~/.ssh/config` would add (answer to `PreviewSshConfig`).
     SshConfigPreview {
         /// The file read.
@@ -1034,6 +1113,8 @@ pub enum Event {
     Snippets(Vec<Snippet>),
     /// The pinned schema-tree objects in order, answering the favorite commands.
     Favorites(Vec<Favorite>),
+    /// The terminal macros by name, answering the macro commands.
+    Macros(Vec<Macro>),
     /// History search results.
     History {
         /// Request id.
@@ -1232,8 +1313,8 @@ pub enum Event {
         /// Request id.
         request: RequestId,
     },
-    /// A coding agent asks to run a command on a Host: show it and answer with
-    /// [`Command::AnswerAgentApproval`]. Nothing runs until the user approves.
+    /// A coding agent asks to run a command on a Host, or for an actual plan: show it and
+    /// answer with [`Command::AnswerAgentApproval`]. Nothing runs until the user approves.
     AgentApproval(AgentApproval),
     /// An approval is no longer waiting (answered, timed out, or the agent went away).
     AgentApprovalClosed {
@@ -1275,6 +1356,13 @@ pub enum Event {
         /// Terminal.
         term: TermId,
     },
+    /// A terminal's session log started, stopped or failed.
+    TerminalLog {
+        /// Terminal.
+        term: TermId,
+        /// New state.
+        state: TermLogState,
+    },
     /// The program asked to copy text (OSC 52).
     TerminalClipboard {
         /// Terminal.
@@ -1302,21 +1390,37 @@ pub enum Event {
     },
 }
 
-/// A command a coding agent wants to run on a Host ([`Event::AgentApproval`]).
+/// Something a coding agent wants to run that needs the user's approval
+/// ([`Event::AgentApproval`]): a shell command on a Host, or an actual plan.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentApproval {
     /// Id to answer with.
     pub id: u64,
     /// The CLI asking.
     pub agent: switchyard_agents::AgentKind,
-    /// The Host.
-    pub host: ProfileId,
-    /// The Host's name.
-    pub host_name: String,
-    /// The Host's environment label.
+    /// What it asks for.
+    pub kind: ApprovalKind,
+    /// The Host or connection.
+    pub target: ProfileId,
+    /// The Host's or connection's name.
+    pub target_name: String,
+    /// Its environment label.
     pub environment: switchyard_store::EnvironmentLabel,
-    /// The shell command, exactly as it would run.
-    pub command: String,
+    /// The shell command or the statement, exactly as it would run.
+    pub text: String,
+}
+
+/// What an [`AgentApproval`] asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApprovalKind {
+    /// A shell command on a Host's SSH session.
+    SshCommand,
+    /// An actual plan (`EXPLAIN ANALYZE`, `STATISTICS XML`): the statement runs, then is
+    /// rolled back.
+    ActualPlan {
+        /// The statement writes (rolled back, but triggers and sequences still fire).
+        writes: bool,
+    },
 }
 
 /// A connected Redis server ([`Event::RedisOpened`]).

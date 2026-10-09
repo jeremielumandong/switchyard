@@ -1,0 +1,2 @@
+-- SELECT id, placed_on FROM orders WHERE placed_on BETWEEN '2026-02-01' AND '2026-02-10'
+2|0|SEARCH orders USING COVERING INDEX ix_orders_placed (placed_on>? AND placed_on<?)

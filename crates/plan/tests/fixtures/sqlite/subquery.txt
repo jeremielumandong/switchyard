@@ -1,0 +1,4 @@
+-- SELECT email FROM customers WHERE id IN (SELECT customer_id FROM orders WHERE total > 400) AND segment = 'vip'
+2|0|SEARCH customers USING INTEGER PRIMARY KEY (rowid=?)
+6|0|LIST SUBQUERY 1
+8|6|SCAN orders

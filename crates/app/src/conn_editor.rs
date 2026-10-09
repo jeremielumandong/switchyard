@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 
+use crate::appearance::{rpx, ts};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -16,7 +17,7 @@ use switchyard_core::db::Engine;
 use switchyard_core::drivers::{Component, ComponentStatus};
 use switchyard_core::store::{
     EnvironmentLabel, FileConnection, FileProtocol, FtpMode, FtpTls, Host, Profile, ProfileId,
-    SshAuth,
+    SshAuth, TerminalColors,
 };
 use switchyard_core::{Command, RequestId, RuntimeHandle};
 
@@ -161,6 +162,8 @@ pub struct ConnEditor {
     forward_agent: bool,
     /// A Host's X11 forwarding (`ssh -X`).
     forward_x11: bool,
+    /// A Host shown in the sidebar's Favorites.
+    favorite: bool,
 }
 
 impl EventEmitter<ConnEditorEvent> for ConnEditor {}
@@ -235,6 +238,7 @@ impl ConnEditor {
             forwards: Vec::new(),
             forward_agent: matches!(&existing, Some(Profile::Host(h)) if h.forward_agent),
             forward_x11: matches!(&existing, Some(Profile::Host(h)) if h.forward_x11),
+            favorite: matches!(&existing, Some(Profile::Host(h)) if h.favorite),
         };
         this.build_fields(existing.as_ref(), window, cx);
         this
@@ -348,6 +352,50 @@ impl ConnEditor {
                     "30",
                     false,
                 );
+                // Per-session settings (MX-6).
+                add(
+                    self,
+                    "folder",
+                    h.folder.as_deref().unwrap_or_default(),
+                    "None",
+                    false,
+                );
+                add(
+                    self,
+                    "startup_command",
+                    h.startup_command.as_deref().unwrap_or_default(),
+                    "tmux new -A -s main",
+                    false,
+                );
+                add(
+                    self,
+                    "start_directory",
+                    h.start_directory.as_deref().unwrap_or_default(),
+                    "Home",
+                    false,
+                );
+                add(
+                    self,
+                    "env",
+                    &format_env(&h.env),
+                    "LANG=C.UTF-8; TZ=UTC",
+                    false,
+                );
+                let colors = h.terminal_colors.clone().unwrap_or_default();
+                add(
+                    self,
+                    "fg",
+                    colors.foreground.as_deref().unwrap_or_default(),
+                    "Theme",
+                    false,
+                );
+                add(
+                    self,
+                    "bg",
+                    colors.background.as_deref().unwrap_or_default(),
+                    "Theme",
+                    false,
+                );
                 add(
                     self,
                     "x11_display",
@@ -399,6 +447,16 @@ impl ConnEditor {
                     "jump",
                     sel(jumps, h.jump_hosts.first().map_or("", |j| j.0.as_str())),
                 );
+                let mut macros = vec![("None".to_owned(), String::new())];
+                macros.extend(
+                    crate::terminal_settings::macros(cx)
+                        .into_iter()
+                        .map(|m| (m.name, m.id)),
+                );
+                self.selects.insert(
+                    "connect_macro",
+                    sel(macros, h.connect_macro.as_deref().unwrap_or("")),
+                );
             }
             ConnKind::Sftp => {
                 let (name, host, path) = match existing {
@@ -425,7 +483,7 @@ impl ConnEditor {
                 self.selects.insert("host", sel(hosts, &host));
             }
             ConnKind::Ftp => {
-                let (name, server, port, tls, mode, user) = match existing {
+                let (name, server, port, tls, mode, user, path) = match existing {
                     Some(Profile::File(FileConnection {
                         name,
                         protocol:
@@ -436,6 +494,7 @@ impl ConnEditor {
                                 mode,
                                 user,
                             },
+                        default_path,
                         ..
                     })) => (
                         name.clone(),
@@ -444,6 +503,7 @@ impl ConnEditor {
                         *tls,
                         *mode,
                         user.clone(),
+                        default_path.clone().unwrap_or_default(),
                     ),
                     _ => (
                         String::new(),
@@ -452,6 +512,7 @@ impl ConnEditor {
                         FtpTls::Explicit,
                         FtpMode::Passive,
                         String::new(),
+                        String::new(),
                     ),
                 };
                 add(self, "name", &name, "assets.acme.dev", false);
@@ -459,6 +520,7 @@ impl ConnEditor {
                 add(self, "port", &port.to_string(), "21", false);
                 add(self, "user", &user, "deploy-assets", false);
                 add(self, "password", "", "", true);
+                add(self, "path", &path, "/public_html", false);
                 self.selects.insert(
                     "tls",
                     sel(
@@ -631,6 +693,17 @@ impl ConnEditor {
                 h.forward_x11 = self.forward_x11;
                 h.x11_display = opt(self.value("x11_display", cx));
                 let jump = self.chosen("jump");
+                h.connect_macro = Some(self.chosen("connect_macro")).filter(|m| !m.is_empty());
+                h.favorite = self.favorite;
+                h.folder = opt(self.value("folder", cx));
+                h.startup_command = opt(self.value("startup_command", cx));
+                h.start_directory = opt(self.value("start_directory", cx));
+                h.env = parse_env(&self.value("env", cx)).map_err(|m| (Some("env"), m))?;
+                let colors = TerminalColors {
+                    foreground: opt(self.value("fg", cx)),
+                    background: opt(self.value("bg", cx)),
+                };
+                h.terminal_colors = (!colors.is_empty()).then_some(colors);
                 h.jump_hosts = if jump.is_empty() {
                     vec![]
                 } else {
@@ -685,7 +758,7 @@ impl ConnEditor {
                     },
                     user: self.value("user", cx),
                 },
-                default_path: None,
+                default_path: Some(self.value("path", cx)).filter(|p| !p.is_empty()),
                 environment: self.env,
                 folder: None,
                 secret: existing.and_then(|p| p.secret().cloned()),
@@ -751,8 +824,14 @@ impl ConnEditor {
             (ConnKind::Sftp, Ok(_)) => {
                 self.test = TestState::Failed("SFTP ships in milestone M4 (russh-sftp)".into())
             }
-            (ConnKind::Ftp, Ok(_)) => {
-                self.test = TestState::Failed("FTP/FTPS ships in milestone M4 (suppaftp)".into())
+            (ConnKind::Ftp, Ok(Profile::File(connection))) => {
+                let request = next_id();
+                self.test = TestState::Testing(request);
+                self.core.send(Command::TestFiles {
+                    request,
+                    connection,
+                    secret: self.secret(cx),
+                });
             }
             (_, Err((f, m))) => self.error = Some((f, m)),
             _ => {}
@@ -831,17 +910,17 @@ impl ConnEditor {
             .map(|(_, m)| m.clone());
         let body: AnyElement = if let Some(input) = self.inputs.get(key) {
             div()
-                .h(px(28.))
+                .h(rpx(28.))
                 .flex()
                 .items_center()
-                .px(px(9.))
+                .px(rpx(9.))
                 .border_1()
                 .border_color(if err.is_some() { p.prod } else { p.bd2 })
                 .rounded(px(6.))
                 .bg(p.bg)
-                .text_size(px(12.5))
+                .text_size(ts::UI)
                 .when(mono, |d| d.font_family(MONO))
-                .child(Input::new(input).appearance(false).text_size(px(12.5)))
+                .child(Input::new(input).appearance(false).text_size(ts::UI))
                 .when(browse, |d| d.flex_1().min_w_0())
                 .into_any_element()
         } else if let Some(sel) = self.selects.get(key) {
@@ -863,16 +942,16 @@ impl ConnEditor {
                 .child(
                     div()
                         .id(SharedString::from(format!("sel-{key}")))
-                        .h(px(28.))
+                        .h(rpx(28.))
                         .flex()
                         .items_center()
-                        .gap(px(6.))
-                        .px(px(9.))
+                        .gap(rpx(6.))
+                        .px(rpx(9.))
                         .border_1()
                         .border_color(if open { p.acc } else { p.bd2 })
                         .rounded(px(6.))
                         .bg(p.bg)
-                        .text_size(px(12.5))
+                        .text_size(ts::UI)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.open_select = if this.open_select == Some(key) {
                                 None
@@ -882,17 +961,17 @@ impl ConnEditor {
                             cx.notify();
                         }))
                         .child(div().flex_1().truncate().child(label))
-                        .child(div().text_color(p.fg3).text_size(px(10.)).child("▾")),
+                        .child(div().text_color(p.fg3).text_size(ts::CAPTION).child("▾")),
                 )
                 .when(open, |d| {
                     d.child(deferred(
                         div()
                             .id(SharedString::from(format!("sel-menu-{key}")))
                             .absolute()
-                            .top(px(30.))
+                            .top(rpx(30.))
                             .left_0()
                             .right_0()
-                            .p(px(4.))
+                            .p(rpx(4.))
                             .bg(p.elev)
                             .rounded(px(7.))
                             .shadow(ui::shadow(p))
@@ -900,12 +979,12 @@ impl ConnEditor {
                             .children(options.into_iter().map(|(i, l)| {
                                 div()
                                     .id(SharedString::from(format!("opt-{key}-{i}")))
-                                    .h(px(26.))
+                                    .h(rpx(26.))
                                     .flex()
                                     .items_center()
-                                    .px(px(8.))
+                                    .px(rpx(8.))
                                     .rounded(px(4.))
-                                    .text_size(px(12.5))
+                                    .text_size(ts::UI)
                                     .when(i == chosen, |d| d.bg(p.sel))
                                     .hover(|s| s.bg(p.sel))
                                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -927,7 +1006,7 @@ impl ConnEditor {
         let body = if browse {
             div()
                 .flex()
-                .gap(px(6.))
+                .gap(rpx(6.))
                 .child(body)
                 .child(
                     ui::button(
@@ -936,7 +1015,7 @@ impl ConnEditor {
                         Kind::Secondary,
                         p,
                     )
-                    .h(px(28.))
+                    .h(rpx(28.))
                     .on_click(cx.listener(move |this, _, w, cx| this.browse_file(key, w, cx))),
                 )
                 .into_any_element()
@@ -947,11 +1026,11 @@ impl ConnEditor {
             .col_span(span)
             .flex()
             .flex_col()
-            .gap(px(5.))
+            .gap(rpx(5.))
             .min_w_0()
             .child(
                 div()
-                    .text_size(px(11.5))
+                    .text_size(ts::LABEL)
                     .text_color(p.fg2)
                     .font_weight(FontWeight::MEDIUM)
                     .child(label.to_owned()),
@@ -961,7 +1040,7 @@ impl ConnEditor {
                 let is_err = self.error.as_ref().is_some_and(|(f, _)| *f == Some(key));
                 d.child(
                     div()
-                        .text_size(px(11.))
+                        .text_size(ts::SMALL)
                         .text_color(if is_err { p.prod } else { p.fg3 })
                         .child(h),
                 )
@@ -999,10 +1078,10 @@ impl ConnEditor {
         div()
             .flex()
             .flex_col()
-            .gap(px(6.))
+            .gap(rpx(6.))
             .child(
                 div()
-                    .text_size(px(11.5))
+                    .text_size(ts::LABEL)
                     .text_color(p.fg2)
                     .font_weight(FontWeight::MEDIUM)
                     .child("Database type"),
@@ -1011,18 +1090,18 @@ impl ConnEditor {
                 div()
                     .grid()
                     .grid_cols(4)
-                    .gap(px(6.))
+                    .gap(rpx(6.))
                     .children(engines::ALL.iter().map(|e| {
                         let e = *e;
                         let active = self.kind == ConnKind::Db(e);
                         div()
                             .id(SharedString::from(format!("engine-{}", e.badge())))
                             .min_w_0()
-                            .h(px(32.))
+                            .h(rpx(32.))
                             .flex()
                             .items_center()
-                            .gap(px(8.))
-                            .px(px(8.))
+                            .gap(rpx(8.))
+                            .px(rpx(8.))
                             .border_1()
                             .border_color(if active { p.acc } else { p.bd2 })
                             .rounded(px(6.))
@@ -1033,7 +1112,7 @@ impl ConnEditor {
                             }))
                             .child(
                                 div()
-                                    .w(px(24.))
+                                    .w(rpx(24.))
                                     .flex_none()
                                     .flex()
                                     .justify_center()
@@ -1043,14 +1122,14 @@ impl ConnEditor {
                                     .text_color(if active { p.acc } else { p.fg2 })
                                     .font_family(MONO)
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_size(px(8.5))
-                                    .line_height(px(16.))
+                                    .text_size(ts::MICRO)
+                                    .line_height(rpx(16.))
                                     .child(e.badge()),
                             )
                             .child(
                                 div()
                                     .min_w_0()
-                                    .text_size(px(12.5))
+                                    .text_size(ts::UI)
                                     .font_weight(FontWeight::MEDIUM)
                                     .truncate()
                                     .child(e.display_name()),
@@ -1107,6 +1186,40 @@ impl ConnEditor {
                 }
                 v.push(Field::new("jump", "Jump host").span(4).mono());
                 v.push(Field::new("keepalive", "Keepalive (s)").span(2));
+                v.push(
+                    Field::new("folder", "Folder")
+                        .span(3)
+                        .hint("Groups Hosts in the sidebar"),
+                );
+                v.push(
+                    Field::new("connect_macro", "Macro on connect")
+                        .span(3)
+                        .hint("Typed into each new shell (record one in a terminal)"),
+                );
+                v.push(Field::new("start_directory", "Start folder").span(3).mono());
+                v.push(
+                    Field::new("startup_command", "Startup command")
+                        .span(3)
+                        .mono(),
+                );
+                v.push(
+                    Field::new("env", "Environment variables")
+                        .span(6)
+                        .mono()
+                        .hint("NAME=value; separated by semicolons. The server must accept them (AcceptEnv)"),
+                );
+                v.push(
+                    Field::new("fg", "Terminal text color")
+                        .span(3)
+                        .mono()
+                        .hint("#rrggbb"),
+                );
+                v.push(
+                    Field::new("bg", "Terminal background")
+                        .span(3)
+                        .mono()
+                        .hint("#rrggbb"),
+                );
                 if self.forward_x11 {
                     v.push(
                         Field::new("x11_display", "X display")
@@ -1129,6 +1242,11 @@ impl ConnEditor {
                 v.push(Field::new("mode", "Mode").span(3));
                 v.push(Field::new("user", "User").span(3));
                 v.push(Field::new("password", "Password").span(3));
+                v.push(
+                    Field::new("path", "Default remote path")
+                        .mono()
+                        .hint("Empty: the login folder"),
+                );
             }
         }
         v
@@ -1149,7 +1267,7 @@ impl Render for ConnEditor {
         let fields: Vec<AnyElement> = layout.iter().map(|f| self.field(f, &p, cx)).collect();
         let assistant_field = (self.kind.is_db() && self.agents).then(|| {
             div()
-                .w(px(300.))
+                .w(rpx(300.))
                 .child(self.field(&Field::new("assistant", "Assistant CLI"), &p, cx))
         });
         let engine_picker = (self.kind.is_db() && self.existing_id.is_none())
@@ -1179,8 +1297,8 @@ impl Render for ConnEditor {
         let _ = window;
         div()
             .id("conn-editor")
-            .w(px(780.))
-            .max_h(px(640.))
+            .w(rpx(780.))
+            .max_h(rpx(640.))
             .flex()
             .flex_col()
             .bg(p.elev)
@@ -1192,25 +1310,25 @@ impl Render for ConnEditor {
             })
             .child(
                 div()
-                    .h(px(46.))
+                    .h(rpx(46.))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .px(px(16.))
+                    .px(rpx(16.))
                     .border_b_1()
                     .border_color(p.bd)
                     .child(
                         div()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_size(px(14.))
+                            .text_size(ts::TITLE)
                             .child(title),
                     )
                     .child(div().flex_1())
                     .child(
                         div()
                             .id("ce-close")
-                            .px(px(8.))
-                            .py(px(2.))
+                            .px(rpx(8.))
+                            .py(rpx(2.))
                             .rounded(px(4.))
                             .text_color(p.fg3)
                             .hover(|s| s.bg(p.hover))
@@ -1225,12 +1343,12 @@ impl Render for ConnEditor {
                     .flex()
                     .child(
                         div()
-                            .w(px(190.))
+                            .w(rpx(190.))
                             .flex_none()
-                            .p(px(8.))
+                            .p(rpx(8.))
                             .flex()
                             .flex_col()
-                            .gap(px(2.))
+                            .gap(rpx(2.))
                             .bg(p.panel)
                             .border_r_1()
                             .border_color(p.bd)
@@ -1246,9 +1364,9 @@ impl Render for ConnEditor {
                                     .id(SharedString::from(format!("ctype-{}", k.badge())))
                                     .flex()
                                     .items_center()
-                                    .gap(px(9.))
-                                    .px(px(8.))
-                                    .py(px(7.))
+                                    .gap(rpx(9.))
+                                    .px(rpx(8.))
+                                    .py(rpx(7.))
                                     .rounded(px(6.))
                                     .when(active, |d| d.bg(p.sel))
                                     .when(!active && !disabled, |d| d.hover(|s| s.bg(p.hover)))
@@ -1258,7 +1376,7 @@ impl Render for ConnEditor {
                                     )
                                     .child(
                                         div()
-                                            .w(px(32.))
+                                            .w(rpx(32.))
                                             .flex_none()
                                             .flex()
                                             .justify_center()
@@ -1268,8 +1386,8 @@ impl Render for ConnEditor {
                                             .text_color(p.fg2)
                                             .font_family(MONO)
                                             .font_weight(FontWeight::SEMIBOLD)
-                                            .text_size(px(8.5))
-                                            .line_height(px(16.))
+                                            .text_size(ts::MICRO)
+                                            .line_height(rpx(16.))
                                             .child(k.badge()),
                                     )
                                     .child(
@@ -1279,14 +1397,14 @@ impl Render for ConnEditor {
                                             .min_w_0()
                                             .child(
                                                 div()
-                                                    .text_size(px(12.5))
+                                                    .text_size(ts::UI)
                                                     .font_weight(FontWeight::MEDIUM)
                                                     .whitespace_nowrap()
                                                     .child(k.rail_label()),
                                             )
                                             .child(
                                                 div()
-                                                    .text_size(px(11.))
+                                                    .text_size(ts::SMALL)
                                                     .text_color(p.fg3)
                                                     .truncate()
                                                     .child(k.sub()),
@@ -1300,13 +1418,13 @@ impl Render for ConnEditor {
                             .flex_1()
                             .min_w_0()
                             .overflow_y_scroll()
-                            .px(px(18.))
-                            .py(px(16.))
+                            .px(rpx(18.))
+                            .py(rpx(16.))
                             .flex()
                             .flex_col()
-                            .gap(px(14.))
+                            .gap(rpx(14.))
                             .children(engine_picker)
-                            .child(div().grid().grid_cols(6).gap(px(12.)).children(fields))
+                            .child(div().grid().grid_cols(6).gap(rpx(12.)).children(fields))
                             .children(forwards)
                             .when(self.kind == ConnKind::Ssh, |d| {
                                 d.child(
@@ -1318,6 +1436,18 @@ impl Render for ConnEditor {
                                     )
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.forward_agent = !this.forward_agent;
+                                        cx.notify();
+                                    })),
+                                )
+                                .child(
+                                    ui::checkbox(
+                                        "host-fav",
+                                        self.favorite,
+                                        "Show in Favorites at the top of the sidebar",
+                                        &p,
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.favorite = !this.favorite;
                                         cx.notify();
                                     })),
                                 )
@@ -1338,15 +1468,15 @@ impl Render for ConnEditor {
                                 div()
                                     .flex()
                                     .flex_col()
-                                    .gap(px(6.))
+                                    .gap(rpx(6.))
                                     .child(
                                         div()
-                                            .text_size(px(11.5))
+                                            .text_size(ts::LABEL)
                                             .text_color(p.fg2)
                                             .font_weight(FontWeight::MEDIUM)
                                             .child("Environment"),
                                     )
-                                    .child(div().flex().gap(px(6.)).children(
+                                    .child(div().flex().gap(rpx(6.)).children(
                                         EnvironmentLabel::ALL.iter().map(|e| {
                                             let e = *e;
                                             let active = e == self.env;
@@ -1356,16 +1486,16 @@ impl Render for ConnEditor {
                                                     e.badge()
                                                 )))
                                                 .flex_1()
-                                                .h(px(30.))
+                                                .h(rpx(30.))
                                                 .flex()
                                                 .items_center()
-                                                .gap(px(8.))
-                                                .px(px(10.))
+                                                .gap(rpx(8.))
+                                                .px(rpx(10.))
                                                 .border_1()
                                                 .border_color(if active { p.env(e) } else { p.bd2 })
                                                 .rounded(px(6.))
                                                 .bg(if active { p.env_bg(e) } else { p.bg })
-                                                .text_size(px(12.5))
+                                                .text_size(ts::UI)
                                                 .on_click(cx.listener(move |this, _, _, cx| {
                                                     this.env = e;
                                                     cx.notify();
@@ -1380,8 +1510,8 @@ impl Render for ConnEditor {
                                                 .id("lock-ro")
                                                 .flex()
                                                 .items_center()
-                                                .gap(px(8.))
-                                                .text_size(px(11.5))
+                                                .gap(rpx(8.))
+                                                .text_size(ts::LABEL)
                                                 .text_color(p.fg2)
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.read_only = !this.read_only;
@@ -1389,7 +1519,7 @@ impl Render for ConnEditor {
                                                 }))
                                                 .child(
                                                     div()
-                                                        .size(px(14.))
+                                                        .size(rpx(14.))
                                                         .flex()
                                                         .items_center()
                                                         .justify_center()
@@ -1406,7 +1536,7 @@ impl Render for ConnEditor {
                                                             p.surface
                                                         })
                                                         .text_color(p.acc_fg)
-                                                        .text_size(px(10.))
+                                                        .text_size(ts::CAPTION)
                                                         .child(if self.read_only {
                                                             "✓"
                                                         } else {
@@ -1470,11 +1600,11 @@ impl Render for ConnEditor {
                             .when_some(general_error, |d, e| {
                                 d.child(
                                     div()
-                                        .px(px(10.))
-                                        .py(px(6.))
+                                        .px(rpx(10.))
+                                        .py(rpx(6.))
                                         .rounded(px(6.))
                                         .bg(p.prod_bg)
-                                        .text_size(px(12.))
+                                        .text_size(ts::BODY)
                                         .text_color(p.fg)
                                         .child(e),
                                 )
@@ -1483,26 +1613,26 @@ impl Render for ConnEditor {
             )
             .child(
                 div()
-                    .h(px(52.))
+                    .h(rpx(52.))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .px(px(16.))
+                    .gap(rpx(10.))
+                    .px(rpx(16.))
                     .border_t_1()
                     .border_color(p.bd)
                     .child(
                         ui::button("ce-test", "Test connection", Kind::Secondary, &p)
-                            .h(px(28.))
+                            .h(rpx(28.))
                             .on_click(cx.listener(|this, _, _, cx| this.test(cx))),
                     )
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(7.))
+                            .gap(rpx(7.))
                             .min_w_0()
-                            .text_size(px(12.))
+                            .text_size(ts::BODY)
                             .text_color(test_color)
                             .child(if testing {
                                 ui::pulse_dot("test-dot", test_color, 6.)
@@ -1514,7 +1644,7 @@ impl Render for ConnEditor {
                     .child(div().flex_1())
                     .child(
                         ui::button("ce-cancel", "Cancel", Kind::Ghost, &p)
-                            .h(px(28.))
+                            .h(rpx(28.))
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(ConnEditorEvent::Close))),
                     )
                     .child(
@@ -1524,9 +1654,46 @@ impl Render for ConnEditor {
                             Kind::Primary,
                             &p,
                         )
-                        .h(px(28.))
+                        .h(rpx(28.))
                         .on_click(cx.listener(|this, _, _, cx| this.save(cx))),
                     ),
             )
+    }
+}
+
+/// Environment variables as `NAME=value; NAME2=value2`.
+fn format_env(env: &[(String, String)]) -> String {
+    env.iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Parse [`format_env`]'s format; empty entries are skipped.
+fn parse_env(s: &str) -> Result<Vec<(String, String)>, String> {
+    s.split(';')
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .map(|e| match e.split_once('=') {
+            Some((k, v)) if !k.trim().is_empty() => Ok((k.trim().to_owned(), v.trim().to_owned())),
+            _ => Err(format!("\"{e}\" is not NAME=value")),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod env_tests {
+    use super::*;
+
+    #[test]
+    fn env_round_trips_through_the_field() {
+        let env = vec![
+            ("LANG".to_owned(), "C.UTF-8".to_owned()),
+            ("OPTS".to_owned(), "a=b c".to_owned()),
+        ];
+        assert_eq!(parse_env(&format_env(&env)).unwrap(), env);
+        assert!(parse_env(" ; ").unwrap().is_empty());
+        assert!(parse_env("NOVALUE").is_err());
+        assert!(parse_env("=x").is_err());
     }
 }

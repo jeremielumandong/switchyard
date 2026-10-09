@@ -11,6 +11,7 @@ use switchyard_core::store::{Profile, ProfileId};
 
 use crate::actions::{CommandId, fuzzy_score, palette_commands};
 use crate::app_state::{Profiles, describe};
+use crate::appearance::{rpx, ts};
 use crate::theme::{MONO, palette};
 use crate::ui;
 
@@ -212,13 +213,13 @@ impl Render for PaletteView {
                 let sel = i == self.selected;
                 div()
                     .id(("pal-item", i))
-                    .h(px(32.))
+                    .h(rpx(32.))
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .px(px(10.))
+                    .gap(rpx(10.))
+                    .px(rpx(10.))
                     .rounded(px(6.))
-                    .text_size(px(13.))
+                    .text_size(ts::BASE)
                     .when(sel, |d| d.bg(p.sel))
                     .on_mouse_move(cx.listener(move |this, _, _, cx| {
                         if this.selected != i {
@@ -234,18 +235,18 @@ impl Render for PaletteView {
                     .child(div().flex_1().min_w_0().truncate().child(it.label))
                     .child(
                         div()
-                            .text_size(px(11.5))
+                            .text_size(ts::LABEL)
                             .text_color(p.fg3)
                             .whitespace_nowrap()
                             .child(it.group),
                     )
                     .child(
                         div()
-                            .min_w(px(44.))
+                            .min_w(rpx(44.))
                             .flex()
                             .justify_end()
                             .font_family(MONO)
-                            .text_size(px(10.5))
+                            .text_size(ts::CAPTION_PLUS)
                             .text_color(p.fg2)
                             .child(it.key),
                     )
@@ -254,7 +255,7 @@ impl Render for PaletteView {
             .collect();
         div()
             .id("palette")
-            .w(px(620.))
+            .w(rpx(620.))
             .bg(p.elev)
             .rounded(px(10.))
             .shadow(ui::shadow(&p))
@@ -276,33 +277,33 @@ impl Render for PaletteView {
             }))
             .child(
                 div()
-                    .h(px(46.))
+                    .h(rpx(46.))
                     .flex()
                     .items_center()
-                    .gap(px(10.))
-                    .px(px(14.))
+                    .gap(rpx(10.))
+                    .px(rpx(14.))
                     .border_b_1()
                     .border_color(p.bd)
                     .child(
                         div()
                             .flex_none()
-                            .px(px(6.))
-                            .py(px(2.))
+                            .px(rpx(6.))
+                            .py(rpx(2.))
                             .rounded(px(4.))
                             .bg(p.hover)
                             .text_color(p.fg2)
                             .font_family(MONO)
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_size(px(10.))
+                            .text_size(ts::CAPTION)
                             .child(mode_label),
                     )
-                    .child(div().flex_1().child(Input::new(&self.input).appearance(false).text_size(px(14.))))
+                    .child(div().flex_1().child(Input::new(&self.input).appearance(false).text_size(ts::TITLE)))
                     .child(
                         div()
                             .id("pal-swap")
                             .flex_none()
                             .font_family(MONO)
-                            .text_size(px(10.5))
+                            .text_size(ts::CAPTION_PLUS)
                             .text_color(p.fg3)
                             .whitespace_nowrap()
                             .on_click(cx.listener(|this, _, w, cx| this.swap(w, cx)))
@@ -312,22 +313,22 @@ impl Render for PaletteView {
             .child(
                 div()
                     .id("pal-list")
-                    .max_h(px(380.))
+                    .max_h(rpx(380.))
                     .overflow_y_scroll()
-                    .p(px(4.))
+                    .p(rpx(4.))
                     .children(rows)
                     .when(n == 0, |d| {
                         d.child(
                             div()
-                                .py(px(28.))
-                                .px(px(16.))
+                                .py(rpx(28.))
+                                .px(rpx(16.))
                                 .flex()
                                 .flex_col()
                                 .items_center()
                                 .text_color(p.fg2)
-                                .text_size(px(13.))
+                                .text_size(ts::BASE)
                                 .child(format!("No matches for “{q}”"))
-                                .child(div().mt(px(4.)).text_color(p.fg3).text_size(px(12.)).child(if cmd {
+                                .child(div().mt(rpx(4.)).text_color(p.fg3).text_size(ts::BODY).child(if cmd {
                                     format!("Try “run” or “settings”, or {} to search connections", ui::keys("⌘P", "Ctrl+P"))
                                 } else {
                                     format!("Press {} to search commands instead", ui::keys("⇧⌘P", "Ctrl+Shift+P"))
@@ -338,12 +339,12 @@ impl Render for PaletteView {
             .child(
                 div()
                     .flex()
-                    .gap(px(14.))
-                    .px(px(14.))
-                    .py(px(8.))
+                    .gap(rpx(14.))
+                    .px(rpx(14.))
+                    .py(rpx(8.))
                     .border_t_1()
                     .border_color(p.bd)
-                    .text_size(px(11.))
+                    .text_size(ts::SMALL)
                     .text_color(p.fg3)
                     .child("↑↓ navigate")
                     .child("↵ run")
