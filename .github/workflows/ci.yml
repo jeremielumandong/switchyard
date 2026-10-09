@@ -85,6 +85,13 @@ jobs:
         run: |
           scripts/ftp-test-certs.sh
           docker compose -f docker/compose.yml up -d ftp ftp-implicit ftp-plain
+          for port in 2120 2121 2990; do
+            for _ in $(seq 1 30); do
+              (exec 3<>/dev/tcp/127.0.0.1/$port) 2>/dev/null && break
+              sleep 1
+            done
+            (exec 3<>/dev/tcp/127.0.0.1/$port) || { echo "FTP port $port is not listening"; exit 1; }
+          done
       - run: cargo test -p switchyard-remote --test ftp -- --ignored --test-threads 1
         env:
           SWITCHYARD_FTP_CA: docker/ftp/ca.pem
@@ -102,6 +109,11 @@ jobs:
           -- --ignored --test-threads 1
         env:
           SWITCHYARD_SSH_KEYS: /tmp/switchyard-ssh
+      - name: FTP server state and logs
+        if: failure()
+        run: |
+          docker compose -f docker/compose.yml ps -a
+          docker compose -f docker/compose.yml logs --no-color --timestamps ftp ftp-implicit ftp-plain | tail -n 300
 
   integration-other:
     name: integration (MySQL, MongoDB, Redis)
