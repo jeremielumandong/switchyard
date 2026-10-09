@@ -105,12 +105,15 @@ impl Service {
         session: SessionId,
         request: RequestId,
         pattern: String,
+        kind: Option<switchyard_db::redis::KeyKind>,
         cursor: u64,
     ) {
         let result = async {
             let slot = self.redis_slot(session)?;
             let mut c = self.redis_client(&slot).await?;
-            Ok::<_, CoreError>(browse::scan(&mut c, cursor, &pattern, SCAN_COUNT).await?)
+            Ok::<_, CoreError>(
+                browse::scan(&mut c, cursor, &pattern, kind.as_ref(), SCAN_COUNT).await?,
+            )
         }
         .await;
         self.emit(Event::RedisKeys {

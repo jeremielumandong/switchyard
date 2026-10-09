@@ -1084,3 +1084,28 @@ commands.
   own blocks and draws them with `rich_text::RichText`, a copy of gpui-base's
   `SelectableText` (Apache-2.0) with highlight runs, inline-code font overrides and
   clickable links (http, https and mailto only). Copy gives the text without markup.
+
+## 2026-10-09 — MongoDB grid edits by `_id`; Redis delimiter and type filter
+
+- **Same edit flow, document statements.** `Dialect::edits_documents` (true for MongoDB)
+  switches the SQL tab's staged edits to `db::mongo::edit`: the target comes from parsing the
+  `find` statement (no catalog detail, no primary key lookup), and each staged row becomes
+  `updateOne({ _id }, { $set: { "a.b": … } })`, `deleteOne({ _id })` or `insertOne({ … })`.
+  Statements are shell text, so they show in the staged panel and in history like SQL.
+- **Types are preserved, not guessed.** `_id` is read from the `(document)` column's
+  Extended JSON, so ObjectId, numbers and strings match exactly. A new value takes its
+  column's type (`int`, `long`, `objectId`, `date`, …); in a `mixed` column it takes the
+  replaced value's type; with neither, the text is read as a shell value and falls back to
+  a string. A digits-only string in a string column stays a string.
+- **NULL means `$set: null`**, not `$unset`: clearing a cell does what it says, and the
+  field stays. New rows leave NULL fields out (the server adds `_id` unless one is typed).
+- **No transaction.** The MongoDB session has none, so `ApplyEdits` applies document edits
+  in order without one and, on a failure, says how many were already saved. Updates report
+  matched documents as their affected count (PostgreSQL semantics), so re-saving an
+  unchanged value is not a failure.
+- **Redis tree delimiter** is a per-connection option (`tree_delimiter` in
+  `DbConnection::options`), any string, `:` when blank. The type filter uses `SCAN … TYPE`
+  and falls back to filtering each page's `TYPE` replies on servers before 6.0.
+- **Console history** for Up / Down comes from the connection's stored query history (the
+  console already records each line, masked), not a separate store; lines that carry a
+  secret and coding-agent lines are not recalled.

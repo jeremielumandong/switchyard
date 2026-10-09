@@ -659,8 +659,12 @@ impl Service {
                 session,
                 request,
                 pattern,
+                kind,
                 cursor,
-            } => self.redis_scan(session, request, pattern, cursor).await,
+            } => {
+                self.redis_scan(session, request, pattern, kind, cursor)
+                    .await
+            }
             Command::RedisLoad {
                 session,
                 request,
@@ -1273,10 +1277,27 @@ impl Service {
             ));
         }
         let mut inner = slot.inner.lock().await;
-        let own_txn = !inner.session.in_transaction();
+        let mut own_txn = !inner.session.in_transaction();
         if own_txn {
-            inner.session.begin().await?;
+            match inner.session.begin().await {
+                Ok(()) => {}
+                // No transactions (MongoDB here): apply one statement at a time and say
+                // how many went through if one fails.
+                Err(switchyard_db::DbError::Unsupported(_)) => own_txn = false,
+                Err(e) => return Err(e.into()),
+            }
         }
+        let atomic = own_txn || inner.session.in_transaction();
+        let partial = |total: u64, msg: String| {
+            if atomic || total == 0 {
+                msg
+            } else {
+                format!(
+                    "{msg} ({total} earlier change{} already saved)",
+                    if total == 1 { " was" } else { "s were" }
+                )
+            }
+        };
         let mut total = 0u64;
         for sql in &statements {
             let outcome: Result<u64> = async {
@@ -1296,13 +1317,19 @@ impl Service {
                     if own_txn {
                         let _ = inner.session.rollback().await;
                     }
-                    return Err(CoreError::Unsupported(format!(
-                        "expected to change 1 row but changed {n}; nothing was saved"
-                    )));
+                    let msg = if atomic {
+                        format!("expected to change 1 row but changed {n}; nothing was saved")
+                    } else {
+                        format!("expected to change 1 row but changed {n}")
+                    };
+                    return Err(CoreError::Unsupported(partial(total, msg)));
                 }
                 Err(e) => {
                     if own_txn {
                         let _ = inner.session.rollback().await;
+                    }
+                    if !atomic && total > 0 {
+                        return Err(CoreError::Unsupported(partial(total, e.to_string())));
                     }
                     return Err(e);
                 }

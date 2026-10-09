@@ -8,6 +8,7 @@
 //! `srv` (`true` resolves a `mongodb+srv://` seed list, as MongoDB Atlas gives it).
 
 mod catalog;
+pub mod edit;
 pub mod flatten;
 pub mod shell;
 
@@ -558,11 +559,9 @@ impl MongoSession {
                     "delete" => format!("deleted {n}"),
                     _ => format!("{n} affected"),
                 };
-                affected = Some(if verb == "update" {
-                    count_of(&reply, "nModified")
-                } else {
-                    n
-                });
+                // Matched documents for updates, as PostgreSQL counts them: an
+                // update that leaves a document as it was still found its document.
+                affected = Some(n);
                 if !inserted.is_empty() {
                     let docs: Vec<Document> = inserted
                         .into_iter()
