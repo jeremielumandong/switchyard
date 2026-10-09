@@ -248,6 +248,10 @@ impl Dialect for MongoDialect {
         false
     }
 
+    fn edits_documents(&self) -> bool {
+        true
+    }
+
     fn use_database(&self, database: &str) -> Option<String> {
         Some(format!("use {database}"))
     }

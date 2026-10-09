@@ -114,7 +114,7 @@ fn is_extended(d: &Document) -> bool {
 }
 
 /// The value at a dotted path, following the same flattening as [`walk`].
-fn lookup<'a>(doc: &'a Document, path: &str) -> Option<&'a Bson> {
+pub(crate) fn lookup<'a>(doc: &'a Document, path: &str) -> Option<&'a Bson> {
     if let Some(v) = doc.get(path) {
         return Some(v);
     }

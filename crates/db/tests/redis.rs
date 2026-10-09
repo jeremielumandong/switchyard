@@ -67,7 +67,7 @@ async fn browses_and_edits_every_type() {
     let mut keys = Vec::new();
     let mut cursor = 0;
     loop {
-        let page = browse::scan(&mut c, cursor, "*", 2).await.unwrap();
+        let page = browse::scan(&mut c, cursor, "*", None, 2).await.unwrap();
         keys.extend(page.keys);
         cursor = page.cursor;
         if cursor == 0 {
@@ -82,13 +82,27 @@ async fn browses_and_edits_every_type() {
     assert_eq!(kinds.len(), 7);
     assert!(kinds.contains(&(b"z:1".to_vec(), KeyKind::ZSet)));
     assert!(kinds.contains(&(b"bin\xff".to_vec(), KeyKind::String)));
-    let only_h = browse::scan(&mut c, 0, "h:*", 100).await.unwrap();
+    // SCAN … TYPE: only the sorted set, walking every page.
+    let mut zsets = Vec::new();
+    let mut cursor = 0;
+    loop {
+        let page = browse::scan(&mut c, cursor, "*", Some(&KeyKind::ZSet), 2)
+            .await
+            .unwrap();
+        zsets.extend(page.keys.into_iter().map(|k| k.key));
+        cursor = page.cursor;
+        if cursor == 0 {
+            break;
+        }
+    }
+    assert_eq!(zsets, [b"z:1".to_vec()]);
+    let only_h = browse::scan(&mut c, 0, "h:*", None, 100).await.unwrap();
     assert_eq!(only_h.keys.len(), 1);
     // The key list's TTL and size columns.
     assert_eq!(only_h.keys[0].ttl_ms, None);
     assert!(only_h.keys[0].memory.is_some_and(|m| m > 0));
     c.call(&["EXPIRE", "s:1", "100"]).await.unwrap();
-    let s1 = browse::scan(&mut c, 0, "s:*", 100).await.unwrap();
+    let s1 = browse::scan(&mut c, 0, "s:*", None, 100).await.unwrap();
     assert!(
         s1.keys[0]
             .ttl_ms

@@ -594,6 +594,22 @@ server or bundled Unix tools on Windows (Tier 3).
   full-value viewer with copy for the selected hash/list/set/zset/stream row; console
   transcript and values in read-only editors so all text selects and copies.
   Note: the delimiter is fixed to `:`; TTLs in the list are as of the scan.
+- [x] RD-4 Key type filter, tree delimiter, console history (follow-up, 2026-10-09): type
+  dropdown next to the pattern (All / String / List / Set / Sorted set / Hash / Stream /
+  JSON) scans with `SCAN … TYPE` (filtered client-side on servers before 6.0); "Key tree
+  delimiter" in the Redis connection form (`DbConnection::options["tree_delimiter"]`, any
+  string, `:` by default); Up / Down in the console recall commands, seeded from this
+  connection's stored history (agent lines and secret-bearing lines left out).
+  Note: a changed delimiter applies to key browser tabs opened afterwards. Integration test
+  for TYPE added to `db --test redis` but not run here (no redis image in this container).
+- [x] MG-1 MongoDB document edits from the grid (follow-up, 2026-10-09): `find` results with
+  `_id` edit like SQL results (staged cells, add / duplicate / delete rows, Production
+  confirmation for deletes) and commit as `updateOne({ _id }, { $set })`, `deleteOne({ _id })`
+  and `insertOne` (`db::mongo::edit`). `_id` comes from the document column, so its BSON
+  type is kept; new values keep their column's type (or, in `mixed` columns, the replaced
+  value's). Other results are read-only with a hint. Updates count matched documents.
+  Note: no transactions, so edits apply in order and a failure reports how many were saved;
+  the document column itself is read-only (no `replaceOne` editing yet).
 
 ## DBX — Database explorer and editors at DBeaver / SSMS level (user request)
 
@@ -752,8 +768,8 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   running app's unlocked secrets over the loopback handoff, scoped by the session token.
 
 (Add items here instead of doing them mid-task.)
-- Redis: configurable tree delimiter and key type filter (SCAN TYPE); Pub/Sub and MONITOR viewers;
-  Cluster and Sentinel; per-element pagination past 1,000 items; console up/down history;
+- Redis: Pub/Sub and MONITOR viewers;
+  Cluster and Sentinel; per-element pagination past 1,000 items;
   RESP3 (`HELLO 3`) types; integration test for TLS.
 - `db --test pg` integration tests share one database: run in parallel, `introspection_snapshots`
   can see another test's scratch objects. CI runs them with `--test-threads 1`; isolate them in
@@ -775,7 +791,7 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   exercise the driver against a real account; OAuth (external browser) sign-in.
 - API workspace: port AgentOps's Workbench UI tests; persist workbench preferences (they live
   in session memory for now); per-project collections (`current_project()` returns None).
-- MongoDB: transactions on replica sets, `explain` → `PlanNode`, document edits from the grid (by `_id`), `$currentOp`
+- MongoDB: transactions on replica sets, `explain` → `PlanNode`, `$currentOp`
   activity monitor, X.509 / AWS / OIDC sign-in.
 - Release workflow for macOS (`build-macos.sh` + notarization) next to the Linux and Windows ones.
 - Log file for release builds (Windows GUI subsystem hides stdout).

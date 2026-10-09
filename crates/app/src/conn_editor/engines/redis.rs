@@ -1,5 +1,6 @@
 //! Redis.
 
+use switchyard_core::db::redis::{DEFAULT_TREE_DELIMITER, TREE_DELIMITER_OPTION};
 use switchyard_core::db::{DbAuthMethod, Engine, SslMode};
 use switchyard_core::store::DbConnection;
 
@@ -32,6 +33,12 @@ impl EngineForm for Redis {
         f.secret(d, "");
         f.ssl(d);
         f.via(d);
+        f.text(
+            "delimiter",
+            d.option(TREE_DELIMITER_OPTION)
+                .unwrap_or(DEFAULT_TREE_DELIMITER),
+            DEFAULT_TREE_DELIMITER,
+        );
     }
 
     fn layout(&self, _v: &Values<'_>) -> Vec<Field> {
@@ -49,6 +56,10 @@ impl EngineForm for Redis {
                 .span(3)
                 .hint("Require for TLS ports (cloud Redis); Prefer means plain TCP"),
             Field::via().span(3),
+            Field::new("delimiter", "Key tree delimiter")
+                .span(2)
+                .mono()
+                .hint("Folders in the key browser; : by default"),
         ]
     }
 
@@ -60,6 +71,14 @@ impl EngineForm for Redis {
         d.auth = DbAuthMethod::Password;
         d.ssl_mode = v.ssl();
         d.via_host = v.via();
+        match v.opt("delimiter") {
+            Some(delim) if delim != DEFAULT_TREE_DELIMITER => {
+                d.options.insert(TREE_DELIMITER_OPTION.into(), delim);
+            }
+            _ => {
+                d.options.remove(TREE_DELIMITER_OPTION);
+            }
+        }
         Ok(())
     }
 }

@@ -31,10 +31,15 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+use switchyard_core::db::batch::DOCUMENT_COLUMN;
 use switchyard_core::db::complete::{CatalogIndex, PeekTarget, peek_target};
 use switchyard_core::db::edit::{
     EditTable, RowDelete, RowEdit, RowInsert, delete_statements, delete_targets, duplicate_values,
     editable_table, generated_columns, insert_statements, update_statements,
+};
+use switchyard_core::db::mongo::edit::{
+    ID as DOCUMENT_ID, edit_target as document_edit_target, row_delete as document_delete,
+    row_insert as document_insert, row_update as document_update,
 };
 use switchyard_core::db::{
     BatchList, CatalogChunk, CellRef, ForeignKeyInfo, IntrospectScope, ObjectKind,
@@ -3511,6 +3516,9 @@ pub struct EditState {
     request: Option<RequestId>,
     /// Statements waiting for the Production delete confirmation.
     confirm: Option<Vec<String>>,
+    /// Document edits (MongoDB): the result's document column, which carries each row's
+    /// `_id`; `None` for SQL edits by primary key.
+    documents: Option<usize>,
     _sub: Subscription,
 }
 
@@ -3581,6 +3589,71 @@ fn row_values(r: &ResultSet, e: &EditState, row: usize, cx: &App) -> Vec<(String
         .collect()
 }
 
+/// MongoDB statements for the staged edits: `deleteOne` / `updateOne` by the `_id` in
+/// each row's document column (`doc_col`), then `insertOne` for new rows.
+fn document_statements(
+    r: &ResultSet,
+    e: &EditState,
+    doc_col: usize,
+    cx: &App,
+) -> Result<Vec<String>, String> {
+    let t = r.table.read(cx);
+    let data = t.delegate().data();
+    let document = |row: usize| -> Result<String, String> {
+        match data
+            .cell(row, doc_col)
+            .map(|c| c.to_value(r.columns[doc_col].data_type))
+        {
+            Some(Value::Json(s) | Value::Text(s)) => Ok(s),
+            _ => Err("a row has no document".into()),
+        }
+    };
+    let mut out = Vec::new();
+    for &row in e.deleted.iter().filter(|row| **row < NEW_ROW) {
+        out.push(document_delete(&e.table, &document(row)?)?);
+    }
+    let mut rows: Vec<usize> = e
+        .staged
+        .iter()
+        .map(|((row, _), _)| *row)
+        .filter(|row| *row < NEW_ROW && !e.deleted.contains(row))
+        .collect();
+    rows.sort_unstable();
+    rows.dedup();
+    for row in rows {
+        let set: Vec<(String, Value)> = e
+            .staged
+            .iter()
+            .filter(|((rr, _), _)| *rr == row)
+            .map(|((_, c), v)| (r.columns[*c].name.clone(), v.clone()))
+            .collect();
+        out.push(document_update(
+            &e.table,
+            &r.columns,
+            &document(row)?,
+            &set,
+        )?);
+    }
+    for row in (0..e.inserted)
+        .map(|i| NEW_ROW + i)
+        .filter(|row| !e.deleted.contains(row))
+    {
+        let mut values: Vec<(usize, Value)> = e
+            .staged
+            .iter()
+            .filter(|((rr, _), _)| *rr == row)
+            .map(|((_, c), v)| (*c, v.clone()))
+            .collect();
+        values.sort_by_key(|(c, _)| *c);
+        let values: Vec<(String, Value)> = values
+            .into_iter()
+            .map(|(c, v)| (r.columns[c].name.clone(), v))
+            .collect();
+        out.push(document_insert(&e.table, &r.columns, &values)?);
+    }
+    Ok(out)
+}
+
 impl SqlTab {
     fn default_schema(&self) -> &'static str {
         self.dialect().default_schema()
@@ -3604,7 +3677,25 @@ impl SqlTab {
             return;
         };
         if self.edit.as_ref().map(|e| e.result_ix) != Some(self.active_result) {
-            let Some(table) = editable_table(self.dialect(), &r.sql, &r.columns) else {
+            let documents = self.dialect().edits_documents();
+            let table = if documents {
+                if matches!(pending, PendingEdit::Reference(..)) {
+                    cx.emit(SqlTabEvent::Toast(
+                        "Documents have no foreign keys to follow".into(),
+                    ));
+                    return;
+                }
+                match document_edit_target(&r.sql, &r.columns) {
+                    Ok(t) => Some(t),
+                    Err(hint) => {
+                        cx.emit(SqlTabEvent::Toast(hint));
+                        return;
+                    }
+                }
+            } else {
+                editable_table(self.dialect(), &r.sql, &r.columns)
+            };
+            let Some(table) = table else {
                 cx.emit(SqlTabEvent::Toast(
                     if matches!(pending, PendingEdit::Reference(..)) {
                         "Foreign keys can be followed from results of a single table"
@@ -3629,7 +3720,15 @@ impl SqlTab {
                     this.stage_current(false, cx);
                 }
             });
-            if let Some(session) = self.session {
+            // Documents are matched by `_id`: no catalog detail to wait for.
+            let doc_cols = documents
+                .then(|| {
+                    let id = r.columns.iter().position(|c| c.name == DOCUMENT_ID)?;
+                    let doc = r.columns.iter().position(|c| c.name == DOCUMENT_COLUMN)?;
+                    Some((id, doc))
+                })
+                .flatten();
+            if let (false, Some(session)) = (documents, self.session) {
                 self.core.send(Command::Introspect {
                     session,
                     scope: switchyard_core::db::IntrospectScope::Detail {
@@ -3646,17 +3745,23 @@ impl SqlTab {
             self.edit = Some(EditState {
                 result_ix: self.active_result,
                 table,
-                key_cols: None,
+                key_cols: doc_cols.map(|(id, _)| vec![id]),
                 staged: Vec::new(),
                 inserted: 0,
                 deleted: Vec::new(),
-                generated: Vec::new(),
+                // New documents get their `_id` from the server unless one is typed.
+                generated: if documents {
+                    vec![DOCUMENT_ID.into(), DOCUMENT_COLUMN.into()]
+                } else {
+                    Vec::new()
+                },
                 foreign_keys: Vec::new(),
                 cell: None,
                 pending: None,
                 input,
                 request: None,
                 confirm: None,
+                documents: doc_cols.map(|(_, doc)| doc),
                 _sub: sub,
             });
         }
@@ -3750,10 +3855,21 @@ impl SqlTab {
 
     fn begin_cell(&mut self, row: usize, col: usize, cx: &mut Context<Self>) {
         let Some(e) = self.edit.as_mut() else { return };
+        if e.documents == Some(col) {
+            cx.emit(SqlTabEvent::Toast(
+                "The document column is read-only; edit fields in their own columns".into(),
+            ));
+            return;
+        }
         // Key columns of new rows are filled in like any other.
         if row < NEW_ROW && e.key_cols.as_ref().is_some_and(|k| k.contains(&col)) {
             cx.emit(SqlTabEvent::Toast(
-                "Primary-key columns are not edited in place".into(),
+                if e.documents.is_some() {
+                    "_id is not edited in place"
+                } else {
+                    "Primary-key columns are not edited in place"
+                }
+                .into(),
             ));
             return;
         }
@@ -4071,13 +4187,17 @@ impl SqlTab {
         cx.notify();
     }
 
-    fn edit_statements(&self, cx: &App) -> Vec<String> {
+    /// The statements a commit runs, or why the staged values cannot be written.
+    fn edit_statements(&self, cx: &App) -> Result<Vec<String>, String> {
         let Some(e) = &self.edit else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         let (Some(keys), Some(r)) = (&e.key_cols, self.results.get(e.result_ix)) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
+        if let Some(doc_col) = e.documents {
+            return document_statements(r, e, doc_col, cx);
+        }
         let t = r.table.read(cx);
         let data = t.delegate().data();
         let key_of = |row: usize| -> Vec<(String, Value)> {
@@ -4148,11 +4268,17 @@ impl SqlTab {
             &e.generated,
             &inserts,
         ));
-        out
+        Ok(out)
     }
 
     fn commit_edits(&mut self, cx: &mut Context<Self>) {
-        let statements = self.edit_statements(cx);
+        let statements = match self.edit_statements(cx) {
+            Ok(s) => s,
+            Err(e) => {
+                cx.emit(SqlTabEvent::Toast(format!("Nothing saved: {e}")));
+                return;
+            }
+        };
         if statements.is_empty() || self.edit.as_ref().is_none_or(|e| e.request.is_some()) {
             return;
         }
@@ -4161,6 +4287,7 @@ impl SqlTab {
             .connection
             .as_ref()
             .is_some_and(|c| c.environment.is_production());
+        let documents = self.edit.as_ref().is_some_and(|e| e.documents.is_some());
         let deletes: Vec<(&String, String)> = statements
             .iter()
             .filter_map(|s| {
@@ -4184,7 +4311,11 @@ impl SqlTab {
                             "Delete {n} row{} from {short}?",
                             if n == 1 { "" } else { "s" }
                         ),
-                        explanation: "The staged changes delete rows by primary key.".into(),
+                        explanation: if documents {
+                            "The staged changes delete documents by _id.".into()
+                        } else {
+                            "The staged changes delete rows by primary key.".into()
+                        },
                         object: target.clone(),
                         label: "Delete rows".into(),
                     }
@@ -4243,9 +4374,12 @@ impl SqlTab {
     ) {
         match result {
             Ok(n) => {
+                let documents = self.edit.as_ref().is_some_and(|e| e.documents.is_some());
                 cx.emit(SqlTabEvent::Toast(format!(
-                    "Committed {n} change{} in 1 transaction · {}",
+                    "{} {n} change{}{} · {}",
+                    if documents { "Applied" } else { "Committed" },
                     if n == 1 { "" } else { "s" },
+                    if documents { "" } else { " in 1 transaction" },
                     ui::duration(elapsed)
                 )));
                 self.discard_edits(cx);
@@ -4338,8 +4472,21 @@ impl SqlTab {
         if e.change_count() == 0 {
             return None;
         }
-        let statements = self.edit_statements(cx);
-        let n = statements.len();
+        // A value that does not fit its field shows instead of the statements.
+        let (statements, problem) = match self.edit_statements(cx) {
+            Ok(s) => (s, None),
+            Err(err) => (Vec::new(), Some(err)),
+        };
+        let n = if problem.is_some() {
+            e.change_count()
+        } else {
+            statements.len()
+        };
+        let how = if e.documents.is_some() {
+            "applied one document at a time"
+        } else {
+            "committed in one transaction"
+        };
         let busy = e.request.is_some();
         let target = match &e.table.schema {
             Some(s) => format!("{s}.{}", e.table.table),
@@ -4373,9 +4520,7 @@ impl SqlTab {
                                     if n == 1 { "" } else { "s" }
                                 )))
                                 .child(
-                                    div().text_color(p.fg3).child(format!(
-                                        "· {target} · committed in one transaction"
-                                    )),
+                                    div().text_color(p.fg3).child(format!("· {target} · {how}")),
                                 ),
                         )
                         .child(
@@ -4397,7 +4542,8 @@ impl SqlTab {
                                     statements
                                         .into_iter()
                                         .map(|sql| div().whitespace_nowrap().child(sql)),
-                                ),
+                                )
+                                .children(problem.map(|err| div().text_color(p.prod).child(err))),
                         ),
                 )
                 .child(
