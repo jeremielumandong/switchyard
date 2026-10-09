@@ -12,6 +12,7 @@ use gpui_kit::{
 use switchyard_core::{Command, Event, FsOp, FsRef, OnConflict, RuntimeHandle, TransferError};
 
 use crate::app_state::next_id;
+use crate::appearance::{rpx, ts};
 use crate::remote_files::human;
 use crate::theme::{MONO, Palette};
 use crate::ui::{self, Kind};
@@ -386,9 +387,9 @@ impl Transfers {
         let link = |sid: String, label: &'static str, color| {
             div()
                 .id(SharedString::from(sid))
-                .px(px(5.))
+                .px(rpx(5.))
                 .rounded(px(3.))
-                .text_size(px(11.))
+                .text_size(ts::SMALL)
                 .text_color(color)
                 .hover(|s| s.bg(p.hover))
                 .child(label)
@@ -463,7 +464,7 @@ impl Transfers {
         let bar =
             pct.filter(|_| matches!(it.state, State::Running | State::Paused | State::Queued));
         let progress_bar = |f: f32| {
-            div().h(px(3.)).rounded(px(2.)).bg(p.bd).child(
+            div().h(rpx(3.)).rounded(px(2.)).bg(p.bd).child(
                 div()
                     .h_full()
                     .rounded(px(2.))
@@ -477,17 +478,17 @@ impl Transfers {
         };
         if compact {
             return div()
-                .px(px(8.))
-                .py(px(3.))
+                .px(rpx(8.))
+                .py(rpx(3.))
                 .flex()
                 .flex_col()
-                .gap(px(3.))
-                .text_size(px(11.5))
+                .gap(rpx(3.))
+                .text_size(ts::LABEL)
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(6.))
+                        .gap(rpx(6.))
                         .child(div().text_color(p.fg3).child(arrow))
                         .child(div().flex_1().min_w_0().truncate().child(it.name.clone())),
                 )
@@ -495,29 +496,29 @@ impl Transfers {
                 .child(
                     div()
                         .font_family(MONO)
-                        .text_size(px(10.5))
+                        .text_size(ts::CAPTION_PLUS)
                         .text_color(color)
                         .truncate()
                         .child(status),
                 )
                 .when(!actions.is_empty(), |d| {
-                    d.child(div().flex().flex_wrap().gap(px(2.)).children(actions))
+                    d.child(div().flex().flex_wrap().gap(rpx(2.)).children(actions))
                 })
                 .into_any_element();
         }
         div()
-            .h(px(34.))
-            .px(px(12.))
+            .h(rpx(34.))
+            .px(rpx(12.))
             .flex()
             .items_center()
-            .gap(px(10.))
+            .gap(rpx(10.))
             .border_b_1()
             .border_color(p.line)
-            .text_size(px(12.))
-            .child(div().w(px(12.)).text_color(p.fg3).child(arrow))
+            .text_size(ts::BODY)
+            .child(div().w(rpx(12.)).text_color(p.fg3).child(arrow))
             .child(
                 div()
-                    .w(px(220.))
+                    .w(rpx(220.))
                     .flex_none()
                     .min_w_0()
                     .truncate()
@@ -525,7 +526,7 @@ impl Transfers {
             )
             .child(
                 div()
-                    .w(px(160.))
+                    .w(rpx(160.))
                     .flex_none()
                     .child(progress_bar(bar.unwrap_or(match it.state {
                         State::Done(_) => 1.0,
@@ -537,12 +538,12 @@ impl Transfers {
                     .flex_1()
                     .min_w_0()
                     .font_family(MONO)
-                    .text_size(px(11.))
+                    .text_size(ts::SMALL)
                     .text_color(color)
                     .truncate()
                     .child(status),
             )
-            .child(div().flex().gap(px(2.)).children(actions))
+            .child(div().flex().gap(rpx(2.)).children(actions))
             .into_any_element()
     }
 
@@ -556,7 +557,7 @@ impl Transfers {
             .collect();
         div()
             .flex_none()
-            .h(px(170.))
+            .h(rpx(170.))
             .flex()
             .flex_col()
             .border_t_1()
@@ -564,15 +565,15 @@ impl Transfers {
             .bg(p.panel)
             .child(
                 div()
-                    .h(px(28.))
+                    .h(rpx(28.))
                     .flex_none()
-                    .px(px(12.))
+                    .px(rpx(12.))
                     .flex()
                     .items_center()
-                    .gap(px(10.))
+                    .gap(rpx(10.))
                     .border_b_1()
                     .border_color(p.bd)
-                    .text_size(px(11.5))
+                    .text_size(ts::LABEL)
                     .child(
                         div()
                             .font_weight(gpui_kit::FontWeight::SEMIBOLD)
@@ -589,8 +590,8 @@ impl Transfers {
                     .when(items.iter().any(|i| !i.active()), |d| {
                         d.child(
                             ui::button("tx-clear", "Clear finished", Kind::Ghost, p)
-                                .h(px(20.))
-                                .text_size(px(11.))
+                                .h(rpx(20.))
+                                .text_size(ts::SMALL)
                                 .on_click(cx.listener(|this, _, _, cx| this.clear_finished(cx))),
                         )
                     }),

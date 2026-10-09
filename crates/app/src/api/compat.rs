@@ -134,13 +134,15 @@ pub mod theme {
 
     pub mod tokens {
         pub mod space {
-            use gpui_kit::{Pixels, px};
-            pub const SP_1: Pixels = px(4.);
-            pub const SP_2: Pixels = px(8.);
-            pub const SP_3: Pixels = px(12.);
-            pub const SP_4: Pixels = px(16.);
-            pub const SP_5: Pixels = px(20.);
-            pub const SP_6: Pixels = px(24.);
+            //! Spacing steps; they follow the zoom (`crate::appearance::rpx`).
+            use crate::appearance::rpx;
+            use gpui_kit::Rems;
+            pub const SP_1: Rems = rpx(4.);
+            pub const SP_2: Rems = rpx(8.);
+            pub const SP_3: Rems = rpx(12.);
+            pub const SP_4: Rems = rpx(16.);
+            pub const SP_5: Rems = rpx(20.);
+            pub const SP_6: Rems = rpx(24.);
         }
 
         pub mod radius {
@@ -181,15 +183,15 @@ pub mod theme {
     }
 
     pub mod text {
-        //! Type sizes in pixels (AgentOps steps were rems at a 13 px root; Switchyard
-        //! sizes text in pixels).
-        use gpui_kit::{Pixels, px};
-        pub const S9: Pixels = px(9.);
-        pub const S10: Pixels = px(10.);
-        pub const S11: Pixels = px(11.);
-        pub const S12: Pixels = px(12.);
-        pub const S13: Pixels = px(13.);
-        pub const S14: Pixels = px(14.);
+        //! Type sizes: the app's text steps (`crate::appearance::ts`), which follow the zoom.
+        use crate::appearance::ts;
+        use gpui_kit::Rems;
+        pub const S9: Rems = ts::TINY;
+        pub const S10: Rems = ts::CAPTION;
+        pub const S11: Rems = ts::SMALL;
+        pub const S12: Rems = ts::BODY;
+        pub const S13: Rems = ts::BASE;
+        pub const S14: Rems = ts::TITLE;
 
         pub mod weight {
             use gpui_kit::FontWeight;

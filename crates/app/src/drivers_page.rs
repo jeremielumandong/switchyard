@@ -14,6 +14,7 @@ use switchyard_core::drivers::{
 };
 use switchyard_core::{Command, Event};
 
+use crate::appearance::{rpx, ts};
 use crate::overlays::Overlay;
 use crate::theme::{MONO, Palette};
 use crate::ui::{self, Kind};
@@ -188,11 +189,11 @@ impl Workspace {
             div()
                 .flex()
                 .items_center()
-                .gap(px(10.))
-                .min_h(px(46.))
-                .px(px(12.))
-                .py(px(6.))
-                .text_size(px(12.5))
+                .gap(rpx(10.))
+                .min_h(rpx(46.))
+                .px(rpx(12.))
+                .py(rpx(6.))
+                .text_size(ts::UI)
                 .children(cells)
         };
         let mut rows: Vec<AnyElement> = Vec::new();
@@ -268,7 +269,7 @@ impl Workspace {
             rows.push(
                 grid_row(vec![
                     div()
-                        .w(px(180.))
+                        .w(rpx(180.))
                         .flex_none()
                         .min_w_0()
                         .flex()
@@ -277,7 +278,7 @@ impl Workspace {
                         .child(
                             div()
                                 .font_family(MONO)
-                                .text_size(px(10.5))
+                                .text_size(ts::CAPTION_PLUS)
                                 .text_color(p.fg3)
                                 .truncate()
                                 .child(location),
@@ -286,29 +287,29 @@ impl Workspace {
                     div()
                         .flex_1()
                         .min_w_0()
-                        .text_size(px(12.))
+                        .text_size(ts::BODY)
                         .text_color(p.fg2)
                         .child(c.needed_for.clone())
                         .into_any_element(),
                     div()
-                        .w(px(90.))
+                        .w(rpx(90.))
                         .font_family(MONO)
-                        .text_size(px(11.5))
+                        .text_size(ts::LABEL)
                         .text_color(p.fg2)
                         .child(version)
                         .into_any_element(),
                     div()
-                        .w(px(130.))
+                        .w(rpx(130.))
                         .flex()
                         .items_center()
-                        .gap(px(6.))
-                        .text_size(px(12.))
+                        .gap(rpx(6.))
+                        .text_size(ts::BODY)
                         .text_color(color)
                         .child(ui::dot(color, 6.))
                         .child(status)
                         .into_any_element(),
                     div()
-                        .w(px(96.))
+                        .w(rpx(96.))
                         .flex()
                         .justify_end()
                         .when_some(action, |d, label| {
@@ -319,8 +320,8 @@ impl Workspace {
                                     Kind::Secondary,
                                     p,
                                 )
-                                .h(px(24.))
-                                .text_size(px(11.5))
+                                .h(rpx(24.))
+                                .text_size(ts::LABEL)
                                 .on_click(
                                     cx.listener(move |this, _, _, cx| {
                                         this.on_row_action(&row_c, cx)
@@ -335,9 +336,9 @@ impl Workspace {
             // Details under the row: license, steps, command, error.
             let detail = |child: AnyElement| {
                 div()
-                    .px(px(12.))
-                    .pb(px(10.))
-                    .text_size(px(12.))
+                    .px(rpx(12.))
+                    .pb(rpx(10.))
+                    .text_size(ts::BODY)
                     .text_color(p.fg2)
                     .child(child)
                     .into_any_element()
@@ -349,7 +350,7 @@ impl Workspace {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(rpx(8.))
                         .child(div().flex_1().min_w_0().child(format!(
                             "{} is under the {}{}. Downloading means you accept it.",
                             c.name,
@@ -380,11 +381,11 @@ impl Workspace {
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(3.))
+                        .gap(rpx(3.))
                         .children(steps.iter().enumerate().map(|(i, s)| {
                             div()
                                 .flex()
-                                .gap(px(8.))
+                                .gap(rpx(8.))
                                 .child(div().text_color(p.fg3).child(format!("{}.", i + 1)))
                                 .child(div().flex_1().min_w_0().font_family(MONO).child(s.clone()))
                         }))
@@ -405,7 +406,7 @@ impl Workspace {
                         div()
                             .flex()
                             .flex_col()
-                            .gap(px(4.))
+                            .gap(rpx(4.))
                             .child(
                                 div()
                                     .text_color(if command.is_some() { p.fg2 } else { p.prod })
@@ -423,7 +424,7 @@ impl Workspace {
                 }
                 _ => {}
             }
-            rows.push(div().h(px(1.)).bg(p.line).into_any_element());
+            rows.push(div().h(rpx(1.)).bg(p.line).into_any_element());
         }
 
         let file_target = self
@@ -439,25 +440,25 @@ impl Workspace {
         div()
             .flex()
             .flex_col()
-            .gap(px(16.))
-            .p(px(18.))
+            .gap(rpx(16.))
+            .p(rpx(18.))
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(8.))
-                    .child(div().text_size(px(12.5)).text_color(p.fg2).child("Built-in drivers need nothing installed. Optional native components are loaded at runtime — a missing one disables a single feature, never the app."))
-                    .child(div().flex().flex_wrap().gap(px(6.)).children(BUILTIN_DRIVERS.iter().map(|d| {
+                    .gap(rpx(8.))
+                    .child(div().text_size(ts::UI).text_color(p.fg2).child("Built-in drivers need nothing installed. Optional native components are loaded at runtime — a missing one disables a single feature, never the app."))
+                    .child(div().flex().flex_wrap().gap(rpx(6.)).children(BUILTIN_DRIVERS.iter().map(|d| {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(6.))
-                            .h(px(24.))
-                            .px(px(9.))
+                            .gap(rpx(6.))
+                            .h(rpx(24.))
+                            .px(rpx(9.))
                             .border_1()
                             .border_color(p.bd)
                             .rounded(px(12.))
-                            .text_size(px(11.5))
+                            .text_size(ts::LABEL)
                             .text_color(p.fg2)
                             .child(ui::dot(p.dev, 6.))
                             .child(format!("{} · {}", d.protocol, d.implementation))
@@ -473,20 +474,20 @@ impl Workspace {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(10.))
-                            .h(px(30.))
-                            .px(px(12.))
+                            .gap(rpx(10.))
+                            .h(rpx(30.))
+                            .px(rpx(12.))
                             .bg(p.panel)
-                            .text_size(px(11.5))
+                            .text_size(ts::LABEL)
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(p.fg2)
                             .border_b_1()
                             .border_color(p.bd)
-                            .child(div().w(px(180.)).flex_none().child("Component"))
+                            .child(div().w(rpx(180.)).flex_none().child("Component"))
                             .child(div().flex_1().min_w_0().child("Needed for"))
-                            .child(div().w(px(90.)).child("Version"))
-                            .child(div().w(px(130.)).child("Status"))
-                            .child(div().w(px(96.))),
+                            .child(div().w(rpx(90.)).child("Version"))
+                            .child(div().w(rpx(130.)).child("Status"))
+                            .child(div().w(rpx(96.))),
                     )
                     .children(rows),
             )
@@ -494,7 +495,7 @@ impl Workspace {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(rpx(8.))
                     .child(field(&file, p))
                     .child(
                         ui::button("drv-file", file_label, Kind::Secondary, p)
@@ -523,7 +524,7 @@ impl Workspace {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(rpx(8.))
                     .child(field(&mirror, p))
                     .child(ui::button("drv-mirror", "Use mirror", Kind::Secondary, p).on_click(
                         cx.listener(|this, _, _, cx| {
@@ -543,8 +544,8 @@ impl Workspace {
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
-                    .text_size(px(12.))
+                    .gap(rpx(8.))
+                    .text_size(ts::BODY)
                     .text_color(p.fg2)
                     .child(ui::button("drv-check", "Check again", Kind::Secondary, p).on_click(cx.listener(|this, _, _, cx| {
                         this.drivers.jobs.retain(|_, j| matches!(j, DriverJob::Working(_)));
@@ -561,13 +562,13 @@ impl Workspace {
 fn field(input: &Entity<InputState>, p: &Palette) -> impl IntoElement {
     div()
         .flex_1()
-        .h(px(28.))
+        .h(rpx(28.))
         .flex()
         .items_center()
-        .px(px(9.))
+        .px(rpx(9.))
         .border_1()
         .border_color(p.bd2)
         .rounded(px(6.))
         .bg(p.bg)
-        .child(Input::new(input).appearance(false).text_size(px(12.)))
+        .child(Input::new(input).appearance(false).text_size(ts::BODY))
 }

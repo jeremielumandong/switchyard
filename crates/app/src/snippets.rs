@@ -17,6 +17,7 @@ use switchyard_core::store::Snippet;
 use switchyard_core::store::snippets::builtin_snippets;
 use switchyard_core::{Command, RuntimeHandle};
 
+use crate::appearance::{rpx, ts};
 use crate::theme::{MONO, Palette, palette};
 use crate::ui::{self, Kind};
 
@@ -210,9 +211,9 @@ impl SnippetsView {
             .id(SharedString::from(format!("snip-{}", s.id)))
             .flex()
             .items_center()
-            .gap(px(8.))
-            .px(px(10.))
-            .py(px(5.))
+            .gap(rpx(8.))
+            .px(rpx(10.))
+            .py(rpx(5.))
             .rounded(px(5.))
             .cursor_pointer()
             .when(active, |d| d.bg(p.sel))
@@ -220,7 +221,7 @@ impl SnippetsView {
             .on_click(cx.listener(move |this, _, window, cx| this.select(&snippet, window, cx)))
             .child(
                 ui::mono(s.prefix.clone(), px(12.))
-                    .w(px(64.))
+                    .w(rpx(64.))
                     .flex_none()
                     .truncate()
                     .text_color(if overridden { p.fg3 } else { p.fg }),
@@ -230,7 +231,7 @@ impl SnippetsView {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(px(12.))
+                    .text_size(ts::BODY)
                     .text_color(p.fg2)
                     .when(overridden, |d| d.line_through())
                     .child(s.name.clone()),
@@ -238,7 +239,7 @@ impl SnippetsView {
             .child(
                 div()
                     .flex_none()
-                    .text_size(px(10.5))
+                    .text_size(ts::CAPTION_PLUS)
                     .text_color(p.fg3)
                     .child(badge),
             )
@@ -249,26 +250,26 @@ fn field(label: &str, input: &Entity<InputState>, p: &Palette) -> impl IntoEleme
     div()
         .flex()
         .flex_col()
-        .gap(px(4.))
+        .gap(rpx(4.))
         .child(
             div()
-                .text_size(px(11.))
+                .text_size(ts::SMALL)
                 .text_color(p.fg3)
                 .child(label.to_owned()),
         )
         .child(
             div()
-                .h(px(28.))
+                .h(rpx(28.))
                 .flex()
                 .items_center()
-                .px(px(8.))
+                .px(rpx(8.))
                 .border_1()
                 .border_color(p.bd2)
                 .rounded(px(6.))
                 .bg(p.bg)
                 .font_family(MONO)
-                .text_size(px(12.))
-                .child(Input::new(input).appearance(false).text_size(px(12.))),
+                .text_size(ts::BODY)
+                .child(Input::new(input).appearance(false).text_size(ts::BODY)),
         )
 }
 
@@ -278,23 +279,23 @@ impl Render for SnippetsView {
         let user: Vec<Snippet> = user_snippets(cx).to_vec();
         let mut list = div()
             .id("snippet-list")
-            .w(px(300.))
+            .w(rpx(300.))
             .flex_none()
             .flex()
             .flex_col()
-            .gap(px(1.))
-            .p(px(8.))
+            .gap(rpx(1.))
+            .p(rpx(8.))
             .border_r_1()
             .border_color(p.bd)
             .bg(p.panel)
             .overflow_y_scroll()
-            .child(ui::caption("YOUR SNIPPETS", &p).px(px(10.)).py(px(4.)));
+            .child(ui::caption("YOUR SNIPPETS", &p).px(rpx(10.)).py(rpx(4.)));
         if user.is_empty() {
             list = list.child(
                 div()
-                    .px(px(10.))
-                    .py(px(4.))
-                    .text_size(px(12.))
+                    .px(rpx(10.))
+                    .py(rpx(4.))
+                    .text_size(ts::BODY)
                     .text_color(p.fg3)
                     .child("None yet. Edit a built-in and save it to override it."),
             );
@@ -308,9 +309,9 @@ impl Render for SnippetsView {
                     format!("BUILT-IN · {}", engine.display_name().to_uppercase()),
                     &p,
                 )
-                .px(px(10.))
-                .pt(px(10.))
-                .pb(px(4.)),
+                .px(rpx(10.))
+                .pt(rpx(10.))
+                .pb(rpx(4.)),
             );
             for b in builtin_snippets(engine) {
                 let overridden = user
@@ -347,17 +348,17 @@ impl Render for SnippetsView {
             .min_w_0()
             .flex()
             .flex_col()
-            .gap(px(12.))
-            .p(px(18.))
+            .gap(rpx(12.))
+            .p(rpx(18.))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(rpx(8.))
                     .child(
                         div()
                             .flex_1()
-                            .text_size(px(13.))
+                            .text_size(ts::BASE)
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(p.fg)
                             .child(title),
@@ -370,21 +371,21 @@ impl Render for SnippetsView {
             .child(
                 div()
                     .flex()
-                    .gap(px(10.))
+                    .gap(rpx(10.))
                     .child(div().flex_1().child(field("Name", &self.name, &p)))
-                    .child(div().w(px(140.)).child(field("Prefix (completion trigger)", &self.prefix, &p))),
+                    .child(div().w(rpx(140.)).child(field("Prefix (completion trigger)", &self.prefix, &p))),
             )
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(4.))
-                    .child(div().text_size(px(11.)).text_color(p.fg3).child("Engine"))
+                    .gap(rpx(4.))
+                    .child(div().text_size(ts::SMALL).text_color(p.fg3).child("Engine"))
                     .child(ui::segmented("snip-engine", engine_options, 22., &p)),
             )
             .child(
                 div()
-                    .text_size(px(11.))
+                    .text_size(ts::SMALL)
                     .text_color(p.fg3)
                     .child("Body. ${1:placeholder} marks a tab stop: its text is inserted and the first one is selected. $1 alone stays as written."),
             )
@@ -392,7 +393,7 @@ impl Render for SnippetsView {
                 div()
                     .id("snip-body")
                     .flex_1()
-                    .min_h(px(120.))
+                    .min_h(rpx(120.))
                     .border_1()
                     .border_color(p.bd2)
                     .rounded(px(6.))
@@ -403,16 +404,16 @@ impl Render for SnippetsView {
                             .appearance(false)
                             .h(relative(1.))
                             .font_family(MONO)
-                            .text_size(px(12.5)),
+                            .text_size(ts::UI),
                     ),
             )
             .when_some(self.error.clone(), |d, e| {
-                d.child(div().text_size(px(12.)).text_color(p.prod).child(e))
+                d.child(div().text_size(ts::BODY).text_color(p.prod).child(e))
             })
             .child(
                 div()
                     .flex()
-                    .gap(px(8.))
+                    .gap(rpx(8.))
                     .justify_end()
                     .when(self.selected.is_some() && !builtin, |d| {
                         d.child(

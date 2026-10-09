@@ -8,7 +8,8 @@
 
 use super::view::mono_field;
 use super::*;
-use gpui_kit::{AnyElement, ClickEvent, Div, KeyDownEvent, div, px};
+use crate::appearance::rpx;
+use gpui_kit::{AnyElement, ClickEvent, Div, KeyDownEvent, div};
 
 /// The rail's open inline rename field.
 #[derive(Clone, Debug)]
@@ -441,17 +442,17 @@ impl WorkbenchPanel {
         };
         let field: Div = mono_field(&self.container_name, window, cx)
             .w_full()
-            .h(px(26.))
+            .h(rpx(26.))
             .text_size(text::S11);
         div()
             .id("workbench-rail-rename")
             .debug_selector(|| "workbench-rail-rename".into())
             .flex()
             .flex_col()
-            .gap(px(2.))
-            .ml(px(indent))
-            .mt(px(2.))
-            .pr(px(2.))
+            .gap(rpx(2.))
+            .ml(rpx(indent))
+            .mt(rpx(2.))
+            .pr(rpx(2.))
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" {
                     cx.stop_propagation();
@@ -462,7 +463,7 @@ impl WorkbenchPanel {
             .when_some(message, |el, message| {
                 el.child(
                     div()
-                        .px(px(2.))
+                        .px(rpx(2.))
                         .text_size(text::S11)
                         .text_color(color)
                         .child(message),

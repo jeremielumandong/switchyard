@@ -157,6 +157,16 @@ fn main() -> Result<()> {
             actions::init(cx);
             editor_tab::init(cx);
             // The saved theme arrives from the store once the workspace loads.
+            // SWITCHYARD_ZOOM (tests, screenshots: `1.5`) wins over the saved zoom.
+            if let Some(z) = appearance::env_zoom() {
+                appearance::set(
+                    appearance::AppearanceSettings {
+                        zoom: z,
+                        ..Default::default()
+                    },
+                    cx,
+                );
+            }
             let start = std::env::var("SWITCHYARD_THEME")
                 .map(|k| theme::ThemeId::from_key(&k))
                 .unwrap_or(theme::ThemeId::SwitchyardDark);
