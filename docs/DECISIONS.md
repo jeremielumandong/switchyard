@@ -1177,3 +1177,29 @@ commands.
   The Follow-ups note came from a branch without that commit. Rechecked: no failure in
   ~120 runs under CPU and disk load, and the test still passes with a forced 200 ms gap
   before `execute`. No timeout change.
+
+
+## 2026-10-09 — Terminal logging, conveniences, macros and session folders (MX-3 to MX-6)
+
+- **Logs are written where output is parsed.** The session log hangs off the terminal's
+  shared state and is fed by the `Feeder` on the I/O side (PTY reader thread or SSH task),
+  so a busy terminal never writes files from the UI thread. Starting and stopping a log are
+  core commands that open or finish the file on a blocking task.
+- **Plain logs resolve redraws per line.** A carriage return followed by text restarts the
+  line and backspace removes the last character, so progress bars and shell line editing
+  leave their final text, not every frame. Full-screen programs still log their escape-free
+  text, which is noisy; raw mode keeps everything for replay with `cat`.
+- **Defaults.** Copy on select and right-click paste stay off (as before); multi-line paste
+  confirmation is on; keyword highlighting is off until the user turns it on (it recolors
+  output) and never applies on the alternate screen or to text a program colored itself.
+- **Macros are bytes.** A macro records the encoded keys and pastes sent to the program, not
+  key names, so it replays the same in any pane; it is stored as an escaped string so an
+  export stays readable. Replay sends it at once.
+- **Per-Host shell setup is typed, env is requested.** Start folder and startup command are
+  typed into each new shell (after reconnects too), like the macro on connect; environment
+  variables go as SSH `env` requests, which servers drop unless `AcceptEnv` allows them
+  (the editor says so) rather than being typed as `export` lines into the session.
+- **Duplicate copies the secret** under the new profile's own key, so deleting either copy
+  never removes the other's password.
+- Font zoom per tab and a per-Host font override were left for after the parallel UI zoom /
+  font-size work (Follow-ups).

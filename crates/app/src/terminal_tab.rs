@@ -18,13 +18,17 @@ use gpui_kit::{
     StrikethroughStyle, Styled as _, Subscription, TextAlign, TextRun, UnderlineStyle, WeakEntity,
     Window, canvas, div, fill, font, outline, point, px, size,
 };
+use switchyard_core::store::macros::{MAX_MACRO_BYTES, escape_input};
+use switchyard_core::store::model::parse_hex_color;
 use switchyard_core::store::{EnvironmentLabel, ProfileId};
+use switchyard_core::store::{Macro, TerminalColors};
 use switchyard_core::term::input::{
     Key, Mods, MouseAction, MouseButton as TermButton, encode_key, encode_mouse, encode_paste,
 };
 use switchyard_core::term::links::url_at;
 use switchyard_core::term::{CursorShape, Mark, Snapshot, TermColor, TermSize, Terminal};
-use switchyard_core::{Command, RuntimeHandle, TermId, TermStatus, TermTarget};
+use switchyard_core::term_settings::{HighlightRule, highlight_spans};
+use switchyard_core::{Command, RuntimeHandle, TermId, TermLogState, TermStatus, TermTarget};
 
 use crate::actions::{TermCopy, TermFind, TermPaste, TermSplit};
 use crate::app_state::next_id;
@@ -87,6 +91,8 @@ struct Pane {
     snapshot: Rc<Snapshot>,
     selecting: bool,
     pressed: Option<TermButton>,
+    /// File the pane's output is logged to (MX-3).
+    log: Option<std::path::PathBuf>,
 }
 
 /// A terminal tab.
@@ -106,6 +112,16 @@ pub struct TerminalTab {
     search_task: Option<gpui_kit::Task<()>>,
     /// Typed into the first pane once its shell is up (e.g. `cd` to a folder).
     startup: Option<Vec<u8>>,
+    /// Multi-line text waiting for the user to confirm the paste: (pane, text).
+    pending_paste: Option<(usize, String)>,
+    /// Keystrokes recorded for a macro (MX-5) while recording.
+    recording: Option<Vec<u8>>,
+    /// A finished recording waiting for its name.
+    macro_save: Option<(Vec<u8>, Entity<InputState>)>,
+    /// The Macros menu is open.
+    macro_menu: bool,
+    /// The Host's terminal colors (text, background) instead of the theme's (MX-6).
+    colors: (Option<Hsla>, Option<Hsla>),
     /// A coding CLI with Switchyard's tools ("Open in terminal"): (CLI, connection).
     agent: Option<(
         Option<switchyard_core::agents::AgentKind>,
@@ -146,6 +162,11 @@ impl TerminalTab {
             _search_sub: None,
             search_task: None,
             startup: None,
+            pending_paste: None,
+            recording: None,
+            macro_save: None,
+            macro_menu: false,
+            colors: (None, None),
             agent: None,
         };
         this.add_pane(cx);
@@ -174,10 +195,32 @@ impl TerminalTab {
             _search_sub: None,
             search_task: None,
             startup: None,
+            pending_paste: None,
+            recording: None,
+            macro_save: None,
+            macro_menu: false,
+            colors: (None, None),
             agent: Some((agent, connection)),
         };
         this.add_pane(cx);
         this
+    }
+
+    /// Draw with a Host's own terminal colors.
+    pub fn with_colors(mut self, colors: Option<&TerminalColors>) -> Self {
+        let hex = |v: &Option<String>| {
+            let (r, g, b) = parse_hex_color(v.as_deref()?)?;
+            Some(Hsla::from(gpui_kit::Rgba {
+                r: f32::from(r) / 255.,
+                g: f32::from(g) / 255.,
+                b: f32::from(b) / 255.,
+                a: 1.,
+            }))
+        };
+        if let Some(c) = colors {
+            self.colors = (hex(&c.foreground), hex(&c.background));
+        }
+        self
     }
 
     /// Type `input` into the first shell once it is up.
@@ -263,6 +306,7 @@ impl TerminalTab {
             snapshot: Rc::default(),
             selecting: false,
             pressed: None,
+            log: None,
         });
         self.active = self.panes.len() - 1;
     }
@@ -297,7 +341,43 @@ impl TerminalTab {
         if !remote {
             self.run_startup(term);
         }
+        let settings = crate::terminal_settings::settings(cx);
+        if settings.log.auto && self.owns(term) {
+            self.core.send(Command::StartTerminalLog {
+                term,
+                settings: settings.log,
+            });
+        }
         cx.notify();
+    }
+
+    /// A pane's session log started, stopped or failed.
+    pub fn on_log(&mut self, term: TermId, state: TermLogState, cx: &mut Context<Self>) {
+        if let Some(p) = self.pane_mut(term) {
+            p.log = match state {
+                TermLogState::Started(path) => Some(path),
+                TermLogState::Stopped | TermLogState::Failed(_) => None,
+            };
+        }
+        cx.notify();
+    }
+
+    /// Start or stop logging the active pane (the tab's Log button).
+    fn toggle_log(&mut self, cx: &mut Context<Self>) {
+        let Some(p) = self.panes.get(self.active) else {
+            return;
+        };
+        if p.terminal.is_none() {
+            return;
+        }
+        if p.log.is_some() {
+            self.core.send(Command::StopTerminalLog { term: p.id });
+        } else {
+            self.core.send(Command::StartTerminalLog {
+                term: p.id,
+                settings: crate::terminal_settings::settings(cx).log,
+            });
+        }
     }
 
     /// Connection state of an SSH terminal.
@@ -491,12 +571,241 @@ impl TerminalTab {
         let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) else {
             return;
         };
+        if crate::terminal_settings::settings(cx).confirm_multiline_paste
+            && text.contains(['\n', '\r'])
+        {
+            self.pending_paste = Some((ix, text));
+            cx.notify();
+            return;
+        }
+        self.paste_text(ix, &text);
+    }
+
+    /// Answer the multi-line paste question.
+    fn finish_paste(&mut self, accept: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((ix, text)) = self.pending_paste.take()
+            && accept
+        {
+            self.paste_text(ix, &text);
+        }
+        self.refocus(window, cx);
+        cx.notify();
+    }
+
+    fn paste_text(&mut self, ix: usize, text: &str) {
         let modes = self
             .panes
             .get(ix)
             .map(|p| p.snapshot.modes)
             .unwrap_or_default();
-        self.send_input(ix, encode_paste(&text, modes));
+        let bytes = encode_paste(text, modes);
+        self.record(&bytes);
+        self.send_input(ix, bytes);
+    }
+
+    /// Keep typed input while recording a macro.
+    fn record(&mut self, bytes: &[u8]) {
+        if let Some(rec) = &mut self.recording
+            && rec.len() + bytes.len() <= MAX_MACRO_BYTES
+        {
+            rec.extend_from_slice(bytes);
+        }
+    }
+
+    /// Start recording, or stop and ask for a name.
+    fn toggle_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.recording.take() {
+            None => {
+                self.recording = Some(Vec::new());
+                self.macro_save = None;
+                self.refocus(window, cx);
+            }
+            Some(bytes) if bytes.is_empty() => self.refocus(window, cx),
+            Some(bytes) => {
+                let name = cx.new(|cx| InputState::new(window, cx).placeholder("Macro name"));
+                name.update(cx, |i, cx| i.focus(window, cx));
+                self.macro_save = Some((bytes, name));
+            }
+        }
+        cx.notify();
+    }
+
+    /// Save (`true`) or drop the finished recording.
+    fn finish_recording(&mut self, save: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((bytes, name)) = self.macro_save.take()
+            && save
+        {
+            let name = name.read(cx).value().trim().to_owned();
+            let name = if name.is_empty() {
+                format!("Macro {}", crate::terminal_settings::macros(cx).len() + 1)
+            } else {
+                name
+            };
+            self.core.send(Command::SaveMacro(Macro::new(&name, bytes)));
+        }
+        self.refocus(window, cx);
+        cx.notify();
+    }
+
+    /// Type a macro into the active pane (every live pane when broadcasting), or into
+    /// every live pane when `all`.
+    fn play_macro(
+        &mut self,
+        input: Vec<u8>,
+        all: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.macro_menu = false;
+        if all {
+            let live: Vec<TermId> = self
+                .panes
+                .iter()
+                .filter(|p| p.state == PaneState::Live)
+                .map(|p| p.id)
+                .collect();
+            for term in live {
+                self.core.send(Command::TerminalInput {
+                    term,
+                    bytes: input.clone(),
+                });
+            }
+        } else {
+            self.send_input(self.active, input);
+        }
+        self.refocus(window, cx);
+        cx.notify();
+    }
+
+    /// The Macros menu, under the header.
+    fn render_macro_menu(
+        &self,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui_kit::AnyElement> {
+        if !self.macro_menu {
+            return None;
+        }
+        let list = crate::terminal_settings::macros(cx);
+        let multi = self.panes.len() > 1;
+        Some(
+            div()
+                .id("t-macros")
+                .absolute()
+                .top(px(38.))
+                .right(px(10.))
+                .w(px(300.))
+                .max_h(px(360.))
+                .overflow_y_scroll()
+                .p(px(4.))
+                .bg(p.elev)
+                .rounded(px(7.))
+                .shadow(ui::shadow(p))
+                .text_size(px(12.5))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .when(list.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .p(px(8.))
+                            .text_color(p.fg3)
+                            .child("No macros yet: press Record, type, then Stop."),
+                    )
+                })
+                .children(list.into_iter().enumerate().map(|(i, m)| {
+                    let (play, all, id) = (m.input.clone(), m.input.clone(), m.id.clone());
+                    div()
+                        .id(("t-macro", i))
+                        .h(px(28.))
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .px(px(8.))
+                        .rounded(px(4.))
+                        .hover(|s| s.bg(p.sel))
+                        .on_click(cx.listener(move |this, _, w, cx| {
+                            this.play_macro(play.clone(), false, w, cx)
+                        }))
+                        .child(div().text_color(p.fg3).child("▶"))
+                        .child(div().flex_1().min_w_0().truncate().child(m.name.clone()))
+                        .when(multi, |d| {
+                            d.child(
+                                ui::button(("t-macro-all", i), "All panes", Kind::Ghost, p)
+                                    .h(px(22.))
+                                    .on_click(cx.listener(move |this, _, w, cx| {
+                                        cx.stop_propagation();
+                                        this.play_macro(all.clone(), true, w, cx)
+                                    })),
+                            )
+                        })
+                        .child(
+                            ui::button(("t-macro-del", i), "×", Kind::Ghost, p)
+                                .h(px(22.))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.core.send(Command::DeleteMacro { id: id.clone() });
+                                })),
+                        )
+                }))
+                .into_any_element(),
+        )
+    }
+
+    /// "Save macro as …" under the header after a recording.
+    fn render_macro_save(
+        &self,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui_kit::AnyElement> {
+        let (bytes, name) = self.macro_save.as_ref()?;
+        Some(
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .px(px(12.))
+                .py(px(5.))
+                .bg(p.surface)
+                .border_b_1()
+                .border_color(p.bd)
+                .text_size(px(12.))
+                .child("Save macro as")
+                .child(
+                    div()
+                        .w(px(200.))
+                        .h(px(24.))
+                        .flex()
+                        .items_center()
+                        .px(px(6.))
+                        .border_1()
+                        .border_color(p.bd2)
+                        .rounded(px(5.))
+                        .bg(p.bg)
+                        .child(Input::new(name).appearance(false).text_size(px(12.))),
+                )
+                .child(
+                    div()
+                        .font_family(MONO)
+                        .text_color(p.fg3)
+                        .truncate()
+                        .min_w_0()
+                        .child(escape_input(&bytes[..bytes.len().min(80)])),
+                )
+                .child(div().flex_1())
+                .child(
+                    ui::button("t-macro-save", "Save", Kind::Primary, p)
+                        .h(px(22.))
+                        .on_click(cx.listener(|this, _, w, cx| this.finish_recording(true, w, cx))),
+                )
+                .child(
+                    ui::button("t-macro-discard", "Discard", Kind::Ghost, p)
+                        .h(px(22.))
+                        .on_click(
+                            cx.listener(|this, _, w, cx| this.finish_recording(false, w, cx)),
+                        ),
+                )
+                .into_any_element(),
+        )
     }
 
     fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -609,6 +918,16 @@ impl TerminalTab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The paste question takes Enter and Escape; other keys wait for it.
+        if self.pending_paste.is_some() {
+            match ev.keystroke.key.as_str() {
+                "enter" => self.finish_paste(true, window, cx),
+                "escape" => self.finish_paste(false, window, cx),
+                _ => {}
+            }
+            cx.stop_propagation();
+            return;
+        }
         let ks = &ev.keystroke;
         let m = &ks.modifiers;
         // App shortcuts: Cmd+… on macOS, Ctrl+Shift+… elsewhere.
@@ -676,6 +995,7 @@ impl TerminalTab {
         };
         let modes = self.panes[ix].snapshot.modes;
         if let Some(bytes) = encode_key(&key, mods, modes) {
+            self.record(&bytes);
             self.send_input(ix, bytes);
             cx.stop_propagation();
         }
@@ -759,6 +1079,9 @@ impl TerminalTab {
                 cx.notify();
             }
             MouseButton::Middle => self.paste(ix, cx),
+            MouseButton::Right if crate::terminal_settings::settings(cx).right_click_paste => {
+                self.paste(ix, cx)
+            }
             _ => {}
         }
     }
@@ -793,7 +1116,14 @@ impl TerminalTab {
 
     fn mouse_up(&mut self, ix: usize, ev: &MouseUpEvent, cx: &mut Context<Self>) {
         let pane = &mut self.panes[ix];
-        pane.selecting = false;
+        let was_selecting = std::mem::take(&mut pane.selecting);
+        if was_selecting
+            && ev.button == MouseButton::Left
+            && crate::terminal_settings::settings(cx).copy_on_select
+        {
+            self.copy(ix, cx);
+        }
+        let pane = &mut self.panes[ix];
         let modes = pane.snapshot.modes;
         if let Some(b) = pane.pressed.take()
             && let Some((row, col, _)) = self.cell_at(ix, ev.position)
@@ -866,7 +1196,13 @@ impl TerminalTab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
-        let p = palette(cx);
+        let mut p = palette(cx);
+        if let Some(fg) = self.colors.0 {
+            p.fg = fg;
+        }
+        if let Some(bg) = self.colors.1 {
+            p.term = bg;
+        }
         let multi = self.panes.len() > 1;
         let is_active = ix == self.active;
         let weak = cx.entity().downgrade();
@@ -883,8 +1219,35 @@ impl TerminalTab {
         let state = pane.state.clone();
         let search_pos = snap.search;
         let pane_empty = snap.lines.iter().all(|l| l.text.trim().is_empty());
+        // Keyword highlighting (MX-4); full-screen programs draw their own colors.
+        let highlights: Vec<(HighlightRule, Hsla)> = {
+            let s = crate::terminal_settings::settings(cx);
+            if s.highlight && !snap.modes.alt_screen {
+                s.highlight_rules
+                    .into_iter()
+                    .map(|r| {
+                        let c = p.ansi(r.color.ansi());
+                        (r, c)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        };
         let grid = canvas(
-            move |bounds, window, cx| prepaint(bounds, &snap, &geom, term_id, weak, &p, window, cx),
+            move |bounds, window, cx| {
+                prepaint(
+                    bounds,
+                    &snap,
+                    &geom,
+                    term_id,
+                    weak,
+                    &highlights,
+                    &p,
+                    window,
+                    cx,
+                )
+            },
             move |_bounds, frame, window, cx| paint(frame, focused, &p, window, cx),
         )
         .size_full();
@@ -1145,6 +1508,91 @@ impl TerminalTab {
             .into_any_element()
     }
 
+    /// "Paste N lines?" over the tab (MX-4).
+    fn render_paste_prompt(
+        &self,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui_kit::AnyElement> {
+        let (_, text) = self.pending_paste.as_ref()?;
+        let lines: Vec<&str> = text.lines().collect();
+        let preview: Vec<String> = lines
+            .iter()
+            .take(6)
+            .map(|l| l.chars().take(120).collect())
+            .collect();
+        let more = lines.len().saturating_sub(preview.len());
+        Some(
+            div()
+                .id("t-paste-scrim")
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(gpui_kit::black().opacity(0.25))
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(
+                    div()
+                        .id("t-paste")
+                        .w(px(480.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.))
+                        .p(px(16.))
+                        .bg(p.elev)
+                        .rounded(px(8.))
+                        .shadow(ui::shadow(p))
+                        .text_size(px(12.5))
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_size(px(14.))
+                                .child(format!("Paste {} lines?", lines.len().max(1))),
+                        )
+                        .child(
+                            div()
+                                .text_color(p.fg2)
+                                .child("Each line may run as a command as soon as it is pasted."),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .p(px(8.))
+                                .bg(p.term)
+                                .rounded(px(6.))
+                                .font_family(MONO)
+                                .text_size(px(11.5))
+                                .children(preview.into_iter().map(|l| div().truncate().child(l)))
+                                .when(more > 0, |d| {
+                                    d.child(div().text_color(p.fg3).child(format!("… {more} more")))
+                                }),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .justify_end()
+                                .gap(px(8.))
+                                .child(
+                                    ui::button("t-paste-cancel", "Cancel", Kind::Secondary, p)
+                                        .on_click(cx.listener(|this, _, w, cx| {
+                                            this.finish_paste(false, w, cx)
+                                        })),
+                                )
+                                .child(
+                                    ui::button("t-paste-ok", "Paste", Kind::Primary, p).on_click(
+                                        cx.listener(|this, _, w, cx| {
+                                            this.finish_paste(true, w, cx)
+                                        }),
+                                    ),
+                                ),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn banner(&self, p: &Palette, cx: &mut Context<Self>) -> Option<gpui_kit::AnyElement> {
         let (title, text, color, bg) = match &self.panes.get(self.active)?.state {
             PaneState::Exited(code) => (
@@ -1256,6 +1704,56 @@ fn color(c: TermColor, p: &Palette, fg: bool) -> Hsla {
     }
 }
 
+/// Split `runs` at the highlight spans and draw the spans' text in their color, only in
+/// runs drawn in the default foreground (`plain`); program colors are kept.
+fn recolor(
+    runs: Vec<TextRun>,
+    plain: &[bool],
+    spans: &[(std::ops::Range<usize>, Hsla)],
+) -> Vec<TextRun> {
+    let mut out = Vec::with_capacity(runs.len() + spans.len() * 2);
+    let mut start = 0;
+    for (k, run) in runs.into_iter().enumerate() {
+        let end = start + run.len;
+        if !plain.get(k).copied().unwrap_or(false) {
+            out.push(run);
+            start = end;
+            continue;
+        }
+        let mut at = start;
+        for (range, color) in spans {
+            if range.end <= at || range.start >= end {
+                continue;
+            }
+            let (s, e) = (range.start.max(at), range.end.min(end));
+            if s > at {
+                out.push(TextRun {
+                    len: s - at,
+                    ..run.clone()
+                });
+            }
+            out.push(TextRun {
+                len: e - s,
+                color: *color,
+                underline: run.underline.map(|u| UnderlineStyle {
+                    color: Some(*color),
+                    ..u
+                }),
+                ..run.clone()
+            });
+            at = e;
+        }
+        if end > at {
+            out.push(TextRun {
+                len: end - at,
+                ..run
+            });
+        }
+        start = end;
+    }
+    out
+}
+
 fn mono(family: &SharedString, bold: bool, italic: bool) -> Font {
     let mut f = font(family.clone());
     if bold {
@@ -1274,10 +1772,12 @@ fn prepaint(
     geom: &Rc<Cell<Geom>>,
     term: TermId,
     view: WeakEntity<TerminalTab>,
+    highlights: &[(HighlightRule, Hsla)],
     p: &Palette,
     window: &mut Window,
     cx: &mut gpui_kit::App,
 ) -> Frame {
+    let rules: Vec<HighlightRule> = highlights.iter().map(|(r, _)| r.clone()).collect();
     let metrics = crate::appearance::term_metrics(cx);
     let family = metrics.family;
     let line_h = metrics.line_height;
@@ -1314,7 +1814,9 @@ fn prepaint(
         let y = origin.y + px(row as f32 * line_h);
         let mut col = 0u16;
         let mut runs = Vec::with_capacity(line.runs.len());
+        let mut plain = Vec::with_capacity(line.runs.len());
         for r in &line.runs {
+            plain.push(r.fg == TermColor::Foreground && r.mark == Mark::None);
             let bg = match r.mark {
                 Mark::Selected => Some(p.sel),
                 Mark::Match => Some(p.staged),
@@ -1369,6 +1871,18 @@ fn prepaint(
             r.len = r.len.min(remaining);
             remaining -= r.len;
             trimmed.push(r);
+        }
+        if !rules.is_empty() {
+            let spans: Vec<(std::ops::Range<usize>, Hsla)> = highlight_spans(text, &rules)
+                .into_iter()
+                .filter_map(|(range, color)| {
+                    let c = highlights.iter().find(|(r, _)| r.color == color)?.1;
+                    Some((range, c))
+                })
+                .collect();
+            if !spans.is_empty() {
+                trimmed = recolor(trimmed, &plain, &spans);
+            }
         }
         let shaped = ts.shape_line(
             SharedString::from(text.to_owned()),
@@ -1477,13 +1991,20 @@ impl Render for TerminalTab {
             Some(PaneState::Blocked(_)) => (p.prod, "Blocked".to_owned()),
             None => (p.fg3, String::new()),
         };
+        let log_path = pane
+            .and_then(|p| p.log.as_ref())
+            .map(|l| l.display().to_string());
         let panes: Vec<gpui_kit::AnyElement> = (0..self.panes.len())
             .map(|i| self.render_pane(i, window, cx))
             .collect();
         let n = panes.len();
         let can_split = n < MAX_PANES;
         let banner = self.banner(&p, cx);
+        let paste_prompt = self.render_paste_prompt(&p, cx);
+        let macro_menu = self.render_macro_menu(&p, cx);
+        let macro_save = self.render_macro_save(&p, cx);
         div()
+            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -1561,6 +2082,52 @@ impl Render for TerminalTab {
                             cx.notify();
                         })),
                     )
+                    .child({
+                        let log = log_path.clone();
+                        ui::button(
+                            "t-log",
+                            if log.is_some() { "● Log" } else { "Log" },
+                            Kind::Ghost,
+                            &p,
+                        )
+                        .h(px(24.))
+                        .when(log.is_some(), |b| b.text_color(p.prod))
+                        .tooltip(move |window, cx| {
+                            let text = match &log {
+                                Some(path) => format!("Logging to {path} · click to stop"),
+                                None => "Log this session's output to a file (Settings → Terminal)"
+                                    .into(),
+                            };
+                            gpui_kit::component::tooltip::Tooltip::new(text).build(window, cx)
+                        })
+                        .on_click(cx.listener(|this, _, w, cx| {
+                            this.toggle_log(cx);
+                            this.refocus(w, cx);
+                        }))
+                    })
+                    .child(
+                        ui::button(
+                            "t-record",
+                            if self.recording.is_some() {
+                                "■ Stop"
+                            } else {
+                                "Record"
+                            },
+                            Kind::Ghost,
+                            &p,
+                        )
+                        .h(px(24.))
+                        .when(self.recording.is_some(), |b| b.text_color(p.prod))
+                        .on_click(cx.listener(|this, _, w, cx| this.toggle_recording(w, cx))),
+                    )
+                    .child(
+                        ui::button("t-macros", "Macros ▾", Kind::Ghost, &p)
+                            .h(px(24.))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.macro_menu = !this.macro_menu;
+                                cx.notify();
+                            })),
+                    )
                     .child(
                         ui::button("t-find", "Find", Kind::Ghost, &p)
                             .h(px(24.))
@@ -1568,6 +2135,7 @@ impl Render for TerminalTab {
                     ),
             )
             .when_some(banner, |d, b| d.child(b))
+            .when_some(macro_save, |d, b| d.child(b))
             .when(self.broadcast && n > 1, |d| {
                 d.child(
                     div()
@@ -1591,5 +2159,7 @@ impl Render for TerminalTab {
                     .bg(p.bd)
                     .children(panes),
             )
+            .when_some(macro_menu, |d, e| d.child(e))
+            .when_some(paste_prompt, |d, e| d.child(e))
     }
 }

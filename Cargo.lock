@@ -9529,6 +9529,7 @@ dependencies = [
 name = "switchyard-core"
 version = "0.1.8"
 dependencies = [
+ "chrono",
  "futures",
  "reqwest",
  "secrecy",

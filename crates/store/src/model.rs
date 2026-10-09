@@ -186,6 +186,121 @@ pub struct Host {
     /// app. Off by default.
     #[serde(default)]
     pub agent_access: bool,
+    /// Terminal macro (its id) typed into each new shell on this Host (MX-5).
+    #[serde(default)]
+    pub connect_macro: Option<String>,
+    /// Shown in the sidebar's Favorites (MX-6).
+    #[serde(default)]
+    pub favorite: bool,
+    /// Command typed into each new shell after login.
+    #[serde(default)]
+    pub startup_command: Option<String>,
+    /// Remote folder each new shell starts in (`cd` before the startup command).
+    #[serde(default)]
+    pub start_directory: Option<String>,
+    /// Environment variables sent with each shell (the server must accept them,
+    /// OpenSSH `AcceptEnv`).
+    #[serde(default)]
+    pub env: Vec<(String, String)>,
+    /// Terminal colors for this Host instead of the theme's.
+    #[serde(default)]
+    pub terminal_colors: Option<TerminalColors>,
+}
+
+/// Terminal colors of a Host (`#rrggbb`); `None` keeps the theme's.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalColors {
+    /// Text color.
+    #[serde(default)]
+    pub foreground: Option<String>,
+    /// Background color.
+    #[serde(default)]
+    pub background: Option<String>,
+}
+
+impl TerminalColors {
+    /// Whether neither color is set.
+    pub fn is_empty(&self) -> bool {
+        self.foreground.is_none() && self.background.is_none()
+    }
+}
+
+/// `#rrggbb` as RGB.
+pub fn parse_hex_color(s: &str) -> Option<(u8, u8, u8)> {
+    let h = s.trim().strip_prefix('#')?;
+    if h.len() != 6 || !h.is_ascii() {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
+    Some((byte(0)?, byte(2)?, byte(4)?))
+}
+
+/// Whether `name` can be an environment variable name (`[A-Za-z_][A-Za-z0-9_]*`).
+pub fn is_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Changes applied to several Hosts at once (sidebar bulk edit); `None` fields are left
+/// as they are.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostPatch {
+    /// Folder (`Some(None)` moves out of any folder).
+    pub folder: Option<Option<String>>,
+    /// Environment label.
+    pub environment: Option<EnvironmentLabel>,
+    /// Login user.
+    pub user: Option<String>,
+    /// Favorite.
+    pub favorite: Option<bool>,
+    /// Startup command (`Some(None)` clears it).
+    pub startup_command: Option<Option<String>>,
+    /// Start folder (`Some(None)` clears it).
+    pub start_directory: Option<Option<String>>,
+    /// Keepalive interval in seconds.
+    pub keepalive_secs: Option<u32>,
+}
+
+fn non_empty(v: &Option<String>) -> Option<String> {
+    v.as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
+impl HostPatch {
+    /// Whether it changes nothing.
+    pub fn is_empty(&self) -> bool {
+        self == &HostPatch::default()
+    }
+
+    /// Apply the set fields to `h`.
+    pub fn apply(&self, h: &mut Host) {
+        if let Some(f) = &self.folder {
+            h.folder = non_empty(f);
+        }
+        if let Some(e) = self.environment {
+            h.environment = e;
+        }
+        if let Some(u) = &self.user {
+            h.user = u.trim().to_owned();
+        }
+        if let Some(f) = self.favorite {
+            h.favorite = f;
+        }
+        if let Some(c) = &self.startup_command {
+            h.startup_command = non_empty(c);
+        }
+        if let Some(d) = &self.start_directory {
+            h.start_directory = non_empty(d);
+        }
+        if let Some(k) = self.keepalive_secs {
+            h.keepalive_secs = k;
+        }
+    }
 }
 
 /// Direction of a saved port forward.
@@ -321,6 +436,23 @@ impl Host {
             forward_x11: false,
             x11_display: None,
             agent_access: false,
+            connect_macro: None,
+            favorite: false,
+            startup_command: None,
+            start_directory: None,
+            env: Vec::new(),
+            terminal_colors: None,
+        }
+    }
+
+    /// A copy under a new id named "<name> copy", without a stored secret (the caller
+    /// copies it under the new id).
+    pub fn duplicate(&self) -> Host {
+        Host {
+            id: ProfileId::new(),
+            name: format!("{} copy", self.name),
+            secret: None,
+            ..self.clone()
         }
     }
 }
@@ -652,6 +784,21 @@ impl Profile {
                         "jump_hosts",
                         "A Host cannot jump through itself",
                     ));
+                }
+                if let Some((name, _)) = h.env.iter().find(|(n, _)| !is_env_name(n)) {
+                    return Err(ValidationError::new(
+                        "env",
+                        &format!("\"{name}\" is not a variable name (letters, digits, _)"),
+                    ));
+                }
+                if let Some(c) = &h.terminal_colors {
+                    for (field, v) in [("fg", &c.foreground), ("bg", &c.background)] {
+                        if let Some(v) = v
+                            && parse_hex_color(v).is_none()
+                        {
+                            return Err(ValidationError::new(field, "Use a #rrggbb color"));
+                        }
+                    }
                 }
             }
             Profile::Db(d) if d.engine == Engine::Snowflake => {
@@ -1169,5 +1316,82 @@ mod tests {
         let mut d = DbConnection::new("shop", Engine::Postgres);
         d.secret = Some(SecretRef::for_profile(&d.id, "password"));
         assert!(Profile::Db(d).without_secret().secret().is_none());
+    }
+
+    #[test]
+    fn host_session_settings_round_trip_and_validate() {
+        let mut h = Host::new("web", "10.0.0.1", "deploy");
+        h.favorite = true;
+        h.folder = Some("Prod".into());
+        h.startup_command = Some("tmux attach".into());
+        h.start_directory = Some("/srv/app".into());
+        h.env = vec![("LANG".into(), "C.UTF-8".into())];
+        h.terminal_colors = Some(TerminalColors {
+            foreground: Some("#e0e0e0".into()),
+            background: Some("#101820".into()),
+        });
+        let p = Profile::Host(h.clone());
+        let json = serde_json::to_string(&p).unwrap();
+        assert_eq!(serde_json::from_str::<Profile>(&json).unwrap(), p);
+        assert!(p.validate().is_ok());
+        // Older stores have none of the fields.
+        let mut v = serde_json::to_value(&p).unwrap();
+        for k in [
+            "favorite",
+            "startup_command",
+            "start_directory",
+            "env",
+            "terminal_colors",
+        ] {
+            v.as_object_mut().unwrap().remove(k);
+        }
+        let Profile::Host(o) = serde_json::from_value::<Profile>(v).unwrap() else {
+            panic!("not a host")
+        };
+        assert!(!o.favorite && o.env.is_empty() && o.terminal_colors.is_none());
+        let mut bad = h.clone();
+        bad.env.push(("1X".into(), "v".into()));
+        assert_eq!(Profile::Host(bad).validate().unwrap_err().field, "env");
+        let mut bad = h;
+        bad.terminal_colors = Some(TerminalColors {
+            foreground: Some("red".into()),
+            background: None,
+        });
+        assert_eq!(Profile::Host(bad).validate().unwrap_err().field, "fg");
+        assert_eq!(parse_hex_color("#0aFf10"), Some((10, 255, 16)));
+        assert!(is_env_name("_A1") && !is_env_name("") && !is_env_name("A-B"));
+    }
+
+    #[test]
+    fn host_patch_changes_only_what_is_set() {
+        let mut h = Host::new("web", "10.0.0.1", "deploy");
+        h.startup_command = Some("uptime".into());
+        let before = h.clone();
+        HostPatch::default().apply(&mut h);
+        assert_eq!(h, before);
+        let patch = HostPatch {
+            folder: Some(Some("  Staging ".into())),
+            environment: Some(EnvironmentLabel::Staging),
+            favorite: Some(true),
+            startup_command: Some(None),
+            ..HostPatch::default()
+        };
+        assert!(!patch.is_empty());
+        patch.apply(&mut h);
+        assert_eq!(h.folder.as_deref(), Some("Staging"));
+        assert_eq!(h.environment, EnvironmentLabel::Staging);
+        assert!(h.favorite);
+        assert_eq!(h.startup_command, None);
+        assert_eq!(h.user, "deploy");
+        HostPatch {
+            folder: Some(Some(" ".into())),
+            ..HostPatch::default()
+        }
+        .apply(&mut h);
+        assert_eq!(h.folder, None);
+        let d = h.duplicate();
+        assert_ne!(d.id, h.id);
+        assert_eq!(d.name, "web copy");
+        assert!(d.secret.is_none() && d.favorite);
     }
 }

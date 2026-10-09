@@ -16,7 +16,7 @@ use switchyard_core::db::Engine;
 use switchyard_core::drivers::{Component, ComponentStatus};
 use switchyard_core::store::{
     EnvironmentLabel, FileConnection, FileProtocol, FtpMode, FtpTls, Host, Profile, ProfileId,
-    SshAuth,
+    SshAuth, TerminalColors,
 };
 use switchyard_core::{Command, RequestId, RuntimeHandle};
 
@@ -161,6 +161,8 @@ pub struct ConnEditor {
     forward_agent: bool,
     /// A Host's X11 forwarding (`ssh -X`).
     forward_x11: bool,
+    /// A Host shown in the sidebar's Favorites.
+    favorite: bool,
 }
 
 impl EventEmitter<ConnEditorEvent> for ConnEditor {}
@@ -235,6 +237,7 @@ impl ConnEditor {
             forwards: Vec::new(),
             forward_agent: matches!(&existing, Some(Profile::Host(h)) if h.forward_agent),
             forward_x11: matches!(&existing, Some(Profile::Host(h)) if h.forward_x11),
+            favorite: matches!(&existing, Some(Profile::Host(h)) if h.favorite),
         };
         this.build_fields(existing.as_ref(), window, cx);
         this
@@ -348,6 +351,50 @@ impl ConnEditor {
                     "30",
                     false,
                 );
+                // Per-session settings (MX-6).
+                add(
+                    self,
+                    "folder",
+                    h.folder.as_deref().unwrap_or_default(),
+                    "None",
+                    false,
+                );
+                add(
+                    self,
+                    "startup_command",
+                    h.startup_command.as_deref().unwrap_or_default(),
+                    "tmux new -A -s main",
+                    false,
+                );
+                add(
+                    self,
+                    "start_directory",
+                    h.start_directory.as_deref().unwrap_or_default(),
+                    "Home",
+                    false,
+                );
+                add(
+                    self,
+                    "env",
+                    &format_env(&h.env),
+                    "LANG=C.UTF-8; TZ=UTC",
+                    false,
+                );
+                let colors = h.terminal_colors.clone().unwrap_or_default();
+                add(
+                    self,
+                    "fg",
+                    colors.foreground.as_deref().unwrap_or_default(),
+                    "Theme",
+                    false,
+                );
+                add(
+                    self,
+                    "bg",
+                    colors.background.as_deref().unwrap_or_default(),
+                    "Theme",
+                    false,
+                );
                 add(
                     self,
                     "x11_display",
@@ -398,6 +445,16 @@ impl ConnEditor {
                 self.selects.insert(
                     "jump",
                     sel(jumps, h.jump_hosts.first().map_or("", |j| j.0.as_str())),
+                );
+                let mut macros = vec![("None".to_owned(), String::new())];
+                macros.extend(
+                    crate::terminal_settings::macros(cx)
+                        .into_iter()
+                        .map(|m| (m.name, m.id)),
+                );
+                self.selects.insert(
+                    "connect_macro",
+                    sel(macros, h.connect_macro.as_deref().unwrap_or("")),
                 );
             }
             ConnKind::Sftp => {
@@ -631,6 +688,17 @@ impl ConnEditor {
                 h.forward_x11 = self.forward_x11;
                 h.x11_display = opt(self.value("x11_display", cx));
                 let jump = self.chosen("jump");
+                h.connect_macro = Some(self.chosen("connect_macro")).filter(|m| !m.is_empty());
+                h.favorite = self.favorite;
+                h.folder = opt(self.value("folder", cx));
+                h.startup_command = opt(self.value("startup_command", cx));
+                h.start_directory = opt(self.value("start_directory", cx));
+                h.env = parse_env(&self.value("env", cx)).map_err(|m| (Some("env"), m))?;
+                let colors = TerminalColors {
+                    foreground: opt(self.value("fg", cx)),
+                    background: opt(self.value("bg", cx)),
+                };
+                h.terminal_colors = (!colors.is_empty()).then_some(colors);
                 h.jump_hosts = if jump.is_empty() {
                     vec![]
                 } else {
@@ -1107,6 +1175,40 @@ impl ConnEditor {
                 }
                 v.push(Field::new("jump", "Jump host").span(4).mono());
                 v.push(Field::new("keepalive", "Keepalive (s)").span(2));
+                v.push(
+                    Field::new("folder", "Folder")
+                        .span(3)
+                        .hint("Groups Hosts in the sidebar"),
+                );
+                v.push(
+                    Field::new("connect_macro", "Macro on connect")
+                        .span(3)
+                        .hint("Typed into each new shell (record one in a terminal)"),
+                );
+                v.push(Field::new("start_directory", "Start folder").span(3).mono());
+                v.push(
+                    Field::new("startup_command", "Startup command")
+                        .span(3)
+                        .mono(),
+                );
+                v.push(
+                    Field::new("env", "Environment variables")
+                        .span(6)
+                        .mono()
+                        .hint("NAME=value; separated by semicolons. The server must accept them (AcceptEnv)"),
+                );
+                v.push(
+                    Field::new("fg", "Terminal text color")
+                        .span(3)
+                        .mono()
+                        .hint("#rrggbb"),
+                );
+                v.push(
+                    Field::new("bg", "Terminal background")
+                        .span(3)
+                        .mono()
+                        .hint("#rrggbb"),
+                );
                 if self.forward_x11 {
                     v.push(
                         Field::new("x11_display", "X display")
@@ -1323,6 +1425,18 @@ impl Render for ConnEditor {
                                 )
                                 .child(
                                     ui::checkbox(
+                                        "host-fav",
+                                        self.favorite,
+                                        "Show in Favorites at the top of the sidebar",
+                                        &p,
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.favorite = !this.favorite;
+                                        cx.notify();
+                                    })),
+                                )
+                                .child(
+                                    ui::checkbox(
                                         "fwd-x11",
                                         self.forward_x11,
                                         "Forward X11 (ssh -X): graphical programs on the Host open windows here",
@@ -1528,5 +1642,42 @@ impl Render for ConnEditor {
                         .on_click(cx.listener(|this, _, _, cx| this.save(cx))),
                     ),
             )
+    }
+}
+
+/// Environment variables as `NAME=value; NAME2=value2`.
+fn format_env(env: &[(String, String)]) -> String {
+    env.iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Parse [`format_env`]'s format; empty entries are skipped.
+fn parse_env(s: &str) -> Result<Vec<(String, String)>, String> {
+    s.split(';')
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .map(|e| match e.split_once('=') {
+            Some((k, v)) if !k.trim().is_empty() => Ok((k.trim().to_owned(), v.trim().to_owned())),
+            _ => Err(format!("\"{e}\" is not NAME=value")),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod env_tests {
+    use super::*;
+
+    #[test]
+    fn env_round_trips_through_the_field() {
+        let env = vec![
+            ("LANG".to_owned(), "C.UTF-8".to_owned()),
+            ("OPTS".to_owned(), "a=b c".to_owned()),
+        ];
+        assert_eq!(parse_env(&format_env(&env)).unwrap(), env);
+        assert!(parse_env(" ; ").unwrap().is_empty());
+        assert!(parse_env("NOVALUE").is_err());
+        assert!(parse_env("=x").is_err());
     }
 }

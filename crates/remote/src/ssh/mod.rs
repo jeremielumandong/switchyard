@@ -442,6 +442,17 @@ impl SshConn {
 
     /// An interactive shell with a PTY of `cols × rows`.
     pub async fn open_shell(&self, cols: u16, rows: u16) -> Result<Channel<Msg>, SshError> {
+        self.open_shell_with_env(cols, rows, &[]).await
+    }
+
+    /// [`Self::open_shell`] with environment variables sent before the shell starts. A
+    /// server that does not accept a variable (OpenSSH `AcceptEnv`) ignores it.
+    pub async fn open_shell_with_env(
+        &self,
+        cols: u16,
+        rows: u16,
+        env: &[(String, String)],
+    ) -> Result<Channel<Msg>, SshError> {
         let ch = self
             .handle()?
             .channel_open_session()
@@ -459,6 +470,10 @@ impl SshConn {
         .await
         .map_err(|e| SshError::Channel(e.to_string()))?;
         self.request_forwarding(&ch).await;
+        for (name, value) in env {
+            // No reply wanted: servers answer refused variables with a failure only.
+            let _ = ch.set_env(false, name.as_str(), value.as_str()).await;
+        }
         ch.request_shell(true)
             .await
             .map_err(|e| SshError::Channel(e.to_string()))?;
