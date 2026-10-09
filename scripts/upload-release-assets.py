@@ -20,7 +20,7 @@ import time
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-PLATFORMS = ['linux', 'windows']
+PLATFORMS = ['linux', 'windows', 'macos']
 
 
 def github_api(path, data=None, missing_ok=False):
@@ -125,6 +125,9 @@ def release_assets(root, platform, version):
     if platform == 'linux':
         package = dist / f'Switchyard-{version}-x86_64.AppImage'
         stable_name = 'Switchyard-linux-x86_64.AppImage'
+    elif platform == 'macos':
+        package = dist / f'Switchyard-{version}-macos-universal.dmg'
+        stable_name = 'Switchyard-macos-universal.dmg'
     else:
         package = dist / f'Switchyard-{version}-windows-x64-setup.exe'
         stable_name = 'Switchyard-windows-x64-setup.exe'
@@ -139,7 +142,7 @@ def release_assets(root, platform, version):
         raise ValueError(f'Checksum does not match {package.name}.')
 
     # A stable name for "latest" download links. Copying keeps the bytes (and the
-    # Authenticode signature) identical.
+    # Authenticode or notarization signature) identical.
     alias = dist / 'release-assets' / stable_name
     alias.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(package, alias)
@@ -192,7 +195,7 @@ def main():
         return
     release = upload(root, args.platform, version, repository, sha)
     message = (f'{args.platform.capitalize()} assets uploaded to draft v{version}: {release["html_url"]}\n'
-               'Publish the draft once both the Linux and Windows assets are attached.\n')
+               'Publish the draft once the Linux, Windows and macOS assets are attached.\n')
     print(message)
     if os.environ.get('GITHUB_STEP_SUMMARY'):
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:

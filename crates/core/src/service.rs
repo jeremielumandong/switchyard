@@ -1023,6 +1023,10 @@ impl Service {
                 });
             }
             Command::DetectComponents => self.emit_components().await,
+            Command::CheckForUpdates { manual } => {
+                let status = crate::update::check(&self.data_dir.join("updates")).await;
+                self.emit(Event::UpdateStatus { manual, status });
+            }
             Command::InstallComponent { id, accept_license } => {
                 let r = crate::components::install(
                     &self.components,

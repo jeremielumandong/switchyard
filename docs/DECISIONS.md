@@ -1047,3 +1047,37 @@ commands.
 - Output goes through the MCP scrubber like everything else, so host addresses and user
   names in it read `[redacted]`.
 
+
+## 2026-10-09 — Release readiness: macOS workflow, icon, log file, update checks
+
+- **macOS release workflow** (`release-macos.yml`) reuses `packaging/macos/build-macos.sh`
+  (universal binary via lipo, `.app`, DMG). Signing and notarization run only when all of
+  `APPLE_CERTIFICATE` (base64 .p12), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`,
+  `APPLE_ID`, `APPLE_TEAM_ID` and `APPLE_APP_PASSWORD` are set in the `macos-release`
+  environment; the certificate goes into a temporary keychain that is deleted afterwards.
+  Without them the DMG is ad-hoc signed, kept as a workflow artifact, and uploaded to the
+  draft release only when the run is started with `upload_unsigned`. Never exercised with a
+  real Developer ID (no macOS runner or certificate here).
+- **App icon**: SVG sources in `packaging/icons/` (a full one and a heavier one for 16-32 px);
+  `generate.py` (cairosvg + Pillow, dev-time only) renders the checked-in PNG set, ICO (DIB
+  entries below 256 px, PNG at 256) and ICNS (Apple's 824/1024 grid), so packaging needs no
+  image tools. Windows: `crates/app/build.rs` writes a `.res` with the ICO as group icon 1
+  (what GPUI loads) and passes it to `link.exe`; no resource-compiler crate. Linux: `app_id`
+  is now `switchyard`, matching `switchyard.desktop`. The X11 `_NET_WM_ICON`
+  (`WindowOptions::icon`) needs the `image` crate as a direct dependency; not added (Follow-ups).
+- **Log file**: `<data>/logs/switchyard.log`, 5 MB cap, 3 rotated copies, always on (release
+  and debug), written by a dedicated thread fed through a bounded channel so the UI thread
+  never touches the disk (lines are dropped if it falls behind). Own small writer instead of
+  `tracing-appender` (not on the approved list). Panics are logged before the default hook.
+- **Update checks (M6-4, scoped)**: the core asks
+  `api.github.com/repos/jeremielumandong/switchyard/releases/latest` with `reqwest` (approved
+  for driver downloads; reused here with the same rustls client as the Driver Manager),
+  ignores drafts and pre-releases, compares semver, and only links to `github.com` pages.
+  Startup checks run in release builds only, can be turned off in Settings → General
+  (`updates.check`) and are skipped with `SWITCHYARD_NO_UPDATE_CHECK`. When a minisign public
+  key is baked in at build time (`SWITCHYARD_UPDATE_PUBKEY`, a repository variable in the
+  release workflows) and the release has `<installer>.minisig`, the platform installer is
+  downloaded to `<data>/updates/<version>/` and kept only if its signature verifies; the
+  notice then opens it. Without a key (today) the app only notifies. Replacing the running
+  app in place is not done: the owner holds the signing key, and Linux defers to package
+  managers.

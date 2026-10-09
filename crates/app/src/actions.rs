@@ -198,6 +198,10 @@ pub enum CommandId {
     SwitchToDefault,
     /// Show the API workspace.
     SwitchToApi,
+    /// Ask GitHub Releases for a newer version (M6-4).
+    CheckForUpdates,
+    /// Open the folder holding the app's log files.
+    OpenLogFolder,
 }
 
 /// A palette entry.
@@ -359,6 +363,8 @@ pub fn palette_commands() -> Vec<PaletteCommand> {
         ),
         c(ShowWelcome, "Show Welcome", "View", "".into()),
         c(OpenComponents, "Open Component Sheet", "View", "".into()),
+        c(CheckForUpdates, "Check for Updates", "Help", "".into()),
+        c(OpenLogFolder, "Open Log Folder", "Help", "".into()),
     ]
 }
 
