@@ -1,0 +1,11 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&mysql_json(&name))
+---
+MySql Estimated
+#0 Union on <union1,2> est=- act=- loops=-
+  #1 Table scan on customers est=500 act=- loops=-
+    Filter: (`shop`.`customers`.`segment` = 'vip')
+  #2 Table scan on orders est=333 act=- loops=-
+    Filter: (`shop`.`orders`.`total` > 450.00)
+findings:

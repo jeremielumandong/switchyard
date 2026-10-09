@@ -1,0 +1,63 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "22575.12"
+    },
+    "ordering_operation": {
+      "using_filesort": true,
+      "cost_info": {
+        "sort_cost": "20290.00"
+      },
+      "table": {
+        "table_name": "d",
+        "access_type": "ALL",
+        "rows_examined_per_scan": 20290,
+        "rows_produced_per_join": 20290,
+        "filtered": "100.00",
+        "cost_info": {
+          "read_cost": "256.12",
+          "eval_cost": "2029.00",
+          "prefix_cost": "2285.12",
+          "data_read_per_join": "475K"
+        },
+        "used_columns": [
+          "k",
+          "n"
+        ],
+        "materialized_from_subquery": {
+          "using_temporary_table": true,
+          "dependent": false,
+          "cacheable": true,
+          "query_block": {
+            "select_id": 2,
+            "cost_info": {
+              "query_cost": "2053.25"
+            },
+            "grouping_operation": {
+              "using_temporary_table": true,
+              "using_filesort": false,
+              "table": {
+                "table_name": "plan_big",
+                "access_type": "ALL",
+                "rows_examined_per_scan": 20290,
+                "rows_produced_per_join": 20290,
+                "filtered": "100.00",
+                "cost_info": {
+                  "read_cost": "24.25",
+                  "eval_cost": "2029.00",
+                  "prefix_cost": "2053.25",
+                  "data_read_per_join": "1M"
+                },
+                "used_columns": [
+                  "id",
+                  "k"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

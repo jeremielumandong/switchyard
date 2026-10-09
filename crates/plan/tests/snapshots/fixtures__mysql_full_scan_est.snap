@@ -1,0 +1,9 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&mysql_json(&name))
+---
+MySql Estimated
+#0 Table scan on plan_big est=2029 act=- loops=-
+  Filter: (`shop`.`plan_big`.`v` = 'v77')
+findings:
+  High FullScan node=Some(0): Table scan on plan_big | Reads 20,290 rows. | Add an index on the filtered or joined columns, or narrow the query.

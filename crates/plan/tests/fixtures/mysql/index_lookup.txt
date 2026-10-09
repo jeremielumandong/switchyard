@@ -1,0 +1,2 @@
+-> Index lookup on orders using fk_orders_customer (customer_id=5)  (cost=0.35 rows=1) (actual time=0.0164..0.0187 rows=1 loops=1)
+

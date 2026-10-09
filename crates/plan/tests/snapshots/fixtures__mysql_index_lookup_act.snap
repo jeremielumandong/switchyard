@@ -1,0 +1,8 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&mysql_tree(&name))
+---
+MySql Actual
+#0 Index lookup on orders.fk_orders_customer est=1 act=1 loops=1 self=0.0ms (100%)
+  Index Cond: (customer_id=5)
+findings:

@@ -184,14 +184,17 @@ fn kind_name(k: ObjectKind) -> &'static str {
 const CONNECTION: &str = "Connection name from list_connections.";
 const HOST: &str = "SSH host name from list_connections (kind \"ssh\").";
 
-/// Tools that need a SQL engine's catalog or planner.
+/// Tools that need a SQL engine's catalog or planner. MongoDB has its collections
+/// (`list_tables`, `describe_table`) and estimated plans (`explain`).
 fn sql_only(conn: &DbConnection, tool: &str) -> Result<(), String> {
     match conn.engine {
         Engine::Redis => Err(format!(
             "{tool} is for SQL connections; {} is Redis: use redis_command",
             conn.name
         )),
-        e if e.is_document_store() && tool != "list_tables" && tool != "describe_table" => {
+        e if e.is_document_store()
+            && !matches!(tool, "list_tables" | "describe_table" | "explain") =>
+        {
             Err(format!(
                 "{tool} is for SQL connections; {} is MongoDB: use run_query with a read-only \
                  mongosh statement (db.coll.find(…), aggregate, countDocuments)",
@@ -509,7 +512,12 @@ impl Tools {
             return Err(err.into());
         }
         if !is_single_plannable(dialect_for(conn.engine), &sql) {
-            let err = "explain takes one SELECT, INSERT, UPDATE, DELETE or MERGE statement";
+            let err = if conn.engine.is_document_store() {
+                "explain takes one find(…) or aggregate([…]) statement that reads, without \
+                 .explain()"
+            } else {
+                "explain takes one SELECT, INSERT, UPDATE, DELETE or MERGE statement"
+            };
             self.record(session, format!("explain: {sql}"), Some(err.into()));
             return Err(err.into());
         }
@@ -727,7 +735,9 @@ impl ToolHost for Tools {
             ToolDef {
                 name: "explain",
                 description: "Estimated query plan as an operator tree, with hotspots and \
-                              missing-index suggestions. Does not run the statement.",
+                              missing-index suggestions. Does not run the statement. SQL \
+                              engines take one statement; MongoDB one find(…) or aggregate([…]) \
+                              that reads (queryPlanner).",
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -852,6 +862,7 @@ mod tests {
         );
         assert!(sql_only(&redis, "list_tables").is_err());
         assert!(sql_only(&mongo, "list_tables").is_ok());
+        assert!(sql_only(&mongo, "explain").is_ok());
         assert!(
             sql_only(&mongo, "workload")
                 .unwrap_err()

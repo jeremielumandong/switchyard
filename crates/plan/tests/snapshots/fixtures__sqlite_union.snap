@@ -1,0 +1,13 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&sqlite(&name))
+---
+Sqlite Estimated
+#0 COMPOUND QUERY est=- act=- loops=-
+  #1 LEFT-MOST SUBQUERY est=- act=- loops=-
+    #2 Table Scan on customers est=- act=- loops=-
+  #3 UNION USING TEMP B-TREE est=- act=- loops=-
+    #4 Table Scan on orders est=- act=- loops=-
+findings:
+  Low FullScan node=Some(2): Table Scan on customers | Reads every row (the plan has no row counts). | Add an index on the filtered or joined columns, or narrow the query.
+  Low FullScan node=Some(4): Table Scan on orders | Reads every row (the plan has no row counts). | Add an index on the filtered or joined columns, or narrow the query.

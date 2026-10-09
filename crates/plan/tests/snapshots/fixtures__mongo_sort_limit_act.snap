@@ -1,0 +1,12 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&mongo(&name))
+---
+MongoDb Actual
+#0 SORT est=- act=5 loops=- self=0.0ms (0%)
+  ! Sorts without an index (blocking sort in memory)
+  #1 COLLSCAN on orders est=- act=16000 loops=- self=2.0ms (20%)
+    Filter: {"total":{"$gte":100}}
+findings:
+  Medium FullScan node=Some(1): COLLSCAN on orders | Reads 20,000 rows. | db.orders.createIndex({ total: 1 })
+  Low TempStructure node=Some(0): SORT sorts without an index | Sorts without an index (blocking sort in memory). 16,000 rows. | An index whose order matches the sort lets rows come out already sorted.

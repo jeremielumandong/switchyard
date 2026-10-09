@@ -1,0 +1,15 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&mongo(&name))
+---
+MongoDb Estimated
+#0 $sort est=- act=- loops=-
+  ! Sorts without an index (blocking sort in memory)
+  #1 $project est=- act=- loops=-
+    #2 $unwind est=- act=- loops=-
+      #3 PROJECTION_SIMPLE est=- act=- loops=-
+        #4 COLLSCAN on orders est=- act=- loops=-
+          Filter: {"total":{"$gt":480}}
+findings:
+  Low FullScan node=Some(4): COLLSCAN on orders | Reads every row (the plan has no row counts). | db.orders.createIndex({ total: 1 })
+  Low TempStructure node=Some(0): $sort sorts without an index | Sorts without an index (blocking sort in memory). | An index whose order matches the sort lets rows come out already sorted.

@@ -94,6 +94,11 @@ fn projection(cols: &[String]) -> Option<String> {
 }
 
 impl Dialect for MongoDialect {
+    /// `explain` of a find or aggregate: `queryPlanner`, or `executionStats` (runs it).
+    fn plans(&self) -> super::PlanSupport {
+        super::PlanSupport::BOTH
+    }
+
     fn engine(&self) -> Engine {
         Engine::MongoDb
     }

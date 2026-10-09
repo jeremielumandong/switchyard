@@ -1,0 +1,12 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&mysql_json(&name))
+---
+MySql Estimated
+#0 Hash Join est=99421 act=- loops=-
+  #1 Index range scan on a.PRIMARY est=49 act=- loops=-
+    Filter: (`shop`.`a`.`id` < 50)
+  #2 Table scan on b est=2029 act=- loops=-
+    Filter: (`shop`.`b`.`k` = `shop`.`a`.`k`)
+findings:
+  Medium FullScan node=Some(2): Table scan on b | Reads 20,290 rows. | Add an index on the filtered or joined columns, or narrow the query.

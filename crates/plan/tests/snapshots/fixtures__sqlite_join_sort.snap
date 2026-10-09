@@ -1,0 +1,13 @@
+---
+source: crates/plan/tests/fixtures.rs
+expression: render(&sqlite(&name))
+---
+Sqlite Estimated
+#0 Query Plan est=- act=- loops=-
+  #1 Covering Index Scan on c.sqlite_autoindex_customers_1 est=- act=- loops=-
+  #2 Index Search on o.ix_orders_customer est=- act=- loops=-
+    Index Cond: (customer_id=?)
+  #3 Temp B-Tree est=- act=- loops=-
+    ! Sorts without an index (temp B-tree for ORDER BY)
+findings:
+  Low TempStructure node=Some(3): Temp B-Tree sorts without an index | Sorts without an index (temp B-tree for ORDER BY). | An index whose order matches the sort lets rows come out already sorted.

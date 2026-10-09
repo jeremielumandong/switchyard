@@ -59,6 +59,34 @@ pub struct ParamRef {
     pub end: usize,
 }
 
+/// Which query plans an engine can show: the UI offers Explain, Analyze and Optimize from
+/// this, and plan capture refuses the rest.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PlanSupport {
+    /// Estimated plans (nothing runs).
+    pub estimated: bool,
+    /// Actual plans (the statement runs; writes are rolled back).
+    pub actual: bool,
+}
+
+impl PlanSupport {
+    /// No plans.
+    pub const NONE: Self = Self {
+        estimated: false,
+        actual: false,
+    };
+    /// Estimated plans only.
+    pub const ESTIMATED: Self = Self {
+        estimated: true,
+        actual: false,
+    };
+    /// Estimated and actual plans.
+    pub const BOTH: Self = Self {
+        estimated: true,
+        actual: true,
+    };
+}
+
 /// Engine-specific SQL behavior. UI and core code go through this trait instead of
 /// branching on the engine.
 pub trait Dialect: Send + Sync {
@@ -214,6 +242,11 @@ pub trait Dialect: Send + Sync {
     /// Whether the engine can list an object's dependencies (DBX-5a).
     fn supports_dependencies(&self) -> bool {
         true
+    }
+
+    /// Query plans the engine can show (none by default).
+    fn plans(&self) -> PlanSupport {
+        PlanSupport::NONE
     }
 
     /// The unit containing byte `offset` (statement at cursor). Falls back to the closest
