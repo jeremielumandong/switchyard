@@ -4,15 +4,15 @@
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, FontWeight, Global,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div, px,
+    AnyElement, App, AppContext as _, Context, Entity, FontWeight, Global, InteractiveElement as _,
+    IntoElement, ParentElement as _, Render, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Window, div, px,
 };
+use switchyard_core::store::Macro;
 use switchyard_core::term_settings::{
     DEFAULT_LOG_TEMPLATE, HighlightColor, HighlightRule, LogFormat, TERMINAL_SETTINGS_KEY,
     TerminalSettings,
 };
-use switchyard_core::store::Macro;
 use switchyard_core::{Command, RuntimeHandle};
 
 use crate::theme::{MONO, Palette, palette};
@@ -129,7 +129,12 @@ impl TerminalSettingsView {
             highlight: s.highlight,
             words: HighlightColor::ALL
                 .into_iter()
-                .map(|c| (c, input(window, cx, &words_of(&s.highlight_rules, c), "none")))
+                .map(|c| {
+                    (
+                        c,
+                        input(window, cx, &words_of(&s.highlight_rules, c), "none"),
+                    )
+                })
                 .collect(),
             saved: false,
         }
@@ -426,7 +431,10 @@ mod tests {
             .into_iter()
             .map(|c| (c, words_of(&rules, c)))
             .collect();
-        assert_eq!(words[0].1, "error, errors, fail, failed, failure, fatal, denied");
+        assert_eq!(
+            words[0].1,
+            "error, errors, fail, failed, failure, fatal, denied"
+        );
         assert_eq!(rules_from(&words), rules);
         assert!(rules_from(&[(HighlightColor::Red, " , ,".into())]).is_empty());
     }

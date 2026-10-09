@@ -86,6 +86,8 @@ pub enum Overlay {
     History(Entity<InputState>),
     /// Hosts found in `~/.ssh/config`, to pick before importing.
     SshImport(SshImportPreview),
+    /// Bulk edit of Hosts (MX-6).
+    BulkEdit(Entity<crate::bulk_edit::BulkEditView>),
     /// Disconnect a connection whose tabs hold an open transaction or staged edits.
     ConfirmDisconnect {
         /// The connection.
@@ -263,6 +265,16 @@ impl Workspace {
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .child(view.clone()),
                     )
+                    .into_any_element(),
+            ),
+            Some(Overlay::BulkEdit(view)) => Some(
+                scrim(p, false)
+                    .key_context("Overlay")
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, w, cx| this.dismiss(w, cx)),
+                    )
+                    .child(view.clone())
                     .into_any_element(),
             ),
             Some(Overlay::ConnEditor(ed)) => Some(
@@ -575,11 +587,32 @@ impl Workspace {
                     ("delete", "Delete", true, "".into()),
                 ]
             }
-            CtxTarget::Profile(_) => vec![
-                ("open", "Open", false, "↵".into()),
-                ("edit", "Edit…", false, "".into()),
-                ("-", "", false, "".into()),
-                ("delete", "Delete", true, "".into()),
+            CtxTarget::Profile(id) => match self.profiles.host(id) {
+                // Hosts (MX-6): favorites, duplicate, folder and bulk edit.
+                Some(h) => vec![
+                    ("open", "Open terminal", false, "↵".into()),
+                    ("edit", "Edit…", false, "".into()),
+                    ("duplicate", "Duplicate", false, "".into()),
+                    if h.favorite {
+                        ("unfavorite", "Remove from Favorites", false, "".into())
+                    } else {
+                        ("favorite", "Add to Favorites", false, "".into())
+                    },
+                    ("bulk", "Folder and session settings…", false, "".into()),
+                    ("-", "", false, "".into()),
+                    ("delete", "Delete", true, "".into()),
+                ],
+                None => vec![
+                    ("open", "Open", false, "↵".into()),
+                    ("edit", "Edit…", false, "".into()),
+                    ("duplicate", "Duplicate", false, "".into()),
+                    ("-", "", false, "".into()),
+                    ("delete", "Delete", true, "".into()),
+                ],
+            },
+            CtxTarget::Folder(_) => vec![
+                ("bulk", "Edit Hosts in folder…", false, "".into()),
+                ("open_all", "Open all terminals", false, "".into()),
             ],
         };
         if matches!(&ctx.target, CtxTarget::Object(o) if o.kind == ObjectKind::Table) {
@@ -881,6 +914,38 @@ impl Workspace {
             }
             CtxTarget::Object(o) => self.object_action(action, o.clone(), window, cx),
             CtxTarget::Tab(ix) => self.close_tabs(action, *ix, cx),
+            CtxTarget::Folder(name) => {
+                let ids = self.folder_hosts(name);
+                match action {
+                    "bulk" => self.open_bulk_edit(&ids, format!("Folder {name}"), window, cx),
+                    "open_all" => {
+                        for id in ids {
+                            self.open_terminal(Some(id), cx);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            CtxTarget::Profile(id) if matches!(action, "favorite" | "unfavorite") => {
+                self.core.send(switchyard_core::Command::UpdateHosts {
+                    ids: vec![id.clone()],
+                    patch: switchyard_core::store::HostPatch {
+                        favorite: Some(action == "favorite"),
+                        ..Default::default()
+                    },
+                })
+            }
+            CtxTarget::Profile(id) if action == "duplicate" => self
+                .core
+                .send(switchyard_core::Command::DuplicateProfile { id: id.clone() }),
+            CtxTarget::Profile(id) if action == "bulk" => {
+                let name = self
+                    .profiles
+                    .host(id)
+                    .map(|h| h.name.clone())
+                    .unwrap_or_default();
+                self.open_bulk_edit(std::slice::from_ref(id), name, window, cx)
+            }
             CtxTarget::Profile(id) => match action {
                 "open" => self.open_profile(id, window, cx),
                 "edit" => {

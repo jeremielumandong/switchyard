@@ -1512,8 +1512,13 @@ impl Workspace {
             .and_then(|h| self.profiles.host(h))
             .map(|h| h.environment)
             .unwrap_or_default();
+        let colors = host
+            .as_ref()
+            .and_then(|h| self.profiles.host(h))
+            .and_then(|h| h.terminal_colors.clone());
         let core = self.core.clone();
-        let t = cx.new(|cx| TerminalTab::new(core, name, env, host, cx));
+        let t =
+            cx.new(|cx| TerminalTab::new(core, name, env, host, cx).with_colors(colors.as_ref()));
         self.tabs.push(Tab::Terminal(t));
         self.active = self.tabs.len() - 1;
         cx.notify();

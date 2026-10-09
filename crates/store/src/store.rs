@@ -690,7 +690,10 @@ impl Store {
 
     /// Delete a macro. Returns whether it existed.
     pub fn delete_macro(&mut self, id: &str) -> Result<bool> {
-        Ok(self.conn.execute("DELETE FROM macros WHERE id = ?1", [id])? > 0)
+        Ok(self
+            .conn
+            .execute("DELETE FROM macros WHERE id = ?1", [id])?
+            > 0)
     }
 
     // ---- favorites ----
@@ -1241,7 +1244,9 @@ mod tests {
         let path = dir.path().join("profiles.db");
         let mut s = Store::open(&path).unwrap();
         let input = b"cd /srv\r\x1b[A\x03\xff".to_vec();
-        let saved = s.save_macro(&Macro::new(" deploy ", input.clone())).unwrap();
+        let saved = s
+            .save_macro(&Macro::new(" deploy ", input.clone()))
+            .unwrap();
         assert!(!saved.id.is_empty());
         assert_eq!(saved.name, "deploy");
         s.save_macro(&Macro::new("a first", b"x".to_vec())).unwrap();

@@ -14,7 +14,7 @@ use switchyard_core::db::{
     CatalogChunk, Engine, IntrospectScope, ObjectDetail, ObjectInfo, ObjectKind, SchemaInfo, Value,
     dialect_for,
 };
-use switchyard_core::store::{DbConnection, Favorite, Profile, ProfileId, now_ms};
+use switchyard_core::store::{DbConnection, Favorite, Host, Profile, ProfileId, now_ms};
 use switchyard_core::{Command, SessionId};
 
 use crate::actions::{
@@ -1157,6 +1157,30 @@ struct ConnRow {
     action: ConnAction,
     /// Can be dragged to reorder among the rows of the same group (`group`).
     drag: Option<DraggedProfile>,
+    /// Extra left indent (rows inside a folder).
+    indent: f32,
+    /// A session folder's name (its group row; right click edits its Hosts).
+    folder: Option<String>,
+}
+
+/// Hosts split into those outside any folder (in order) and folders (sorted by name,
+/// ignoring case) with their Hosts in order.
+pub(crate) fn folder_groups<'a>(
+    hosts: impl Iterator<Item = &'a Host>,
+) -> (Vec<&'a Host>, Vec<(String, Vec<&'a Host>)>) {
+    let mut loose = Vec::new();
+    let mut folders: Vec<(String, Vec<&Host>)> = Vec::new();
+    for h in hosts {
+        match h.folder.as_deref().map(str::trim).filter(|f| !f.is_empty()) {
+            None => loose.push(h),
+            Some(f) => match folders.iter_mut().find(|(name, _)| name == f) {
+                Some((_, list)) => list.push(h),
+                None => folders.push((f.to_owned(), vec![h])),
+            },
+        }
+    }
+    folders.sort_by_key(|(name, _)| name.to_lowercase());
+    (loose, folders)
 }
 
 /// A profile being dragged to a new place in the sidebar.
@@ -1208,6 +1232,8 @@ pub enum CtxTarget {
     Profile(ProfileId),
     /// A tab in the tab strip (by index).
     Tab(usize),
+    /// A session folder of Hosts in the sidebar (MX-6).
+    Folder(String),
     /// A schema (its row or one of its folders) on a connection.
     Schema(ProfileId, String),
 }
@@ -1463,6 +1489,47 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Bulk edit `hosts` (MX-6) in a dialog.
+    pub(crate) fn open_bulk_edit(
+        &mut self,
+        ids: &[ProfileId],
+        title: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let hosts: Vec<Host> = ids
+            .iter()
+            .filter_map(|id| self.profiles.host(id).cloned())
+            .collect();
+        if hosts.is_empty() {
+            return;
+        }
+        let core = self.core.clone();
+        let view = cx.new(|cx| {
+            let refs: Vec<&Host> = hosts.iter().collect();
+            crate::bulk_edit::BulkEditView::new(core, title, &refs, window, cx)
+        });
+        cx.subscribe(
+            &view,
+            |this, _, _: &crate::bulk_edit::BulkEditClosed, cx| {
+                this.overlay = None;
+                cx.notify();
+            },
+        )
+        .detach();
+        self.overlay = Some(crate::overlays::Overlay::BulkEdit(view));
+        cx.notify();
+    }
+
+    /// The Hosts in folder `name`.
+    pub(crate) fn folder_hosts(&self, name: &str) -> Vec<ProfileId> {
+        self.profiles
+            .hosts()
+            .filter(|h| h.folder.as_deref().map(str::trim) == Some(name))
+            .map(|h| h.id.clone())
+            .collect()
+    }
+
     /// Move `dragged` onto `target` in the sidebar and save the order.
     fn reorder_profile(&mut self, dragged: &ProfileId, target: &ProfileId, cx: &mut Context<Self>) {
         let order: Vec<ProfileId> = self.profiles.all.iter().map(|p| p.id().clone()).collect();
@@ -1535,43 +1602,117 @@ impl Workspace {
                     group: group.to_owned(),
                     label,
                 }),
+                indent: 0.,
+                folder: None,
             }
         };
-        for h in self.profiles.hosts() {
-            let key = format!("h:{}", h.id);
-            let collapsed = self.collapsed.contains(&key);
-            let kids = self.profiles.host_children(&h.id);
-            let any_live = kids.iter().any(|k| live.contains(k.id()));
+        // Favorite Hosts first (MX-6): one click opens a terminal.
+        let favorites: Vec<&Host> = self.profiles.hosts().filter(|h| h.favorite).collect();
+        if !favorites.is_empty() {
+            let key = "g:fav".to_owned();
             rows.push(ConnRow {
                 is_group: true,
                 key: key.clone(),
                 badge: "",
-                label: h.name.clone().into(),
-                sub: h.address.clone().into(),
-                env: Some(h.environment),
-                live: any_live,
-                profile: Some(h.id.clone()),
+                label: "★ Favorites".into(),
+                sub: "".into(),
+                env: None,
+                live: false,
+                profile: None,
                 action: ConnAction::Toggle,
-                drag: Some(DraggedProfile {
-                    id: h.id.clone(),
-                    group: "hosts".into(),
-                    label: h.name.clone().into(),
-                }),
+                drag: None,
+                indent: 0.,
+                folder: None,
             });
-            if !collapsed {
-                rows.push(ConnRow {
+            if !self.collapsed.contains(&key) {
+                rows.extend(favorites.into_iter().map(|h| ConnRow {
                     is_group: false,
-                    key: format!("{key}:term"),
+                    key: format!("fav:{}", h.id),
                     badge: "SSH",
-                    label: "Terminal".into(),
-                    sub: "".into(),
-                    env: None,
+                    label: h.name.clone().into(),
+                    sub: h.address.clone().into(),
+                    env: Some(h.environment),
                     live: false,
                     profile: Some(h.id.clone()),
                     action: ConnAction::Terminal(Some(h.id.clone())),
                     drag: None,
+                    indent: 0.,
+                    folder: None,
+                }));
+            }
+        }
+        let (loose, folders) = folder_groups(self.profiles.hosts());
+        let mut groups: Vec<(Option<String>, Vec<&Host>)> = vec![(None, loose)];
+        groups.extend(folders.into_iter().map(|(f, hs)| (Some(f), hs)));
+        for (folder, hosts) in groups {
+            let indent = if let Some(name) = &folder {
+                let key = format!("fd:{name}");
+                let count = hosts.len();
+                rows.push(ConnRow {
+                    is_group: true,
+                    key: key.clone(),
+                    badge: "",
+                    label: format!("▣ {name}").into(),
+                    sub: count.to_string().into(),
+                    env: None,
+                    live: false,
+                    profile: None,
+                    action: ConnAction::Toggle,
+                    drag: None,
+                    indent: 0.,
+                    folder: Some(name.clone()),
                 });
-                rows.extend(kids.into_iter().map(|k| leaf(k, &key)));
+                if self.collapsed.contains(&key) {
+                    continue;
+                }
+                14.
+            } else {
+                0.
+            };
+            for h in hosts {
+                let key = format!("h:{}", h.id);
+                let collapsed = self.collapsed.contains(&key);
+                let kids = self.profiles.host_children(&h.id);
+                let any_live = kids.iter().any(|k| live.contains(k.id()));
+                rows.push(ConnRow {
+                    is_group: true,
+                    key: key.clone(),
+                    badge: "",
+                    label: h.name.clone().into(),
+                    sub: h.address.clone().into(),
+                    env: Some(h.environment),
+                    live: any_live,
+                    profile: Some(h.id.clone()),
+                    action: ConnAction::Toggle,
+                    drag: Some(DraggedProfile {
+                        id: h.id.clone(),
+                        group: "hosts".into(),
+                        label: h.name.clone().into(),
+                    }),
+                    indent,
+                    folder: None,
+                });
+                if !collapsed {
+                    rows.push(ConnRow {
+                        is_group: false,
+                        key: format!("{key}:term"),
+                        badge: "SSH",
+                        label: "Terminal".into(),
+                        sub: "".into(),
+                        env: None,
+                        live: false,
+                        profile: Some(h.id.clone()),
+                        action: ConnAction::Terminal(Some(h.id.clone())),
+                        drag: None,
+                        indent,
+                        folder: None,
+                    });
+                    rows.extend(kids.into_iter().map(|k| {
+                        let mut r = leaf(k, &key);
+                        r.indent = indent;
+                        r
+                    }));
+                }
             }
         }
         let direct = self.profiles.direct();
@@ -1587,6 +1728,8 @@ impl Workspace {
             profile: None,
             action: ConnAction::Toggle,
             drag: None,
+            indent: 0.,
+            folder: None,
         });
         if !self.collapsed.contains(&key) {
             rows.push(ConnRow {
@@ -1600,6 +1743,8 @@ impl Workspace {
                 profile: None,
                 action: ConnAction::Terminal(None),
                 drag: None,
+                indent: 0.,
+                folder: None,
             });
             rows.extend(direct.into_iter().map(|p| {
                 let mut r = leaf(p, "g:direct");
@@ -1619,6 +1764,8 @@ impl Workspace {
                 profile: None,
                 action: ConnAction::Files,
                 drag: None,
+                indent: 0.,
+                folder: None,
             });
         }
         rows
@@ -2001,6 +2148,7 @@ impl Workspace {
         let profile = r.profile.clone();
         let collapsed = self.collapsed.contains(&r.key);
         let ctx_profile = r.profile.clone();
+        let ctx_folder = r.folder.clone();
         let drop_line = p.acc;
         let drop_target = r.drag.clone();
         let over_target = r.drag.clone();
@@ -2030,7 +2178,7 @@ impl Workspace {
             .flex()
             .items_center()
             .gap(px(7.))
-            .pl(px(if r.is_group { 8. } else { 26. }))
+            .pl(px(r.indent + if r.is_group { 8. } else { 26. }))
             .pr(px(10.))
             .text_size(px(12.5))
             .when(active, |d| d.bg(p.sel))
@@ -2057,6 +2205,9 @@ impl Workspace {
                 cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
                     if let Some(id) = &ctx_profile {
                         this.ctx = Some(CtxMenu::new(ev.position, CtxTarget::Profile(id.clone())));
+                        cx.notify();
+                    } else if let Some(f) = &ctx_folder {
+                        this.ctx = Some(CtxMenu::new(ev.position, CtxTarget::Folder(f.clone())));
                         cx.notify();
                     }
                 }),
@@ -3492,6 +3643,43 @@ mod tests {
             names(move_to(&ids, &id("x"), &id("b"))),
             "abcd",
             "unknown id"
+        );
+    }
+}
+
+#[cfg(test)]
+mod folder_tests {
+    use super::*;
+
+    #[test]
+    fn hosts_group_by_folder() {
+        let mk = |name: &str, folder: Option<&str>| {
+            let mut h = Host::new(name, "a", "u");
+            h.folder = folder.map(str::to_owned);
+            h
+        };
+        let hosts = [
+            mk("a", None),
+            mk("b", Some("prod")),
+            mk("c", Some(" ")),
+            mk("d", Some("Dev")),
+            mk("e", Some("prod")),
+        ];
+        let (loose, folders) = folder_groups(hosts.iter());
+        assert_eq!(
+            loose.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(),
+            ["a", "c"]
+        );
+        let summary: Vec<(String, Vec<&str>)> = folders
+            .into_iter()
+            .map(|(f, hs)| (f, hs.iter().map(|h| h.name.as_str()).collect()))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                ("Dev".to_owned(), vec!["d"]),
+                ("prod".to_owned(), vec!["b", "e"])
+            ]
         );
     }
 }

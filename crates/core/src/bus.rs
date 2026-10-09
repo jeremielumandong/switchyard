@@ -13,8 +13,8 @@ use switchyard_drivers::{Component, InstallProgress};
 use switchyard_remote::FileEntry;
 use switchyard_remote::ssh::{HostKeyDecision, HostKeyRequest, InteractiveRequest, TunnelInfo};
 use switchyard_store::{
-    BufferState, DbConnection, Favorite, HistoryEntry, Host, Macro, Profile, ProfileId, Snippet,
-    Workspace,
+    BufferState, DbConnection, Favorite, HistoryEntry, Host, HostPatch, Macro, Profile, ProfileId,
+    Snippet, Workspace,
 };
 use switchyard_term::{TermSize, Terminal};
 
@@ -208,6 +208,18 @@ pub enum Command {
     DeleteProfile {
         /// Profile id.
         id: ProfileId,
+    },
+    /// Save a copy of a profile (and its stored secret) named "<name> copy".
+    DuplicateProfile {
+        /// Profile id.
+        id: ProfileId,
+    },
+    /// Apply one change to several Hosts (sidebar bulk edit).
+    UpdateHosts {
+        /// Hosts.
+        ids: Vec<ProfileId>,
+        /// Fields to change.
+        patch: HostPatch,
     },
     /// Persist sidebar order.
     ReorderProfiles {
