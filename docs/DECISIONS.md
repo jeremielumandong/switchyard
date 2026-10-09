@@ -1232,3 +1232,14 @@ commands.
 - **Tests:** three vsftpd containers (explicit TLS required on 2121, implicit TLS on 2990,
   plain FTP on 127.0.0.1:2120 on the host network so active mode can connect back), with a
   certificate from a throwaway CA made by `scripts/ftp-test-certs.sh`.
+- **Graceful TLS close (CI fix).** suppaftp's rustls stream sends `close_notify` and drops
+  the socket at once. A TLS 1.3 server's session tickets are still unread in an upload's
+  socket, so the kernel answers the close with RST and discards unsent data; on a slower
+  machine (GitHub runners, through docker-proxy) vsftpd then lost the tail of the upload and
+  replied `426 Failure reading network stream`. `remote::ftp_tls` plugs its own stream into
+  suppaftp's connector traits: shutdown sends `close_notify` + FIN, then reads until the
+  server closes (at most 10 s), and a second shutdown is a no-op. Reproduced locally by
+  pausing docker-proxy during an upload; `ftp_tls::tests` covers it without docker.
+- **Every resolved address.** `localhost` resolves to `::1` first on the runners, where the
+  host-network test server listens on 127.0.0.1 only; connecting now tries each address
+  until one answers (a TLS or protocol error stops the search).

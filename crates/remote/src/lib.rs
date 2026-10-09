@@ -3,6 +3,7 @@
 
 pub mod fs;
 pub mod ftp;
+mod ftp_tls;
 pub mod sftp;
 pub mod ssh;
 pub mod ssh_config;
