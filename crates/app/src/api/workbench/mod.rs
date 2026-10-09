@@ -4,6 +4,7 @@
 //! environments, history and runs are project-scoped in `WorkbenchStore`;
 //! resolved secret values remain transient and only redacted snapshots persist.
 
+mod ai_requests;
 mod assist;
 mod body_editor;
 mod collection_urls;
@@ -3377,7 +3378,10 @@ impl WorkbenchPanel {
                     sections,
                 },
             );
-            cx.emit(AskAgentRequested { prompt });
+            cx.emit(AskAgentRequested {
+                label: assist::asked_label(intent, None),
+                prompt,
+            });
             return;
         }
         if let Some(request) = self
@@ -3394,7 +3398,10 @@ impl WorkbenchPanel {
                     sections,
                 },
             );
-            cx.emit(AskAgentRequested { prompt });
+            cx.emit(AskAgentRequested {
+                label: assist::asked_label(intent, Some(request)),
+                prompt,
+            });
             return;
         }
         let compile = match self.compile_redacted_snapshot(cx) {
@@ -3426,7 +3433,10 @@ impl WorkbenchPanel {
                                 sections,
                             },
                         );
-                        cx.emit(AskAgentRequested { prompt });
+                        cx.emit(AskAgentRequested {
+                            label: assist::asked_label(intent, Some(&snapshot)),
+                            prompt,
+                        });
                     }
                     Err(error) => {
                         panel.navigation_notice =
@@ -5389,14 +5399,25 @@ fn preserve_saved_secret_refs(
 impl EventEmitter<PanelEvent> for WorkbenchPanel {}
 
 /// The Workbench asked for the agent's help with a request. The shell owns
-/// the trip to Chat: it opens the surface and fills the composer with
-/// `prompt`, which is built only from redacted snapshots — see [`assist`].
+/// the trip to the assistant: it opens the panel and asks `prompt`, which is
+/// built only from redacted snapshots — see [`assist`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AskAgentRequested {
+    /// What the transcript shows as asked ("Explain: GET /items").
+    pub label: String,
     pub prompt: String,
 }
 
 impl EventEmitter<AskAgentRequested> for WorkbenchPanel {}
+
+/// "Describe with AI": the shell opens the assistant ready for a description
+/// of a new request, with [`WorkbenchPanel::ai_context`] as its context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DescribeRequestRequested;
+
+impl EventEmitter<DescribeRequestRequested> for WorkbenchPanel {}
+
+pub use assist::{REQUEST_FORMAT, describe_prompt};
 
 /// Open the shared AgentOps secret vault from a request workflow.
 pub struct OpenVaultRequested;

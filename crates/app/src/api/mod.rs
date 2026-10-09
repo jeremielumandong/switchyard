@@ -4,4 +4,5 @@
 //! sending are in `switchyard-api`, run on the core runtime.
 
 pub mod compat;
+pub mod generated;
 pub mod workbench;

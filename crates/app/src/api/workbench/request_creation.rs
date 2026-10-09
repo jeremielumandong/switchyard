@@ -1,6 +1,5 @@
 //! Creating a collection member is independent of saving its later edits.
 use std::collections::VecDeque;
-use switchyard_api::HttpMethod;
 
 use super::*;
 
@@ -259,12 +258,12 @@ pub(super) fn new_request_definition(
         collection_id: collection,
         folder_id: folder,
         name,
-        method: HttpMethod::get(),
+        method: seed.method,
         url: seed.url,
         params: Vec::new(),
-        headers: Vec::new(),
+        headers: seed.headers,
         auth: AuthConfig::Inherit,
-        body: Body::None,
+        body: seed.body,
         variables: Vec::new(),
         scripts: Default::default(),
         settings: Default::default(),

@@ -156,6 +156,7 @@ async fn runs_follow_settings_and_connection_choice() {
         connection: Some(allowed.id.clone()),
         prompt: "why slow?".into(),
         resume: None,
+        databases: true,
     });
     let (kind, events) = collect(&mut rx, &h, 1).await;
     assert_eq!(kind, AgentKind::ClaudeCode);
@@ -177,6 +178,7 @@ async fn runs_follow_settings_and_connection_choice() {
         connection: Some(codex_conn.id.clone()),
         prompt: "q".into(),
         resume: None,
+        databases: true,
     });
     let (kind, events) = collect(&mut rx, &h, 2).await;
     assert_eq!(kind, AgentKind::Codex);
@@ -192,6 +194,7 @@ async fn runs_follow_settings_and_connection_choice() {
         connection: Some(closed.id.clone()),
         prompt: "q".into(),
         resume: None,
+        databases: true,
     });
     let (_, events) = collect(&mut rx, &h, 3).await;
     assert!(
@@ -209,6 +212,7 @@ async fn runs_follow_settings_and_connection_choice() {
         connection: Some(allowed.id.clone()),
         prompt: "q".into(),
         resume: None,
+        databases: true,
     });
     tokio::time::sleep(Duration::from_millis(500)).await;
     h.send(Command::CancelAgent { run: 4 });
@@ -232,6 +236,7 @@ async fn runs_follow_settings_and_connection_choice() {
         connection: Some(allowed.id.clone()),
         prompt: "q".into(),
         resume: None,
+        databases: true,
     });
     let (_, events) = collect(&mut rx, &h, 5).await;
     assert!(

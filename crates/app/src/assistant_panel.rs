@@ -2,6 +2,11 @@
 //! or the plan view) or to plan a new query, with its tool calls and answer streaming in.
 //! SQL in the answer becomes suggestion cards: open in an editor, or compare its plan.
 //! The panel only consumes normalized `AgentEvent`s; nothing here knows which CLI ran.
+//!
+//! Beside the API Workbench the panel keeps a second conversation about HTTP requests:
+//! the Workbench's Explain / Debug failure / Review buttons ask it, "Describe a request"
+//! writes a new one, and ```http blocks in the answer become cards that open in the
+//! Workbench. Those runs reach no database connection.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -16,6 +21,7 @@ use switchyard_core::agents::{AgentEvent, AgentKind, RunSummary};
 use switchyard_core::store::DbConnection;
 use switchyard_core::{Command, RuntimeHandle};
 
+use crate::api::generated::{GeneratedRequest, http_requests};
 use crate::theme::{MONO, palette};
 use crate::ui::{self, Kind};
 
@@ -164,6 +170,8 @@ pub enum Mode {
     Optimize,
     /// Write a new query from a description.
     PlanQuery,
+    /// Write a new HTTP request from a description (API Workbench).
+    DescribeRequest,
 }
 
 /// One entry of a turn's transcript.
@@ -186,7 +194,20 @@ struct Turn {
     items: Vec<Item>,
     done: Option<RunSummary>,
     suggestions: Vec<Suggestion>,
+    /// ```http blocks of an API answer.
+    requests: Vec<GeneratedRequest>,
     expanded_tools: bool,
+}
+
+/// The conversation the panel is not showing: the database one beside the API
+/// Workbench, and the other way round. Its run keeps streaming into it.
+#[derive(Default)]
+struct Parked {
+    run: Option<u64>,
+    session: Option<String>,
+    base_sql: Option<String>,
+    mode: Option<Mode>,
+    turns: Vec<Turn>,
 }
 
 /// What the panel asks the workspace to do.
@@ -214,6 +235,8 @@ pub enum AssistantPanelEvent {
     },
     /// Start the CLI interactively in a terminal tab.
     OpenTerminal(Option<AgentKind>),
+    /// Open a request the answer wrote as a new Workbench request.
+    OpenRequest(GeneratedRequest),
     /// Hide the panel.
     Close,
 }
@@ -237,6 +260,12 @@ pub struct AssistantPanel {
     scroll: ScrollHandle,
     /// Settings → Assistant (for the CLI's name).
     settings: switchyard_core::agent_run::AssistantSettings,
+    /// Showing the API Workbench conversation.
+    api: bool,
+    /// What a new request should fit ([`crate::api::workbench::WorkbenchPanel::ai_context`]).
+    api_context: Vec<(&'static str, String)>,
+    /// The other conversation.
+    parked: Parked,
     _subs: Vec<Subscription>,
 }
 
@@ -270,8 +299,67 @@ impl AssistantPanel {
             input,
             scroll: ScrollHandle::new(),
             settings: Default::default(),
+            api: false,
+            api_context: Vec::new(),
+            parked: Parked::default(),
             _subs: vec![sub],
         }
+    }
+
+    /// Show the API Workbench conversation (`true`) or the database one. The other one is
+    /// kept, run and all, for when the workspace switches back.
+    pub fn set_api(&mut self, api: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.api == api {
+            return;
+        }
+        self.swap_parked();
+        let placeholder = if api {
+            "Ask about this API, or describe a request to write"
+        } else {
+            "Ask a follow-up, or describe a query to write"
+        };
+        self.input
+            .update(cx, |i, cx| i.set_placeholder(placeholder, window, cx));
+        cx.notify();
+    }
+
+    /// Trade the shown conversation for the parked one.
+    fn swap_parked(&mut self) {
+        let p = &mut self.parked;
+        std::mem::swap(&mut self.run, &mut p.run);
+        std::mem::swap(&mut self.session, &mut p.session);
+        std::mem::swap(&mut self.base_sql, &mut p.base_sql);
+        std::mem::swap(&mut self.turns, &mut p.turns);
+        let mode = p.mode.replace(self.mode);
+        self.api = !self.api;
+        self.mode = mode.unwrap_or(Mode::Optimize);
+    }
+
+    /// The Workbench context a described request should fit (names only).
+    pub fn set_api_context(&mut self, context: Vec<(&'static str, String)>) {
+        self.api_context = context;
+    }
+
+    /// Ask an API Workbench question built by the Workbench (Explain, Debug failure, …).
+    /// `asked` is what the transcript shows.
+    pub fn ask_api(&mut self, asked: String, prompt: String, cx: &mut Context<Self>) {
+        if !self.api {
+            return;
+        }
+        self.mode = Mode::Optimize;
+        self.session = None;
+        self.start(ellipsis(&asked, 90), prompt, false, cx);
+    }
+
+    /// Switch to describing a new request; the next message describes it.
+    pub fn describe_request(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.api {
+            return;
+        }
+        self.mode = Mode::DescribeRequest;
+        self.session = None;
+        self.input.update(cx, |i, cx| i.focus(window, cx));
+        cx.notify();
     }
 
     /// The saved Settings → Assistant.
@@ -298,9 +386,8 @@ impl AssistantPanel {
 
     /// The CLI the next run will use, for the header.
     fn agent_label(&self, settings: &switchyard_core::agent_run::AssistantSettings) -> String {
-        let kind = self
-            .choice
-            .unwrap_or_else(|| settings.agent_for(self.connection.as_ref()));
+        let conn = self.connection.as_ref().filter(|_| !self.api);
+        let kind = self.choice.unwrap_or_else(|| settings.agent_for(conn));
         kind.display_name().to_owned()
     }
 
@@ -315,14 +402,20 @@ impl AssistantPanel {
             items: Vec::new(),
             done: None,
             suggestions: Vec::new(),
+            requests: Vec::new(),
             expanded_tools: false,
         });
         self.core.send(Command::RunAgent {
             run,
             agent: self.choice,
-            connection: self.connection.as_ref().map(|c| c.id.clone()),
+            connection: if self.api {
+                None
+            } else {
+                self.connection.as_ref().map(|c| c.id.clone())
+            },
             prompt,
             resume: if resume { self.session.clone() } else { None },
+            databases: !self.api,
         });
         self.scroll.scroll_to_bottom();
         cx.notify();
@@ -330,7 +423,7 @@ impl AssistantPanel {
 
     /// Optimize `sql` (from the editor, or the plan view with its findings).
     pub fn optimize(&mut self, sql: String, findings: Vec<String>, cx: &mut Context<Self>) {
-        let Some(conn) = self.connection.clone() else {
+        let Some(conn) = self.connection.clone().filter(|_| !self.api) else {
             return;
         };
         self.mode = Mode::Optimize;
@@ -358,6 +451,9 @@ impl AssistantPanel {
 
     /// Switch to planning a new query; the next message describes it.
     pub fn plan_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.api {
+            return;
+        }
         self.mode = Mode::PlanQuery;
         self.session = None;
         self.base_sql = None;
@@ -367,12 +463,17 @@ impl AssistantPanel {
 
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.input.read(cx).value().trim().to_owned();
-        if text.is_empty() || self.connection.is_none() {
+        if text.is_empty() || (self.connection.is_none() && !self.api) {
             return;
         }
         self.input.update(cx, |i, cx| i.set_value("", window, cx));
-        let conn = self.connection.clone();
         let continuing = self.session.is_some();
+        if self.api {
+            let prompt = api_prompt(self.mode, continuing, &text, &self.api_context);
+            self.start(text, prompt, continuing, cx);
+            return;
+        }
+        let conn = self.connection.clone();
         let prompt = match (self.mode, continuing, conn) {
             (_, true, _) => text.clone(),
             (Mode::PlanQuery, false, Some(c)) => format!(
@@ -382,7 +483,7 @@ impl AssistantPanel {
                 c.engine.display_name(),
                 c.name
             ),
-            (Mode::Optimize, false, Some(c)) => format!(
+            (Mode::Optimize | Mode::DescribeRequest, false, Some(c)) => format!(
                 "On the connection named \"{}\": {text}\n\n{SQL_RULES}",
                 c.name
             ),
@@ -404,11 +505,31 @@ impl AssistantPanel {
         self.turns.clear();
         self.session = None;
         self.base_sql = None;
+        if self.mode == Mode::DescribeRequest {
+            self.mode = Mode::Optimize;
+        }
         cx.notify();
     }
 
     /// An event of one of this panel's runs; others are ignored.
     pub fn on_agent_event(
+        &mut self,
+        run: u64,
+        agent: AgentKind,
+        event: AgentEvent,
+        cx: &mut Context<Self>,
+    ) {
+        if self.parked.run == Some(run) {
+            // The other conversation's run: it streams into that transcript.
+            self.swap_parked();
+            self.apply_agent_event(run, agent, event, cx);
+            self.swap_parked();
+            return;
+        }
+        self.apply_agent_event(run, agent, event, cx);
+    }
+
+    fn apply_agent_event(
         &mut self,
         run: u64,
         agent: AgentKind,
@@ -478,7 +599,11 @@ impl AssistantPanel {
                 } else {
                     streamed
                 };
-                turn.suggestions = suggestions(&answer);
+                if self.api {
+                    turn.requests = http_requests(&answer);
+                } else {
+                    turn.suggestions = suggestions(&answer);
+                }
                 turn.done = Some(summary);
             }
             AgentEvent::Error(e) => turn.items.push(Item::Error(e)),
@@ -521,6 +646,33 @@ impl AssistantPanel {
     }
 }
 
+/// The prompt for a message typed beside the API Workbench: a follow-up goes as typed, a
+/// description becomes [`crate::api::workbench::describe_prompt`], and anything else is a
+/// question about HTTP that may answer with requests.
+fn api_prompt(
+    mode: Mode,
+    continuing: bool,
+    text: &str,
+    context: &[(&'static str, String)],
+) -> String {
+    match (mode, continuing) {
+        (_, true) => text.to_owned(),
+        (Mode::DescribeRequest, false) => crate::api::workbench::describe_prompt(text, context),
+        (_, false) => {
+            let mut prompt = format!(
+                "A question from my Switchyard API Workbench (an HTTP client): {text}\n\n{}\n",
+                crate::api::workbench::REQUEST_FORMAT
+            );
+            for (heading, body) in context {
+                if !body.trim().is_empty() {
+                    prompt.push_str(&format!("\n### {heading}\n{}\n", body.trim()));
+                }
+            }
+            prompt
+        }
+    }
+}
+
 fn ellipsis(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_owned()
@@ -534,11 +686,14 @@ impl Render for AssistantPanel {
         let p = palette(cx);
         let agent = self.agent_label(&self.settings);
         let running = self.run.is_some();
-        let conn_name = self
-            .connection
-            .as_ref()
-            .map(|c| c.name.clone())
-            .unwrap_or_else(|| "No connection".into());
+        let conn_name = if self.api {
+            "API Workbench".to_owned()
+        } else {
+            self.connection
+                .as_ref()
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| "No connection".into())
+        };
         let header = div()
             .flex_none()
             .flex()
@@ -630,19 +785,36 @@ impl Render for AssistantPanel {
             .gap(px(6.))
             .px(px(12.))
             .py(px(8.))
-            .child(
-                ui::button(
-                    "asst-plan",
-                    "Plan a query",
-                    if self.mode == Mode::PlanQuery {
-                        Kind::Primary
-                    } else {
-                        Kind::Secondary
-                    },
-                    &p,
+            .when(!self.api, |d| {
+                d.child(
+                    ui::button(
+                        "asst-plan",
+                        "Plan a query",
+                        if self.mode == Mode::PlanQuery {
+                            Kind::Primary
+                        } else {
+                            Kind::Secondary
+                        },
+                        &p,
+                    )
+                    .on_click(cx.listener(|this, _, w, cx| this.plan_query(w, cx))),
                 )
-                .on_click(cx.listener(|this, _, w, cx| this.plan_query(w, cx))),
-            )
+            })
+            .when(self.api, |d| {
+                d.child(
+                    ui::button(
+                        "asst-describe",
+                        "Describe a request",
+                        if self.mode == Mode::DescribeRequest {
+                            Kind::Primary
+                        } else {
+                            Kind::Secondary
+                        },
+                        &p,
+                    )
+                    .on_click(cx.listener(|this, _, w, cx| this.describe_request(w, cx))),
+                )
+            })
             .child(
                 ui::button("asst-new", "New conversation", Kind::Ghost, &p)
                     .on_click(cx.listener(|this, _, _, cx| this.reset(cx))),
@@ -671,9 +843,11 @@ impl Render for AssistantPanel {
                 div()
                     .text_size(px(12.))
                     .text_color(p.fg2)
-                    .child(match self.mode {
-                        Mode::Optimize => "Click Optimize in the editor or the plan view, or ask about this connection below. The assistant uses your coding CLI with Switchyard's read-only tools; it cannot change the database.",
-                        Mode::PlanQuery => "Describe the query you need below; the assistant looks at the schema and plans it.",
+                    .child(match (self.api, self.mode) {
+                        (true, Mode::DescribeRequest) => "Describe the request you need below (\u{201c}create a customer with a random email\u{201d}); the assistant writes it to fit this collection, and you open it in the Workbench.",
+                        (true, _) => "Use Explain, Debug failure or Review in the Workbench, or ask about an API below. Requests in the answer open as new Workbench requests; nothing is sent for you. Secrets stay redacted and no database is reachable.",
+                        (false, Mode::PlanQuery) => "Describe the query you need below; the assistant looks at the schema and plans it.",
+                        (false, _) => "Click Optimize in the editor or the plan view, or ask about this connection below. The assistant uses your coding CLI with Switchyard's read-only tools; it cannot change the database.",
                     }),
             );
         }
@@ -862,6 +1036,58 @@ impl Render for AssistantPanel {
                         ),
                 );
             }
+            for (ri, r) in turn.requests.iter().enumerate() {
+                let open = r.clone();
+                let body_note = if r.body.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · body {} chars", r.body.chars().count())
+                };
+                t = t.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .p(px(8.))
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(p.bd2)
+                        .child(
+                            div()
+                                .text_size(px(10.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(p.fg3)
+                                .child(format!("REQUEST · {}", r.name)),
+                        )
+                        .child(
+                            div()
+                                .font_family(MONO)
+                                .text_size(px(11.5))
+                                .whitespace_normal()
+                                .child(format!("{} {}", r.method.as_str(), r.url)),
+                        )
+                        .child(div().text_size(px(11.)).text_color(p.fg3).child(format!(
+                            "{} header{}{body_note}",
+                            r.headers.len(),
+                            if r.headers.len() == 1 { "" } else { "s" }
+                        )))
+                        .child(
+                            div().flex().gap(px(6.)).child(
+                                ui::button(
+                                    SharedString::from(format!("asst-req-{ti}-{ri}")),
+                                    "Open in Workbench",
+                                    Kind::Secondary,
+                                    &p,
+                                )
+                                .on_click(cx.listener(
+                                    move |_, _, _, cx| {
+                                        cx.emit(AssistantPanelEvent::OpenRequest(open.clone()))
+                                    },
+                                )),
+                            ),
+                        ),
+                );
+            }
             if last && running {
                 t = t.child(
                     div()
@@ -872,7 +1098,7 @@ impl Render for AssistantPanel {
             }
             transcript = transcript.child(t);
         }
-        let can_ask = self.connection.is_some();
+        let can_ask = self.api || self.connection.is_some();
         let footer = div()
             .flex_none()
             .flex()
@@ -919,6 +1145,22 @@ impl Render for AssistantPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api_prompts_follow_the_mode() {
+        let context = [("Collection", "Shop API".to_owned())];
+        let described = api_prompt(Mode::DescribeRequest, false, "list orders", &context);
+        assert!(described.contains("to do this: list orders"));
+        assert!(described.contains("### Collection\nShop API"));
+        let asked = api_prompt(Mode::Optimize, false, "what is ETag?", &context);
+        assert!(asked.contains("what is ETag?"));
+        assert!(asked.contains(crate::api::workbench::REQUEST_FORMAT));
+        assert!(!asked.contains("SQL"));
+        assert_eq!(
+            api_prompt(Mode::DescribeRequest, true, "make it a PUT", &context),
+            "make it a PUT"
+        );
+    }
 
     #[test]
     fn splits_prose_and_code() {
