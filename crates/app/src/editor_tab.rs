@@ -198,6 +198,27 @@ impl EditorTab {
         &self.fs == fs && self.path == path
     }
 
+    /// Whether a plain save can start now (the file loaded and no save or conflict is
+    /// pending). A conflict needs the banner's Overwrite / Reload choice first.
+    pub fn can_save(&self) -> bool {
+        matches!(self.state, State::Ready | State::SaveFailed(_))
+    }
+
+    /// Save the file (not over a server-side change).
+    pub fn save_file(&mut self, cx: &mut Context<Self>) {
+        self.save(false, cx);
+    }
+
+    /// After [`Self::save_file`]: `None` while the save runs, `Some(true)` once the file
+    /// is saved, `Some(false)` if it failed or hit a conflict.
+    pub fn save_outcome(&self) -> Option<bool> {
+        match self.state {
+            State::Saving | State::Loading => None,
+            State::Ready => Some(!self.dirty),
+            State::Conflict | State::SaveFailed(_) | State::LoadFailed(_) => Some(false),
+        }
+    }
+
     fn save(&mut self, force: bool, cx: &mut Context<Self>) {
         if matches!(
             self.state,
@@ -445,8 +466,8 @@ impl Render for EditorTab {
                         .bordered(false)
                         .appearance(false)
                         .h(relative(1.))
-                        .font_family(MONO)
-                        .text_size(px(12.5)),
+                        .font_family(crate::appearance::editor_font_family(cx))
+                        .text_size(crate::appearance::editor_font_size(cx)),
                 ),
             )
             .children(terminal)

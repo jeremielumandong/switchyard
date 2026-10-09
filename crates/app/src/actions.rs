@@ -60,6 +60,9 @@ actions!(
         MenuOpenSub,
         MenuCloseSub,
         MenuConfirm,
+        ZoomIn,
+        ZoomOut,
+        ZoomReset,
     ]
 );
 
@@ -126,6 +129,12 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("f12", PeekTable, Some("SqlTab > Input")),
         KeyBinding::new("escape", ClosePeek, Some("Peek > Input")),
         KeyBinding::new("escape", ClosePeek, Some("Peek")),
+        // Text size: Cmd/Ctrl with = (or +), - and 0, like a browser.
+        KeyBinding::new("secondary-=", ZoomIn, None),
+        KeyBinding::new("secondary-+", ZoomIn, None),
+        KeyBinding::new("secondary-shift-=", ZoomIn, None),
+        KeyBinding::new("secondary--", ZoomOut, None),
+        KeyBinding::new("secondary-0", ZoomReset, None),
     ]);
     // Inside a terminal, Ctrl+letter belongs to the shell (readline, vim, …). App
     // shortcuts there use Cmd on macOS and Ctrl+Shift elsewhere.
@@ -198,6 +207,12 @@ pub enum CommandId {
     SwitchToDefault,
     /// Show the API workspace.
     SwitchToApi,
+    /// Larger text (UI, editors, grid, terminal).
+    ZoomIn,
+    /// Smaller text.
+    ZoomOut,
+    /// Text size back to 100 %.
+    ResetZoom,
 }
 
 /// A palette entry.
@@ -304,6 +319,9 @@ pub fn palette_commands() -> Vec<PaletteCommand> {
         c(SplitRight, "Split Right", "View", k("⌘\\", "Ctrl+\\")),
         c(SplitDown, "Split Down", "View", k("⇧⌘\\", "Ctrl+Shift+\\")),
         c(Unsplit, "Close Split", "View", "".into()),
+        c(ZoomIn, "Zoom In", "View", k("⌘=", "Ctrl+=")),
+        c(ZoomOut, "Zoom Out", "View", k("⌘-", "Ctrl+-")),
+        c(ResetZoom, "Reset Zoom", "View", k("⌘0", "Ctrl+0")),
         c(
             NewTerminal,
             "New Terminal",
@@ -455,6 +473,9 @@ mod tests {
             ToggleSidebar,
             SplitRight,
             SplitDown,
+            ZoomIn,
+            ZoomOut,
+            ResetZoom,
         ];
         let cmds = palette_commands();
         for id in bound {

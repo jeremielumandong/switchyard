@@ -104,8 +104,8 @@ impl Render for DdlTab {
                         .bordered(false)
                         .appearance(false)
                         .h(relative(1.))
-                        .font_family(MONO)
-                        .text_size(px(12.5)),
+                        .font_family(crate::appearance::editor_font_family(cx))
+                        .text_size(crate::appearance::editor_font_size(cx)),
                 ),
             )
     }

@@ -16,10 +16,10 @@ use std::sync::Arc;
 
 use std::rc::Rc;
 
+use gpui_kit::component::Sizable as _;
 use gpui_kit::component::input::{Editor, EditorState, InputEvent};
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::table::{DataTable, TableEvent, TableState};
-use gpui_kit::component::{Sizable as _, Size};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FontWeight,
@@ -602,7 +602,7 @@ impl ObjectTab {
 
     fn add_grid(&mut self, cols: Arc<[ColumnMeta]>, window: &mut Window, cx: &mut Context<Self>) {
         self.data.columns = cols.iter().map(|c| c.name.clone()).collect();
-        let mut delegate = GridDelegate::new(cols.clone());
+        let mut delegate = GridDelegate::new(cols.clone()).zoomed(crate::appearance::zoom(cx));
         let weak = cx.entity().downgrade();
         delegate.set_server_sort(
             self.pager.sort_indexes(&cols),
@@ -1262,7 +1262,7 @@ impl ObjectTab {
                         .bordered(false)
                         .stripe(false)
                         .scrollbar_visible(true, true)
-                        .with_size(Size::XSmall),
+                        .with_size(crate::appearance::table_size(cx)),
                 )
             }))
             .into_any_element()

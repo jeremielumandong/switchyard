@@ -134,10 +134,18 @@ impl GridDelegate {
         self.deleted = rows.into_iter().collect();
     }
 
-    /// Width of the pinned row-number column; it grows with the row count.
-    pub fn row_number_width(&self) -> Pixels {
+    /// Width of the pinned row-number column; it grows with the row count and the zoom.
+    pub fn row_number_width(&self, cx: &App) -> Pixels {
         let digits = thousands(self.data.len().max(1) as u64).len() as f32;
-        px((digits * 7.5 + 22.0).max(44.0))
+        px((digits * 7.5 + 22.0).max(44.0) * crate::appearance::zoom(cx))
+    }
+
+    /// Scale the initial column widths for zoom `z` (call before building the table).
+    pub fn zoomed(mut self, z: f32) -> Self {
+        for w in &mut self.widths {
+            *w = px((f32::from(*w) * z).round());
+        }
+        self
     }
 
     /// The data column shown at table column `table_col` (0 is the row-number column).
@@ -800,10 +808,10 @@ impl TableDelegate for GridDelegate {
         self.visible_rows() + self.inserted
     }
 
-    fn column(&self, col_ix: usize, _cx: &App) -> Column {
+    fn column(&self, col_ix: usize, cx: &App) -> Column {
         if col_ix == 0 {
             return Column::new("#", "#")
-                .width(self.row_number_width())
+                .width(self.row_number_width(cx))
                 .text_right()
                 .fixed_left()
                 .resizable(false)
@@ -872,7 +880,7 @@ impl TableDelegate for GridDelegate {
                 .items_center()
                 .justify_end()
                 .text_color(p.fg2)
-                .text_size(px(11.5))
+                .text_size(crate::appearance::scaled(11.5, cx))
                 .font_weight(FontWeight::SEMIBOLD)
                 .child("#");
         }
@@ -899,7 +907,7 @@ impl TableDelegate for GridDelegate {
             .child(
                 div()
                     .text_color(p.fg2)
-                    .text_size(px(11.5))
+                    .text_size(crate::appearance::scaled(11.5, cx))
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(meta.name.clone()),
             )
@@ -907,7 +915,7 @@ impl TableDelegate for GridDelegate {
                 d.child(
                     div()
                         .font_family(MONO)
-                        .text_size(px(10.))
+                        .text_size(crate::appearance::scaled(10., cx))
                         .text_color(p.acc)
                         .child("FK"),
                 )
@@ -915,14 +923,14 @@ impl TableDelegate for GridDelegate {
             .child(
                 div()
                     .font_family(MONO)
-                    .text_size(px(10.))
+                    .text_size(crate::appearance::scaled(10., cx))
                     .text_color(p.fg3)
                     .child(meta.type_name.clone()),
             )
             .children(sort_mark.map(|m| {
                 div()
                     .font_family(MONO)
-                    .text_size(px(10.5))
+                    .text_size(crate::appearance::scaled(10.5, cx))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(p.acc)
                     .child(m)
@@ -941,8 +949,8 @@ impl TableDelegate for GridDelegate {
             .size_full()
             .flex()
             .items_center()
-            .font_family(MONO)
-            .text_size(px(12.))
+            .font_family(crate::appearance::editor_font_family(cx))
+            .text_size(crate::appearance::scaled(12., cx))
             .whitespace_nowrap()
             .overflow_hidden();
         let data_row = self.data_row(row_ix);

@@ -30,8 +30,6 @@ use crate::app_state::next_id;
 use crate::theme::{MONO, Palette, palette};
 use crate::ui::{self, Kind};
 
-const FONT_SIZE: f32 = 12.5;
-const LINE_HEIGHT: f32 = 19.;
 const PAD_X: f32 = 12.;
 const PAD_Y: f32 = 10.;
 const MAX_PANES: usize = 4;
@@ -41,6 +39,8 @@ const MAX_PANES: usize = 4;
 struct Geom {
     origin: Point<Pixels>,
     cell_w: f32,
+    /// Line height (follows the editor font size and zoom).
+    line_h: f32,
     cols: u16,
     rows: u16,
 }
@@ -561,7 +561,7 @@ impl TerminalTab {
         let x = f32::from(pos.x - g.origin.x);
         let y = f32::from(pos.y - g.origin.y);
         let col = (x / g.cell_w).floor().clamp(0., f32::from(g.cols - 1));
-        let row = (y / LINE_HEIGHT)
+        let row = (y / g.line_h.max(1.))
             .floor()
             .clamp(0., f32::from(g.rows.max(1) - 1));
         let right = x - col * g.cell_w > g.cell_w / 2.;
@@ -780,7 +780,15 @@ impl TerminalTab {
     fn wheel(&mut self, ix: usize, ev: &ScrollWheelEvent, cx: &mut Context<Self>) {
         let lines = match ev.delta {
             ScrollDelta::Lines(p) => p.y.round() as i32,
-            ScrollDelta::Pixels(p) => (f32::from(p.y) / LINE_HEIGHT).round() as i32,
+            ScrollDelta::Pixels(p) => {
+                let line_h = self
+                    .panes
+                    .get(ix)
+                    .map(|pane| pane.geom.get().line_h)
+                    .filter(|h| *h > 0.)
+                    .unwrap_or(19.);
+                (f32::from(p.y) / line_h).round() as i32
+            }
         };
         if lines == 0 {
             return;
@@ -966,7 +974,7 @@ impl TerminalTab {
                     .top(px(PAD_Y))
                     .left(px(PAD_X))
                     .font_family(MONO)
-                    .text_size(px(FONT_SIZE))
+                    .text_size(crate::appearance::editor_font_size(cx))
                     .text_color(p.fg3)
                     .child("Connecting…"),
             ),
@@ -1186,6 +1194,7 @@ impl Focusable for TerminalTab {
 struct Frame {
     origin: Point<Pixels>,
     cell_w: f32,
+    line_h: f32,
     bgs: Vec<(Bounds<Pixels>, Hsla)>,
     lines: Vec<(Point<Pixels>, gpui_kit::ShapedLine)>,
     cursor: Option<(Bounds<Pixels>, CursorShape, Option<gpui_kit::ShapedLine>)>,
@@ -1213,8 +1222,8 @@ fn color(c: TermColor, p: &Palette, fg: bool) -> Hsla {
     }
 }
 
-fn mono(bold: bool, italic: bool) -> Font {
-    let mut f = font(MONO);
+fn mono(family: &SharedString, bold: bool, italic: bool) -> Font {
+    let mut f = font(family.clone());
     if bold {
         f.weight = FontWeight::SEMIBOLD;
     }
@@ -1235,22 +1244,26 @@ fn prepaint(
     window: &mut Window,
     cx: &mut gpui_kit::App,
 ) -> Frame {
-    let font_size = px(FONT_SIZE);
+    let metrics = crate::appearance::term_metrics(cx);
+    let family = metrics.family;
+    let line_h = metrics.line_height;
+    let font_size = px(metrics.font_size);
     let ts = window.text_system().clone();
-    let font_id = ts.resolve_font(&mono(false, false));
+    let font_id = ts.resolve_font(&mono(&family, false, false));
     let cell_w = ts
         .advance(font_id, font_size, 'm')
         .map(|s| f32::from(s.width))
-        .unwrap_or(FONT_SIZE * 0.6)
+        .unwrap_or(metrics.font_size * 0.6)
         .max(1.);
     let origin = point(bounds.origin.x + px(PAD_X), bounds.origin.y + px(PAD_Y));
     let avail_w = f32::from(bounds.size.width) - 2. * PAD_X;
     let avail_h = f32::from(bounds.size.height) - 2. * PAD_Y;
     let cols = ((avail_w / cell_w).floor() as u16).max(2);
-    let rows = ((avail_h / LINE_HEIGHT).floor() as u16).max(1);
+    let rows = ((avail_h / line_h).floor() as u16).max(1);
     geom.set(Geom {
         origin,
         cell_w,
+        line_h,
         cols,
         rows,
     });
@@ -1264,7 +1277,7 @@ fn prepaint(
     let mut bgs = Vec::new();
     let mut lines = Vec::new();
     for (row, line) in snap.lines.iter().enumerate() {
-        let y = origin.y + px(row as f32 * LINE_HEIGHT);
+        let y = origin.y + px(row as f32 * line_h);
         let mut col = 0u16;
         let mut runs = Vec::with_capacity(line.runs.len());
         for r in &line.runs {
@@ -1282,7 +1295,7 @@ fn prepaint(
                 bgs.push((
                     Bounds::new(
                         point(origin.x + px(f32::from(col) * cell_w), y),
-                        size(px(f32::from(r.cells) * cell_w), px(LINE_HEIGHT)),
+                        size(px(f32::from(r.cells) * cell_w), px(line_h)),
                     ),
                     bg,
                 ));
@@ -1293,7 +1306,7 @@ fn prepaint(
             }
             runs.push(TextRun {
                 len: r.len,
-                font: mono(r.attrs.bold, r.attrs.italic),
+                font: mono(&family, r.attrs.bold, r.attrs.italic),
                 color: fg,
                 background_color: None,
                 underline: r.attrs.underline.then(|| UnderlineStyle {
@@ -1336,9 +1349,9 @@ fn prepaint(
         let b = Bounds::new(
             point(
                 origin.x + px(f32::from(c.col) * cell_w),
-                origin.y + px(f32::from(c.row) * LINE_HEIGHT),
+                origin.y + px(f32::from(c.row) * line_h),
             ),
-            size(px(cell_w), px(LINE_HEIGHT)),
+            size(px(cell_w), px(line_h)),
         );
         // The glyph under a block cursor is redrawn in the background color.
         let glyph = snap
@@ -1354,7 +1367,7 @@ fn prepaint(
                     font_size,
                     &[TextRun {
                         len,
-                        font: mono(false, false),
+                        font: mono(&family, false, false),
                         color: p.term,
                         background_color: None,
                         underline: None,
@@ -1369,6 +1382,7 @@ fn prepaint(
     Frame {
         origin,
         cell_w,
+        line_h,
         bgs,
         lines,
         cursor,
@@ -1381,7 +1395,7 @@ fn paint(frame: Frame, focused: bool, _p: &Palette, window: &mut Window, cx: &mu
     for (b, c) in &frame.bgs {
         window.paint_quad(fill(*b, *c));
     }
-    let lh = px(LINE_HEIGHT);
+    let lh = px(frame.line_h);
     for (origin, line) in &frame.lines {
         let _ = line.paint(*origin, lh, TextAlign::Left, None, window, cx);
     }
