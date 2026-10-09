@@ -264,5 +264,8 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
   `LD_LIBRARY_PATH=<ic> SWITCHYARD_ORACLE_CLIENT=<ic> cargo test -p switchyard-db --test oracle -- --ignored`.
 - Docker Hub rate-limits anonymous pulls in CI and cloud sessions; gvenzl's Oracle images are
   also on ghcr.io.
+- gpui-base's window text selection copies on the `Root` context's Ctrl/Cmd+C, but a focused
+  `Input` takes that key first and copies its own (empty) selection. A view whose selectable
+  text sits beside an input focuses itself on mouse down (`assistant_panel.rs` transcript).
 - Pageant comes with russh on Windows (`AgentClient::connect_pageant`, `pageant` crate,
   Apache-2.0); no feature flag.
