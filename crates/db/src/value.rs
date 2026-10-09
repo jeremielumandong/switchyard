@@ -24,6 +24,8 @@ pub enum Engine {
     MongoDb,
     /// A local SQLite database file.
     Sqlite,
+    /// Redis (key-value; browsed with [`crate::redis`], not SQL).
+    Redis,
 }
 
 impl Engine {
@@ -38,6 +40,7 @@ impl Engine {
             Engine::MySql => "MySQL",
             Engine::MongoDb => "MongoDB",
             Engine::Sqlite => "SQLite",
+            Engine::Redis => "Redis",
         }
     }
 
@@ -52,6 +55,7 @@ impl Engine {
             Engine::MySql => "MY",
             Engine::MongoDb => "MG",
             Engine::Sqlite => "SL",
+            Engine::Redis => "RD",
         }
     }
 
@@ -66,6 +70,7 @@ impl Engine {
             Engine::MongoDb => 27017,
             // A file, not a server.
             Engine::Sqlite => 0,
+            Engine::Redis => 6379,
         }
     }
 
@@ -74,7 +79,10 @@ impl Engine {
     /// statements are single operations (multi-document transactions need a replica set
     /// and are not offered yet).
     pub fn supports_transactions(self) -> bool {
-        !matches!(self, Engine::D1 | Engine::Snowflake | Engine::MongoDb)
+        !matches!(
+            self,
+            Engine::D1 | Engine::Snowflake | Engine::MongoDb | Engine::Redis
+        )
     }
 
     /// Whether statements are documents and shell calls rather than SQL (MongoDB): SQL
@@ -93,6 +101,13 @@ impl Engine {
     /// than reaching a server.
     pub fn is_local_file(self) -> bool {
         matches!(self, Engine::Sqlite)
+    }
+
+    /// Whether the engine opens the query editor and schema explorer (SQL engines, and
+    /// MongoDB with its shell syntax). Key-value stores (Redis) open a key browser instead
+    /// and have no catalog, plans or activity views.
+    pub fn is_sql(self) -> bool {
+        !matches!(self, Engine::Redis)
     }
 }
 

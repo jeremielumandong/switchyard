@@ -23,6 +23,7 @@ pub mod mssql;
 pub mod mysql;
 pub mod oracle;
 pub mod pg;
+pub mod redis;
 pub mod snowflake;
 pub mod sqlite;
 pub mod stream;

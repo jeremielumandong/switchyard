@@ -362,6 +362,8 @@ pub fn dialect_for(engine: Engine) -> &'static dyn Dialect {
         Engine::Oracle => &oracle::OracleDialect,
         Engine::MySql => &mysql::MySqlDialect,
         Engine::MongoDb => &mongo::MongoDialect,
+        // Redis has no SQL; nothing parses statements for it, so any dialect will do.
+        Engine::Redis => &postgres::PostgresDialect,
     }
 }
 

@@ -76,6 +76,8 @@ chacha20poly1305 = "0.11"
 # TLS / net
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-native-certs = "0.8"
+# Async TLS for the Redis client; already in the tree through tokio-postgres-rustls.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 
 # platform
 directories = "6"

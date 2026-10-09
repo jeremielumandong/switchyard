@@ -64,6 +64,8 @@ pub enum Tab {
     Activity(Entity<crate::activity_tab::ActivityTab>),
     /// ER diagram of a schema (DBX-5d).
     Er(Entity<crate::er_tab::ErTab>),
+    /// Redis key browser and console.
+    Redis(Entity<crate::redis_tab::RedisTab>),
 }
 
 /// The root view.
@@ -316,6 +318,11 @@ impl Workspace {
     fn on_event(&mut self, ev: Event, window: &mut Window, cx: &mut Context<Self>) {
         match ev {
             Event::Pong { .. } => {}
+            ev @ (Event::RedisOpened { .. }
+            | Event::RedisKeys { .. }
+            | Event::RedisKey { .. }
+            | Event::RedisEdited { .. }
+            | Event::RedisReply { .. }) => self.on_redis_event(ev, window, cx),
             Event::TerminalOpened {
                 term,
                 terminal,
@@ -417,7 +424,13 @@ impl Workspace {
             Event::Profiles(list) => {
                 self.profiles = Profiles { all: list };
                 self.profiles_loaded = true;
-                let dbs: Vec<_> = self.profiles.dbs().cloned().collect();
+                // The schema explorer lists SQL databases; Redis opens its own browser.
+                let dbs: Vec<_> = self
+                    .profiles
+                    .dbs()
+                    .filter(|d| d.engine.is_sql())
+                    .cloned()
+                    .collect();
                 let core = self.core.clone();
                 self.explorer.set_profiles(dbs, &core);
                 let hosts = self.host_list();
@@ -1066,6 +1079,7 @@ impl Workspace {
             Some(Tab::Object(o)) => o.clone().into_any_element(),
             Some(Tab::Activity(a)) => a.clone().into_any_element(),
             Some(Tab::Er(e)) => e.clone().into_any_element(),
+            Some(Tab::Redis(r)) => r.clone().into_any_element(),
             _ => self.render_welcome(p, cx),
         }
     }
@@ -1210,6 +1224,9 @@ impl Workspace {
         let Some(conn) = self.profiles.db(id).cloned() else {
             return;
         };
+        if !conn.engine.is_sql() {
+            return self.open_redis(conn, window, cx);
+        }
         // An active tab without a connection adopts it.
         if let Some(t) = self.active_sql()
             && t.read(cx).connection.is_none()
@@ -1273,7 +1290,7 @@ impl Workspace {
         let conn = self
             .active_sql()
             .and_then(|t| t.read(cx).connection.clone())
-            .or_else(|| self.profiles.dbs().next().cloned());
+            .or_else(|| self.profiles.dbs().find(|d| d.engine.is_sql()).cloned());
         let n = self
             .tabs
             .iter()
@@ -1393,6 +1410,9 @@ impl Workspace {
         }
         if let Tab::Er(e) = &self.tabs[ix] {
             e.update(cx, |e, _| e.shutdown());
+        }
+        if let Tab::Redis(r) = &self.tabs[ix] {
+            r.update(cx, |r, _| r.shutdown());
         }
         if let Tab::Editor(e) = &self.tabs[ix] {
             let e = e.entity_id();
@@ -2341,6 +2361,15 @@ impl Workspace {
                     e.badge().into(),
                     e.title.clone(),
                     Some(e.connection.environment),
+                    false,
+                )
+            }
+            Tab::Redis(r) => {
+                let c = &r.read(cx).connection;
+                (
+                    "RD".into(),
+                    c.name.clone().into(),
+                    Some(c.environment),
                     false,
                 )
             }

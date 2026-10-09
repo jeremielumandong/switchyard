@@ -89,6 +89,11 @@ impl ConnKind {
         matches!(self, ConnKind::Db(_))
     }
 
+    /// A database with a query editor (history of statements and coding agents apply).
+    fn is_sql(self) -> bool {
+        matches!(self, ConnKind::Db(e) if e.is_sql())
+    }
+
     fn sub(self) -> &'static str {
         match self {
             ConnKind::Db(e) => e.display_name(),
@@ -476,7 +481,7 @@ impl ConnEditor {
                 );
             }
         }
-        if self.kind.is_db() {
+        if self.kind.is_sql() {
             let chosen = match existing {
                 Some(Profile::Db(d)) => d.assistant_agent.clone().unwrap_or_default(),
                 _ => String::new(),
@@ -587,7 +592,7 @@ impl ConnEditor {
                 d.environment = self.env;
                 d.read_only = self.read_only;
                 d.history_enabled = self.history;
-                d.agent_access = self.agents;
+                d.agent_access = self.agents && engine.is_sql();
                 d.assistant_agent = Some(self.chosen("assistant")).filter(|a| !a.is_empty());
                 Profile::Db(d)
             }
@@ -1132,7 +1137,7 @@ impl Render for ConnEditor {
         };
         let layout = self.layout(cx);
         let fields: Vec<AnyElement> = layout.iter().map(|f| self.field(f, &p, cx)).collect();
-        let assistant_field = (self.kind.is_db() && self.agents).then(|| {
+        let assistant_field = (self.kind.is_sql() && self.agents).then(|| {
             div()
                 .w(px(300.))
                 .child(self.field(&Field::new("assistant", "Assistant CLI"), &p, cx))
@@ -1412,7 +1417,11 @@ impl Render for ConnEditor {
                                     ui::checkbox(
                                         "history",
                                         self.history,
-                                        "Record executed statements in query history",
+                                        if self.kind == ConnKind::Db(Engine::Redis) {
+                                            "Record console commands in query history (passwords are masked)"
+                                        } else {
+                                            "Record executed statements in query history"
+                                        },
                                         &p,
                                     )
                                     .on_click(cx.listener(
@@ -1423,7 +1432,7 @@ impl Render for ConnEditor {
                                     )),
                                 )
                             })
-                            .when(is_db, |d| {
+                            .when(self.kind.is_sql(), |d| {
                                 let label = if self.env.is_production() {
                                     "Allow coding agents (Production: read-only queries and \
                                      estimated plans; every call is recorded in history)"

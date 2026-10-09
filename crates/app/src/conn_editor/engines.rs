@@ -11,6 +11,7 @@ mod mongo;
 mod mysql;
 mod oracle;
 mod postgres;
+mod redis;
 mod snowflake;
 mod sqlite;
 mod sqlserver;
@@ -25,6 +26,7 @@ pub(super) const ALL: &[Engine] = &[
     Engine::D1,
     Engine::Sqlite,
     Engine::MongoDb,
+    Engine::Redis,
 ];
 
 /// The form for `engine`.
@@ -38,6 +40,7 @@ pub(super) fn form(engine: Engine) -> &'static dyn EngineForm {
         Engine::D1 => &d1::D1,
         Engine::Sqlite => &sqlite::Sqlite,
         Engine::MongoDb => &mongo::Mongo,
+        Engine::Redis => &redis::Redis,
     }
 }
 

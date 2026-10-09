@@ -46,6 +46,7 @@ use crate::runtime::EventSender;
 mod activity;
 pub mod agent;
 mod assistant;
+mod redis;
 
 /// The SSH layer's description of a saved forward.
 fn forward_spec(f: &switchyard_store::PortForward) -> ForwardSpec {
@@ -185,6 +186,8 @@ pub struct Service {
     vault: Option<Arc<VaultStore>>,
     drivers: HashMap<Engine, Arc<dyn Driver>>,
     sessions: Mutex<HashMap<SessionId, Arc<SessionSlot>>>,
+    /// Open Redis key browsers.
+    redis: Mutex<HashMap<SessionId, Arc<redis::RedisSlot>>>,
     /// Running assistant runs, to cancel.
     agent_runs: Mutex<HashMap<crate::bus::AgentRunId, switchyard_agents::CancelHandle>>,
     /// Data directory (assistant session tokens).
@@ -308,6 +311,7 @@ impl Service {
             vault,
             drivers,
             sessions: Mutex::default(),
+            redis: Mutex::default(),
             agent_runs: Mutex::default(),
             data_dir: config.data_dir.clone(),
             swy: config.swy.clone(),
@@ -612,7 +616,42 @@ impl Service {
             }
             Command::CloseSession { session } => {
                 lock(&self.sessions).remove(&session);
+                lock(&self.redis).remove(&session);
             }
+            Command::RedisOpen {
+                session,
+                connection,
+            } => {
+                let result = self.redis_open(session, connection).await;
+                self.emit(Event::RedisOpened {
+                    session,
+                    result: result.map_err(|e| e.to_string()),
+                });
+            }
+            Command::RedisScan {
+                session,
+                request,
+                pattern,
+                cursor,
+            } => self.redis_scan(session, request, pattern, cursor).await,
+            Command::RedisLoad {
+                session,
+                request,
+                key,
+            } => self.redis_load(session, request, key).await,
+            Command::RedisEdit {
+                session,
+                request,
+                key,
+                edit,
+                create,
+            } => self.redis_edit(session, request, key, edit, create).await,
+            Command::RedisRun {
+                session,
+                request,
+                line,
+                confirmed,
+            } => self.redis_run(session, request, line, confirmed).await,
             Command::SetSessionContext {
                 session,
                 request,
@@ -1634,6 +1673,17 @@ impl Service {
         c: DbConnection,
         secret: Option<SecretString>,
     ) -> Result<String> {
+        if c.engine == Engine::Redis {
+            let started = Instant::now();
+            let (client, tunnel) = self.redis_connect(&c, secret).await?;
+            let ms = started.elapsed().as_millis();
+            let via = if tunnel.is_some() { " via tunnel" } else { "" };
+            return Ok(format!(
+                "Connected · {} · db {} · {ms} ms{via}",
+                client.server_version(),
+                client.db()
+            ));
+        }
         let driver = self.driver(c.engine)?;
         let cfg = self.db_config(&c, secret).await?;
         let tunnel = self.endpoint(&c).await?;

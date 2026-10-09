@@ -981,3 +981,27 @@ The user asked for SQLite next to the server engines. Choices:
 - Inline editing works: result columns carry an id hashed from their origin table
   (`sqlite3_column_table_name`). Agent `run_query` begins a transaction that is rolled back,
   like SQL Server. Attached databases appear as schemas.
+
+## 2026-10-08 — Redis: own RESP client, `Engine::Redis`, key browser instead of SQL
+
+The user asked for Redis next to SQLite and MongoDB.
+
+- **No Redis crate.** RESP2 is small (five reply types), so `db::redis` speaks it directly over
+  tokio, with rustls for TLS through `tokio-rustls` 0.26 (already in the lockfile through
+  `tokio-postgres-rustls`; now a direct workspace dependency). This avoids an unapproved
+  dependency and its own TLS stack and keeps tunnels and certificate handling the same as the
+  other drivers. Replies are size- and depth-limited.
+- **Profiles reuse `DbConnection`** with `Engine::Redis`: host, port, ACL user, password
+  (keychain), Database = logical db number, `ssl_mode`, `via_host`, environment, read-only.
+  `Engine::is_sql()` is false, so the explorer, snippets, activity, plans and agent tools skip
+  it; validation refuses agent access (MCP tools are SQL-only).
+- **TLS:** Redis has no STARTTLS, so Disable and Prefer mean plain TCP; Require and Verify
+  full mean TLS with verification on (the certificate must name the profile's host, also
+  through a tunnel). New profiles default to Disable.
+- **UI:** a Redis connection opens a key browser tab, not a SQL tab: SCAN-based list (never
+  `KEYS`), typed value pane, and a console. The console refuses commands that block or change
+  the connection (SUBSCRIBE, MONITOR, SELECT, AUTH, MULTI, blocking pops); read-only profiles
+  allow only read commands; on Production, destructive commands (FLUSHALL, DEL, CONFIG SET…)
+  ask first. Console history masks passwords (AUTH, HELLO AUTH, ACL SETUSER, CONFIG SET).
+  Values are read up to 1,000 elements (strings 64 KB) per key.
+
