@@ -213,8 +213,13 @@ async fn run_shell(
     size: &mut TermSize,
     feeder: &mut Feeder,
     input: &mut mpsc::UnboundedReceiver<TermInput>,
+    startup: &[u8],
 ) -> Result<ShellEnd, SshError> {
     let mut ch = conn.open_shell(size.cols, size.rows).await?;
+    if !startup.is_empty() {
+        // Typed like keystrokes; the shell reads them once its prompt is up.
+        let _ = ch.data(startup).await;
+    }
     let mut code = None;
     loop {
         tokio::select! {
@@ -261,6 +266,13 @@ pub struct SshTerminalSpec {
     pub target: SshTarget,
     /// Initial size.
     pub size: TermSize,
+    /// Typed into every new shell (each reconnect too): see [`shell_startup`].
+    pub startup: Vec<u8>,
+}
+
+/// What to type into a new shell on `host`: the bytes of its connect macro.
+pub fn shell_startup(connect_macro: Option<&[u8]>) -> Vec<u8> {
+    connect_macro.map(<[u8]>::to_vec).unwrap_or_default()
 }
 
 impl Terminals {
@@ -277,6 +289,7 @@ impl Terminals {
             host_id,
             target,
             mut size,
+            startup,
         } = spec;
         let (tx, mut rx) = mpsc::unbounded_channel::<TermInput>();
         let input: InputFn = Arc::new(move |msg| {
@@ -340,7 +353,7 @@ impl Terminals {
                         description: conn.description.clone(),
                     },
                 });
-                match run_shell(&conn, &mut size, &mut feeder, &mut rx).await {
+                match run_shell(&conn, &mut size, &mut feeder, &mut rx, &startup).await {
                     Ok(ShellEnd::Exited(code)) => {
                         registry.remove(term);
                         events.emit(Event::TerminalExited {

@@ -421,6 +421,14 @@ impl Service {
             .map_err(CoreError::from)
     }
 
+    /// Emit the terminal macros ([`Event::Macros`]).
+    async fn emit_macros(&self) {
+        match self.with_store(|s| s.macros()).await {
+            Ok(list) => self.emit(Event::Macros(list)),
+            Err(e) => self.error("Macros", e),
+        }
+    }
+
     /// Emit the user's snippets ([`Event::Snippets`]).
     async fn emit_snippets(&self) {
         match self.with_store(|s| s.snippets()).await {
@@ -845,6 +853,17 @@ impl Service {
                 match self.with_store(move |s| s.delete_snippet(&id)).await {
                     Ok(_) => self.emit_snippets().await,
                     Err(e) => self.error("Snippets", e),
+                }
+            }
+            Command::LoadMacros => self.emit_macros().await,
+            Command::SaveMacro(m) => match self.with_store(move |s| s.save_macro(&m)).await {
+                Ok(_) => self.emit_macros().await,
+                Err(e) => self.error("Macros", e),
+            },
+            Command::DeleteMacro { id } => {
+                match self.with_store(move |s| s.delete_macro(&id)).await {
+                    Ok(_) => self.emit_macros().await,
+                    Err(e) => self.error("Macros", e),
                 }
             }
             Command::LoadFavorites => self.emit_favorites().await,
@@ -1440,6 +1459,7 @@ impl Service {
             }
             TermTarget::Host(host_id) => match self.ssh_target(&host_id).await {
                 Ok(target) => {
+                    let startup = self.shell_startup(&host_id).await;
                     let description = format!("{}@{}", target.user, target.address);
                     let terminal = self.terminals.open_ssh(
                         SshTerminalSpec {
@@ -1447,6 +1467,7 @@ impl Service {
                             host_id,
                             target,
                             size,
+                            startup,
                         },
                         self.ssh.clone(),
                         self.events.clone(),
@@ -1509,6 +1530,24 @@ impl Service {
             .await
             .map_err(|e| CoreError::Unsupported(e.to_string()))?;
         Ok(format!("Connected · {}", conn.description))
+    }
+
+    /// What to type into each new shell on a Host (its connect macro).
+    async fn shell_startup(&self, id: &ProfileId) -> Vec<u8> {
+        let Ok(host) = self.host(id).await else {
+            return Vec::new();
+        };
+        let input = match host.connect_macro.clone() {
+            Some(mid) => match self.with_store(|s| s.macros()).await {
+                Ok(list) => list.into_iter().find(|m| m.id == mid).map(|m| m.input),
+                Err(e) => {
+                    warn!(error = %e, "connect macro not loaded");
+                    None
+                }
+            },
+            None => None,
+        };
+        crate::terminals::shell_startup(input.as_deref())
     }
 
     async fn host(&self, id: &ProfileId) -> Result<Host> {
