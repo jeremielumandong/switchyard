@@ -114,24 +114,28 @@ impl Pane {
     }
 
     fn visible(&self) -> Vec<FileEntry> {
-        let mut v: Vec<FileEntry> = self
+        let (by, asc) = self.sort;
+        // Lowercase each name once, not once per comparison.
+        let mut v: Vec<(String, &FileEntry)> = self
             .entries
             .iter()
             .filter(|e| self.show_hidden || !e.is_hidden())
-            .cloned()
+            .map(|e| match by {
+                SortBy::Name => (e.name.to_lowercase(), e),
+                _ => (String::new(), e),
+            })
             .collect();
-        let (by, asc) = self.sort;
-        v.sort_by(|a, b| {
+        v.sort_by(|(ka, a), (kb, b)| {
             // Folders stay on top whatever the column.
             let dirs = b.is_dir().cmp(&a.is_dir());
             let ord = match by {
-                SortBy::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                SortBy::Name => ka.cmp(kb),
                 SortBy::Size => a.size.cmp(&b.size),
                 SortBy::Modified => a.modified_ms.cmp(&b.modified_ms),
             };
             dirs.then(if asc { ord } else { ord.reverse() })
         });
-        v
+        v.into_iter().map(|(_, e)| e.clone()).collect()
     }
 
     /// `/`, `home`, `swy`, `app` with the path up to each.

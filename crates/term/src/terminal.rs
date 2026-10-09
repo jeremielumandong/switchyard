@@ -368,6 +368,11 @@ impl Terminal {
         let selection = content.selection;
         let mode = *term.mode();
         let colors = term.colors();
+        // Only matches on screen can mark a cell; each cell checks them all.
+        let top = Line(-(offset as i32));
+        let bottom = Line(rows as i32 - 1 - offset as i32);
+        let mut matches = matches;
+        matches.retain(|(m, _)| m.end().line >= top && m.start().line <= bottom);
 
         let mut lines = Vec::with_capacity(rows);
         for r in 0..rows {
@@ -851,7 +856,15 @@ mod tests {
         for _ in 0..10 {
             t.search_step(false);
         }
-        assert!(t.snapshot().display_offset > 0);
+        let s = t.snapshot();
+        assert!(s.display_offset > 0);
+        // Matches in the scrollback still mark their cells once scrolled into view.
+        assert!(
+            s.lines
+                .iter()
+                .flat_map(|l| &l.runs)
+                .any(|r| r.mark == Mark::FocusedMatch)
+        );
         assert_eq!(t.search("a.b("), 0, "special characters are literal");
     }
 

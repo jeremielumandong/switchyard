@@ -68,7 +68,8 @@ pub struct RedisTab {
     pattern: Entity<InputState>,
     /// The pattern the shown keys were scanned with.
     scanned: String,
-    keys: Vec<KeyEntry>,
+    /// Shared with the virtualized key list, which renders without copying it.
+    keys: Arc<Vec<KeyEntry>>,
     cursor: u64,
     scan_request: Option<RequestId>,
     /// Keep scanning until this many keys are listed (or the scan ends).
@@ -155,7 +156,7 @@ impl RedisTab {
             open_error: None,
             pattern,
             scanned: String::new(),
-            keys: Vec::new(),
+            keys: Arc::default(),
             cursor: 0,
             scan_request: None,
             want: FIRST_KEYS,
@@ -251,7 +252,7 @@ impl RedisTab {
             return;
         }
         self.scanned = Self::value(&self.pattern, cx).trim().to_owned();
-        self.keys.clear();
+        self.keys = Arc::default();
         self.cursor = 0;
         self.want = FIRST_KEYS;
         self.list_error = None;
@@ -292,13 +293,12 @@ impl RedisTab {
         match result {
             Ok(page) => {
                 self.cursor = page.cursor;
-                // SCAN can repeat a key across pages.
-                for k in page.keys {
-                    if !self.keys.iter().any(|e| e.key == k.key) {
-                        self.keys.push(k);
-                    }
-                }
-                self.keys.sort_by(|a, b| a.key.cmp(&b.key));
+                // SCAN can repeat a key across pages. The stable sort keeps a known key
+                // ahead of its repeat, which dedup then drops.
+                let keys = Arc::make_mut(&mut self.keys);
+                keys.extend(page.keys);
+                keys.sort_by(|a, b| a.key.cmp(&b.key));
+                keys.dedup_by(|later, first| later.key == first.key);
                 if self.cursor != 0 && self.keys.len() < self.want {
                     self.scan_next();
                 }
@@ -363,7 +363,7 @@ impl RedisTab {
                     e.set_value(text, window, cx);
                 });
                 if d.kind == KeyKind::Missing {
-                    self.keys.retain(|k| k.key != d.key);
+                    Arc::make_mut(&mut self.keys).retain(|k| k.key != d.key);
                 }
                 self.sync_placeholders(&d.kind, window, cx);
                 self.details = Some(d);
@@ -418,13 +418,13 @@ impl RedisTab {
                 let deleted = self.mode == Mode::ConfirmDelete;
                 self.mode = Mode::View;
                 if deleted {
-                    self.keys.retain(|k| k.key != key);
+                    Arc::make_mut(&mut self.keys).retain(|k| k.key != key);
                     self.selected = None;
                     self.details = None;
                 } else {
                     if renamed && let Some(old) = &self.selected {
                         let old = old.clone();
-                        self.keys.retain(|k| k.key != old);
+                        Arc::make_mut(&mut self.keys).retain(|k| k.key != old);
                     }
                     if (was_new || renamed) && !self.keys.iter().any(|k| k.key == key) {
                         let kind = self
@@ -434,11 +434,11 @@ impl RedisTab {
                             .map(|d| d.kind.clone())
                             .or(new_kind)
                             .unwrap_or(KeyKind::String);
-                        self.keys.push(KeyEntry {
+                        Arc::make_mut(&mut self.keys).push(KeyEntry {
                             key: key.clone(),
                             kind,
                         });
-                        self.keys.sort_by(|a, b| a.key.cmp(&b.key));
+                        Arc::make_mut(&mut self.keys).sort_by(|a, b| a.key.cmp(&b.key));
                     }
                     self.selected = Some(key);
                     self.reload(window, cx);
@@ -767,7 +767,7 @@ impl RedisTab {
     }
 
     fn render_keys(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let keys: Arc<[KeyEntry]> = self.keys.clone().into();
+        let keys = self.keys.clone();
         let selected = self.selected.clone();
         let p2 = *p;
         let scanning = self.scan_request.is_some();
