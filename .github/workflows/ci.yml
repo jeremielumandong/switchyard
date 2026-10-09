@@ -80,6 +80,7 @@ jobs:
       - name: Start SSH test servers
         run: sudo DIR=/tmp/switchyard-ssh scripts/ssh-test-servers.sh
       - run: cargo test -p switchyard-db --lib --test pg --test d1 -- --ignored --test-threads 1
+      - run: cargo test -p switchyard-db --test activity -- --ignored --test-threads 1 postgres
       - run: cargo test -p switchyard-plan --test capture -- --ignored --test-threads 1 postgres
       - run: cargo test -p switchyard-plan --test access -- --ignored --test-threads 1 --skip sql_server
       - run: cargo test -p switchyard-cli --test cli -- --ignored --test-threads 1 --skip sql_server
@@ -87,10 +88,25 @@ jobs:
       # so it runs in the SQL Server job.
       - run: >-
           cargo test -p switchyard-core -p switchyard-remote --lib
-          --test flow --test pg_edits --test ssh_files --test ssh_terminal --test tunnel_pg --test ssh
+          --test flow --test pg_edits --test session_context --test ssh_files --test ssh_forwards
+          --test ssh_terminal --test tunnel_pg --test ssh
           -- --ignored --test-threads 1
         env:
           SWITCHYARD_SSH_KEYS: /tmp/switchyard-ssh
+
+  integration-other:
+    name: integration (MySQL, MongoDB, Redis)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+      # MySQL seeds itself from docker/mysql; MongoDB and Redis start empty.
+      - name: Start MySQL, MongoDB and Redis
+        run: docker compose -f docker/compose.yml up -d --wait mysql mongo redis
+      - run: cargo test -p switchyard-db --test mysql -- --ignored --test-threads 1
+      - run: cargo test -p switchyard-db --test mongo -- --ignored --test-threads 1
+      - run: cargo test -p switchyard-db --test redis -- --ignored --test-threads 1
 
   integration-oracle:
     name: integration (Oracle)
@@ -129,6 +145,9 @@ jobs:
       - name: Start SQL Server
         run: DIR=/tmp/switchyard-mssql scripts/mssql-test-server.sh
       - run: cargo test -p switchyard-db --test mssql -- --ignored --test-threads 1
+        env:
+          SWITCHYARD_MSSQL_CA: /tmp/switchyard-mssql/ca.pem
+      - run: cargo test -p switchyard-db --test activity -- --ignored --test-threads 1 sql_server
         env:
           SWITCHYARD_MSSQL_CA: /tmp/switchyard-mssql/ca.pem
       - run: cargo test -p switchyard-plan --test capture -- --ignored --test-threads 1 sql_server
