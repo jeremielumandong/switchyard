@@ -9,12 +9,6 @@ Written in Rust on [GPUI](https://www.gpui.rs/) and
 [gpui-component](https://github.com/longbridge/gpui-kit). Runs on macOS, Windows and Linux.
 Licensed under Apache-2.0.
 
-- Product and technical spec: [`docs/SPEC.md`](docs/SPEC.md)
-- Build plan and progress: [`PLAN.md`](PLAN.md)
-- Decisions log: [`docs/DECISIONS.md`](docs/DECISIONS.md)
-- Contributor / agent guide: [`CLAUDE.md`](CLAUDE.md)
-- UI design prototype: [`docs/design/Switchyard.dc.html`](docs/design/Switchyard.dc.html)
-
 ## Features
 
 ### One connection model
