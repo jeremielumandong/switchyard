@@ -573,6 +573,12 @@ server or bundled Unix tools on Windows (Tier 3).
   type (string/JSON text editor, hash/list/set/zset/stream tables) with edits, new key,
   rename (RENAMENX), expiry, delete; `redis-cli`-style console with Production confirmation
   for destructive commands, read-only enforcement and masked history.
+- [x] RD-3 Key browser like Redis Insight: tree view of `:`-separated folders (folders
+  first, key counts, expand/collapse all) or flat list; TTL and size columns (TYPE, PTTL
+  and MEMORY USAGE pipelined with each SCAN page); key list resizable by dragging its edge;
+  full-value viewer with copy for the selected hash/list/set/zset/stream row; console
+  transcript and values in read-only editors so all text selects and copies.
+  Note: the delimiter is fixed to `:`; TTLs in the list are as of the scan.
 
 ## DBX — Database explorer and editors at DBeaver / SSMS level (user request)
 
@@ -731,7 +737,7 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   running app's unlocked secrets over the loopback handoff, scoped by the session token.
 
 (Add items here instead of doing them mid-task.)
-- Redis: prefix tree (`:`-separated groups) in the key list; Pub/Sub and MONITOR viewers;
+- Redis: configurable tree delimiter and key type filter (SCAN TYPE); Pub/Sub and MONITOR viewers;
   Cluster and Sentinel; per-element pagination past 1,000 items; console up/down history;
   RESP3 (`HELLO 3`) types; integration test for TLS.
 - `db --test pg` integration tests share one database: run in parallel, `introspection_snapshots`
