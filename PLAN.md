@@ -563,6 +563,12 @@ server or bundled Unix tools on Windows (Tier 3).
   "Open in Workbench" cards that create a saved, unsent request. API runs reach no database
   (`Command::RunAgent { databases: false }`). Prompts say Switchyard, not AgentOps.
   Note: the answer opens as a new request; applying a fix to the open request in place is not done.
+- [x] UX-11 Copyable assistant transcript (user request, 2026-10-09): every string in the
+  assistant panel (question, answer prose and code, tool calls and results, errors, notes,
+  suggestion SQL, request lines) is a `SelectableText` run in the window selection, so a drag
+  can cross runs and Ctrl/Cmd+C copies them in reading order. Answers get "Copy answer"
+  (the CLI's text, fences kept) and SQL cards "Copy". Checked under Xvfb with a scripted CLI.
+  Deferred: Markdown rendering of answers.
 
 ## Extra — Redis (user request, 2026-10-08)
 
