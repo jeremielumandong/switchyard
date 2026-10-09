@@ -8,3 +8,4 @@ docker/ftp/*.pem
 __pycache__/
 target*
 .claude*
+docker/mssql/tls/
