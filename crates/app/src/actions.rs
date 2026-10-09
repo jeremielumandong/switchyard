@@ -366,8 +366,12 @@ pub fn palette_commands() -> Vec<PaletteCommand> {
 pub fn fuzzy(query: &str, text: &str) -> bool {
     let mut q = query.chars().flat_map(char::to_lowercase).peekable();
     for ch in text.chars().flat_map(char::to_lowercase) {
-        if q.peek() == Some(&ch) {
-            q.next();
+        match q.peek() {
+            None => return true,
+            Some(c) if *c == ch => {
+                q.next();
+            }
+            Some(_) => {}
         }
     }
     q.peek().is_none()
