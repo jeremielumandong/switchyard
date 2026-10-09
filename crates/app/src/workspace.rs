@@ -135,8 +135,8 @@ pub struct Workspace {
     pending_editor: Option<(FsRef, PathBuf)>,
     /// The shared transfer queue (Files tab drawer, sidebar panel, status bar).
     pub(crate) transfers: Entity<Transfers>,
-    /// An editor tab with unsaved changes whose close was clicked once.
-    close_confirm: Option<gpui_kit::EntityId>,
+    /// Unsaved-changes dialog state (`crate::unsaved`).
+    pub(crate) unsaved: crate::unsaved::UnsavedState,
     /// The sidebar asked for the Files tab with this Host.
     pending_files: Option<Option<ProfileId>>,
     rebind: Vec<(Entity<SqlTab>, Option<ProfileId>)>,
@@ -182,6 +182,9 @@ impl Workspace {
             key: "theme".into(),
         });
         core.send(Command::LoadSetting {
+            key: crate::appearance::APPEARANCE_KEY.into(),
+        });
+        core.send(Command::LoadSetting {
             key: "inspector.width".into(),
         });
         core.send(Command::LoadSetting {
@@ -195,6 +198,13 @@ impl Workspace {
         core.send(Command::LoadFavorites);
         core.send(Command::LoadSetting {
             key: crate::explorer::SAVED_NODES_KEY.into(),
+        });
+        // Closing the window with unsaved files asks first (native close buttons).
+        let close_weak = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |window, cx| {
+            close_weak
+                .update(cx, |w, cx| w.request_close_window(window, cx))
+                .unwrap_or(true)
         });
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
@@ -290,7 +300,7 @@ impl Workspace {
             pending_open: None,
             pending_editor: None,
             transfers,
-            close_confirm: None,
+            unsaved: Default::default(),
             pending_files: None,
             rebind: Vec::new(),
             split: None,
@@ -498,6 +508,14 @@ impl Workspace {
                     .map(ProfileId)
                     .collect();
                 self.explorer.restore(ids);
+            }
+            Event::Setting { key, value } if key == crate::appearance::APPEARANCE_KEY => {
+                if let Some(s) = value.and_then(|v| {
+                    serde_json::from_value::<crate::appearance::AppearanceSettings>(v).ok()
+                }) {
+                    crate::appearance::set(s, cx);
+                    theme::apply_fonts(Some(window), cx);
+                }
             }
             Event::Setting { key, value } if key == "sidebar.width" => {
                 if let Some(w) = value.as_ref().and_then(|v| v.as_f64()) {
@@ -737,6 +755,7 @@ impl Workspace {
                         e.update(cx, |e, cx| e.on_event(&ev, window, cx));
                     }
                 }
+                self.finish_saved_closes(window, cx);
                 // A saved file's size and time changed in the Files panel.
                 if matches!(ev, Event::TextFileSaved { result: Ok(_), .. }) {
                     for panel in self.remote_files.values() {
@@ -1326,7 +1345,13 @@ impl Workspace {
     /// Close a group of tabs from the tab menu: `close`, `close_others`, `close_right`,
     /// `close_left` or `close_all`, relative to tab `ix`. Each goes through
     /// [`Self::close_tab`], so open transactions and unsaved files still hold their tab.
-    pub(crate) fn close_tabs(&mut self, action: &str, ix: usize, cx: &mut Context<Self>) {
+    pub(crate) fn close_tabs(
+        &mut self,
+        action: &str,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let n = self.tabs.len();
         if ix >= n {
             return;
@@ -1339,9 +1364,18 @@ impl Workspace {
             "close_all" => (0..n).collect(),
             _ => return,
         };
-        // Highest first, so the remaining indices stay valid.
+        // Highest first, so the remaining indices stay valid. Files with unsaved changes
+        // wait for one Save / Discard / Cancel question.
+        let mut dirty = Vec::new();
         for i in doomed.into_iter().rev() {
-            self.close_tab(i, cx);
+            match self.tabs.get(i) {
+                Some(Tab::Editor(e)) if e.read(cx).dirty => dirty.push(e.clone()),
+                _ => self.close_tab_now(i, cx),
+            }
+        }
+        if !dirty.is_empty() {
+            dirty.reverse();
+            self.confirm_unsaved(dirty, crate::unsaved::AfterUnsaved::CloseTabs, window, cx);
         }
         cx.notify();
     }
@@ -1390,7 +1424,21 @@ impl Workspace {
         out
     }
 
-    fn close_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
+    /// Close tab `ix`; a file with unsaved changes asks Save / Discard / Cancel first.
+    fn close_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(Tab::Editor(e)) = self.tabs.get(ix)
+            && e.read(cx).dirty
+        {
+            let e = e.clone();
+            self.confirm_unsaved(vec![e], crate::unsaved::AfterUnsaved::CloseTabs, window, cx);
+            return;
+        }
+        self.close_tab_now(ix, cx);
+    }
+
+    /// Close tab `ix` without asking about unsaved files (an open transaction still
+    /// keeps the tab).
+    pub(crate) fn close_tab_now(&mut self, ix: usize, cx: &mut Context<Self>) {
         if ix >= self.tabs.len() {
             return;
         }
@@ -1425,16 +1473,6 @@ impl Workspace {
         if let Tab::Redis(r) = &self.tabs[ix] {
             r.update(cx, |r, _| r.shutdown());
         }
-        if let Tab::Editor(e) = &self.tabs[ix] {
-            let e = e.entity_id();
-            let dirty = matches!(&self.tabs[ix], Tab::Editor(t) if t.read(cx).dirty);
-            if dirty && self.close_confirm != Some(e) {
-                self.close_confirm = Some(e);
-                self.toast("Unsaved changes · close again to discard them", cx);
-                return;
-            }
-        }
-        self.close_confirm = None;
         if let Tab::Editor(e) = &self.tabs[ix] {
             e.update(cx, |e, cx| e.shutdown(cx));
         }
@@ -1943,6 +1981,40 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Apply and save new text-size settings (zoom, editor font).
+    pub(crate) fn set_appearance(
+        &mut self,
+        s: crate::appearance::AppearanceSettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        crate::appearance::set(s, cx);
+        theme::apply_fonts(Some(window), cx);
+        let saved = crate::appearance::current(cx);
+        match serde_json::to_value(&saved) {
+            Ok(value) => self.core.send(Command::SetSetting {
+                key: crate::appearance::APPEARANCE_KEY.into(),
+                value,
+            }),
+            Err(e) => tracing::warn!(error = %e, "could not save the appearance settings"),
+        }
+        cx.notify();
+    }
+
+    /// Change the zoom level with `f` (zoom in, out, or reset) and say where it landed.
+    pub(crate) fn zoom_by(
+        &mut self,
+        f: impl FnOnce(f32) -> f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut s = crate::appearance::current(cx);
+        s.zoom = crate::appearance::clamp_zoom(f(s.zoom));
+        let pct = crate::appearance::percent(s.zoom);
+        self.set_appearance(s, window, cx);
+        self.toast(format!("Zoom {pct} %"), cx);
+    }
+
     /// Execute a palette command.
     pub(crate) fn run_command(
         &mut self,
@@ -2064,6 +2136,9 @@ impl Workspace {
             CommandId::Unsplit => self.split = None,
             CommandId::SwitchToDefault => self.set_mode(AppMode::Default, window, cx),
             CommandId::SwitchToApi => self.set_mode(AppMode::Api, window, cx),
+            CommandId::ZoomIn => self.zoom_by(crate::appearance::zoom_in, window, cx),
+            CommandId::ZoomOut => self.zoom_by(crate::appearance::zoom_out, window, cx),
+            CommandId::ResetZoom => self.zoom_by(|_| 1.0, window, cx),
         }
         cx.notify();
     }
@@ -2350,7 +2425,17 @@ impl Workspace {
                         cx.listener(|this, _, w, cx| this.run_command(CommandId::Settings, w, cx)),
                     ),
             );
+        let close_weak = cx.entity().downgrade();
         TitleBar::new()
+            // Linux draws its own close button: ask about unsaved files there too.
+            .on_close_window(move |_, window, cx| {
+                let close = close_weak
+                    .update(cx, |w, cx| w.request_close_window(window, cx))
+                    .unwrap_or(true);
+                if close {
+                    window.remove_window();
+                }
+            })
             .h(px(38.))
             .bg(p.panel)
             .border_color(p.bd)
@@ -2643,9 +2728,10 @@ impl Workspace {
                         )
                     })
                     .child(div().truncate().child(label))
+                    // Unsaved marker (editor files, SQL text not yet autosaved).
                     .child(ui::dot(
                         if dirty {
-                            p.fg2
+                            p.stg
                         } else {
                             gpui_kit::transparent_black()
                         },
@@ -2660,9 +2746,9 @@ impl Workspace {
                             .text_color(p.fg3)
                             .text_size(px(11.))
                             .hover(|s| s.bg(p.hover).text_color(p.fg))
-                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            .on_click(cx.listener(move |this, _: &ClickEvent, w, cx| {
                                 cx.stop_propagation();
-                                this.close_tab(i, cx);
+                                this.close_tab(i, w, cx);
                             }))
                             .child("×"),
                     )
@@ -3114,7 +3200,7 @@ impl Render for Workspace {
             .bg(p.bg)
             .text_color(p.fg)
             .font_family(SANS)
-            .text_size(px(13.))
+            .text_size(crate::appearance::ui_font_size(cx))
             .on_action(cx.listener(|this, _: &actions::OpenPalette, w, cx| {
                 this.open_palette(PaletteMode::Commands, w, cx)
             }))
@@ -3146,7 +3232,9 @@ impl Render for Workspace {
                 this.run_command(CommandId::NewQueryTab, w, cx)
             }))
             .on_action(
-                cx.listener(|this, _: &actions::CloseTab, _, cx| this.close_tab(this.active, cx)),
+                cx.listener(|this, _: &actions::CloseTab, w, cx| {
+                    this.close_tab(this.active, w, cx)
+                }),
             )
             .on_action(cx.listener(|this, _: &actions::OpenSettings, w, cx| {
                 this.open_settings(SettingsPage::General, w, cx)
@@ -3205,6 +3293,15 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &actions::Unsplit, w, cx| {
                 this.run_command(CommandId::Unsplit, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::ZoomIn, w, cx| {
+                this.run_command(CommandId::ZoomIn, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::ZoomOut, w, cx| {
+                this.run_command(CommandId::ZoomOut, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::ZoomReset, w, cx| {
+                this.run_command(CommandId::ResetZoom, w, cx)
             }))
             .child(title)
             .when_some(mode_menu, |d, menu| d.child(menu))

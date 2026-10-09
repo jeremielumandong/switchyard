@@ -1047,3 +1047,17 @@ commands.
 - Output goes through the MCP scrubber like everything else, so host addresses and user
   names in it read `[redacted]`.
 
+## Text size and zoom (2026-10-09)
+
+- **Not a whole-window zoom.** GPUI's display scale factor can't be overridden outside test
+  builds, and the app sizes most chrome text and layout in `px`. Zoom therefore scales what
+  reads text for a living: gpui-component's `font_size` (also the window rem size, so its
+  controls follow), the workspace's base text size, every code editor, the result grid (cell
+  and header text, row height via `Size::Size`, row-number and initial column widths) and the
+  terminal (font, cell width, line height; the PTY resizes from the new metrics). Steps 70,
+  80, 90, 100, 110, 125, 150, 175, 190, 200 %.
+- **Editor font family** applies to editors, grid cells and terminals; badges and other chrome
+  keep the bundled Geist Mono.
+- **Unsaved tabs**: SQL tabs autosave their buffer (dirty only until the 400 ms autosave), so
+  they only get the marker; the Save / Discard / Cancel dialog is for file editor tabs.
+

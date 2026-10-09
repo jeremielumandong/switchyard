@@ -4,11 +4,11 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use gpui_kit::component::Sizable as _;
 use gpui_kit::component::highlighter::{Diagnostic, DiagnosticSeverity};
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState, Position};
 use gpui_kit::component::scroll::{Scrollbar, ScrollbarHandle as _, ScrollbarMode};
 use gpui_kit::component::table::{DataTable, TableEvent, TableState};
-use gpui_kit::component::{Sizable as _, Size};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
@@ -1224,7 +1224,7 @@ impl SqlTab {
     }
 
     fn add_result(&mut self, cols: Arc<[ColumnMeta]>, window: &mut Window, cx: &mut Context<Self>) {
-        let delegate = GridDelegate::new(cols.clone());
+        let delegate = GridDelegate::new(cols.clone()).zoomed(crate::appearance::zoom(cx));
         let table = cx.new(|cx| {
             TableState::new(delegate, window, cx)
                 .cell_selectable(true)
@@ -2249,7 +2249,7 @@ impl SqlTab {
                     .h(Scrollbar::width())
                     .flex()
                     .bg(p.surface)
-                    .child(div().flex_none().w(table.delegate().row_number_width()))
+                    .child(div().flex_none().w(table.delegate().row_number_width(cx)))
                     .child(
                         div().flex_1().h_full().relative().child(
                             Scrollbar::horizontal(&table.horizontal_scroll_handle)
@@ -2307,7 +2307,7 @@ impl SqlTab {
                                 .bordered(false)
                                 .stripe(false)
                                 .scrollbar_visible(true, false)
-                                .with_size(Size::XSmall),
+                                .with_size(crate::appearance::table_size(cx)),
                         ),
                 )
                 .children(h_scrollbar)
@@ -3447,8 +3447,8 @@ impl Render for SqlTab {
                                     .bordered(false)
                                     .appearance(false)
                                     .h(relative(1.))
-                                    .font_family(MONO)
-                                    .text_size(px(12.5)),
+                                    .font_family(crate::appearance::editor_font_family(cx))
+                                    .text_size(crate::appearance::editor_font_size(cx)),
                             ),
                     )
                     .children(peek),

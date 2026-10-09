@@ -877,7 +877,7 @@ impl Workspace {
                 self.open_er_diagram(&o.conn, o.schema.clone(), Some(o.name.clone()), window, cx)
             }
             CtxTarget::Object(o) => self.object_action(action, o.clone(), window, cx),
-            CtxTarget::Tab(ix) => self.close_tabs(action, *ix, cx),
+            CtxTarget::Tab(ix) => self.close_tabs(action, *ix, window, cx),
             CtxTarget::Profile(id) => match action {
                 "open" => self.open_profile(id, window, cx),
                 "edit" => {
@@ -1668,8 +1668,7 @@ impl Workspace {
                             }),
                         )),
                 )
-                .child(setting_row("Editor font", "Geist Mono · 12.5", true, p))
-                .child(setting_row("Row height", "Compact · 26 px", false, p))
+                .child(self.render_text_size(p, cx))
                 .into_any_element(),
             SettingsPage::General => div()
                 .flex()
@@ -2238,6 +2237,120 @@ fn kv(k: &str, v: &str, mono: bool, p: &Palette) -> AnyElement {
                 .child(v.to_owned()),
         )
         .into_any_element()
+}
+
+impl Workspace {
+    /// Settings → Appearance: editor font family and size, UI zoom.
+    fn render_text_size(&mut self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        use crate::appearance::{self as ap, AppearanceSettings};
+        let cur = ap::current(cx);
+        let families = ap::mono_choices(ap::installed_fonts(cx), &cur.editor_font_family);
+        let label =
+            |text: &'static str| div().w(px(200.)).flex_none().text_color(p.fg2).child(text);
+        let value = |text: String, mono: bool| {
+            div()
+                .min_w(px(72.))
+                .h(px(28.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .px(px(9.))
+                .border_1()
+                .border_color(p.bd2)
+                .rounded(px(6.))
+                .bg(p.bg)
+                .when(mono, |d| d.font_family(MONO))
+                .child(text)
+        };
+        let row = || div().flex().items_center().gap(px(8.)).text_size(px(12.5));
+        let set = |f: fn(&mut AppearanceSettings)| {
+            cx.listener(
+                move |this: &mut Workspace, _: &gpui_kit::ClickEvent, w, cx| {
+                    let mut s = ap::current(cx);
+                    f(&mut s);
+                    this.set_appearance(s, w, cx);
+                },
+            )
+        };
+        let font_row = row().child(label("Editor font")).child(
+            div().flex_1().flex().flex_wrap().gap(px(6.)).children(
+                families.into_iter().enumerate().map(|(i, fam)| {
+                    let on = fam == cur.editor_font_family;
+                    let pick = fam.clone();
+                    div()
+                        .id(("set-font", i))
+                        .h(px(28.))
+                        .flex()
+                        .items_center()
+                        .px(px(10.))
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(if on { p.acc } else { p.bd2 })
+                        .when(on, |d| d.bg(p.sel))
+                        .hover(|d| d.bg(p.hover))
+                        .font_family(SharedString::from(fam.clone()))
+                        .child(fam)
+                        .on_click(cx.listener(move |this, _, w, cx| {
+                            let mut s = ap::current(cx);
+                            s.editor_font_family = pick.clone();
+                            this.set_appearance(s, w, cx);
+                        }))
+                }),
+            ),
+        );
+        let size_row = row()
+            .child(label("Editor font size"))
+            .child(
+                ui::button("set-font-smaller", "−", Kind::Secondary, p).on_click(set(|s| {
+                    s.editor_font_size = ap::clamp_font_size(s.editor_font_size - 0.5)
+                })),
+            )
+            .child(value(format!("{} px", cur.editor_font_size), true))
+            .child(
+                ui::button("set-font-larger", "+", Kind::Secondary, p).on_click(set(|s| {
+                    s.editor_font_size = ap::clamp_font_size(s.editor_font_size + 0.5)
+                })),
+            )
+            .child(
+                ui::button("set-font-default", "Default", Kind::Ghost, p).on_click(set(|s| {
+                    s.editor_font_size = AppearanceSettings::default().editor_font_size
+                })),
+            );
+        let zoom_row = row()
+            .child(label("Zoom"))
+            .child(
+                ui::button("set-zoom-out", "−", Kind::Secondary, p)
+                    .on_click(set(|s| s.zoom = ap::zoom_out(s.zoom))),
+            )
+            .child(value(format!("{} %", ap::percent(cur.zoom)), true))
+            .child(
+                ui::button("set-zoom-in", "+", Kind::Secondary, p)
+                    .on_click(set(|s| s.zoom = ap::zoom_in(s.zoom))),
+            )
+            .child(
+                ui::button("set-zoom-reset", "Reset", Kind::Ghost, p)
+                    .on_click(set(|s| s.zoom = 1.0)),
+            )
+            .child(
+                div()
+                    .text_color(p.fg3)
+                    .child(ui::keys("⌘= · ⌘- · ⌘0", "Ctrl+= · Ctrl+- · Ctrl+0")),
+            );
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(10.))
+            .child(font_row)
+            .child(size_row)
+            .child(zoom_row)
+            .child(setting_row(
+                "Row height",
+                &format!("{} px · follows zoom", ap::grid_row_height(cur.zoom)),
+                false,
+                p,
+            ))
+            .into_any_element()
+    }
 }
 
 fn setting_row(label: &str, value: &str, mono: bool, p: &Palette) -> AnyElement {

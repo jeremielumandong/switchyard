@@ -578,6 +578,15 @@ server or bundled Unix tools on Windows (Tier 3).
   (Run / Deny) and runs it on the Host's shared SSH session (`SshConn::run_command`: 64 KB per
   stream, timeout); every request is in history tagged `agent`, `agent:<cli>`, `ssh`.
   Note: integration test for `run_command` needs the docker SSH server (not run here).
+- [x] UX-13 Text size and unsaved tabs (user request, 2026-10-09): Zoom In / Out / Reset
+  (Cmd/Ctrl + `=`/`+`, `-`, `0`, palette under View, 70–200 %) scales the UI font (gpui-component
+  `font_size` = rem), editors, result-grid text and row heights, and terminal font and cell
+  metrics. Settings → Appearance: editor font family (bundled + installed monospace), editor
+  font size, zoom; saved under `appearance` in the settings store, restored on launch
+  (`app/src/appearance.rs`). Dirty tabs show an amber dot; closing an editor tab with unsaved
+  changes (alone, a tab-menu group, or the window) asks Save / Discard / Cancel in a
+  gpui-component dialog, Save only when every file can be saved now (`app/src/unsaved.rs`).
+  Note: chrome text with explicit px sizes (sidebar, tab strip, toolbars) does not scale.
 
 ## Extra — Redis (user request, 2026-10-08)
 
@@ -760,8 +769,7 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   per-test schemas if they need to run in parallel.
 - UX pass: Headers/Console/Trace/Tests response tabs copy via buttons only (no drag-select);
   `pm.sendRequest` inside runs skips the Production check; env dropdown doesn't show labels;
-  no window-level UI tests for the new Workbench interactions; "Unsaved changes" on tab
-  close could be a tab marker instead of a toast.
+  no window-level UI tests for the new Workbench interactions.
 - Agent actual plans: approval prompt in the app for `explain` with ANALYZE / STATISTICS XML
   from an agent (the MCP server refuses them until then).
 - Assistant panel: markdown is prose + code blocks only (no bold/lists/tables); GPUI tests
@@ -795,3 +803,7 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   The grid row filter still runs on the UI thread per keystroke (now allocation-free).
 - Assistant on Hosts: "always allow this command on this Host" for repeat read-only commands;
   approvals from an interactive "Open in terminal" run show in the panel, not the terminal.
+- Zoom: chrome text sized in px (sidebar tree, tab strip, toolbars, status bar; ~490 call
+  sites) stays at 100 %; route them through `appearance::scaled` or rem sizes. Grid column
+  widths scale only for results opened after a zoom change. No quit (Cmd+Q) action exists
+  yet to hook the unsaved-files dialog into; window close is covered.
