@@ -674,11 +674,19 @@ impl Workspace {
                 self.explorer.set_favorites(list, &core);
             }
             Event::History { request, entries } => {
-                match self.plan_tab(cx, |v| v.owns_history(request)) {
-                    Some(tab) => tab.update(cx, |t, cx| {
-                        t.plan_view().update(cx, |v, cx| v.on_history(entries, cx))
-                    }),
-                    None => self.history = entries,
+                let redis = self.tabs.iter().find_map(|t| match t {
+                    Tab::Redis(r) if r.read(cx).owns_history(request) => Some(r.clone()),
+                    _ => None,
+                });
+                if let Some(tab) = redis {
+                    tab.update(cx, |t, _| t.on_history(&entries));
+                } else {
+                    match self.plan_tab(cx, |v| v.owns_history(request)) {
+                        Some(tab) => tab.update(cx, |t, cx| {
+                            t.plan_view().update(cx, |v, cx| v.on_history(entries, cx))
+                        }),
+                        None => self.history = entries,
+                    }
                 }
             }
             Event::Plan {

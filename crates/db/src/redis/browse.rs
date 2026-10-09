@@ -44,6 +44,32 @@ impl KeyKind {
         }
     }
 
+    /// The name `TYPE` reports and `SCAN … TYPE` takes (`zset`, `ReJSON-RL`).
+    pub fn type_name(&self) -> &str {
+        match self {
+            KeyKind::String => "string",
+            KeyKind::List => "list",
+            KeyKind::Set => "set",
+            KeyKind::ZSet => "zset",
+            KeyKind::Hash => "hash",
+            KeyKind::Stream => "stream",
+            KeyKind::Json => "ReJSON-RL",
+            KeyKind::Missing => "none",
+            KeyKind::Other(t) => t,
+        }
+    }
+
+    /// The kinds the key list can be filtered by, in menu order (JSON needs RedisJSON).
+    pub const FILTERS: [KeyKind; 7] = [
+        KeyKind::String,
+        KeyKind::List,
+        KeyKind::Set,
+        KeyKind::ZSet,
+        KeyKind::Hash,
+        KeyKind::Stream,
+        KeyKind::Json,
+    ];
+
     /// Short label for badges (`STR`, `HASH`).
     pub fn badge(&self) -> &str {
         match self {
@@ -267,24 +293,48 @@ impl KeyEdit {
     }
 }
 
-/// One `SCAN` page matching `pattern` (glob, `*` for all), with each key's type.
-pub async fn scan(c: &mut RedisClient, cursor: u64, pattern: &str, count: u32) -> Result<ScanPage> {
+/// The `SCAN` arguments for one page; `kind` adds `TYPE <name>` (Redis 6.0+).
+pub fn scan_args(cursor: u64, pattern: &str, kind: Option<&KeyKind>, count: u32) -> Vec<String> {
     let pattern = if pattern.trim().is_empty() {
         "*"
     } else {
         pattern.trim()
     };
-    let r = c
-        .call(&[
-            "SCAN",
-            &cursor.to_string(),
-            "MATCH",
-            pattern,
-            "COUNT",
-            &count.max(1).to_string(),
-        ])
-        .await?
-        .ok()?;
+    let mut args = vec![
+        "SCAN".to_owned(),
+        cursor.to_string(),
+        "MATCH".to_owned(),
+        pattern.to_owned(),
+        "COUNT".to_owned(),
+        count.max(1).to_string(),
+    ];
+    if let Some(k) = kind {
+        args.push("TYPE".to_owned());
+        args.push(k.type_name().to_owned());
+    }
+    args
+}
+
+/// One `SCAN` page matching `pattern` (glob, `*` for all), with each key's type; `kind`
+/// keeps only keys of that type (`SCAN … TYPE`, or filtered here on servers before 6.0).
+pub async fn scan(
+    c: &mut RedisClient,
+    cursor: u64,
+    pattern: &str,
+    kind: Option<&KeyKind>,
+    count: u32,
+) -> Result<ScanPage> {
+    let args = scan_args(cursor, pattern, kind, count);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let r = match c.call(&refs).await? {
+        // Servers before 6.0 reject the TYPE option: scan everything and filter below.
+        Reply::Error(e) if kind.is_some() && e.to_ascii_lowercase().contains("syntax") => {
+            let args = scan_args(cursor, pattern, None, count);
+            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            c.call(&refs).await?.ok()?
+        }
+        r => r.ok()?,
+    };
     let [next, keys] = r.items() else {
         return Err(DbError::Protocol("unexpected SCAN reply".into()));
     };
@@ -330,7 +380,7 @@ pub async fn scan(c: &mut RedisClient, cursor: u64, pattern: &str, count: u32) -
                 .and_then(Reply::int)
                 .and_then(|m| u64::try_from(m).ok()),
         })
-        .filter(|e| e.kind != KeyKind::Missing)
+        .filter(|e| e.kind != KeyKind::Missing && kind.is_none_or(|k| *k == e.kind))
         .collect();
     out.sort_by(|a, b| a.key.cmp(&b.key));
     Ok(ScanPage {
@@ -577,6 +627,27 @@ mod tests {
         };
         assert!(d.truncated());
         assert!(!KeyDetails { len: 1, ..d }.truncated());
+    }
+
+    #[test]
+    fn scan_args_add_the_type_filter() {
+        assert_eq!(
+            scan_args(0, " ", None, 0),
+            ["SCAN", "0", "MATCH", "*", "COUNT", "1"]
+        );
+        assert_eq!(
+            scan_args(17, "user:*", Some(&KeyKind::ZSet), 500),
+            [
+                "SCAN", "17", "MATCH", "user:*", "COUNT", "500", "TYPE", "zset"
+            ]
+        );
+        assert_eq!(
+            scan_args(0, "*", Some(&KeyKind::Json), 10)[6..],
+            ["TYPE", "ReJSON-RL"]
+        );
+        for k in KeyKind::FILTERS {
+            assert_eq!(KeyKind::parse(k.type_name()), k);
+        }
     }
 
     #[test]
