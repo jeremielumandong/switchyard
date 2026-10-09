@@ -2278,7 +2278,7 @@ impl Workspace {
         let core = self.core.clone();
         match &r.conn {
             None if r.key == "favorites" => {
-                self.explorer.favorites_open = !self.explorer.favorites_open;
+                self.explorer.toggle_favorites();
             }
             Some(id) if r.fav.is_none() && !r.key.starts_with("fav:") => {
                 if let Some(s) = self.explorer.state_mut(id) {
@@ -2322,7 +2322,7 @@ impl Workspace {
         };
         let r = &rows[ix];
         let expanded = match &r.conn {
-            None => self.explorer.favorites_open,
+            None => self.explorer.favorites_open(),
             Some(id) => self
                 .explorer
                 .state(id)
@@ -2451,14 +2451,20 @@ impl Workspace {
     /// A pin was clicked: reveal it in its connection's tree, connecting and expanding
     /// as needed; it is selected once its folder has loaded.
     pub(crate) fn reveal_favorite(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(f) = self.explorer.favorites.iter().find(|f| f.id == id).cloned() else {
+        let Some(f) = self
+            .explorer
+            .favorites()
+            .iter()
+            .find(|f| f.id == id)
+            .cloned()
+        else {
             return;
         };
         let Some(conn) = self.profiles.db(&f.connection_id).cloned() else {
             self.toast("The connection of this pin no longer exists", cx);
             return;
         };
-        if !self.explorer.filter.is_empty() {
+        if !self.explorer.filter().is_empty() {
             self.schema_search
                 .update(cx, |i, cx| i.set_value("", window, cx));
             let core = self.core.clone();

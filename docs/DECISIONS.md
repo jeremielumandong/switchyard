@@ -1109,3 +1109,20 @@ commands.
 - **Console history** for Up / Down comes from the connection's stored query history (the
   console already records each line, masked), not a separate store; lines that carry a
   secret and coding-agent lines are not recalled.
+
+
+## 2026-10-09 — UI-thread performance follow-ups
+
+- **Schema tree rows** are cached (`Explorer::rows()` returns a shared `Rc<[TreeRow]>`).
+  The tree-shaping fields are private, so every change goes through a `&mut` method that
+  drops the cache; reading fields like `cursor` or `active` does not rebuild.
+- **Grid row filter**: below 50,000 loaded rows it stays synchronous (it takes a few ms);
+  above, it waits 150 ms after the last keystroke and scans on GPUI's background executor.
+  Each keystroke bumps a generation; the scan checks it per batch and a stale result is
+  dropped. Rows streamed in during the scan join the view unfiltered, like `push` does.
+- **Terminal search** is debounced 120 ms and scans on the background executor with the
+  same generation scheme (`Terminal::begin_search` / `search_as`); it is not incremental.
+- **API workbench**: the collection rail is a `list()` over rows named by identity
+  (`RailItem`) and re-measures only the rows that changed; the History table rows are a
+  `uniform_list` capped at 560 px that scrolls inside the page. The body's JSON check is
+  cached by content.
