@@ -557,18 +557,21 @@ impl Workspace {
                 ("-", "", false, "".into()),
                 ("close_all", "Close all", false, "".into()),
             ],
-            CtxTarget::Profile(id) if self.profiles.db(id).is_some() => vec![
-                ("open", "Open", false, "↵".into()),
-                ("new_query", "New query here", false, "".into()),
-                ("edit", "Edit…", false, "".into()),
-                ("-", "", false, "".into()),
-                ("explore", "Show in explorer", false, "".into()),
-                ("refresh_schema", "Refresh schema", false, "".into()),
-                ("activity", "Activity monitor", false, "".into()),
-                ("disconnect", "Disconnect", false, "".into()),
-                ("-", "", false, "".into()),
-                ("delete", "Delete", true, "".into()),
-            ],
+            // Redis has no queries, schema or activity: the plain profile menu.
+            CtxTarget::Profile(id) if self.profiles.db(id).is_some_and(|d| d.engine.is_sql()) => {
+                vec![
+                    ("open", "Open", false, "↵".into()),
+                    ("new_query", "New query here", false, "".into()),
+                    ("edit", "Edit…", false, "".into()),
+                    ("-", "", false, "".into()),
+                    ("explore", "Show in explorer", false, "".into()),
+                    ("refresh_schema", "Refresh schema", false, "".into()),
+                    ("activity", "Activity monitor", false, "".into()),
+                    ("disconnect", "Disconnect", false, "".into()),
+                    ("-", "", false, "".into()),
+                    ("delete", "Delete", true, "".into()),
+                ]
+            }
             CtxTarget::Profile(_) => vec![
                 ("open", "Open", false, "↵".into()),
                 ("edit", "Edit…", false, "".into()),
