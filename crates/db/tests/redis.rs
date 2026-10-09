@@ -84,6 +84,16 @@ async fn browses_and_edits_every_type() {
     assert!(kinds.contains(&(b"bin\xff".to_vec(), KeyKind::String)));
     let only_h = browse::scan(&mut c, 0, "h:*", 100).await.unwrap();
     assert_eq!(only_h.keys.len(), 1);
+    // The key list's TTL and size columns.
+    assert_eq!(only_h.keys[0].ttl_ms, None);
+    assert!(only_h.keys[0].memory.is_some_and(|m| m > 0));
+    c.call(&["EXPIRE", "s:1", "100"]).await.unwrap();
+    let s1 = browse::scan(&mut c, 0, "s:*", 100).await.unwrap();
+    assert!(
+        s1.keys[0]
+            .ttl_ms
+            .is_some_and(|t| t > 90_000 && t <= 100_000)
+    );
 
     let d = browse::load(&mut c, b"h:1", 100).await.unwrap();
     assert_eq!(d.len, 2);
