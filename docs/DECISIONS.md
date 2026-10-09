@@ -1254,3 +1254,15 @@ commands.
   converters tag nodes with the `model::warn` texts and the rule only reads those. Plans
   with no row counts at all (SQLite, MongoDB estimates) flag every full scan and temp
   structure at Low severity, since the plan cannot say how large they are.
+
+- **Graceful TLS close (CI fix).** suppaftp's rustls stream sends `close_notify` and drops
+  the socket at once. A TLS 1.3 server's session tickets are still unread in an upload's
+  socket, so the kernel answers the close with RST and discards unsent data; on a slower
+  machine (GitHub runners, through docker-proxy) vsftpd then lost the tail of the upload and
+  replied `426 Failure reading network stream`. `remote::ftp_tls` plugs its own stream into
+  suppaftp's connector traits: shutdown sends `close_notify` + FIN, then reads until the
+  server closes (at most 10 s), and a second shutdown is a no-op. Reproduced locally by
+  pausing docker-proxy during an upload; `ftp_tls::tests` covers it without docker.
+- **Every resolved address.** `localhost` resolves to `::1` first on the runners, where the
+  host-network test server listens on 127.0.0.1 only; connecting now tries each address
+  until one answers (a TLS or protocol error stops the search).

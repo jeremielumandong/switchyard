@@ -275,3 +275,6 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
   timeout: it is best effort with a 2 s limit.
 - vsftpd applies `-o` options and the config file in argument order: put the file first or
   its `background=YES` overrides `-obackground=NO` and the container exits.
+- Closing a TCP socket with unread received data sends RST and drops unsent data. TLS 1.3
+  servers send session tickets after the handshake that a pure upload never reads, so an
+  upload must read until the server closes before dropping the socket (`remote::ftp_tls`).
