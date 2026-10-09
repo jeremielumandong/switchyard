@@ -94,9 +94,9 @@ impl ConnKind {
         matches!(self, ConnKind::Db(e) if e.is_sql())
     }
 
-    /// Whether coding agents may use it: SQL engines only (MongoDB has no agent tools yet).
+    /// Whether coding agents may use it: every database, and Hosts (each command approved).
     fn agents_apply(self) -> bool {
-        matches!(self, ConnKind::Db(e) if e.is_sql() && !e.is_document_store())
+        matches!(self, ConnKind::Db(_) | ConnKind::Ssh)
     }
 
     fn sub(self) -> &'static str {
@@ -220,7 +220,11 @@ impl ConnEditor {
                 .unwrap_or(EnvironmentLabel::Development),
             read_only: matches!(&existing, Some(Profile::Db(d)) if d.read_only),
             history: !matches!(&existing, Some(Profile::Db(d)) if !d.history_enabled),
-            agents: matches!(&existing, Some(Profile::Db(d)) if d.agent_access),
+            agents: match &existing {
+                Some(Profile::Db(d)) => d.agent_access,
+                Some(Profile::Host(h)) => h.agent_access,
+                _ => false,
+            },
             test: TestState::Idle,
             card: None,
             driver_path: driver_card::path_input(window, cx),
@@ -633,6 +637,7 @@ impl ConnEditor {
                     vec![ProfileId(jump)]
                 };
                 h.environment = self.env;
+                h.agent_access = self.agents;
                 h.forwards = self
                     .forwards
                     .iter()
@@ -1142,7 +1147,7 @@ impl Render for ConnEditor {
         };
         let layout = self.layout(cx);
         let fields: Vec<AnyElement> = layout.iter().map(|f| self.field(f, &p, cx)).collect();
-        let assistant_field = (self.kind.agents_apply() && self.agents).then(|| {
+        let assistant_field = (self.kind.is_db() && self.agents).then(|| {
             div()
                 .w(px(300.))
                 .child(self.field(&Field::new("assistant", "Assistant CLI"), &p, cx))
@@ -1438,7 +1443,13 @@ impl Render for ConnEditor {
                                 )
                             })
                             .when(self.kind.agents_apply(), |d| {
-                                let label = if self.env.is_production() {
+                                let label = if self.kind == ConnKind::Ssh {
+                                    "Allow coding agents (each command waits for your approval \
+                                     in the assistant panel; every command is recorded in history)"
+                                } else if self.kind == ConnKind::Db(Engine::Redis) {
+                                    "Allow coding agents (read-only commands; every call is \
+                                     recorded in history)"
+                                } else if self.env.is_production() {
                                     "Allow coding agents (Production: read-only queries and \
                                      estimated plans; every call is recorded in history)"
                                 } else {

@@ -721,6 +721,26 @@ pub enum Command {
         /// Run id.
         run: AgentRunId,
     },
+    /// The user's answer to [`Event::AgentApproval`]: run the command, or refuse it.
+    AnswerAgentApproval {
+        /// The approval's id.
+        id: u64,
+        /// Run it.
+        approve: bool,
+    },
+    /// Run one read-only Redis command for a coding agent ([`Event::RedisReply`]). Only
+    /// commands that read (not `KEYS`, which blocks the server) are run; every call is
+    /// recorded in history with `tags`, whatever the connection's history setting.
+    AgentRedis {
+        /// A Redis session opened with [`Command::RedisOpen`].
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// The line, `redis-cli` quoting.
+        line: String,
+        /// History tags (`agent` is always added).
+        tags: Vec<String>,
+    },
     /// Start the CLI interactively in a local terminal with Switchyard's tools attached
     /// ("Open in terminal"); answers like [`Command::OpenTerminal`].
     OpenAgentTerminal {
@@ -1212,6 +1232,14 @@ pub enum Event {
         /// Request id.
         request: RequestId,
     },
+    /// A coding agent asks to run a command on a Host: show it and answer with
+    /// [`Command::AnswerAgentApproval`]. Nothing runs until the user approves.
+    AgentApproval(AgentApproval),
+    /// An approval is no longer waiting (answered, timed out, or the agent went away).
+    AgentApprovalClosed {
+        /// The approval's id.
+        id: u64,
+    },
     /// What an assistant run did ([`Command::RunAgent`]); `Exited` is its last event.
     Agent {
         /// Run id.
@@ -1272,6 +1300,23 @@ pub enum Event {
         /// Message.
         message: String,
     },
+}
+
+/// A command a coding agent wants to run on a Host ([`Event::AgentApproval`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentApproval {
+    /// Id to answer with.
+    pub id: u64,
+    /// The CLI asking.
+    pub agent: switchyard_agents::AgentKind,
+    /// The Host.
+    pub host: ProfileId,
+    /// The Host's name.
+    pub host_name: String,
+    /// The Host's environment label.
+    pub environment: switchyard_store::EnvironmentLabel,
+    /// The shell command, exactly as it would run.
+    pub command: String,
 }
 
 /// A connected Redis server ([`Event::RedisOpened`]).

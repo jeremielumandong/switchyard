@@ -569,6 +569,15 @@ server or bundled Unix tools on Windows (Tier 3).
   can cross runs and Ctrl/Cmd+C copies them in reading order. Answers get "Copy answer"
   (the CLI's text, fences kept) and SQL cards "Copy". Checked under Xvfb with a scripted CLI.
   Deferred: Markdown rendering of answers.
+- [x] UX-12 Assistant for every datasource (user request, 2026-10-09): "Allow coding agents"
+  on Redis, MongoDB and SSH Hosts (`Host::agent_access`, off by default). The panel follows the
+  active tab (SQL, Redis, object/activity/ER tabs, SSH terminal). MCP: `redis_command` (Read
+  class only, no KEYS; `Command::AgentRedis`, always in history), MongoDB `run_query` with the
+  shell parser's read-only check, `list_connections` lists Hosts, `run_ssh_command` goes to
+  the app over the handoff socket, which checks the run's token, shows an approval card
+  (Run / Deny) and runs it on the Host's shared SSH session (`SshConn::run_command`: 64 KB per
+  stream, timeout); every request is in history tagged `agent`, `agent:<cli>`, `ssh`.
+  Note: integration test for `run_command` needs the docker SSH server (not run here).
 
 ## Extra — Redis (user request, 2026-10-08)
 
@@ -766,8 +775,7 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   exercise the driver against a real account; OAuth (external browser) sign-in.
 - API workspace: port AgentOps's Workbench UI tests; persist workbench preferences (they live
   in session memory for now); per-project collections (`current_project()` returns None).
-- MongoDB: transactions on replica sets, `explain` → `PlanNode`, agent `run_query` with the
-  shell parser's read-only check, document edits from the grid (by `_id`), `$currentOp`
+- MongoDB: transactions on replica sets, `explain` → `PlanNode`, document edits from the grid (by `_id`), `$currentOp`
   activity monitor, X.509 / AWS / OIDC sign-in.
 - Release workflow for macOS (`build-macos.sh` + notarization) next to the Linux and Windows ones.
 - Log file for release builds (Windows GUI subsystem hides stdout).
@@ -785,3 +793,5 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   parses and reformats the JSON body on every render; the collection rail and history are not
   virtualized. Terminal search rescans the whole scrollback on the UI thread per keystroke.
   The grid row filter still runs on the UI thread per keystroke (now allocation-free).
+- Assistant on Hosts: "always allow this command on this Host" for repeat read-only commands;
+  approvals from an interactive "Open in terminal" run show in the panel, not the terminal.

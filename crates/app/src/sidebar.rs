@@ -1304,6 +1304,8 @@ impl Workspace {
     /// view (added, expanded and connected when it is not in the explorer yet). Other
     /// nodes keep their state.
     pub(crate) fn sync_schema(&mut self, cx: &mut Context<Self>) {
+        // The assistant follows the active tab too (databases, Redis, SSH terminals).
+        self.sync_assistant(cx);
         let conn = self
             .active_sql()
             .and_then(|t| t.read(cx).connection.clone());
