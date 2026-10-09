@@ -712,6 +712,9 @@ pub enum Command {
         prompt: String,
         /// Conversation to continue.
         resume: Option<String>,
+        /// Whether the run may use database connections at all. `false` (an API Workbench
+        /// question) gives the run no connection, whatever `connection` says.
+        databases: bool,
     },
     /// Stop a run (its CLI and everything it started).
     CancelAgent {
