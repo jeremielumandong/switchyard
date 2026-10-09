@@ -1698,6 +1698,28 @@ impl Workspace {
                 .child(
                     div()
                         .flex()
+                        .items_center()
+                        .gap(px(12.))
+                        .child(
+                            ui::checkbox(
+                                "set-update-check",
+                                self.updates.enabled,
+                                "Check for updates at startup (GitHub Releases)",
+                                p,
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let on = !this.updates.enabled;
+                                this.set_update_checks(on, cx)
+                            })),
+                        )
+                        .child(
+                            ui::button("set-update-now", "Check now", Kind::Ghost, p)
+                                .on_click(cx.listener(|this, _, _, cx| this.check_for_updates(cx))),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
                         .gap(px(8.))
                         .pt(px(8.))
                         .child(
@@ -1720,6 +1742,10 @@ impl Workspace {
                             .on_click(cx.listener(|this, _, w, cx| {
                                 this.run_command(crate::actions::CommandId::ImportSshConfig, w, cx)
                             })),
+                        )
+                        .child(
+                            ui::button("set-log-folder", "Open log folder", Kind::Secondary, p)
+                                .on_click(cx.listener(|this, _, _, cx| this.open_log_folder(cx))),
                         ),
                 )
                 .into_any_element(),

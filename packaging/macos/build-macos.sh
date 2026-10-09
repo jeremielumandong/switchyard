@@ -7,6 +7,8 @@
 #   MACOS_SIGN_IDENTITY       "Developer ID Application: Name (TEAMID)"  -> codesign app + dmg
 #   MACOS_INSTALLER_IDENTITY  "Developer ID Installer: Name (TEAMID)"    -> sign .pkg
 #   MACOS_NOTARY_PROFILE      keychain profile from `xcrun notarytool store-credentials`
+#   MACOS_NOTARY_KEYCHAIN     keychain holding that profile (default: the login keychain; CI uses a temporary one)
+# shellcheck source=packaging/lib.sh
 source "$(dirname "$0")/../lib.sh"
 
 ARCH="universal"
@@ -19,7 +21,7 @@ while [[ $# -gt 0 ]]; do
     --no-dmg) MAKE_DMG=0; shift ;;
     --no-pkg) MAKE_PKG=0; shift ;;
     --skip-build) SKIP_BUILD=1; shift ;;
-    -h|--help) sed -n '2,11p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -38,7 +40,7 @@ case "$ARCH" in
   *) die "--arch must be universal, arm64 or x86_64" ;;
 esac
 
-cd "$REPO_ROOT"
+cd "$REPO_ROOT" || exit 1
 
 if [[ $SKIP_BUILD -eq 0 ]]; then
   for t in "${TARGETS[@]}"; do
@@ -80,15 +82,8 @@ sed -e "s|@APP_NAME@|$APP_NAME|g" -e "s|@APP_BIN@|$APP_BIN|g" -e "s|@APP_ID@|$AP
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 cp "$REPO_ROOT/crates/app/assets/fonts/OFL-Geist.txt" "$APP/Contents/Resources/"
 
-ICONSET="$WORK/$APP_NAME.iconset"
-mkdir -p "$ICONSET"
-SRC_ICON="$PACKAGING_DIR/icons/switchyard.png"
-for s in 16 32 128 256 512; do
-  sips -z $s $s "$SRC_ICON" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
-  sips -z $((s * 2)) $((s * 2)) "$SRC_ICON" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
-done
-iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/$APP_NAME.icns"
-rm -rf "$ICONSET"
+# Rendered from packaging/icons/switchyard.svg by packaging/icons/generate.py (Apple's icon grid).
+cp "$PACKAGING_DIR/icons/switchyard.icns" "$APP/Contents/Resources/$APP_NAME.icns"
 
 # Extended attributes (quarantine, provenance) break signatures and leak into the .pkg as ._ files.
 xattr -cr "$APP"
@@ -111,7 +106,9 @@ fi
 notarize() {
   [[ -n "${MACOS_NOTARY_PROFILE:-}" ]] || return 0
   log "notarizing $(basename "$1")"
-  xcrun notarytool submit "$1" --keychain-profile "$MACOS_NOTARY_PROFILE" --wait
+  local kc=()
+  [[ -n "${MACOS_NOTARY_KEYCHAIN:-}" ]] && kc=(--keychain "$MACOS_NOTARY_KEYCHAIN")
+  xcrun notarytool submit "$1" --keychain-profile "$MACOS_NOTARY_PROFILE" ${kc[@]+"${kc[@]}"} --wait
   xcrun stapler staple "$1"
 }
 

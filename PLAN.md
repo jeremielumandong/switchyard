@@ -718,6 +718,9 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 - [ ] **M6-1 macOS.** Universal binary, app bundle, signing, notarization, DMG, Homebrew cask.
   Partial: `packaging/macos/build-macos.sh` builds the universal app, `.dmg` and `.pkg`, with optional
   signing/notarization via env vars (not yet exercised with a real Developer ID). Cask pending.
+  `release-macos.yml` builds the universal DMG on macos-15 and signs + notarizes it only when the
+  `APPLE_*` secrets exist (else an unsigned DMG, uploaded only on request). Not run yet: no macOS
+  runner or certificate was available to test it; signing untested.
 - [ ] **M6-2 Windows.** Signed MSI, winget manifest.
   Partial: NSIS installer via `packaging/windows/build-windows.ps1` (optional signtool signing).
   `release-windows.yml` builds it with a static CRT, signs the exes, uninstaller and installer
@@ -729,6 +732,10 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   SHA-256); `release.yml` builds it on Ubuntu 22.04 and uploads to the draft release.
   `.deb`, `.rpm`, AUR pending.
 - [ ] **M6-4 Auto-update.** Signed updates on macOS and Windows; Linux defers to package managers.
+  Partial: `core::update` checks GitHub Releases (startup in release builds, Settings toggle,
+  "Check for Updates"), shows a status-bar notice linking the release; with a build-time
+  `SWITCHYARD_UPDATE_PUBKEY` it downloads the installer and keeps it only if its minisign
+  signature verifies. No key configured yet (notify only); no in-place replace.
 - [ ] **M6-5 Performance gates.** CI jobs that fail when a budget from CLAUDE.md is exceeded.
 - [ ] **M6-6 Crash reporting.** Opt-in, scrubbed of SQL text, hostnames and credentials;
   telemetry off by default.
@@ -777,9 +784,6 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   in session memory for now); per-project collections (`current_project()` returns None).
 - MongoDB: transactions on replica sets, `explain` → `PlanNode`, document edits from the grid (by `_id`), `$currentOp`
   activity monitor, X.509 / AWS / OIDC sign-in.
-- Release workflow for macOS (`build-macos.sh` + notarization) next to the Linux and Windows ones.
-- Log file for release builds (Windows GUI subsystem hides stdout).
-- Real app icon to replace the generated placeholder in `packaging/icons/`.
 
 - Smoke tests for the SQL Server, SSH and FTP containers (M0-2).
 - Grid frame-time harness (M1-16).
@@ -795,3 +799,8 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   The grid row filter still runs on the UI thread per keystroke (now allocation-free).
 - Assistant on Hosts: "always allow this command on this Host" for repeat read-only commands;
   approvals from an interactive "Open in terminal" run show in the panel, not the terminal.
+- Release readiness leftovers: X11 window icon (`WindowOptions::icon` needs the `image` crate as
+  a direct dependency); hicolor PNGs (`packaging/icons/png/`) into the AppImage / future `.deb`;
+  sign release installers with minisign and set `SWITCHYARD_UPDATE_PUBKEY` so M6-4 can offer
+  verified installers; run `release-macos.yml` once with real Apple secrets; Windows icon
+  resource (`app/build.rs`) only checked with `llvm-cvtres`, not linked on Windows yet.

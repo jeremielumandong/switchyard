@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Switchyard icon simplified for 16-32 px: the same tracks with heavier strokes and no detail. -->
+  <rect x="0" y="0" width="1024" height="1024" rx="192" fill="#18181D"/>
+  <g fill="none" stroke-width="150" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 170 236 H 290 C 450 236 450 512 600 512" stroke="#BD9FF2"/>
+    <path d="M 170 788 H 290 C 450 788 450 512 600 512" stroke="#4FC9B0"/>
+    <path d="M 170 512 H 600" stroke="#5AA3EC"/>
+    <path d="M 580 512 H 860" stroke="#E7E7EA"/>
+  </g>
+</svg>

@@ -9502,6 +9502,7 @@ dependencies = [
  "switchyard-core",
  "sxd-document",
  "sxd-xpath",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

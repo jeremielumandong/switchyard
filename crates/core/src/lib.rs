@@ -16,6 +16,7 @@ pub mod runtime;
 pub mod service;
 pub mod ssh_import;
 pub mod terminals;
+pub mod update;
 
 pub use bus::{
     AgentApproval, Command, Event, FetchLimit, FsOp, FsRef, OnConflict, PromptAnswer, QueryEvent,

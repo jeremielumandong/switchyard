@@ -776,6 +776,11 @@ pub enum Command {
         /// The new key's fingerprint, as shown to the user.
         fingerprint: String,
     },
+    /// Ask GitHub Releases for a newer version ([`Event::UpdateStatus`]).
+    CheckForUpdates {
+        /// The user asked (show "up to date" and failures, not only a newer version).
+        manual: bool,
+    },
 }
 
 /// Events from a running query.
@@ -834,6 +839,13 @@ pub enum QueryEvent {
 /// Events for the UI.
 #[derive(Clone, Debug)]
 pub enum Event {
+    /// Answer to [`Command::CheckForUpdates`].
+    UpdateStatus {
+        /// Echoes the command's `manual`.
+        manual: bool,
+        /// What the check found.
+        status: crate::update::UpdateStatus,
+    },
     /// What importing `~/.ssh/config` would add (answer to `PreviewSshConfig`).
     SshConfigPreview {
         /// The file read.

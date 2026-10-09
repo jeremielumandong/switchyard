@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Switchyard app icon: three tracks converge through a switch onto one main line.
+       Source of truth for 48 px and up; generate.py renders the PNG / ICO / ICNS set from
+       this file and from switchyard-small.svg (16-32 px). -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#24242B"/>
+      <stop offset="1" stop-color="#111114"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.03"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="1024" height="1024" rx="228" fill="url(#bg)"/>
+  <rect x="6" y="6" width="1012" height="1012" rx="222" fill="none" stroke="url(#rim)" stroke-width="12"/>
+  <!-- Incoming tracks, then the shared main line after the switch. -->
+  <g fill="none" stroke-width="84" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 232 272 H 330 C 470 272 470 512 610 512" stroke="#BD9FF2"/>
+    <path d="M 232 752 H 330 C 470 752 470 512 610 512" stroke="#4FC9B0"/>
+    <path d="M 232 512 H 610" stroke="#5AA3EC"/>
+    <path d="M 600 512 H 830" stroke="#E7E7EA"/>
+  </g>
+  <!-- Buffer stops at the yard end of each track. -->
+  <g fill="#141418" stroke-width="40">
+    <circle cx="200" cy="272" r="62" stroke="#BD9FF2"/>
+    <circle cx="200" cy="512" r="62" stroke="#5AA3EC"/>
+    <circle cx="200" cy="752" r="62" stroke="#4FC9B0"/>
+  </g>
+</svg>
