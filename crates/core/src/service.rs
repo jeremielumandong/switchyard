@@ -595,6 +595,28 @@ impl Service {
             Command::ReconnectTerminal { term } => {
                 self.terminals.send(term, TermInput::Reconnect);
             }
+            Command::StartTerminalLog { term, settings } => {
+                let terminals = self.terminals.clone();
+                let dir = self.data_dir.join("terminal-logs");
+                let started = tokio::task::spawn_blocking(move || {
+                    terminals.start_log(term, &settings, &dir)
+                })
+                .await;
+                let state = match started {
+                    Ok(Ok(path)) => crate::bus::TermLogState::Started(path),
+                    Ok(Err(message)) => crate::bus::TermLogState::Failed(message),
+                    Err(e) => crate::bus::TermLogState::Failed(e.to_string()),
+                };
+                self.emit(Event::TerminalLog { term, state });
+            }
+            Command::StopTerminalLog { term } => {
+                let terminals = self.terminals.clone();
+                let _ = tokio::task::spawn_blocking(move || terminals.stop_log(term)).await;
+                self.emit(Event::TerminalLog {
+                    term,
+                    state: crate::bus::TermLogState::Stopped,
+                });
+            }
             Command::AnswerPrompt { request, answer } => self.prompter.answer(request, answer),
             Command::AcceptChangedHostKey { host, fingerprint } => {
                 self.ssh.accept_changed_key(&host.0, &fingerprint);

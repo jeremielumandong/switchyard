@@ -118,6 +118,8 @@ pub struct Workspace {
     pub(crate) assistant: switchyard_core::agent_run::AssistantSettings,
     /// The Assistant settings page, once opened.
     pub(crate) assistant_view: Option<Entity<crate::assistant_settings::AssistantSettingsView>>,
+    /// The Terminal settings page, once opened.
+    pub(crate) terminal_view: Option<Entity<crate::terminal_settings::TerminalSettingsView>>,
     /// The assistant panel (right side).
     pub(crate) assistant_panel: Entity<crate::assistant_panel::AssistantPanel>,
     pub(crate) assistant_open: bool,
@@ -189,6 +191,9 @@ impl Workspace {
         });
         core.send(Command::LoadSetting {
             key: switchyard_core::agent_run::ASSISTANT_SETTINGS_KEY.into(),
+        });
+        core.send(Command::LoadSetting {
+            key: switchyard_core::term_settings::TERMINAL_SETTINGS_KEY.into(),
         });
         core.send(Command::DetectComponents);
         // Pins and the explorer's connection nodes (DBX-5e).
@@ -277,6 +282,7 @@ impl Workspace {
             components: Vec::new(),
             assistant: Default::default(),
             assistant_view: None,
+            terminal_view: None,
             assistant_panel,
             assistant_open: false,
             drivers: Default::default(),
@@ -412,6 +418,14 @@ impl Workspace {
                 // OSC 52 copy: allowed (it only writes); reading the clipboard is never offered.
                 cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
             }
+            Event::TerminalLog { term, state } => {
+                if let switchyard_core::TermLogState::Failed(m) = &state {
+                    self.toast(format!("Terminal log: {m}"), cx);
+                }
+                if let Some(t) = self.terminal_tab(term, cx) {
+                    t.update(cx, |t, cx| t.on_log(term, state, cx));
+                }
+            }
             Event::TerminalExited {
                 term,
                 code,
@@ -503,6 +517,14 @@ impl Workspace {
                 if let Some(w) = value.as_ref().and_then(|v| v.as_f64()) {
                     self.sidebar_width = (w as f32).max(crate::sidebar::SIDEBAR_MIN);
                 }
+            }
+            Event::Setting { key, value }
+                if key == switchyard_core::term_settings::TERMINAL_SETTINGS_KEY =>
+            {
+                let s = value
+                    .and_then(|v| serde_json::from_value(v).ok())
+                    .unwrap_or_default();
+                crate::terminal_settings::apply(s, cx);
             }
             Event::Setting { key, value }
                 if key == switchyard_core::agent_run::ASSISTANT_SETTINGS_KEY =>

@@ -30,17 +30,19 @@ pub enum SettingsPage {
     Keybindings,
     Drivers,
     Assistant,
+    Terminal,
     Security,
 }
 
 impl SettingsPage {
-    const ALL: [SettingsPage; 7] = [
+    const ALL: [SettingsPage; 8] = [
         SettingsPage::General,
         SettingsPage::Editor,
         SettingsPage::Appearance,
         SettingsPage::Keybindings,
         SettingsPage::Drivers,
         SettingsPage::Assistant,
+        SettingsPage::Terminal,
         SettingsPage::Security,
     ];
 
@@ -52,6 +54,7 @@ impl SettingsPage {
             SettingsPage::Keybindings => "Keybindings",
             SettingsPage::Drivers => "Drivers",
             SettingsPage::Assistant => "Assistant",
+            SettingsPage::Terminal => "Terminal",
             SettingsPage::Security => "Security",
         }
     }
@@ -1642,6 +1645,20 @@ impl Workspace {
                     }
                 };
                 crate::assistant_settings::element(&view)
+            }
+            SettingsPage::Terminal => {
+                let view = match &self.terminal_view {
+                    Some(v) => v.clone(),
+                    None => {
+                        let core = self.core.clone();
+                        let v = cx.new(|cx| {
+                            crate::terminal_settings::TerminalSettingsView::new(core, window, cx)
+                        });
+                        self.terminal_view = Some(v.clone());
+                        v
+                    }
+                };
+                crate::terminal_settings::element(&view)
             }
             SettingsPage::Appearance => div()
                 .flex()

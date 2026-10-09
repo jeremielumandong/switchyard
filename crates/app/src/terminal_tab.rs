@@ -23,7 +23,7 @@ use switchyard_core::term::input::{
 };
 use switchyard_core::term::links::url_at;
 use switchyard_core::term::{CursorShape, Mark, Snapshot, TermColor, TermSize, Terminal};
-use switchyard_core::{Command, RuntimeHandle, TermId, TermStatus, TermTarget};
+use switchyard_core::{Command, RuntimeHandle, TermId, TermLogState, TermStatus, TermTarget};
 
 use crate::actions::{TermCopy, TermFind, TermPaste, TermSplit};
 use crate::app_state::next_id;
@@ -84,6 +84,8 @@ struct Pane {
     snapshot: Rc<Snapshot>,
     selecting: bool,
     pressed: Option<TermButton>,
+    /// File the pane's output is logged to (MX-3).
+    log: Option<std::path::PathBuf>,
 }
 
 /// A terminal tab.
@@ -256,6 +258,7 @@ impl TerminalTab {
             snapshot: Rc::default(),
             selecting: false,
             pressed: None,
+            log: None,
         });
         self.active = self.panes.len() - 1;
     }
@@ -290,7 +293,43 @@ impl TerminalTab {
         if !remote {
             self.run_startup(term);
         }
+        let settings = crate::terminal_settings::settings(cx);
+        if settings.log.auto && self.owns(term) {
+            self.core.send(Command::StartTerminalLog {
+                term,
+                settings: settings.log,
+            });
+        }
         cx.notify();
+    }
+
+    /// A pane's session log started, stopped or failed.
+    pub fn on_log(&mut self, term: TermId, state: TermLogState, cx: &mut Context<Self>) {
+        if let Some(p) = self.pane_mut(term) {
+            p.log = match state {
+                TermLogState::Started(path) => Some(path),
+                TermLogState::Stopped | TermLogState::Failed(_) => None,
+            };
+        }
+        cx.notify();
+    }
+
+    /// Start or stop logging the active pane (the tab's Log button).
+    fn toggle_log(&mut self, cx: &mut Context<Self>) {
+        let Some(p) = self.panes.get(self.active) else {
+            return;
+        };
+        if p.terminal.is_none() {
+            return;
+        }
+        if p.log.is_some() {
+            self.core.send(Command::StopTerminalLog { term: p.id });
+        } else {
+            self.core.send(Command::StartTerminalLog {
+                term: p.id,
+                settings: crate::terminal_settings::settings(cx).log,
+            });
+        }
     }
 
     /// Connection state of an SSH terminal.
@@ -1429,6 +1468,9 @@ impl Render for TerminalTab {
             Some(PaneState::Blocked(_)) => (p.prod, "Blocked".to_owned()),
             None => (p.fg3, String::new()),
         };
+        let log_path = pane
+            .and_then(|p| p.log.as_ref())
+            .map(|l| l.display().to_string());
         let panes: Vec<gpui_kit::AnyElement> = (0..self.panes.len())
             .map(|i| self.render_pane(i, window, cx))
             .collect();
@@ -1513,6 +1555,28 @@ impl Render for TerminalTab {
                             cx.notify();
                         })),
                     )
+                    .child({
+                        let log = log_path.clone();
+                        ui::button(
+                            "t-log",
+                            if log.is_some() { "● Log" } else { "Log" },
+                            Kind::Ghost,
+                            &p,
+                        )
+                        .h(px(24.))
+                        .when(log.is_some(), |b| b.text_color(p.prod))
+                        .tooltip(move |window, cx| {
+                            let text = match &log {
+                                Some(path) => format!("Logging to {path} · click to stop"),
+                                None => "Log this session's output to a file (Settings → Terminal)".into(),
+                            };
+                            gpui_kit::component::tooltip::Tooltip::new(text).build(window, cx)
+                        })
+                        .on_click(cx.listener(|this, _, w, cx| {
+                            this.toggle_log(cx);
+                            this.refocus(w, cx);
+                        }))
+                    })
                     .child(
                         ui::button("t-find", "Find", Kind::Ghost, &p)
                             .h(px(24.))

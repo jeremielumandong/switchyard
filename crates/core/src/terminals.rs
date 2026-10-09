@@ -14,7 +14,21 @@ use switchyard_term::{
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use crate::bus::{Event, TermId, TermStatus};
+use std::path::{Path, PathBuf};
+
+use switchyard_term::SessionLog;
+
+use crate::bus::{Event, TermId, TermLogState, TermStatus};
+use crate::term_settings::{LogSettings, open_session_log};
+
+/// Write a stopped log's last line and flush it.
+fn finish_log(log: Option<SessionLog>) {
+    if let Some(mut log) = log
+        && let Err(e) = log.finish()
+    {
+        warn!(error = %e, "could not finish the terminal log");
+    }
+}
 
 /// Reconnect attempts after an established SSH session drops.
 const RECONNECT_ATTEMPTS: u32 = 5;
@@ -40,6 +54,8 @@ pub type InputFn = Arc<dyn Fn(TermInput) + Send + Sync>;
 #[derive(Default)]
 pub struct Terminals {
     inputs: Mutex<HashMap<TermId, InputFn>>,
+    /// Each terminal's state and a name for its log files (Host name or "local").
+    terms: Mutex<HashMap<TermId, (Terminal, String)>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -58,6 +74,10 @@ pub fn event_sink(term: TermId, events: EventSender, input: InputFn) -> EventSin
         }),
         TermEvent::Bell => events.emit(Event::TerminalBell { term }),
         TermEvent::Clipboard(text) => events.emit(Event::TerminalClipboard { term, text }),
+        TermEvent::LogFailed(message) => events.emit(Event::TerminalLog {
+            term,
+            state: TermLogState::Failed(message),
+        }),
     })
 }
 
@@ -80,11 +100,53 @@ impl Terminals {
         if let Some(f) = lock(&self.inputs).remove(&term) {
             f(TermInput::Close);
         }
+        self.forget(term);
     }
 
     /// Forget a terminal whose program ended.
     pub fn remove(&self, term: TermId) {
         lock(&self.inputs).remove(&term);
+        self.forget(term);
+    }
+
+    /// Keep a terminal's state for logging; `name` names its log files.
+    pub fn track(&self, term: TermId, terminal: &Terminal, name: &str) {
+        lock(&self.terms).insert(term, (terminal.clone(), name.to_owned()));
+    }
+
+    /// Drop a closed terminal's state, finishing its log.
+    fn forget(&self, term: TermId) {
+        if let Some((t, _)) = lock(&self.terms).remove(&term) {
+            finish_log(t.set_log(None));
+        }
+    }
+
+    /// Start logging a terminal's output to a new file (blocking file I/O; called from
+    /// a blocking task). Replaces a log already running.
+    pub fn start_log(
+        &self,
+        term: TermId,
+        settings: &LogSettings,
+        default_dir: &Path,
+    ) -> Result<PathBuf, String> {
+        let (terminal, name) = lock(&self.terms)
+            .get(&term)
+            .cloned()
+            .ok_or_else(|| "the terminal is closed".to_owned())?;
+        let (log, path) = open_session_log(settings, &name, default_dir)
+            .map_err(|e| format!("could not create the log file: {e}"))?;
+        info!(term, path = %path.display(), "terminal log started");
+        finish_log(terminal.set_log(Some(log)));
+        Ok(path)
+    }
+
+    /// Stop logging a terminal. Returns whether it was logging.
+    pub fn stop_log(&self, term: TermId) -> bool {
+        let terminal = lock(&self.terms).get(&term).map(|(t, _)| t.clone());
+        let old = terminal.and_then(|t| t.set_log(None));
+        let was = old.is_some();
+        finish_log(old);
+        was
     }
 
     /// Start a local shell. Returns the terminal for the UI.
@@ -109,7 +171,8 @@ impl Terminals {
         let sink = event_sink(term, events.clone(), input.clone());
         let (terminal, feeder) = switchyard_term::new_terminal(size, scrollback, sink);
         let registry = self.clone();
-        spawn_local(
+        self.track(term, &terminal, "local");
+        let spawned = spawn_local(
             &shell,
             size,
             feeder,
@@ -125,7 +188,11 @@ impl Terminals {
                     message: None,
                 });
             }),
-        )?;
+        );
+        if let Err(e) = spawned {
+            self.forget(term);
+            return Err(e);
+        }
         self.insert(term, input);
         Ok(terminal)
     }
@@ -219,6 +286,7 @@ impl Terminals {
         let (terminal, mut feeder) =
             switchyard_term::new_terminal(size, switchyard_term::DEFAULT_SCROLLBACK, sink);
         self.insert(term, input);
+        self.track(term, &terminal, &target.label);
         let registry = self.clone();
         tokio::spawn(async move {
             let mut attempt = 0u32;
