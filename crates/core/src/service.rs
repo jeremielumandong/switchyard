@@ -29,9 +29,9 @@ use switchyard_remote::ssh::{
 };
 use switchyard_remote::{LocalFs, RemoteFs};
 use switchyard_store::{
-    AppPaths, DbConnection, HistoryEntry, HistoryStatus, Host, HostPatch, KeychainStore,
-    MemoryStore, Profile, ProfileId, SecretRef, SecretStore, SshAuth, Store, StoreError,
-    VaultStore, now_ms,
+    AppPaths, DbConnection, FileConnection, HistoryEntry, HistoryStatus, Host, HostPatch,
+    KeychainStore, MemoryStore, Profile, ProfileId, SecretRef, SecretStore, SshAuth, Store,
+    StoreError, VaultStore, now_ms,
 };
 use switchyard_term::{LocalShell, TermSize};
 use tokio::sync::mpsc;
@@ -499,6 +499,7 @@ impl Service {
                 let removed = self.with_store(move |s| s.delete_profile(&id)).await;
                 match removed {
                     Ok(Some(p)) => {
+                        self.files.ftp.lock().await.remove(&p.id().0);
                         if let Some(key) = p.secret().cloned() {
                             let _ = self.with_secrets(move |s| s.delete(&key)).await;
                         }
@@ -583,6 +584,17 @@ impl Service {
                 secret,
             } => {
                 let result = self.test_connection(connection, secret).await;
+                self.emit(Event::TestResult {
+                    request,
+                    result: result.map_err(|e| e.to_string()),
+                });
+            }
+            Command::TestFiles {
+                request,
+                connection,
+                secret,
+            } => {
+                let result = self.test_files(connection, secret).await;
                 self.emit(Event::TestResult {
                     request,
                     result: result.map_err(|e| e.to_string()),
@@ -1173,6 +1185,7 @@ impl Service {
         let id = match fs {
             crate::bus::FsRef::Local => return Ok((Arc::new(LocalFs), cfg!(unix))),
             crate::bus::FsRef::Host(id) => id,
+            crate::bus::FsRef::Ftp(id) => return Ok((self.ftp_fs(id).await?, true)),
         };
         let mut open = self.files.sftp.lock().await;
         if let Some(f) = open.get(&id.0)
@@ -1194,6 +1207,89 @@ impl Service {
         );
         open.insert(id.0.clone(), f.clone());
         Ok((f, true))
+    }
+
+    /// The FTP file system of a saved file connection, logged in once and reused.
+    async fn ftp_fs(&self, id: &ProfileId) -> Result<Arc<dyn switchyard_remote::RemoteFs>> {
+        let mut open = self.files.ftp.lock().await;
+        if let Some(f) = open.get(&id.0) {
+            return Ok(f.clone());
+        }
+        let id2 = id.clone();
+        let Some(Profile::File(conn)) = self.with_store(move |s| s.profile(&id2)).await? else {
+            return Err(CoreError::NotFound(format!("file connection {}", id.0)));
+        };
+        let f = Arc::new(self.ftp_connect(&conn, None).await?);
+        open.insert(id.0.clone(), f.clone());
+        Ok(f)
+    }
+
+    /// Log in to an FTP file connection (`secret` overrides the stored password).
+    async fn ftp_connect(
+        &self,
+        c: &FileConnection,
+        secret: Option<SecretString>,
+    ) -> Result<switchyard_remote::FtpFs> {
+        use switchyard_remote::{FtpConfig, FtpDataMode, FtpSecurity};
+        use switchyard_store::{FileProtocol, FtpMode, FtpTls};
+        let FileProtocol::Ftp {
+            server,
+            port,
+            tls,
+            mode,
+            user,
+        } = &c.protocol
+        else {
+            return Err(CoreError::Unsupported(format!(
+                "{} is an SFTP connection",
+                c.name
+            )));
+        };
+        let password = match secret {
+            Some(s) => Some(s),
+            None => match c.secret.clone() {
+                Some(key) => self.with_secrets(move |s| s.get(&key)).await?,
+                None => None,
+            },
+        };
+        let mut cfg = FtpConfig::new(
+            server.trim(),
+            *port,
+            user.trim(),
+            password.unwrap_or_else(|| SecretString::from(String::new())),
+        );
+        cfg.security = match tls {
+            FtpTls::None => FtpSecurity::None,
+            FtpTls::Explicit => FtpSecurity::Explicit,
+            FtpTls::Implicit => FtpSecurity::Implicit,
+        };
+        cfg.mode = match mode {
+            FtpMode::Passive => FtpDataMode::Passive,
+            FtpMode::Active => FtpDataMode::Active,
+        };
+        let mut fs = switchyard_remote::FtpFs::connect(cfg, c.name.clone())
+            .await
+            .map_err(|e| CoreError::Unsupported(format!("FTP {}: {e}", c.name)))?;
+        if let Some(dir) = &c.default_path {
+            fs.set_home(dir);
+        }
+        Ok(fs)
+    }
+
+    async fn test_files(&self, c: FileConnection, secret: Option<SecretString>) -> Result<String> {
+        let started = Instant::now();
+        let fs = self.ftp_connect(&c, secret).await?;
+        let listed = fs
+            .list(&fs.home())
+            .await
+            .map_err(|e| CoreError::Unsupported(format!("Listing {}: {e}", fs.home().display())))?;
+        Ok(format!(
+            "Connected · {} · {} entries in {} · {} ms",
+            fs.describe(),
+            listed.len(),
+            fs.home().display(),
+            started.elapsed().as_millis()
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1452,7 +1548,11 @@ impl Service {
         }
         let id = profile.id().clone();
         match self.with_store(move |s| s.save_profile(&profile)).await {
-            Ok(()) => self.emit(Event::ProfileSaved { request, id }),
+            Ok(()) => {
+                // An edited FTP connection logs in again with its new settings.
+                self.files.ftp.lock().await.remove(&id.0);
+                self.emit(Event::ProfileSaved { request, id })
+            }
             Err(CoreError::Store(StoreError::Validation(v))) => self.emit(Event::ProfileError {
                 request,
                 field: Some(v.field),

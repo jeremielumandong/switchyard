@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use switchyard_remote::fs::file_name;
-use switchyard_remote::{FileEntry, FsError, RemoteFs, SftpFs};
+use switchyard_remote::{FileEntry, FsError, FtpFs, RemoteFs, SftpFs};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use crate::bus::{OnConflict, SaveError, TextFile, TransferError};
@@ -28,9 +28,11 @@ const PAUSE: u8 = 2;
 /// A transfer's control flag, flipped by Pause and Cancel.
 pub(crate) type Control = Arc<AtomicU8>;
 
-/// Open SFTP file systems (one per Host) and the transfer queue.
+/// Open SFTP file systems (one per Host), FTP connections and the transfer queue.
 pub(crate) struct Files {
     pub(crate) sftp: tokio::sync::Mutex<HashMap<String, Arc<SftpFs>>>,
+    /// FTP / FTPS file systems by file connection id.
+    pub(crate) ftp: tokio::sync::Mutex<HashMap<String, Arc<FtpFs>>>,
     controls: Mutex<HashMap<u64, Control>>,
     pub(crate) slots: Arc<tokio::sync::Semaphore>,
 }
@@ -39,6 +41,7 @@ impl Default for Files {
     fn default() -> Self {
         Self {
             sftp: tokio::sync::Mutex::default(),
+            ftp: tokio::sync::Mutex::default(),
             controls: Mutex::default(),
             slots: Arc::new(tokio::sync::Semaphore::new(PARALLEL_TRANSFERS)),
         }

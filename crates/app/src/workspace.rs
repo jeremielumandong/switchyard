@@ -466,10 +466,10 @@ impl Workspace {
                     .collect();
                 let core = self.core.clone();
                 self.explorer.set_profiles(dbs, &core);
-                let hosts = self.host_list();
+                let sources = self.file_sources();
                 for t in &self.tabs {
                     if let Tab::Files(f) = t {
-                        f.update(cx, |f, cx| f.set_hosts(hosts.clone(), cx));
+                        f.update(cx, |f, cx| f.set_sources(sources.clone(), cx));
                     }
                 }
                 // Refresh connection details held by tabs.
@@ -1584,7 +1584,7 @@ impl Workspace {
             Some(Tab::Terminal(t)) => t.read(cx).host().cloned(),
             Some(Tab::Editor(e)) => match &e.read(cx).fs {
                 FsRef::Host(h) => Some(h.clone()),
-                FsRef::Local => None,
+                FsRef::Local | FsRef::Ftp(_) => None,
             },
             Some(Tab::Files(f)) => f.read(cx).right_host().cloned(),
             _ => None,
@@ -1641,6 +1641,13 @@ impl Workspace {
                 .host(h)
                 .map(|h| (h.name.clone(), h.environment))
                 .unwrap_or_default(),
+            FsRef::Ftp(id) => self
+                .profiles
+                .all
+                .iter()
+                .find(|p| p.id() == id)
+                .map(|p| (p.name().to_owned(), p.environment()))
+                .unwrap_or_default(),
             FsRef::Local => ("this computer".into(), Default::default()),
         };
         let core = self.core.clone();
@@ -1655,20 +1662,36 @@ impl Workspace {
         self.open_files_for(host, cx);
     }
 
-    fn host_list(&self) -> Vec<(ProfileId, String)> {
-        self.profiles
+    /// What the Files tab's right pane can show: Hosts (SFTP) and FTP connections.
+    fn file_sources(&self) -> Vec<(FsRef, String)> {
+        let hosts = self
+            .profiles
             .hosts()
-            .map(|h| (h.id.clone(), h.name.clone()))
-            .collect()
+            .map(|h| (FsRef::Host(h.id.clone()), h.name.clone()));
+        let ftp = self.profiles.all.iter().filter_map(|p| match p {
+            Profile::File(f)
+                if matches!(f.protocol, switchyard_core::store::FileProtocol::Ftp { .. }) =>
+            {
+                Some((FsRef::Ftp(f.id.clone()), f.name.clone()))
+            }
+            _ => None,
+        });
+        hosts.chain(ftp).collect()
     }
 
     /// The Files tab, with `host` on the right (or what it already shows).
     pub(crate) fn open_files_for(&mut self, host: Option<ProfileId>, cx: &mut Context<Self>) {
+        self.open_files_on(host.map(FsRef::Host), cx);
+    }
+
+    /// The Files tab, with `right` (a Host or an FTP connection) on the right, or what it
+    /// already shows.
+    pub(crate) fn open_files_on(&mut self, right: Option<FsRef>, cx: &mut Context<Self>) {
         if let Some(ix) = self.tabs.iter().position(|t| matches!(t, Tab::Files(_))) {
-            if let (Some(h), Tab::Files(f)) = (host, &self.tabs[ix]) {
+            if let (Some(fs), Tab::Files(f)) = (right, &self.tabs[ix]) {
                 f.update(cx, |f, cx| {
-                    if f.right_host() != Some(&h) {
-                        f.show_host(Some(h), cx)
+                    if *f.right_source() != fs {
+                        f.show(fs, cx)
                     }
                 });
             }
@@ -1676,8 +1699,9 @@ impl Workspace {
         }
         let core = self.core.clone();
         let transfers = self.transfers.clone();
-        let hosts = self.host_list();
-        let f = cx.new(|cx| FilesTab::new(core, transfers, hosts, host, cx));
+        let sources = self.file_sources();
+        let right = right.unwrap_or(FsRef::Local);
+        let f = cx.new(|cx| FilesTab::new(core, transfers, sources, right, cx));
         let sub = cx.subscribe(&f, |this, _, ev: &FilesTabEvent, cx| match ev {
             FilesTabEvent::Open { fs, path } => {
                 this.pending_editor = Some((fs.clone(), path.clone()));
@@ -1762,7 +1786,9 @@ impl Workspace {
                 switchyard_core::store::FileProtocol::Sftp { host_id } => {
                     self.open_files_for(Some(host_id.clone()), cx)
                 }
-                _ => self.open_files(window, cx),
+                switchyard_core::store::FileProtocol::Ftp { .. } => {
+                    self.open_files_on(Some(FsRef::Ftp(f.id.clone())), cx)
+                }
             },
             Some(Profile::Terminal(t)) => self.open_terminal(t.host_id, cx),
             None => {}
@@ -2531,11 +2557,15 @@ impl Workspace {
                 )
             }
             Tab::Files(f) => {
-                let right = f
-                    .read(cx)
-                    .right_host()
-                    .and_then(|h| self.profiles.host(h))
-                    .map_or("local".to_owned(), |h| h.name.clone());
+                let right = match f.read(cx).right_source() {
+                    FsRef::Local => "local".to_owned(),
+                    FsRef::Host(id) | FsRef::Ftp(id) => self
+                        .profiles
+                        .all
+                        .iter()
+                        .find(|p| p.id() == id)
+                        .map_or("local".to_owned(), |p| p.name().to_owned()),
+                };
                 ("FS".into(), format!("Files · {right}").into(), None, false)
             }
             Tab::Editor(e) => {

@@ -2196,7 +2196,11 @@ impl Workspace {
                         }
                     }
                     ConnAction::Terminal(h) => this.open_terminal(h.clone(), cx),
-                    ConnAction::Files => this.open_files(w, cx),
+                    // A saved file connection opens its own server (SFTP Host or FTP).
+                    ConnAction::Files => match &profile {
+                        Some(id) => this.open_profile(id, w, cx),
+                        None => this.open_files(w, cx),
+                    },
                 }
                 cx.notify();
             }))

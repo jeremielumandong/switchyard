@@ -167,9 +167,10 @@ impl EditorTab {
         if show && self.terminal.is_none() {
             let host = match &self.fs {
                 FsRef::Host(h) => Some(h.clone()),
-                FsRef::Local => None,
+                FsRef::Local | FsRef::Ftp(_) => None,
             };
-            let start = if host.is_some() || cfg!(unix) {
+            // An FTP file has no shell beside it: the terminal starts where it starts.
+            let start = if host.is_some() || (cfg!(unix) && self.fs == FsRef::Local) {
                 posix_parent(&self.path).map(|d| cd_into(&d))
             } else {
                 None
