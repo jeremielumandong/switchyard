@@ -246,7 +246,7 @@ then the Driver Manager detects it, explains why, installs it and retries the co
 
 ## Status
 
-Switchyard is pre-beta (v0.1.7). Not finished yet (see [`PLAN.md`](PLAN.md)):
+Switchyard is pre-beta (v0.1.8). Not finished yet (see [`PLAN.md`](PLAN.md)):
 
 - FTP / FTPS, corporate CA import and per-connection certificate pinning.
 - Query plans and workload stats for Oracle and Snowflake; in-app approval for agent actual plans.
@@ -300,7 +300,7 @@ under [Quick start](#quick-start)):
 
 ```sh
 ./install.sh --build                         # build the AppImage, then install it
-./install.sh dist/Switchyard-0.1.7-x86_64.AppImage   # install an AppImage you already have
+./install.sh dist/Switchyard-0.1.8-x86_64.AppImage   # install an AppImage you already have
 ./install.sh --uninstall
 ```
 
