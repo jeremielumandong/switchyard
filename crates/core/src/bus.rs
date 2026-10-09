@@ -1232,8 +1232,8 @@ pub enum Event {
         /// Request id.
         request: RequestId,
     },
-    /// A coding agent asks to run a command on a Host: show it and answer with
-    /// [`Command::AnswerAgentApproval`]. Nothing runs until the user approves.
+    /// A coding agent asks to run a command on a Host, or for an actual plan: show it and
+    /// answer with [`Command::AnswerAgentApproval`]. Nothing runs until the user approves.
     AgentApproval(AgentApproval),
     /// An approval is no longer waiting (answered, timed out, or the agent went away).
     AgentApprovalClosed {
@@ -1302,21 +1302,37 @@ pub enum Event {
     },
 }
 
-/// A command a coding agent wants to run on a Host ([`Event::AgentApproval`]).
+/// Something a coding agent wants to run that needs the user's approval
+/// ([`Event::AgentApproval`]): a shell command on a Host, or an actual plan.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentApproval {
     /// Id to answer with.
     pub id: u64,
     /// The CLI asking.
     pub agent: switchyard_agents::AgentKind,
-    /// The Host.
-    pub host: ProfileId,
-    /// The Host's name.
-    pub host_name: String,
-    /// The Host's environment label.
+    /// What it asks for.
+    pub kind: ApprovalKind,
+    /// The Host or connection.
+    pub target: ProfileId,
+    /// The Host's or connection's name.
+    pub target_name: String,
+    /// Its environment label.
     pub environment: switchyard_store::EnvironmentLabel,
-    /// The shell command, exactly as it would run.
-    pub command: String,
+    /// The shell command or the statement, exactly as it would run.
+    pub text: String,
+}
+
+/// What an [`AgentApproval`] asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApprovalKind {
+    /// A shell command on a Host's SSH session.
+    SshCommand,
+    /// An actual plan (`EXPLAIN ANALYZE`, `STATISTICS XML`): the statement runs, then is
+    /// rolled back.
+    ActualPlan {
+        /// The statement writes (rolled back, but triggers and sequences still fire).
+        writes: bool,
+    },
 }
 
 /// A connected Redis server ([`Event::RedisOpened`]).

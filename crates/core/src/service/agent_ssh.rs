@@ -15,10 +15,10 @@ use tracing::warn;
 
 use super::{Service, lock};
 use crate::agent_run::verify_token;
-use crate::bus::{AgentApproval, Event};
+use crate::bus::{AgentApproval, ApprovalKind, Event};
 use crate::handoff::{AgentCommand, AgentCommandOutput, AgentResponder};
 
-/// How long a command waits for the user's answer.
+/// How long a command or an actual plan waits for the user's answer.
 pub const APPROVAL_WAIT: Duration = Duration::from_secs(10 * 60);
 /// The longest a command may run.
 pub const MAX_COMMAND_TIME: Duration = Duration::from_secs(10 * 60);
@@ -29,6 +29,17 @@ static NEXT_APPROVAL: AtomicU64 = AtomicU64::new(1);
 
 /// Approvals waiting for the user.
 pub(super) type Approvals = Mutex<HashMap<u64, oneshot::Sender<bool>>>;
+
+/// The user's answer to an [`AgentApproval`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Answer {
+    /// Run it.
+    Approved,
+    /// Refused (or the panel went away).
+    Declined,
+    /// Nobody answered within [`APPROVAL_WAIT`].
+    TimedOut,
+}
 
 /// Removes a waiting approval and tells the UI it is gone, however the wait ends.
 struct Waiting<'a> {
@@ -59,6 +70,22 @@ impl Service {
         })
     }
 
+    /// Show `approval` (its id is assigned here) and wait for the user's answer. The card
+    /// closes however the wait ends, including when the caller stops waiting.
+    pub(super) async fn ask_user(&self, mut approval: AgentApproval) -> Answer {
+        let id = NEXT_APPROVAL.fetch_add(1, Ordering::Relaxed);
+        approval.id = id;
+        let (tx, rx) = oneshot::channel();
+        lock(&self.agent_approvals).insert(id, tx);
+        let _waiting = Waiting { service: self, id };
+        self.emit(Event::AgentApproval(approval));
+        match tokio::time::timeout(APPROVAL_WAIT, rx).await {
+            Ok(Ok(true)) => Answer::Approved,
+            Ok(_) => Answer::Declined,
+            Err(_) => Answer::TimedOut,
+        }
+    }
+
     /// [`crate::Command::AnswerAgentApproval`].
     pub(super) fn answer_agent_approval(&self, id: u64, approve: bool) {
         if let Some(tx) = lock(&self.agent_approvals).remove(&id) {
@@ -86,32 +113,24 @@ impl Service {
             "ssh".to_owned(),
         ];
 
-        let id = NEXT_APPROVAL.fetch_add(1, Ordering::Relaxed);
-        let (tx, rx) = oneshot::channel();
-        lock(&self.agent_approvals).insert(id, tx);
-        let waiting = Waiting { service: self, id };
-        self.emit(Event::AgentApproval(AgentApproval {
-            id,
-            agent: scope.agent,
-            host: host.id.clone(),
-            host_name: host.name.clone(),
-            environment: host.environment,
-            command: command.clone(),
-        }));
-        let answer = tokio::time::timeout(APPROVAL_WAIT, rx).await;
-        drop(waiting);
-        let approved = match answer {
-            Ok(Ok(a)) => a,
-            Ok(Err(_)) => false,
-            Err(_) => {
-                let e = "nobody approved the command in Switchyard in time".to_owned();
-                self.ssh_history(&host, command, Duration::ZERO, Some(e.clone()), tags)
-                    .await;
-                return Err(e);
-            }
+        let answer = self
+            .ask_user(AgentApproval {
+                id: 0,
+                agent: scope.agent,
+                kind: ApprovalKind::SshCommand,
+                target: host.id.clone(),
+                target_name: host.name.clone(),
+                environment: host.environment,
+                text: command.clone(),
+            })
+            .await;
+        let refused = match answer {
+            Answer::Approved => None,
+            Answer::Declined => Some("the user declined to run this command"),
+            Answer::TimedOut => Some("nobody approved the command in Switchyard in time"),
         };
-        if !approved {
-            let e = "the user declined to run this command".to_owned();
+        if let Some(e) = refused {
+            let e = e.to_owned();
             self.ssh_history(&host, command, Duration::ZERO, Some(e.clone()), tags)
                 .await;
             return Err(e);

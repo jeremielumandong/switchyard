@@ -1047,3 +1047,26 @@ commands.
 - Output goes through the MCP scrubber like everything else, so host addresses and user
   names in it read `[redacted]`.
 
+
+## 2026-10-09 — Agent actual plans approved in the app; markdown in the assistant panel
+
+- **Approval in the app, capture in `swy mcp`.** `explain` with `analyze` from an agent asks
+  the running app over the handoff socket (`handoff::ask_agent_plan`), the same way
+  `run_ssh_command` does. The app checks the run's session token and the connection (agent
+  access, in the token's scope, not Production, PostgreSQL / SQL Server, one plannable
+  statement, no write on a read-only connection) and shows an approval card with the exact
+  statement and connection name. Only the yes / no goes back: `swy mcp` then captures the
+  plan on its own session through the core's `Explain` (writes run in a transaction that is
+  rolled back), renders it, and records the call tagged `agent:<cli>`. This keeps one
+  session per agent run and one renderer; the app never opens a second session for it.
+- **Outside the app** (no session token) actual plans stay refused, and Production
+  connections are estimated only even inside app-started runs.
+- `AgentApproval` became generic (`ApprovalKind::SshCommand` / `ActualPlan { writes }`,
+  `target`, `target_name`, `text`); one approval queue and one card list serve both.
+- **Markdown without `TextView`.** gpui-component's `TextView` renders markdown, but it takes
+  its selection document order from a per-frame global counter, while the transcript's
+  `SelectableText` runs use explicit orders; mixing them scrambles a copy that crosses both.
+  The panel parses answers with the `markdown` crate (already a dependency, GFM) into its
+  own blocks and draws them with `rich_text::RichText`, a copy of gpui-base's
+  `SelectableText` (Apache-2.0) with highlight runs, inline-code font overrides and
+  clickable links (http, https and mailto only). Copy gives the text without markup.
