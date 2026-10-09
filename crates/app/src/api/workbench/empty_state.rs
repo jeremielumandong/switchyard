@@ -24,14 +24,20 @@ pub(super) const SAMPLE_URL: &str = "https://httpbin.org/get";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct RequestSeed {
     pub name: String,
+    pub method: switchyard_api::HttpMethod,
     pub url: String,
+    pub headers: Vec<switchyard_api::KeyValueRow>,
+    pub body: Body,
 }
 
 impl Default for RequestSeed {
     fn default() -> Self {
         Self {
             name: "New request".into(),
+            method: switchyard_api::HttpMethod::get(),
             url: String::new(),
+            headers: Vec::new(),
+            body: Body::None,
         }
     }
 }
@@ -42,6 +48,18 @@ impl RequestSeed {
         Self {
             name: "Sample request".into(),
             url: SAMPLE_URL.into(),
+            ..Self::default()
+        }
+    }
+
+    /// A request the assistant wrote.
+    pub fn generated(request: &crate::api::generated::GeneratedRequest) -> Self {
+        Self {
+            name: request.name.clone(),
+            method: request.method.clone(),
+            url: request.url.clone(),
+            headers: request.header_rows(),
+            body: request.body(),
         }
     }
 }
@@ -53,6 +71,8 @@ pub(super) enum StartAction {
     Import,
     PasteCurl,
     Sample,
+    /// Describe the request in words; the assistant writes it.
+    DescribeWithAi,
 }
 
 /// The tab to make active after closing some: the preferred (or previously
@@ -172,6 +192,7 @@ impl WorkbenchPanel {
                 self.tab = Tab::Compose;
                 self.new_request(window, cx);
             }
+            StartAction::DescribeWithAi => cx.emit(DescribeRequestRequested),
             StartAction::Sample => {
                 self.tab = Tab::Compose;
                 self.create_seeded_request_in_selection(Some(RequestSeed::sample()), window, cx);
@@ -394,6 +415,14 @@ impl WorkbenchPanel {
                     .child(
                         action("workbench-empty-curl", "Paste cURL", StartAction::PasteCurl)
                             .outline(),
+                    )
+                    .child(
+                        action(
+                            "workbench-empty-describe",
+                            "Describe with AI",
+                            StartAction::DescribeWithAi,
+                        )
+                        .outline(),
                     ),
             )
             .into_any_element()
@@ -434,6 +463,28 @@ mod tests {
         );
         assert_eq!(second.name, "New request 2");
         assert_eq!(second.sort_key, 1);
+    }
+
+    #[test]
+    fn a_generated_seed_keeps_method_headers_and_body() {
+        let answer = "```http\n# Create order\nPOST {{baseUrl}}/orders\nContent-Type: application/json\n\n{\"sku\": \"a\"}\n```";
+        let generated = crate::api::generated::http_requests(answer);
+        let collection = CollectionId::new();
+        let request = request_creation::new_request_definition(
+            &[],
+            collection,
+            None,
+            Some(RequestSeed::generated(&generated[0])),
+        );
+        assert_eq!(request.name, "Create order");
+        assert_eq!(request.method.as_str(), "POST");
+        assert_eq!(request.url, "{{baseUrl}}/orders");
+        assert_eq!(request.headers.len(), 1);
+        assert_eq!(request.headers[0].key, "Content-Type");
+        assert!(matches!(
+            request.body,
+            Body::Raw { media_type: switchyard_api::RawBodyKind::Json, ref text } if text == "{\"sku\": \"a\"}"
+        ));
     }
 
     #[test]

@@ -554,6 +554,15 @@ server or bundled Unix tools on Windows (Tier 3).
   (tiles) above the form; each engine's form is its own `EngineForm` in
   `app/src/conn_editor/engines/` (fields, layout, apply, required Driver Manager component),
   registered in `engines.rs`. Switching engines keeps Name, Host and User.
+- [x] UX-10 AI in the API Workbench (user request, 2026-10-09): the Workbench's AI buttons
+  (Explain, Debug failure, Ask AI review, Write tests, Generate body/data, Fill env, Review
+  import) now run in the assistant panel beside it (they emitted an event nothing handled).
+  The panel keeps a separate API conversation (the database one is parked, its run still
+  streaming); "Describe with AI" (empty Compose, request menu) writes a new request from
+  prose using the collection's names and environment keys; ```http blocks in answers become
+  "Open in Workbench" cards that create a saved, unsent request. API runs reach no database
+  (`Command::RunAgent { databases: false }`). Prompts say Switchyard, not AgentOps.
+  Note: the answer opens as a new request; applying a fix to the open request in place is not done.
 
 ## Extra — Redis (user request, 2026-10-08)
 

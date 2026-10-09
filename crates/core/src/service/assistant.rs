@@ -22,12 +22,12 @@ impl Service {
             .unwrap_or_default()
     }
 
-    /// The CLI and its request for a question about `connection`: the connection must allow
-    /// agents; without one, every agent-enabled connection is in scope.
+    /// The CLI and its request for a question about `connection`; see [`agent_scope`].
     async fn agent_request(
         &self,
         agent: Option<AgentKind>,
         connection: Option<ProfileId>,
+        databases: bool,
         prompt: String,
         resume: Option<String>,
     ) -> Result<(AgentKind, AgentRunRequest)> {
@@ -40,29 +40,7 @@ impl Service {
                 _ => None,
             })
             .collect();
-        let (conn, scope) = match &connection {
-            Some(id) => {
-                let c = dbs
-                    .iter()
-                    .find(|c| &c.id == id)
-                    .ok_or_else(|| CoreError::NotFound("the connection".into()))?;
-                if !c.agent_access {
-                    return Err(CoreError::Unsupported(format!(
-                        "Coding agents are off for {}. Turn on \u{201c}Allow coding agents\u{201d} in its \
-                         settings to ask the assistant about it.",
-                        c.name
-                    )));
-                }
-                (Some(*c), vec![c.id.clone()])
-            }
-            None => (
-                None,
-                dbs.iter()
-                    .filter(|c| c.agent_access)
-                    .map(|c| c.id.clone())
-                    .collect(),
-            ),
-        };
+        let (conn, scope) = agent_scope(&dbs, connection.as_ref(), databases)?;
         let kind = agent.unwrap_or_else(|| settings.agent_for(conn));
         let mut req = settings.request(kind, prompt, resume, scope);
         req.swy.clone_from(&self.swy);
@@ -79,10 +57,14 @@ impl Service {
         run: AgentRunId,
         agent: Option<AgentKind>,
         connection: Option<ProfileId>,
+        databases: bool,
         prompt: String,
         resume: Option<String>,
     ) {
-        let (kind, req) = match self.agent_request(agent, connection, prompt, resume).await {
+        let (kind, req) = match self
+            .agent_request(agent, connection, databases, prompt, resume)
+            .await
+        {
             Ok(r) => r,
             Err(e) => {
                 let kind = agent.unwrap_or(AgentKind::ClaudeCode);
@@ -135,7 +117,7 @@ impl Service {
     ) {
         let result = async {
             let (kind, req) = self
-                .agent_request(agent, connection, String::new(), None)
+                .agent_request(agent, connection, true, String::new(), None)
                 .await?;
             let data = self.data_dir.clone();
             let session = tokio::task::spawn_blocking(move || prepare_agent_terminal(&data, req))
@@ -175,5 +157,81 @@ impl Service {
                 message: e.to_string(),
             }),
         }
+    }
+}
+
+/// The connection a run is about and the connections its token may reach. With
+/// `databases` off (an API Workbench question) the run reaches none. Otherwise `connection`
+/// must allow agents and is the only one in scope; without one, every agent-enabled
+/// connection is.
+fn agent_scope<'a>(
+    dbs: &[&'a DbConnection],
+    connection: Option<&ProfileId>,
+    databases: bool,
+) -> Result<(Option<&'a DbConnection>, Vec<ProfileId>)> {
+    if !databases {
+        return Ok((None, Vec::new()));
+    }
+    match connection {
+        Some(id) => {
+            let c = *dbs
+                .iter()
+                .find(|c| &c.id == id)
+                .ok_or_else(|| CoreError::NotFound("the connection".into()))?;
+            if !c.agent_access {
+                return Err(CoreError::Unsupported(format!(
+                    "Coding agents are off for {}. Turn on \u{201c}Allow coding agents\u{201d} in its \
+                     settings to ask the assistant about it.",
+                    c.name
+                )));
+            }
+            Ok((Some(c), vec![c.id.clone()]))
+        }
+        None => Ok((
+            None,
+            dbs.iter()
+                .filter(|c| c.agent_access)
+                .map(|c| c.id.clone())
+                .collect(),
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use switchyard_db::Engine;
+
+    fn conn(name: &str, agent_access: bool) -> DbConnection {
+        let mut c = DbConnection::new(name, Engine::Postgres);
+        c.agent_access = agent_access;
+        c
+    }
+
+    #[test]
+    fn api_runs_reach_no_connection() {
+        let (open, closed) = (conn("app", true), conn("billing", false));
+        let dbs = [&open, &closed];
+        let (c, scope) = agent_scope(&dbs, Some(&open.id), false).unwrap();
+        assert!(c.is_none());
+        assert!(scope.is_empty());
+        // Not even a connection that refuses agents is looked at.
+        assert!(agent_scope(&dbs, Some(&closed.id), false).is_ok());
+    }
+
+    #[test]
+    fn database_runs_keep_their_scope() {
+        let (open, other, closed) = (conn("app", true), conn("ops", true), conn("billing", false));
+        let dbs = [&open, &other, &closed];
+        let (c, scope) = agent_scope(&dbs, Some(&open.id), true).unwrap();
+        assert_eq!(c.map(|c| c.name.as_str()), Some("app"));
+        assert_eq!(scope, vec![open.id.clone()]);
+        let (_, scope) = agent_scope(&dbs, None, true).unwrap();
+        assert_eq!(scope, vec![open.id.clone(), other.id.clone()]);
+        assert!(matches!(
+            agent_scope(&dbs, Some(&closed.id), true),
+            Err(CoreError::Unsupported(m)) if m.contains("Allow coding agents")
+        ));
     }
 }
