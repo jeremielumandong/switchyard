@@ -269,6 +269,9 @@ impl CommandRunner for SystemRunner {
                 .ok_or_else(|| DriverError::Command("empty command".into()))?;
             let mut cmd = tokio::process::Command::new(bin);
             cmd.args(args).stdin(std::process::Stdio::null());
+            // Output is captured; don't flash a console window on Windows.
+            #[cfg(windows)]
+            cmd.creation_flags(crate::detect::CREATE_NO_WINDOW);
             if let Some(original) = crate::registry::original_loader_path() {
                 match original {
                     Some(v) => cmd.env("LD_LIBRARY_PATH", v),

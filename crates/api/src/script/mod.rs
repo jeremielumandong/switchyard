@@ -327,6 +327,9 @@ fn worker_command() -> Result<tokio::process::Command, String> {
     let executable = std::env::current_exe()
         .map_err(|error| format!("locate Workbench script sandbox: {error}"))?;
     let mut command = tokio::process::Command::new(executable);
+    // CREATE_NO_WINDOW: the worker talks over pipes; never open a console for it.
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000);
     #[cfg(not(test))]
     command.arg(WORKER_ARG);
     #[cfg(test)]
