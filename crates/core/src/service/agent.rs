@@ -66,8 +66,8 @@ impl Service {
         let conn = slot.connection.clone();
         let started_at = now_ms();
         let started = Instant::now();
-        let result = if !guard::is_single_select(dialect_for(conn.engine), &sql) {
-            Err("only a single SELECT or WITH query is allowed".to_owned())
+        let result = if let Some(why) = refusal(conn.engine, &sql) {
+            Err(why)
         } else {
             let mut inner = slot.inner.lock().await;
             if inner.session.in_transaction() {
@@ -186,6 +186,31 @@ impl Service {
     }
 }
 
+/// Why `sql` is not an agent query on `engine`, if it is not: one SELECT / WITH on SQL
+/// engines, one statement that only reads on MongoDB (no transaction holds it back there).
+fn refusal(engine: Engine, sql: &str) -> Option<String> {
+    match engine {
+        Engine::MongoDb => {
+            use switchyard_db::mongo::shell::{Effect, Op, parse};
+            match parse(sql) {
+                Ok(Op::Use(_)) => Some(
+                    "`use` is not allowed; name the database with db.getSiblingDB(\"…\")".into(),
+                ),
+                Ok(op) if op.effect() == Effect::Read => None,
+                Ok(_) => Some(
+                    "only a single statement that reads (find, aggregate without \
+                               $out/$merge, countDocuments, distinct, …) is allowed"
+                        .into(),
+                ),
+                Err(e) => Some(format!("could not parse the statement: {}", e.message)),
+            }
+        }
+        Engine::Redis => Some("Redis connections take redis_command, not queries".into()),
+        e if guard::is_single_select(dialect_for(e), sql) => None,
+        _ => Some("only a single SELECT or WITH query is allowed".into()),
+    }
+}
+
 /// Open the read-only wrapper, run `sql`, keep up to `cap` rows.
 async fn read_only(
     inner: &mut SessionInner,
@@ -264,6 +289,28 @@ async fn drain(stream: Result<switchyard_db::ResultStream, DbError>) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mongodb_agents_only_read() {
+        let r = |s: &str| refusal(Engine::MongoDb, s);
+        assert_eq!(r("db.orders.find({ status: \"A\" }).limit(5)"), None);
+        assert_eq!(
+            r("db.orders.aggregate([{ $group: { _id: \"$s\" } }])"),
+            None
+        );
+        assert_eq!(r("show collections"), None);
+        assert!(r("db.orders.aggregate([{ $out: \"x\" }])").is_some());
+        assert!(r("db.orders.deleteMany({})").is_some());
+        assert!(r("db.orders.insertOne({ a: 1 })").is_some());
+        assert!(r("db.orders.drop()").is_some());
+        assert!(r("use shop").is_some());
+        assert_eq!(r_sql("select 1"), None);
+        assert!(r_sql("delete from t").is_some());
+    }
+
+    fn r_sql(s: &str) -> Option<String> {
+        refusal(Engine::Postgres, s)
+    }
 
     #[test]
     fn cells_keep_numbers_and_text() {

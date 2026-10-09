@@ -33,14 +33,7 @@ impl Service {
     ) -> Result<(AgentKind, AgentRunRequest)> {
         let settings = self.assistant_settings().await;
         let profiles = self.with_store(|s| s.profiles()).await?;
-        let dbs: Vec<&DbConnection> = profiles
-            .iter()
-            .filter_map(|p| match p {
-                Profile::Db(d) => Some(d),
-                _ => None,
-            })
-            .collect();
-        let (conn, scope) = agent_scope(&dbs, connection.as_ref(), databases)?;
+        let (conn, scope) = agent_scope(&profiles, connection.as_ref(), databases)?;
         let kind = agent.unwrap_or_else(|| settings.agent_for(conn));
         let mut req = settings.request(kind, prompt, resume, scope);
         req.swy.clone_from(&self.swy);
@@ -162,36 +155,39 @@ impl Service {
 
 /// The connection a run is about and the connections its token may reach. With
 /// `databases` off (an API Workbench question) the run reaches none. Otherwise `connection`
-/// must allow agents and is the only one in scope; without one, every agent-enabled
-/// connection is.
+/// (a database or a Host) must allow agents and is the only one in scope; without one,
+/// every agent-enabled database and Host is.
 fn agent_scope<'a>(
-    dbs: &[&'a DbConnection],
+    profiles: &'a [Profile],
     connection: Option<&ProfileId>,
     databases: bool,
 ) -> Result<(Option<&'a DbConnection>, Vec<ProfileId>)> {
     if !databases {
         return Ok((None, Vec::new()));
     }
+    let off = |name: &str| {
+        CoreError::Unsupported(format!(
+            "Coding agents are off for {name}. Turn on \u{201c}Allow coding agents\u{201d} in its \
+             settings to ask the assistant about it."
+        ))
+    };
     match connection {
-        Some(id) => {
-            let c = *dbs
-                .iter()
-                .find(|c| &c.id == id)
-                .ok_or_else(|| CoreError::NotFound("the connection".into()))?;
-            if !c.agent_access {
-                return Err(CoreError::Unsupported(format!(
-                    "Coding agents are off for {}. Turn on \u{201c}Allow coding agents\u{201d} in its \
-                     settings to ask the assistant about it.",
-                    c.name
-                )));
-            }
-            Ok((Some(c), vec![c.id.clone()]))
-        }
+        Some(id) => match profiles.iter().find(|p| p.id() == id) {
+            Some(Profile::Db(c)) if c.agent_access => Ok((Some(c), vec![c.id.clone()])),
+            Some(Profile::Db(c)) => Err(off(&c.name)),
+            Some(Profile::Host(h)) if h.agent_access => Ok((None, vec![h.id.clone()])),
+            Some(Profile::Host(h)) => Err(off(&h.name)),
+            _ => Err(CoreError::NotFound("the connection".into())),
+        },
         None => Ok((
             None,
-            dbs.iter()
-                .filter(|c| c.agent_access)
-                .map(|c| c.id.clone())
+            profiles
+                .iter()
+                .filter_map(|p| match p {
+                    Profile::Db(c) if c.agent_access => Some(c.id.clone()),
+                    Profile::Host(h) if h.agent_access => Some(h.id.clone()),
+                    _ => None,
+                })
                 .collect(),
         )),
     }
@@ -202,36 +198,57 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use switchyard_db::Engine;
+    use switchyard_store::Host;
 
-    fn conn(name: &str, agent_access: bool) -> DbConnection {
+    fn conn(name: &str, agent_access: bool) -> Profile {
         let mut c = DbConnection::new(name, Engine::Postgres);
         c.agent_access = agent_access;
-        c
+        Profile::Db(c)
+    }
+
+    fn host(name: &str, agent_access: bool) -> Profile {
+        let mut h = Host::new(name, "example.test", "deploy");
+        h.agent_access = agent_access;
+        Profile::Host(h)
     }
 
     #[test]
     fn api_runs_reach_no_connection() {
-        let (open, closed) = (conn("app", true), conn("billing", false));
-        let dbs = [&open, &closed];
-        let (c, scope) = agent_scope(&dbs, Some(&open.id), false).unwrap();
+        let profiles = [conn("app", true), conn("billing", false)];
+        let (c, scope) = agent_scope(&profiles, Some(profiles[0].id()), false).unwrap();
         assert!(c.is_none());
         assert!(scope.is_empty());
         // Not even a connection that refuses agents is looked at.
-        assert!(agent_scope(&dbs, Some(&closed.id), false).is_ok());
+        assert!(agent_scope(&profiles, Some(profiles[1].id()), false).is_ok());
     }
 
     #[test]
     fn database_runs_keep_their_scope() {
-        let (open, other, closed) = (conn("app", true), conn("ops", true), conn("billing", false));
-        let dbs = [&open, &other, &closed];
-        let (c, scope) = agent_scope(&dbs, Some(&open.id), true).unwrap();
+        let profiles = [conn("app", true), conn("ops", true), conn("billing", false)];
+        let ids: Vec<ProfileId> = profiles.iter().map(|p| p.id().clone()).collect();
+        let (c, scope) = agent_scope(&profiles, Some(&ids[0]), true).unwrap();
         assert_eq!(c.map(|c| c.name.as_str()), Some("app"));
-        assert_eq!(scope, vec![open.id.clone()]);
-        let (_, scope) = agent_scope(&dbs, None, true).unwrap();
-        assert_eq!(scope, vec![open.id.clone(), other.id.clone()]);
+        assert_eq!(scope, vec![ids[0].clone()]);
+        let (_, scope) = agent_scope(&profiles, None, true).unwrap();
+        assert_eq!(scope, vec![ids[0].clone(), ids[1].clone()]);
         assert!(matches!(
-            agent_scope(&dbs, Some(&closed.id), true),
+            agent_scope(&profiles, Some(&ids[2]), true),
             Err(CoreError::Unsupported(m)) if m.contains("Allow coding agents")
         ));
+    }
+
+    #[test]
+    fn hosts_join_the_scope_when_enabled() {
+        let profiles = [conn("app", true), host("web", true), host("bastion", false)];
+        let ids: Vec<ProfileId> = profiles.iter().map(|p| p.id().clone()).collect();
+        let (c, scope) = agent_scope(&profiles, Some(&ids[1]), true).unwrap();
+        assert!(c.is_none());
+        assert_eq!(scope, vec![ids[1].clone()]);
+        assert!(matches!(
+            agent_scope(&profiles, Some(&ids[2]), true),
+            Err(CoreError::Unsupported(m)) if m.contains("bastion")
+        ));
+        let (_, scope) = agent_scope(&profiles, None, true).unwrap();
+        assert_eq!(scope, vec![ids[0].clone(), ids[1].clone()]);
     }
 }

@@ -45,6 +45,7 @@ use crate::runtime::EventSender;
 
 mod activity;
 pub mod agent;
+pub mod agent_ssh;
 mod assistant;
 mod redis;
 
@@ -190,6 +191,8 @@ pub struct Service {
     redis: Mutex<HashMap<SessionId, Arc<redis::RedisSlot>>>,
     /// Running assistant runs, to cancel.
     agent_runs: Mutex<HashMap<crate::bus::AgentRunId, switchyard_agents::CancelHandle>>,
+    /// Agent commands on Hosts waiting for the user's approval.
+    agent_approvals: agent_ssh::Approvals,
     /// Data directory (assistant session tokens).
     data_dir: PathBuf,
     /// `swy` override for assistant runs.
@@ -313,6 +316,7 @@ impl Service {
             sessions: Mutex::default(),
             redis: Mutex::default(),
             agent_runs: Mutex::default(),
+            agent_approvals: Mutex::default(),
             data_dir: config.data_dir.clone(),
             swy: config.swy.clone(),
             queries: Mutex::default(),
@@ -378,6 +382,14 @@ impl Service {
                 }
                 Command::AnswerPrompt { request, answer } => {
                     self.prompter.answer(request, answer);
+                    continue;
+                }
+                Command::StartHandoff { data_dir } => {
+                    tokio::spawn(crate::handoff::serve(
+                        crate::handoff::handoff_file(&data_dir),
+                        self.events.clone(),
+                        Some(self.agent_responder()),
+                    ));
                     continue;
                 }
                 other => other,
@@ -753,12 +765,15 @@ impl Service {
                     .instrument(span)
                     .await
             }
-            Command::StartHandoff { data_dir } => {
-                tokio::spawn(crate::handoff::serve(
-                    crate::handoff::handoff_file(&data_dir),
-                    self.events.clone(),
-                ));
-            }
+            // Started in `run`, which can hand the listener this service.
+            Command::StartHandoff { .. } => {}
+            Command::AnswerAgentApproval { id, approve } => self.answer_agent_approval(id, approve),
+            Command::AgentRedis {
+                session,
+                request,
+                line,
+                tags,
+            } => self.agent_redis(session, request, line, tags).await,
             Command::RecordAgentCall {
                 session,
                 summary,

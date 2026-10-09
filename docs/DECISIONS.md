@@ -1022,3 +1022,28 @@ redacted prompt for a Chat composer that Switchyard does not have.
   and no existing request is changed by the assistant.
 - **Two conversations.** Switching Default ↔ API swaps the panel's transcript and session; a
   run in the hidden one keeps streaming into it.
+
+## 2026-10-09 — The assistant on every datasource, SSH commands approved one by one
+
+The user asked for the assistant on all datasources, including SSH Hosts where it can run
+commands.
+
+- **Same rules, per kind.** "Allow coding agents" now exists on every database and on Hosts,
+  off by default. Redis gets `redis_command` (only commands `CommandClass::Read` covers, and
+  not `KEYS`); MongoDB gets `run_query` with one statement whose `Effect` is Read (`use` is
+  refused, since it changes the session). Both are checked in the core and recorded in
+  history like SQL agent calls.
+- **SSH commands need the app.** A shell command can do anything, so no read-only check
+  exists for it: the user approves each exact command. `swy mcp` cannot show a prompt, so it
+  hands the command to the running app over the existing handoff socket; the app verifies the
+  run's session token (so only runs it started, scoped to the Host) and shows a Run / Deny
+  card in the assistant panel. Default: per-command approval, no "always allow" (Follow-ups).
+  A run started outside the app gets no Hosts at all.
+- **The app runs it.** The command runs on the Host's one shared SSH session (CLAUDE.md), in
+  its own exec channel without a PTY, with 64 KB per stream and a timeout (default 60 s, at
+  most 10 min). Approvals wait 10 min; closing the run withdraws a waiting one.
+- **Production Hosts** may be enabled like Production databases; approval still applies to
+  every command and the card is marked Production.
+- Output goes through the MCP scrubber like everything else, so host addresses and user
+  names in it read `[redacted]`.
+
