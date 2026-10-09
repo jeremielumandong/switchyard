@@ -7,6 +7,7 @@
 use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::PopupMenu;
@@ -66,6 +67,49 @@ pub struct GridDelegate {
     /// Data columns that are part of a foreign key (marked in the header).
     fk_cols: Vec<usize>,
     menu: Option<MenuBuilder>,
+    /// Generation of the latest row filter; a [`FilterJob`] for an older one stops and
+    /// its result is dropped.
+    filter_gen: Arc<AtomicU64>,
+}
+
+/// Loaded rows from which the row filter runs off the UI thread (debounced).
+pub const ASYNC_FILTER_ROWS: usize = 50_000;
+
+/// A row filter over a large result, to run off the UI thread. Holds its own handle on
+/// the loaded batches (shared, not copied); hand its result to
+/// [`GridDelegate::finish_filter`].
+pub struct FilterJob {
+    generation: u64,
+    current: Arc<AtomicU64>,
+    data: BatchList,
+    needle: String,
+}
+
+impl FilterJob {
+    /// Whether a newer filter replaced this one.
+    pub fn is_stale(&self) -> bool {
+        self.current.load(Ordering::Acquire) != self.generation
+    }
+
+    /// Scan the rows. `None` when it was superseded on the way.
+    pub fn run(self) -> Option<FilterResult> {
+        let keep = self
+            .data
+            .rows_containing_until(&self.needle, &|| self.is_stale())?;
+        Some(FilterResult {
+            generation: self.generation,
+            scanned: self.data.len(),
+            keep,
+        })
+    }
+}
+
+/// The rows a [`FilterJob`] kept.
+pub struct FilterResult {
+    generation: u64,
+    /// Rows loaded when the job started; rows streamed in since join unfiltered.
+    scanned: usize,
+    keep: Vec<u32>,
 }
 
 /// Most cells one copy may take.
@@ -105,6 +149,7 @@ impl GridDelegate {
             server_sort: None,
             fk_cols: Vec::new(),
             menu: None,
+            filter_gen: Arc::default(),
         }
     }
 
@@ -289,14 +334,55 @@ impl GridDelegate {
         self.deleted.clear();
     }
 
-    /// Apply a client-side filter: keep rows where any cell contains `needle`.
+    /// Apply a client-side filter now: keep rows where any cell contains `needle`.
+    #[cfg(test)]
     pub fn set_filter(&mut self, needle: &str) {
+        if let Some(job) = self.begin_filter_at(needle, usize::MAX)
+            && let Some(result) = job.run()
+        {
+            self.finish_filter(result);
+        }
+    }
+
+    /// Start a client-side filter. An empty needle or a result under
+    /// [`ASYNC_FILTER_ROWS`] rows is applied now (`None`); a larger one returns the job
+    /// to run off the UI thread. Either way any earlier job becomes stale.
+    pub fn begin_filter(&mut self, needle: &str) -> Option<FilterJob> {
+        self.begin_filter_at(needle, ASYNC_FILTER_ROWS)
+    }
+
+    fn begin_filter_at(&mut self, needle: &str, async_from: usize) -> Option<FilterJob> {
+        let generation = self.filter_gen.fetch_add(1, Ordering::AcqRel) + 1;
         if needle.is_empty() {
             self.view = None;
-            return;
+            return None;
         }
-        let keep = self.data.rows_containing(needle);
+        let job = FilterJob {
+            generation,
+            current: self.filter_gen.clone(),
+            data: self.data.clone(),
+            needle: needle.to_owned(),
+        };
+        if self.data.len() < async_from {
+            if let Some(result) = job.run() {
+                self.finish_filter(result);
+            }
+            return None;
+        }
+        Some(job)
+    }
+
+    /// Apply a [`FilterJob`]'s rows unless a newer filter started since. Returns whether
+    /// the view changed.
+    pub fn finish_filter(&mut self, result: FilterResult) -> bool {
+        if self.filter_gen.load(Ordering::Acquire) != result.generation {
+            return false;
+        }
+        let mut keep = result.keep;
+        // Rows that streamed in during the scan join unfiltered, as in [`Self::push`].
+        keep.extend(result.scanned as u32..self.data.len() as u32);
         self.view = Some(Arc::new(keep));
+        true
     }
 
     fn sort_by(&mut self, col: usize, sort: ColumnSort) {
@@ -1119,6 +1205,39 @@ mod tests {
         b.push_null();
         g.push(b.finish());
         g
+    }
+
+    #[test]
+    fn a_background_filter_drops_stale_results() {
+        let mut g = delegate();
+        // Small results filter right away.
+        assert!(g.begin_filter("b").is_none());
+        assert_eq!(g.visible_rows(), 1);
+        // Large ones (threshold forced to 0 here) come back as a job.
+        let old = g.begin_filter_at("a", 0).expect("job");
+        let new = g.begin_filter_at("c", 0).expect("job");
+        assert!(old.is_stale() && !new.is_stale());
+        assert!(old.run().is_none(), "a superseded scan stops");
+        let result = new.run().expect("current");
+        // Rows streamed in during the scan join the view unfiltered.
+        let cols = g.columns();
+        let mut b = RowBatchBuilder::for_columns(&cols, 1);
+        b.push_i64(9);
+        b.push_str("zzz");
+        g.push(b.finish());
+        assert!(g.finish_filter(result));
+        assert_eq!(g.visible_rows(), 2);
+        assert_eq!(g.data_row(0), 0);
+        assert_eq!(g.data_row(1), 4);
+        // A result that finishes after a newer filter started is ignored.
+        let late = g
+            .begin_filter_at("a", 0)
+            .expect("job")
+            .run()
+            .expect("current");
+        g.set_filter("");
+        assert!(!g.finish_filter(late));
+        assert_eq!(g.visible_rows(), 5);
     }
 
     #[test]

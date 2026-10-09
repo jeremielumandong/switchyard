@@ -16,12 +16,13 @@ use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants};
 use gpui_kit::component::input::InputState;
 use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem};
 use gpui_kit::component::resizable::{h_resizable, resizable_panel, v_resizable};
-use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::scroll::{ScrollableElement, Scrollbar};
 use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable};
 use gpui_kit::{
     AnyElement, App, Context, Div, Entity, Hsla, MouseButton, Render, SharedString, Stateful, Svg,
-    WeakEntity, Window, div, prelude::*, px, svg,
+    WeakEntity, Window, div, list, prelude::*, px, svg, uniform_list,
 };
+use std::rc::Rc;
 
 use super::move_request::{Destination, DraggedRequest};
 use super::*;
@@ -433,6 +434,50 @@ fn menu_trigger(
 /// row's collection, folder or request rather than on whatever happens to
 /// be selected. It sits beside the row's click target, not inside it, so
 /// opening the menu never selects (and never dirties) anything.
+/// One row of the collection rail, by identity (see
+/// `WorkbenchPanel::rail_items`). Rows compare equal while they draw at the
+/// same height, so the virtualized list keeps their measurements.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum RailItem {
+    /// A note in place of rows ("Storage unavailable", no collections).
+    Note(&'static str),
+    /// A collection heading, by its index in the project's collections.
+    Collection {
+        index: usize,
+        target: RenameTarget,
+        renaming: bool,
+    },
+    /// "No requests in this collection."
+    EmptyCollection,
+    /// A folder of the expanded collection (`workbench-folder-{index}`).
+    Folder {
+        index: usize,
+        depth: usize,
+        count: usize,
+        filtering: bool,
+        target: RenameTarget,
+        renaming: bool,
+    },
+    /// A request of the expanded collection (`workbench-rail-{index}`).
+    Request {
+        index: usize,
+        depth: usize,
+        target: RenameTarget,
+        renaming: bool,
+    },
+}
+
+/// A muted one-line note in the rail.
+fn rail_note(text: &'static str, cx: &App) -> AnyElement {
+    div()
+        .px(px(6.))
+        .py(px(5.))
+        .text_size(text::S11)
+        .text_color(palette::text_tertiary(cx))
+        .child(text)
+        .into_any_element()
+}
+
 fn rail_item_menu(
     id: String,
     selector: String,
@@ -1159,250 +1204,59 @@ impl WorkbenchPanel {
                     )
                     .child(add_menu),
             )
-            .child(
-                div().flex_1().min_h(px(0.)).overflow_y_scrollbar().child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .pt(px(6.))
-                        .px(px(6.))
-                        .pb(space::SP_3)
-                        .children(self.render_rail_groups(&filter, window, cx)),
-                ),
-            )
+            .child({
+                // Virtualized: only the rows in view are built each frame.
+                let items = self.ux.rail_rows.sync(self.rail_items(&filter));
+                let last = items.len().saturating_sub(1);
+                let view = cx.entity();
+                let state = self.ux.rail_rows.state().clone();
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .relative()
+                    .child(
+                        list(state.clone(), move |ix, window, cx| {
+                            let Some(item) = items.get(ix).cloned() else {
+                                return div().into_any_element();
+                            };
+                            let row = view
+                                .update(cx, |this, cx| this.render_rail_item(&item, window, cx));
+                            div()
+                                .px(px(6.))
+                                .when(ix == 0, |el| el.pt(px(6.)))
+                                .when(ix == last, |el| el.pb(space::SP_3))
+                                .child(row)
+                                .into_any_element()
+                        })
+                        .size_full(),
+                    )
+                    .child(Scrollbar::vertical(&state))
+            })
             .into_any_element()
     }
 
-    /// `COLLECTION · name` headings, one per collection, with the selected
-    /// collection's tree ([`rail_rows`]) under its heading.
-    fn render_rail_groups(
-        &self,
-        filter: &str,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> Vec<AnyElement> {
-        let colors = cx.theme().colors;
+    /// The rail's rows by identity, in order: what the virtualized rail
+    /// lists. Cheap (no elements); [`Self::render_rail_item`] draws a row
+    /// once it scrolls into view.
+    fn rail_items(&self, filter: &str) -> Vec<RailItem> {
         let Some(data) = self.workspace_data.as_ref() else {
-            return vec![
-                div()
-                    .px(px(6.))
-                    .py(px(5.))
-                    .text_size(text::S11)
-                    .text_color(palette::text_tertiary(cx))
-                    .child("Storage unavailable")
-                    .into_any_element(),
-            ];
+            return vec![RailItem::Note("Storage unavailable")];
         };
         let mut out = Vec::new();
         if data.collections.is_empty() {
-            out.push(
-                div()
-                    .px(px(6.))
-                    .py(px(5.))
-                    .text_size(text::S11)
-                    .text_color(palette::text_tertiary(cx))
-                    .child("No collections yet. Use + → New collection.")
-                    .into_any_element(),
-            );
+            out.push(RailItem::Note(
+                "No collections yet. Use + → New collection.",
+            ));
         }
-        let handle = cx.entity().downgrade();
         for (index, collection) in data.collections.iter().enumerate() {
-            let id = collection.id.clone();
-            let selected = self.current_collection_id.as_ref() == Some(&id);
-            let expanded = selected && self.collection_tree_expanded;
-            let heading_label = format!("Collection · {}", collection.name);
-            let build_menu = {
-                let handle = handle.clone();
-                let id = id.clone();
-                move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
-                    let request_in = id.clone();
-                    let folder_in = id.clone();
-                    let rename = id.clone();
-                    let settings = id.clone();
-                    let replace_urls = id.clone();
-                    let delete = id.clone();
-                    let expand = id.clone();
-                    let collapse = id.clone();
-                    let run = id.clone();
-                    let export_agentops = id.clone();
-                    let export_postman = id.clone();
-                    menu.item(menu_item(
-                        "workbench-collection-menu-settings".into(),
-                        "Collection settings…",
-                        &handle,
-                        move |this, window, cx| {
-                            this.open_collection_settings(settings.clone(), window, cx)
-                        },
-                    ))
-                    .item(menu_item(
-                        "workbench-collection-menu-new-request".into(),
-                        "Add request",
-                        &handle,
-                        move |this, window, cx| {
-                            this.new_request_in(request_in.clone(), None, window, cx)
-                        },
-                    ))
-                    .item(menu_item(
-                        "workbench-collection-menu-new-folder".into(),
-                        "New folder",
-                        &handle,
-                        move |this, window, cx| {
-                            this.new_folder_in(folder_in.clone(), None, window, cx)
-                        },
-                    ))
-                    .item(menu_item(
-                        "workbench-collection-menu-replace-urls".into(),
-                        "Replace request URLs…",
-                        &handle,
-                        move |this, window, cx| {
-                            this.open_url_replacement(replace_urls.clone(), window, cx)
-                        },
-                    ))
-                    .item(menu_item(
-                        "workbench-collection-menu-rename".into(),
-                        "Rename collection…",
-                        &handle,
-                        move |this, window, cx| {
-                            this.open_rail_rename(
-                                RenameTarget::Collection(rename.clone()),
-                                window,
-                                cx,
-                            )
-                        },
-                    ))
-                    .separator()
-                    .item(menu_item(
-                        "workbench-collection-menu-run".into(),
-                        "Run collection",
-                        &handle,
-                        move |this, window, cx| this.run_from_rail(run.clone(), None, window, cx),
-                    ))
-                    .item(menu_item(
-                        "workbench-collection-menu-export-agentops".into(),
-                        "Export collection · AgentOps JSON…",
-                        &handle,
-                        move |this, _, cx| {
-                            this.export_from_rail(export_agentops.clone(), None, false, cx)
-                        },
-                    ))
-                    .item(menu_item(
-                        "workbench-collection-menu-export-postman".into(),
-                        "Export collection · Postman v2.1…",
-                        &handle,
-                        move |this, _, cx| {
-                            this.export_from_rail(export_postman.clone(), None, true, cx)
-                        },
-                    ))
-                    .separator()
-                    .item(menu_item(
-                        "workbench-collection-menu-expand-folders".into(),
-                        "Expand all folders",
-                        &handle,
-                        move |this, _, cx| this.set_collection_folders_expanded(&expand, true, cx),
-                    ))
-                    .item(menu_item(
-                        "workbench-collection-menu-collapse-folders".into(),
-                        "Collapse all folders",
-                        &handle,
-                        move |this, _, cx| {
-                            this.set_collection_folders_expanded(&collapse, false, cx)
-                        },
-                    ))
-                    .separator()
-                    .item(menu_item(
-                        "workbench-collection-menu-delete".into(),
-                        "Delete collection",
-                        &handle,
-                        move |this, window, cx| {
-                            if this.focus_collection(delete.clone(), window, cx) {
-                                this.delete_current_collection(window, cx);
-                            }
-                        },
-                    ))
-                }
-            };
-            let rename_field = self
-                .rail_rename_for(&RenameTarget::Collection(collection.id.clone()))
-                .map(|rename| self.render_rail_rename(rename, 0., window, cx));
-            let menu = rail_item_menu(
-                format!("workbench-collection-{}-menu", collection.id.as_str()),
-                format!("workbench-collection-{index}-menu"),
-                cx,
-                build_menu.clone(),
-            );
-            let drop_collection = collection.id.clone();
-            out.push(
-                div()
-                    .id(SharedString::from(format!(
-                        "workbench-collection-context-{}",
-                        collection.id.as_str()
-                    )))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(2.))
-                            .pr(px(2.))
-                            .when(index > 0, |el| el.mt(space::SP_2))
-                            .child(
-                                div()
-                                    .id(SharedString::from(format!(
-                                        "workbench-collection-{}",
-                                        collection.id.as_str()
-                                    )))
-                                    .debug_selector(move || format!("workbench-collection-{index}"))
-                                    .flex()
-                                    .flex_1()
-                                    .min_w(px(0.))
-                                    .items_center()
-                                    .gap(px(6.))
-                                    .px(px(6.))
-                                    .py(px(5.))
-                                    .rounded(radius::sm())
-                                    .cursor_pointer()
-                                    .hover(|style| style.bg(colors.accent))
-                                    .drag_over::<DraggedRequest>(|style, _, _, cx| {
-                                        style.bg(cx.theme().accent)
-                                    })
-                                    .on_drop(cx.listener(
-                                        move |this, dragged: &DraggedRequest, _, cx| {
-                                            this.move_saved_request(
-                                                &dragged.id,
-                                                &drop_collection,
-                                                None,
-                                                cx,
-                                            );
-                                        },
-                                    ))
-                                    .on_click(cx.listener(move |this, event, window, cx| {
-                                        let target = RenameTarget::Collection(id.clone());
-                                        if !this.rail_row_clicked(target, event, window, cx) {
-                                            this.toggle_collection_tree(id.clone(), window, cx)
-                                        }
-                                    }))
-                                    .child(icon(
-                                        if expanded {
-                                            "chevron-down"
-                                        } else {
-                                            "chevron-right"
-                                        },
-                                        12.,
-                                        colors.muted_foreground,
-                                    ))
-                                    .child(
-                                        heading(heading_label, colors.muted_foreground).truncate(),
-                                    ),
-                            )
-                            .child(menu)
-                            .context_menu(build_menu),
-                    )
-                    .into_any_element(),
-            );
-            // The rename field takes the heading's place while it is open.
-            if let (Some(field), Some(heading)) = (rename_field, out.last_mut()) {
-                *heading = field;
-            }
-            if !expanded {
+            let target = RenameTarget::Collection(collection.id.clone());
+            out.push(RailItem::Collection {
+                index,
+                renaming: self.rail_rename_for(&target).is_some(),
+                target,
+            });
+            let selected = self.current_collection_id.as_ref() == Some(&collection.id);
+            if !(selected && self.collection_tree_expanded) {
                 continue;
             }
             let rows = rail_rows(data, Some(&collection.id));
@@ -1410,448 +1264,655 @@ impl WorkbenchPanel {
                 .iter()
                 .any(|row| matches!(row, RailRow::Request { .. }))
             {
-                out.push(
-                    div()
-                        .id("workbench-rail-empty")
-                        .debug_selector(|| "workbench-rail-empty".into())
-                        .pl(px(24.))
-                        .py(px(5.))
-                        .text_size(text::S11)
-                        .text_color(palette::text_tertiary(cx))
-                        .child("No requests in this collection.")
-                        .into_any_element(),
-                );
+                out.push(RailItem::EmptyCollection);
             }
-            out.extend(self.render_rail_rows(rows, filter, window, cx));
+            let counts = folder_request_counts(&rows);
+            // Filtering reveals requests inside collapsed folders temporarily.
+            let rows = if filter.is_empty() {
+                expanded_rail_rows(rows, &self.collapsed_folder_ids)
+            } else {
+                rows
+            };
+            let (mut folder_index, mut request_index) = (0, 0);
+            for row in rows {
+                match row {
+                    RailRow::Folder { depth, folder } => {
+                        let target = RenameTarget::Folder(folder.id.clone());
+                        out.push(RailItem::Folder {
+                            index: folder_index,
+                            depth,
+                            count: counts.get(&folder.id).copied().unwrap_or_default(),
+                            filtering: !filter.is_empty(),
+                            renaming: self.rail_rename_for(&target).is_some(),
+                            target,
+                        });
+                        folder_index += 1;
+                    }
+                    RailRow::Request { depth, request } => {
+                        let matches = filter.is_empty()
+                            || request.name.to_lowercase().contains(filter)
+                            || request.url.to_lowercase().contains(filter);
+                        if !matches {
+                            continue;
+                        }
+                        let target = RenameTarget::Request(request.id.clone());
+                        out.push(RailItem::Request {
+                            index: request_index,
+                            depth,
+                            renaming: self.rail_rename_for(&target).is_some(),
+                            target,
+                        });
+                        request_index += 1;
+                    }
+                }
+            }
         }
         out
     }
 
-    /// The selected collection's tree — request rows are numbered
-    /// `workbench-rail-{index}` in tree order, folder headings
-    /// `workbench-folder-{index}`.
-    fn render_rail_rows(
+    /// One rail row (see [`Self::rail_items`]); an empty element when what it
+    /// names is gone (the list catches up on the next render).
+    fn render_rail_item(
         &self,
-        rows: Vec<RailRow<'_>>,
-        filter: &str,
+        item: &RailItem,
         window: &Window,
         cx: &mut Context<Self>,
-    ) -> Vec<AnyElement> {
+    ) -> AnyElement {
+        let Some(data) = self.workspace_data.as_ref() else {
+            return rail_note("Storage unavailable", cx);
+        };
+        match item {
+            RailItem::Note(text) => rail_note(text, cx),
+            RailItem::EmptyCollection => div()
+                .id("workbench-rail-empty")
+                .debug_selector(|| "workbench-rail-empty".into())
+                .pl(px(24.))
+                .py(px(5.))
+                .text_size(text::S11)
+                .text_color(palette::text_tertiary(cx))
+                .child("No requests in this collection.")
+                .into_any_element(),
+            RailItem::Collection { index, .. } => match data.collections.get(*index) {
+                Some(collection) => self.render_rail_collection(*index, collection, window, cx),
+                None => div().into_any_element(),
+            },
+            RailItem::Folder {
+                index,
+                depth,
+                count,
+                filtering,
+                target: RenameTarget::Folder(id),
+                ..
+            } => match data.folders.iter().find(|folder| &folder.id == id) {
+                Some(folder) => {
+                    self.render_rail_folder(folder, *depth, *index, *count, *filtering, window, cx)
+                }
+                None => div().into_any_element(),
+            },
+            RailItem::Request {
+                index,
+                depth,
+                target: RenameTarget::Request(id),
+                ..
+            } => match data.requests.iter().find(|request| &request.id == id) {
+                Some(request) => self.render_rail_request(request, *depth, *index, window, cx),
+                None => div().into_any_element(),
+            },
+            RailItem::Folder { .. } | RailItem::Request { .. } => div().into_any_element(),
+        }
+    }
+
+    /// A `Collection · name` heading, or its rename field while that is open.
+    fn render_rail_collection(
+        &self,
+        index: usize,
+        collection: &switchyard_api::Collection,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if let Some(rename) = self.rail_rename_for(&RenameTarget::Collection(collection.id.clone()))
+        {
+            return self.render_rail_rename(rename, 0., window, cx);
+        }
         let colors = cx.theme().colors;
         let handle = cx.entity().downgrade();
-        let mut request_index = 0;
-        let mut folder_index = 0;
-        let counts = folder_request_counts(&rows);
-        // Filtering reveals requests inside collapsed folders temporarily.
-        let rows = if filter.is_empty() {
-            expanded_rail_rows(rows, &self.collapsed_folder_ids)
-        } else {
-            rows
-        };
-        rows.into_iter()
-            .filter_map(|row| match row {
-                RailRow::Folder { depth, folder } => {
-                    let index = folder_index;
-                    folder_index += 1;
-                    let id = folder.id.clone();
-                    if let Some(rename) = self.rail_rename_for(&RenameTarget::Folder(id.clone())) {
-                        let indent = 12. * (depth as f32 + 1.);
-                        return Some(self.render_rail_rename(rename, indent, window, cx));
-                    }
-                    let toggle_id = id.clone();
-                    let expanded = !filter.is_empty() || !self.collapsed_folder_ids.contains(&id);
-                    let toggle_selector = format!("workbench-folder-toggle-{}", id.as_str());
-                    let count = counts.get(&id).copied().unwrap_or_default();
-                    let assigned = self.selected_folder().as_ref() == Some(&folder.id);
-                    let build_menu = {
-                        let handle = handle.clone();
-                        let collection_id = folder.collection_id.clone();
-                        let id = id.clone();
-                        move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
-                            let request_in = (collection_id.clone(), id.clone());
-                            let folder_in = (collection_id.clone(), id.clone());
-                            let rename = id.clone();
-                            let settings = id.clone();
-                            let delete = id.clone();
-                            let run = (collection_id.clone(), id.clone());
-                            let export_agentops = (collection_id.clone(), id.clone());
-                            let export_postman = (collection_id.clone(), id.clone());
-                            menu.item(menu_item(
-                                "workbench-folder-menu-settings".into(),
-                                "Folder settings…",
-                                &handle,
-                                move |this, window, cx| {
-                                    this.open_folder_settings(settings.clone(), window, cx)
-                                },
-                            ))
-                            .item(menu_item(
-                                "workbench-folder-menu-new-request".into(),
-                                "Add request",
-                                &handle,
-                                move |this, window, cx| {
-                                    let (collection, folder) = request_in.clone();
-                                    this.new_request_in(collection, Some(folder), window, cx)
-                                },
-                            ))
-                            .item(menu_item(
-                                "workbench-folder-menu-new-folder".into(),
-                                "New subfolder",
-                                &handle,
-                                move |this, window, cx| {
-                                    let (collection, folder) = folder_in.clone();
-                                    this.new_folder_in(collection, Some(folder), window, cx)
-                                },
-                            ))
-                            .item(menu_item(
-                                "workbench-folder-menu-rename".into(),
-                                "Rename folder…",
-                                &handle,
-                                move |this, window, cx| {
-                                    this.open_rail_rename(
-                                        RenameTarget::Folder(rename.clone()),
-                                        window,
-                                        cx,
-                                    )
-                                },
-                            ))
-                            .separator()
-                            .item(menu_item(
-                                "workbench-folder-menu-run".into(),
-                                "Run folder",
-                                &handle,
-                                move |this, window, cx| {
-                                    let (collection, folder) = run.clone();
-                                    this.run_from_rail(collection, Some(folder), window, cx)
-                                },
-                            ))
-                            .item(menu_item(
-                                "workbench-folder-menu-export-agentops".into(),
-                                "Export folder · AgentOps JSON…",
-                                &handle,
-                                move |this, _, cx| {
-                                    let (collection, folder) = export_agentops.clone();
-                                    this.export_from_rail(collection, Some(folder), false, cx)
-                                },
-                            ))
-                            .item(menu_item(
-                                "workbench-folder-menu-export-postman".into(),
-                                "Export folder · Postman v2.1…",
-                                &handle,
-                                move |this, _, cx| {
-                                    let (collection, folder) = export_postman.clone();
-                                    this.export_from_rail(collection, Some(folder), true, cx)
-                                },
-                            ))
-                            .separator()
-                            .item(menu_item(
-                                "workbench-folder-menu-delete".into(),
-                                "Delete folder",
-                                &handle,
-                                move |this, window, cx| {
-                                    this.select_folder(delete.clone(), window, cx);
-                                    this.delete_current_folder(cx);
-                                },
-                            ))
+        let id = collection.id.clone();
+        let selected = self.current_collection_id.as_ref() == Some(&id);
+        let expanded = selected && self.collection_tree_expanded;
+        let heading_label = format!("Collection · {}", collection.name);
+        let build_menu = {
+            let handle = handle.clone();
+            let id = id.clone();
+            move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
+                let request_in = id.clone();
+                let folder_in = id.clone();
+                let rename = id.clone();
+                let settings = id.clone();
+                let replace_urls = id.clone();
+                let delete = id.clone();
+                let expand = id.clone();
+                let collapse = id.clone();
+                let run = id.clone();
+                let export_agentops = id.clone();
+                let export_postman = id.clone();
+                menu.item(menu_item(
+                    "workbench-collection-menu-settings".into(),
+                    "Collection settings…",
+                    &handle,
+                    move |this, window, cx| {
+                        this.open_collection_settings(settings.clone(), window, cx)
+                    },
+                ))
+                .item(menu_item(
+                    "workbench-collection-menu-new-request".into(),
+                    "Add request",
+                    &handle,
+                    move |this, window, cx| {
+                        this.new_request_in(request_in.clone(), None, window, cx)
+                    },
+                ))
+                .item(menu_item(
+                    "workbench-collection-menu-new-folder".into(),
+                    "New folder",
+                    &handle,
+                    move |this, window, cx| this.new_folder_in(folder_in.clone(), None, window, cx),
+                ))
+                .item(menu_item(
+                    "workbench-collection-menu-replace-urls".into(),
+                    "Replace request URLs…",
+                    &handle,
+                    move |this, window, cx| {
+                        this.open_url_replacement(replace_urls.clone(), window, cx)
+                    },
+                ))
+                .item(menu_item(
+                    "workbench-collection-menu-rename".into(),
+                    "Rename collection…",
+                    &handle,
+                    move |this, window, cx| {
+                        this.open_rail_rename(RenameTarget::Collection(rename.clone()), window, cx)
+                    },
+                ))
+                .separator()
+                .item(menu_item(
+                    "workbench-collection-menu-run".into(),
+                    "Run collection",
+                    &handle,
+                    move |this, window, cx| this.run_from_rail(run.clone(), None, window, cx),
+                ))
+                .item(menu_item(
+                    "workbench-collection-menu-export-agentops".into(),
+                    "Export collection · AgentOps JSON…",
+                    &handle,
+                    move |this, _, cx| {
+                        this.export_from_rail(export_agentops.clone(), None, false, cx)
+                    },
+                ))
+                .item(menu_item(
+                    "workbench-collection-menu-export-postman".into(),
+                    "Export collection · Postman v2.1…",
+                    &handle,
+                    move |this, _, cx| {
+                        this.export_from_rail(export_postman.clone(), None, true, cx)
+                    },
+                ))
+                .separator()
+                .item(menu_item(
+                    "workbench-collection-menu-expand-folders".into(),
+                    "Expand all folders",
+                    &handle,
+                    move |this, _, cx| this.set_collection_folders_expanded(&expand, true, cx),
+                ))
+                .item(menu_item(
+                    "workbench-collection-menu-collapse-folders".into(),
+                    "Collapse all folders",
+                    &handle,
+                    move |this, _, cx| this.set_collection_folders_expanded(&collapse, false, cx),
+                ))
+                .separator()
+                .item(menu_item(
+                    "workbench-collection-menu-delete".into(),
+                    "Delete collection",
+                    &handle,
+                    move |this, window, cx| {
+                        if this.focus_collection(delete.clone(), window, cx) {
+                            this.delete_current_collection(window, cx);
                         }
-                    };
-                    let menu = rail_item_menu(
-                        format!("workbench-folder-{}-menu", folder.id.as_str()),
-                        format!("workbench-folder-{index}-menu"),
-                        cx,
-                        build_menu.clone(),
-                    );
-                    let drop_folder = id.clone();
-                    let drop_collection = folder.collection_id.clone();
-                    Some(
+                    },
+                ))
+            }
+        };
+        let menu = rail_item_menu(
+            format!("workbench-collection-{}-menu", collection.id.as_str()),
+            format!("workbench-collection-{index}-menu"),
+            cx,
+            build_menu.clone(),
+        );
+        let drop_collection = collection.id.clone();
+        div()
+            .id(SharedString::from(format!(
+                "workbench-collection-context-{}",
+                collection.id.as_str()
+            )))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(2.))
+                    .pr(px(2.))
+                    .when(index > 0, |el| el.mt(space::SP_2))
+                    .child(
                         div()
                             .id(SharedString::from(format!(
-                                "workbench-folder-context-{}",
+                                "workbench-collection-{}",
+                                collection.id.as_str()
+                            )))
+                            .debug_selector(move || format!("workbench-collection-{index}"))
+                            .flex()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .items_center()
+                            .gap(px(6.))
+                            .px(px(6.))
+                            .py(px(5.))
+                            .rounded(radius::sm())
+                            .cursor_pointer()
+                            .hover(|style| style.bg(colors.accent))
+                            .drag_over::<DraggedRequest>(|style, _, _, cx| {
+                                style.bg(cx.theme().accent)
+                            })
+                            .on_drop(cx.listener(move |this, dragged: &DraggedRequest, _, cx| {
+                                this.move_saved_request(&dragged.id, &drop_collection, None, cx);
+                            }))
+                            .on_click(cx.listener(move |this, event, window, cx| {
+                                let target = RenameTarget::Collection(id.clone());
+                                if !this.rail_row_clicked(target, event, window, cx) {
+                                    this.toggle_collection_tree(id.clone(), window, cx)
+                                }
+                            }))
+                            .child(icon(
+                                if expanded {
+                                    "chevron-down"
+                                } else {
+                                    "chevron-right"
+                                },
+                                12.,
+                                colors.muted_foreground,
+                            ))
+                            .child(heading(heading_label, colors.muted_foreground).truncate()),
+                    )
+                    .child(menu)
+                    .context_menu(build_menu),
+            )
+            .into_any_element()
+    }
+
+    /// A folder heading of the rail tree (`workbench-folder-{index}`).
+    #[allow(clippy::too_many_arguments)]
+    fn render_rail_folder(
+        &self,
+        folder: &switchyard_api::Folder,
+        depth: usize,
+        index: usize,
+        count: usize,
+        filtering: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = cx.theme().colors;
+        let handle = cx.entity().downgrade();
+        let id = folder.id.clone();
+        if let Some(rename) = self.rail_rename_for(&RenameTarget::Folder(id.clone())) {
+            let indent = 12. * (depth as f32 + 1.);
+            return self.render_rail_rename(rename, indent, window, cx);
+        }
+        let toggle_id = id.clone();
+        let expanded = filtering || !self.collapsed_folder_ids.contains(&id);
+        let toggle_selector = format!("workbench-folder-toggle-{}", id.as_str());
+        let assigned = self.selected_folder().as_ref() == Some(&folder.id);
+        let build_menu = {
+            let handle = handle.clone();
+            let collection_id = folder.collection_id.clone();
+            let id = id.clone();
+            move |menu: PopupMenu, _: &mut Window, _: &mut Context<PopupMenu>| {
+                let request_in = (collection_id.clone(), id.clone());
+                let folder_in = (collection_id.clone(), id.clone());
+                let rename = id.clone();
+                let settings = id.clone();
+                let delete = id.clone();
+                let run = (collection_id.clone(), id.clone());
+                let export_agentops = (collection_id.clone(), id.clone());
+                let export_postman = (collection_id.clone(), id.clone());
+                menu.item(menu_item(
+                    "workbench-folder-menu-settings".into(),
+                    "Folder settings…",
+                    &handle,
+                    move |this, window, cx| this.open_folder_settings(settings.clone(), window, cx),
+                ))
+                .item(menu_item(
+                    "workbench-folder-menu-new-request".into(),
+                    "Add request",
+                    &handle,
+                    move |this, window, cx| {
+                        let (collection, folder) = request_in.clone();
+                        this.new_request_in(collection, Some(folder), window, cx)
+                    },
+                ))
+                .item(menu_item(
+                    "workbench-folder-menu-new-folder".into(),
+                    "New subfolder",
+                    &handle,
+                    move |this, window, cx| {
+                        let (collection, folder) = folder_in.clone();
+                        this.new_folder_in(collection, Some(folder), window, cx)
+                    },
+                ))
+                .item(menu_item(
+                    "workbench-folder-menu-rename".into(),
+                    "Rename folder…",
+                    &handle,
+                    move |this, window, cx| {
+                        this.open_rail_rename(RenameTarget::Folder(rename.clone()), window, cx)
+                    },
+                ))
+                .separator()
+                .item(menu_item(
+                    "workbench-folder-menu-run".into(),
+                    "Run folder",
+                    &handle,
+                    move |this, window, cx| {
+                        let (collection, folder) = run.clone();
+                        this.run_from_rail(collection, Some(folder), window, cx)
+                    },
+                ))
+                .item(menu_item(
+                    "workbench-folder-menu-export-agentops".into(),
+                    "Export folder · AgentOps JSON…",
+                    &handle,
+                    move |this, _, cx| {
+                        let (collection, folder) = export_agentops.clone();
+                        this.export_from_rail(collection, Some(folder), false, cx)
+                    },
+                ))
+                .item(menu_item(
+                    "workbench-folder-menu-export-postman".into(),
+                    "Export folder · Postman v2.1…",
+                    &handle,
+                    move |this, _, cx| {
+                        let (collection, folder) = export_postman.clone();
+                        this.export_from_rail(collection, Some(folder), true, cx)
+                    },
+                ))
+                .separator()
+                .item(menu_item(
+                    "workbench-folder-menu-delete".into(),
+                    "Delete folder",
+                    &handle,
+                    move |this, window, cx| {
+                        this.select_folder(delete.clone(), window, cx);
+                        this.delete_current_folder(cx);
+                    },
+                ))
+            }
+        };
+        let menu = rail_item_menu(
+            format!("workbench-folder-{}-menu", folder.id.as_str()),
+            format!("workbench-folder-{index}-menu"),
+            cx,
+            build_menu.clone(),
+        );
+        let drop_folder = id.clone();
+        let drop_collection = folder.collection_id.clone();
+        div()
+            .id(SharedString::from(format!(
+                "workbench-folder-context-{}",
+                folder.id.as_str()
+            )))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(2.))
+                    .ml(px(12. * (depth as f32 + 1.)))
+                    .mt(space::SP_1)
+                    .pr(px(2.))
+                    .child(
+                        Button::new(SharedString::from(format!(
+                            "folder-disclosure-{}",
+                            id.as_str()
+                        )))
+                        .debug_selector(move || toggle_selector.clone())
+                        .ghost()
+                        .xsmall()
+                        .icon(if expanded {
+                            IconName::ChevronDown
+                        } else {
+                            IconName::ChevronRight
+                        })
+                        .tooltip(if filtering {
+                            "Folders stay expanded while filtering".to_string()
+                        } else {
+                            format!(
+                                "{} {}",
+                                if expanded { "Collapse" } else { "Expand" },
+                                folder.name
+                            )
+                        })
+                        .disabled(filtering)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.toggle_folder_tree(toggle_id.clone(), cx);
+                        })),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!(
+                                "workbench-folder-{}",
                                 folder.id.as_str()
                             )))
+                            .debug_selector(move || format!("workbench-folder-{index}"))
+                            .flex()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .items_center()
+                            .gap(px(6.))
+                            .px(px(6.))
+                            .py(px(5.))
+                            .rounded(radius::sm())
+                            .cursor_pointer()
+                            .when(assigned, |el| el.bg(colors.accent))
+                            .hover(|style| style.bg(colors.accent))
+                            .drag_over::<DraggedRequest>(|style, _, _, cx| {
+                                style.bg(cx.theme().accent)
+                            })
+                            .on_drop(cx.listener(move |this, dragged: &DraggedRequest, _, cx| {
+                                this.move_saved_request(
+                                    &dragged.id,
+                                    &drop_collection,
+                                    Some(&drop_folder),
+                                    cx,
+                                );
+                            }))
+                            .on_click(cx.listener(move |this, event, window, cx| {
+                                let target = RenameTarget::Folder(id.clone());
+                                if !this.rail_row_clicked(target, event, window, cx) {
+                                    this.select_folder(id.clone(), window, cx)
+                                }
+                            }))
+                            .child(icon("folder", 12., colors.muted_foreground))
+                            .child(heading(folder.name.clone(), colors.muted_foreground).truncate())
+                            .child(div().flex_1())
                             .child(
                                 div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(2.))
-                                    .ml(px(12. * (depth as f32 + 1.)))
-                                    .mt(space::SP_1)
-                                    .pr(px(2.))
-                                    .child(
-                                        Button::new(SharedString::from(format!(
-                                            "folder-disclosure-{}",
-                                            id.as_str()
-                                        )))
-                                        .debug_selector(move || toggle_selector.clone())
-                                        .ghost()
-                                        .xsmall()
-                                        .icon(if expanded {
-                                            IconName::ChevronDown
-                                        } else {
-                                            IconName::ChevronRight
-                                        })
-                                        .tooltip(if !filter.is_empty() {
-                                            "Folders stay expanded while filtering".to_string()
-                                        } else {
-                                            format!(
-                                                "{} {}",
-                                                if expanded { "Collapse" } else { "Expand" },
-                                                folder.name
-                                            )
-                                        })
-                                        .disabled(!filter.is_empty())
-                                        .on_click(
-                                            cx.listener(move |this, _, _, cx| {
-                                                this.toggle_folder_tree(toggle_id.clone(), cx);
-                                            }),
-                                        ),
-                                    )
-                                    .child(
-                                        div()
-                                            .id(SharedString::from(format!(
-                                                "workbench-folder-{}",
-                                                folder.id.as_str()
-                                            )))
-                                            .debug_selector(move || {
-                                                format!("workbench-folder-{index}")
-                                            })
-                                            .flex()
-                                            .flex_1()
-                                            .min_w(px(0.))
-                                            .items_center()
-                                            .gap(px(6.))
-                                            .px(px(6.))
-                                            .py(px(5.))
-                                            .rounded(radius::sm())
-                                            .cursor_pointer()
-                                            .when(assigned, |el| el.bg(colors.accent))
-                                            .hover(|style| style.bg(colors.accent))
-                                            .drag_over::<DraggedRequest>(|style, _, _, cx| {
-                                                style.bg(cx.theme().accent)
-                                            })
-                                            .on_drop(cx.listener(
-                                                move |this, dragged: &DraggedRequest, _, cx| {
-                                                    this.move_saved_request(
-                                                        &dragged.id,
-                                                        &drop_collection,
-                                                        Some(&drop_folder),
-                                                        cx,
-                                                    );
-                                                },
-                                            ))
-                                            .on_click(cx.listener(
-                                                move |this, event, window, cx| {
-                                                    let target = RenameTarget::Folder(id.clone());
-                                                    if !this
-                                                        .rail_row_clicked(target, event, window, cx)
-                                                    {
-                                                        this.select_folder(id.clone(), window, cx)
-                                                    }
-                                                },
-                                            ))
-                                            .child(icon("folder", 12., colors.muted_foreground))
-                                            .child(
-                                                heading(
-                                                    folder.name.clone(),
-                                                    colors.muted_foreground,
-                                                )
-                                                .truncate(),
-                                            )
-                                            .child(div().flex_1())
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(colors.muted_foreground)
-                                                    .child(count.to_string()),
-                                            ),
-                                    )
-                                    .child(menu)
-                                    .context_menu(build_menu),
-                            )
-                            .into_any_element(),
+                                    .text_xs()
+                                    .text_color(colors.muted_foreground)
+                                    .child(count.to_string()),
+                            ),
                     )
-                }
-                RailRow::Request { depth, request } => {
-                    let index = request_index;
-                    let matches = filter.is_empty()
-                        || request.name.to_lowercase().contains(filter)
-                        || request.url.to_lowercase().contains(filter);
-                    if !matches {
-                        return None;
-                    }
-                    request_index += 1;
-                    if let Some(rename) =
-                        self.rail_rename_for(&RenameTarget::Request(request.id.clone()))
-                    {
-                        let indent = 12. * (depth as f32 + 1.);
-                        return Some(self.render_rail_rename(rename, indent, window, cx));
-                    }
-                    // Row callbacks retain identity, not the potentially large
-                    // body, scripts and credentials of every saved request.
-                    let request_for_click = request.id.clone();
-                    let method = request.method.as_str().to_string();
-                    let active = self.current_request_id.as_ref() == Some(&request.id);
-                    let dragged = DraggedRequest {
-                        id: request.id.clone(),
-                        name: request.name.clone(),
-                    };
-                    let build_menu = {
-                        let handle = handle.clone();
-                        let request = request.id.clone();
-                        move |menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>| {
-                            let delete = request.clone();
-                            let rename = request.clone();
-                            let open = request.clone();
-                            let duplicate = request.clone();
-                            let menu = menu
-                                .item(menu_item(
-                                    "workbench-request-menu-open".into(),
-                                    "Open request",
-                                    &handle,
-                                    move |this, window, cx| {
-                                        this.open_saved_request(&open, window, cx);
-                                    },
-                                ))
-                                .item(menu_item(
-                                    "workbench-request-menu-duplicate".into(),
-                                    "Duplicate request",
-                                    &handle,
-                                    move |this, window, cx| {
-                                        this.open_saved_request(&duplicate, window, cx);
-                                        if this.current_request_id.as_ref() == Some(&duplicate)
-                                            && let Some(tab) = this.active_request_tab_id()
-                                        {
-                                            this.run_request_tab_action(
-                                                tab_menu::Action::Duplicate,
-                                                tab,
-                                                window,
-                                                cx,
-                                            );
-                                        }
-                                    },
-                                ))
-                                .separator()
-                                .item(menu_item(
-                                    "workbench-request-menu-rename".into(),
-                                    "Rename request…",
-                                    &handle,
-                                    move |this, window, cx| {
-                                        this.open_rail_rename(
-                                            RenameTarget::Request(rename.clone()),
-                                            window,
-                                            cx,
-                                        )
-                                    },
-                                ));
-                            let destinations = handle
-                                .upgrade()
-                                .map(|panel| panel.read(cx).request_destinations(&request))
-                                .unwrap_or_default();
-                            let menu = request_move_menu(
-                                menu,
-                                request.clone(),
-                                destinations,
-                                handle.clone(),
-                                window,
-                                cx,
-                            );
-                            menu.item(menu_item(
-                                "workbench-request-menu-delete".into(),
-                                "Delete request",
-                                &handle,
-                                move |this, window, cx| this.delete_request(&delete, window, cx),
-                            ))
-                        }
-                    };
-                    let menu = rail_item_menu(
-                        format!("workbench-request-{}-menu", request.id.as_str()),
-                        format!("workbench-rail-{index}-menu"),
-                        cx,
-                        build_menu.clone(),
-                    );
-                    Some(
+                    .child(menu)
+                    .context_menu(build_menu),
+            )
+            .into_any_element()
+    }
+
+    /// A request row of the rail tree (`workbench-rail-{index}`).
+    fn render_rail_request(
+        &self,
+        request: &SavedRequest,
+        depth: usize,
+        index: usize,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = cx.theme().colors;
+        let handle = cx.entity().downgrade();
+        if let Some(rename) = self.rail_rename_for(&RenameTarget::Request(request.id.clone())) {
+            let indent = 12. * (depth as f32 + 1.);
+            return self.render_rail_rename(rename, indent, window, cx);
+        }
+        // Row callbacks retain identity, not the potentially large
+        // body, scripts and credentials of every saved request.
+        let request_for_click = request.id.clone();
+        let method = request.method.as_str().to_string();
+        let active = self.current_request_id.as_ref() == Some(&request.id);
+        let dragged = DraggedRequest {
+            id: request.id.clone(),
+            name: request.name.clone(),
+        };
+        let build_menu = {
+            let handle = handle.clone();
+            let request = request.id.clone();
+            move |menu: PopupMenu, window: &mut Window, cx: &mut Context<PopupMenu>| {
+                let delete = request.clone();
+                let rename = request.clone();
+                let open = request.clone();
+                let duplicate = request.clone();
+                let menu = menu
+                    .item(menu_item(
+                        "workbench-request-menu-open".into(),
+                        "Open request",
+                        &handle,
+                        move |this, window, cx| {
+                            this.open_saved_request(&open, window, cx);
+                        },
+                    ))
+                    .item(menu_item(
+                        "workbench-request-menu-duplicate".into(),
+                        "Duplicate request",
+                        &handle,
+                        move |this, window, cx| {
+                            this.open_saved_request(&duplicate, window, cx);
+                            if this.current_request_id.as_ref() == Some(&duplicate)
+                                && let Some(tab) = this.active_request_tab_id()
+                            {
+                                this.run_request_tab_action(
+                                    tab_menu::Action::Duplicate,
+                                    tab,
+                                    window,
+                                    cx,
+                                );
+                            }
+                        },
+                    ))
+                    .separator()
+                    .item(menu_item(
+                        "workbench-request-menu-rename".into(),
+                        "Rename request…",
+                        &handle,
+                        move |this, window, cx| {
+                            this.open_rail_rename(RenameTarget::Request(rename.clone()), window, cx)
+                        },
+                    ));
+                let destinations = handle
+                    .upgrade()
+                    .map(|panel| panel.read(cx).request_destinations(&request))
+                    .unwrap_or_default();
+                let menu = request_move_menu(
+                    menu,
+                    request.clone(),
+                    destinations,
+                    handle.clone(),
+                    window,
+                    cx,
+                );
+                menu.item(menu_item(
+                    "workbench-request-menu-delete".into(),
+                    "Delete request",
+                    &handle,
+                    move |this, window, cx| this.delete_request(&delete, window, cx),
+                ))
+            }
+        };
+        let menu = rail_item_menu(
+            format!("workbench-request-{}-menu", request.id.as_str()),
+            format!("workbench-rail-{index}-menu"),
+            cx,
+            build_menu.clone(),
+        );
+        div()
+            .id(SharedString::from(format!(
+                "workbench-request-context-{}",
+                request.id.as_str()
+            )))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(2.))
+                    .ml(px(12. * (depth as f32 + 1.)))
+                    .pr(px(2.))
+                    .child(
                         div()
                             .id(SharedString::from(format!(
-                                "workbench-request-context-{}",
+                                "workbench-request-{}",
                                 request.id.as_str()
                             )))
+                            .debug_selector(move || format!("workbench-rail-{index}"))
+                            .flex()
+                            .flex_1()
+                            .min_w(px(0.))
+                            .items_center()
+                            .gap(space::SP_2)
+                            .px(px(6.))
+                            .py(px(5.))
+                            .rounded(radius::sm())
+                            .cursor_pointer()
+                            .when(active, |el| el.bg(colors.accent))
+                            .hover(|style| style.bg(colors.accent))
+                            .on_drag(dragged, |dragged, _, _, cx| {
+                                cx.stop_propagation();
+                                cx.new(|_| dragged.clone())
+                            })
+                            .text_color(if active {
+                                colors.foreground
+                            } else {
+                                palette::text_secondary(cx)
+                            })
+                            .on_click(cx.listener(move |this, event, window, cx| {
+                                let target = RenameTarget::Request(request_for_click.clone());
+                                if !this.rail_row_clicked(target, event, window, cx) {
+                                    this.open_saved_request(&request_for_click, window, cx);
+                                }
+                            }))
+                            .child(verb(
+                                method.clone(),
+                                self.method_tint_label(&method, cx),
+                                44.,
+                                cx,
+                            ))
                             .child(
                                 div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(2.))
-                                    .ml(px(12. * (depth as f32 + 1.)))
-                                    .pr(px(2.))
-                                    .child(
-                                        div()
-                                            .id(SharedString::from(format!(
-                                                "workbench-request-{}",
-                                                request.id.as_str()
-                                            )))
-                                            .debug_selector(move || {
-                                                format!("workbench-rail-{index}")
-                                            })
-                                            .flex()
-                                            .flex_1()
-                                            .min_w(px(0.))
-                                            .items_center()
-                                            .gap(space::SP_2)
-                                            .px(px(6.))
-                                            .py(px(5.))
-                                            .rounded(radius::sm())
-                                            .cursor_pointer()
-                                            .when(active, |el| el.bg(colors.accent))
-                                            .hover(|style| style.bg(colors.accent))
-                                            .on_drag(dragged, |dragged, _, _, cx| {
-                                                cx.stop_propagation();
-                                                cx.new(|_| dragged.clone())
-                                            })
-                                            .text_color(if active {
-                                                colors.foreground
-                                            } else {
-                                                palette::text_secondary(cx)
-                                            })
-                                            .on_click(cx.listener(
-                                                move |this, event, window, cx| {
-                                                    let target = RenameTarget::Request(
-                                                        request_for_click.clone(),
-                                                    );
-                                                    if !this
-                                                        .rail_row_clicked(target, event, window, cx)
-                                                    {
-                                                        this.open_saved_request(
-                                                            &request_for_click,
-                                                            window,
-                                                            cx,
-                                                        );
-                                                    }
-                                                },
-                                            ))
-                                            .child(verb(
-                                                method.clone(),
-                                                self.method_tint_label(&method, cx),
-                                                44.,
-                                                cx,
-                                            ))
-                                            .child(
-                                                div()
-                                                    .flex_1()
-                                                    .min_w(px(0.))
-                                                    .truncate()
-                                                    .font_family(crate::api::compat::fonts::mono(
-                                                        cx,
-                                                    ))
-                                                    .text_size(text::S11)
-                                                    .child(request.name.clone()),
-                                            ),
-                                    )
-                                    .child(menu)
-                                    .context_menu(build_menu),
-                            )
-                            .into_any_element(),
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .truncate()
+                                    .font_family(crate::api::compat::fonts::mono(cx))
+                                    .text_size(text::S11)
+                                    .child(request.name.clone()),
+                            ),
                     )
-                }
-            })
-            .collect()
+                    .child(menu)
+                    .context_menu(build_menu),
+            )
+            .into_any_element()
     }
 }
 
@@ -2543,14 +2604,17 @@ impl WorkbenchPanel {
                 );
         }
         let source = self.body.read(cx).value().to_string();
+        // Parsed and formatted once per distinct body, not on every render.
+        let json_check = (self.body_mode == draft::BodyMode::Json && !source.trim().is_empty())
+            .then(|| self.ux.body_json.check(&source));
         let hint = match self.body_mode {
             draft::BodyMode::Json if source.trim().is_empty() => "Empty JSON body".to_string(),
             draft::BodyMode::Json if source.contains("{{") => {
                 "Template body · JSON is validated after variable substitution".to_string()
             }
-            draft::BodyMode::Json => match serde_json::from_str::<serde_json::Value>(&source) {
-                Ok(_) => format!("Valid JSON · {}", pretty::human_size(source.len() as u64)),
-                Err(error) => format!("Invalid JSON — {error}"),
+            draft::BodyMode::Json => match json_check.as_ref().and_then(|c| c.error.as_ref()) {
+                None => format!("Valid JSON · {}", pretty::human_size(source.len() as u64)),
+                Some(error) => format!("Invalid JSON — {error}"),
             },
             mode => format!(
                 "{} body · {}",
@@ -2609,18 +2673,13 @@ impl WorkbenchPanel {
                             .text_color(colors.muted_foreground)
                             .child(hint),
                     )
-                    .when(
-                        self.body_mode == draft::BodyMode::Json
-                            && pretty::format_json(&source).is_some_and(|f| f != source),
-                        |el| {
-                            el.child(
-                                outline_chip("workbench-body-format".into(), "Format", cx)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.format_body(window, cx)
-                                    })),
-                            )
-                        },
-                    )
+                    .when(json_check.as_ref().is_some_and(|c| c.formattable), |el| {
+                        el.child(
+                            outline_chip("workbench-body-format".into(), "Format", cx).on_click(
+                                cx.listener(|this, _, window, cx| this.format_body(window, cx)),
+                            ),
+                        )
+                    })
                     .child(ai_button(assist::AssistIntent::GenerateBody, false, cx)),
             )
             .child(
@@ -5386,6 +5445,9 @@ impl WorkbenchPanel {
 // History
 // ---------------------------------------------------------------------------
 
+/// Height the History table's virtualized rows grow to before they scroll.
+const HISTORY_LIST_MAX_H: f32 = 560.;
+
 const HISTORY_COLS: [Col; 7] = [
     Col::Px(120.),
     Col::Flex,
@@ -5504,119 +5566,22 @@ impl WorkbenchPanel {
                                     true,
                                     cx,
                                 ))
-                                .children(rows.iter().map(|(index, entry)| {
-                                    let index = *index;
-                                    let selected = self.selected_history.contains(&index);
-                                    let passed = entry
-                                        .response
-                                        .test_results
-                                        .iter()
-                                        .filter(|test| test.passed && !test.skipped)
-                                        .count();
-                                    let skipped = entry.response.test_results.iter().filter(|test| test.skipped).count();
-                                    let total = entry.response.test_results.len();
-                                    let tint = self.method_tint_label(&entry.method, cx);
-                                    let target = div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(space::SP_2)
-                                        .min_w(px(0.))
-                                        .child(verb(entry.method.clone(), tint, 44., cx))
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .min_w(px(0.))
-                                                .truncate()
-                                                .text_color(colors.foreground)
-                                                .child(entry.target.clone()),
-                                        )
-                                        .into_any_element();
-                                    let actions = div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(space::SP_1)
-                                        .child(
-                                            history_action(format!("workbench-history-replay-{index}"), "play", colors.primary, cx)
-                                                .on_click(cx.listener(move |this, _, window, cx| {
-                                                    this.replay_history(index, window, cx)
-                                                })),
-                                        )
-                                        .child(
-                                            history_action(format!("workbench-history-save-{index}"), "save", colors.primary, cx)
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.save_history_as_request(index, cx)
-                                                })),
-                                        )
-                                        .child(
-                                            history_action(format!("workbench-history-delete-{index}"), "trash", colors.danger, cx)
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.delete_history_entry(index, cx)
-                                                })),
-                                        )
-                                        .into_any_element();
-                                    let row = table_row(
-                                        &HISTORY_COLS,
-                                        vec![
-                                            tinted_cell(
-                                                pretty::relative_time(entry.exchange.completed_at, now),
-                                                palette::text_tertiary(cx),
-                                            ),
-                                            target,
-                                            tinted_cell(
-                                                entry.response.status.to_string(),
-                                                status_tint(entry.response.status, cx),
-                                            ),
-                                            cell(format!("{} ms", entry.elapsed_ms)),
-                                            if total == 0 {
-                                                tinted_cell("—", palette::text_tertiary(cx))
-                                            } else {
-                                                tinted_cell(
-                                                    format!("{passed}/{total} · {skipped} skipped"),
-                                                    if passed + skipped == total { colors.success } else { colors.danger },
-                                                )
-                                            },
-                                            tinted_cell("—", palette::text_tertiary(cx)),
-                                            actions,
-                                        ],
-                                        false,
-                                        cx,
+                                .child({
+                                    // Virtualized: only the rows in view are built (history keeps up to
+                                    // its retention limit, 1,000 by default).
+                                    let indices: Rc<[usize]> = rows.iter().map(|(index, _)| *index).collect();
+                                    uniform_list(
+                                        "workbench-history-rows",
+                                        indices.len(),
+                                        cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                                            range
+                                                .map(|i| this.render_history_row(indices[i], now, cx))
+                                                .collect::<Vec<_>>()
+                                        }),
                                     )
-                                    .id(SharedString::from(format!("workbench-history-{index}")))
-                                    .debug_selector(move || format!("workbench-history-{index}"))
-                                    .cursor_pointer()
-                                    .when(selected, |el| el.bg(colors.accent))
-                                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_history(index, cx)));
-                                    let exchange_id = entry.exchange.id.clone();
-                                    div()
-                                        .id(SharedString::from(format!("workbench-history-menu-{exchange_id}")))
-                                        .child(row.context_menu({
-                                            let handle = cx.entity().downgrade();
-                                            move |mut menu, _, _| {
-                                                for (action, label) in [
-                                                    ("replay", "Replay request"),
-                                                    ("save", "Save as request"),
-                                                    ("select", "Select for comparison"),
-                                                    ("delete", "Delete history entry"),
-                                                ] {
-                                                    let id = exchange_id.clone();
-                                                    if action == "delete" { menu = menu.separator(); }
-                                                    menu = menu.item(menu_item(
-                                                        format!("workbench-history-menu-{action}"), label, &handle,
-                                                        move |this, window, cx| {
-                                                            let Some(index) = this.history.iter().position(|entry| entry.exchange.id == id) else { return; };
-                                                            match action {
-                                                                "replay" => this.replay_history(index, window, cx),
-                                                                "save" => this.save_history_as_request(index, cx),
-                                                                "select" => this.toggle_history(index, cx),
-                                                                _ => this.delete_history_entry(index, cx),
-                                                            }
-                                                        },
-                                                    ).checked(action == "select" && selected));
-                                                }
-                                                menu
-                                            }
-                                        }))
-                                }))
+                                    .with_sizing_behavior(gpui_kit::ListSizingBehavior::Infer)
+                                    .max_h(px(HISTORY_LIST_MAX_H))
+                                })
                                 .when(rows.is_empty(), |el| {
                                     el.child(
                                         div()
@@ -5701,6 +5666,162 @@ impl WorkbenchPanel {
                         )
                     }),
             )
+            .into_any_element()
+    }
+
+    /// One row of the History table: history entry `index`.
+    fn render_history_row(&self, index: usize, now: i64, cx: &mut Context<Self>) -> AnyElement {
+        let colors = cx.theme().colors;
+        let Some(entry) = self.history.get(index) else {
+            return div().into_any_element();
+        };
+        let selected = self.selected_history.contains(&index);
+        let passed = entry
+            .response
+            .test_results
+            .iter()
+            .filter(|test| test.passed && !test.skipped)
+            .count();
+        let skipped = entry
+            .response
+            .test_results
+            .iter()
+            .filter(|test| test.skipped)
+            .count();
+        let total = entry.response.test_results.len();
+        let tint = self.method_tint_label(&entry.method, cx);
+        let target = div()
+            .flex()
+            .items_center()
+            .gap(space::SP_2)
+            .min_w(px(0.))
+            .child(verb(entry.method.clone(), tint, 44., cx))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .truncate()
+                    .text_color(colors.foreground)
+                    .child(entry.target.clone()),
+            )
+            .into_any_element();
+        let actions = div()
+            .flex()
+            .items_center()
+            .gap(space::SP_1)
+            .child(
+                history_action(
+                    format!("workbench-history-replay-{index}"),
+                    "play",
+                    colors.primary,
+                    cx,
+                )
+                .on_click(
+                    cx.listener(move |this, _, window, cx| this.replay_history(index, window, cx)),
+                ),
+            )
+            .child(
+                history_action(
+                    format!("workbench-history-save-{index}"),
+                    "save",
+                    colors.primary,
+                    cx,
+                )
+                .on_click(
+                    cx.listener(move |this, _, _, cx| this.save_history_as_request(index, cx)),
+                ),
+            )
+            .child(
+                history_action(
+                    format!("workbench-history-delete-{index}"),
+                    "trash",
+                    colors.danger,
+                    cx,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.delete_history_entry(index, cx))),
+            )
+            .into_any_element();
+        let row = table_row(
+            &HISTORY_COLS,
+            vec![
+                tinted_cell(
+                    pretty::relative_time(entry.exchange.completed_at, now),
+                    palette::text_tertiary(cx),
+                ),
+                target,
+                tinted_cell(
+                    entry.response.status.to_string(),
+                    status_tint(entry.response.status, cx),
+                ),
+                cell(format!("{} ms", entry.elapsed_ms)),
+                if total == 0 {
+                    tinted_cell("—", palette::text_tertiary(cx))
+                } else {
+                    tinted_cell(
+                        format!("{passed}/{total} · {skipped} skipped"),
+                        if passed + skipped == total {
+                            colors.success
+                        } else {
+                            colors.danger
+                        },
+                    )
+                },
+                tinted_cell("—", palette::text_tertiary(cx)),
+                actions,
+            ],
+            false,
+            cx,
+        )
+        .id(SharedString::from(format!("workbench-history-{index}")))
+        .debug_selector(move || format!("workbench-history-{index}"))
+        .cursor_pointer()
+        .when(selected, |el| el.bg(colors.accent))
+        .on_click(cx.listener(move |this, _, _, cx| this.toggle_history(index, cx)));
+        let exchange_id = entry.exchange.id.clone();
+        div()
+            .id(SharedString::from(format!(
+                "workbench-history-menu-{exchange_id}"
+            )))
+            .child(row.context_menu({
+                let handle = cx.entity().downgrade();
+                move |mut menu, _, _| {
+                    for (action, label) in [
+                        ("replay", "Replay request"),
+                        ("save", "Save as request"),
+                        ("select", "Select for comparison"),
+                        ("delete", "Delete history entry"),
+                    ] {
+                        let id = exchange_id.clone();
+                        if action == "delete" {
+                            menu = menu.separator();
+                        }
+                        menu = menu.item(
+                            menu_item(
+                                format!("workbench-history-menu-{action}"),
+                                label,
+                                &handle,
+                                move |this, window, cx| {
+                                    let Some(index) = this
+                                        .history
+                                        .iter()
+                                        .position(|entry| entry.exchange.id == id)
+                                    else {
+                                        return;
+                                    };
+                                    match action {
+                                        "replay" => this.replay_history(index, window, cx),
+                                        "save" => this.save_history_as_request(index, cx),
+                                        "select" => this.toggle_history(index, cx),
+                                        _ => this.delete_history_entry(index, cx),
+                                    }
+                                },
+                            )
+                            .checked(action == "select" && selected),
+                        );
+                    }
+                    menu
+                }
+            }))
             .into_any_element()
     }
 }
