@@ -1047,3 +1047,18 @@ commands.
 - Output goes through the MCP scrubber like everything else, so host addresses and user
   names in it read `[redacted]`.
 
+
+## 2026-10-09 — Compose SQL Server with a test CA; cancel flake already fixed
+
+- **Compose `mssql` TLS.** The driver never skips certificate verification, so the compose
+  SQL Server's self-signed fallback certificate could not be used by any test. A one-shot
+  `mssql-tls` service (the same image, which has openssl) runs `docker/mssql/make-tls.sh`
+  to write a throwaway CA and a localhost certificate to `docker/mssql/tls/` (git-ignored,
+  made once); `mssql` mounts them with `docker/mssql/mssql.conf`. Tests trust
+  `docker/mssql/tls/ca.pem`. `scripts/mssql-test-server.sh` stays for the CI SQL Server job.
+- **`cancel_stops_a_running_query_quickly` flake.** Root cause was a Cancel landing between
+  `StatementStarted` and the driver's `execute`, which clears the cancel flag; fixed in
+  40814b2 (core re-asserts the cancel from the resume channel while `execute` is in flight).
+  The Follow-ups note came from a branch without that commit. Rechecked: no failure in
+  ~120 runs under CPU and disk load, and the test still passes with a forced 200 ms gap
+  before `execute`. No timeout change.
