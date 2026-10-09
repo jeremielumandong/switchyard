@@ -1,0 +1,18 @@
+---
+source: crates/db/src/activity.rs
+expression: MYSQL_LIST
+---
+SELECT CAST(p.ID AS CHAR) AS id,
+       p.USER AS username,
+       p.DB AS database_name,
+       p.HOST AS client,
+       p.COMMAND AS state,
+       NULLIF(p.STATE, '') AS wait,
+       p.TIME * 1000 AS age_ms,
+       CASE WHEN p.COMMAND NOT IN ('Sleep', 'Binlog Dump') THEN 1 ELSE 0 END AS running,
+       p.INFO AS sql_text,
+       CASE WHEN p.ID = CONNECTION_ID() THEN 1 ELSE 0 END AS is_self
+FROM information_schema.PROCESSLIST p
+WHERE p.COMMAND <> 'Daemon'
+ORDER BY running DESC, p.TIME DESC
+LIMIT 500

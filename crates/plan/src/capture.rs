@@ -44,6 +44,9 @@ pub async fn capture(
         Engine::Oracle => Err(PlanError::Unsupported(
             "query plans are not available for Oracle yet".into(),
         )),
+        Engine::MySql => Err(PlanError::Unsupported(
+            "query plans are not available for MySQL yet".into(),
+        )),
     }
 }
 

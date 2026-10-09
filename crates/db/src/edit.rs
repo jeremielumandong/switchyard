@@ -359,6 +359,7 @@ mod tests {
             Engine::Oracle,
             Engine::Snowflake,
             Engine::D1,
+            Engine::MySql,
         ] {
             let d = dialect_for(engine);
             let t = EditTable {

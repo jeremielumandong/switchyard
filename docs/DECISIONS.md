@@ -914,3 +914,23 @@ are MIT/Apache-2.0 (memchr Unlicense OR MIT, unicode-ident adds Unicode-3.0), no
 Rejected `layout-rs` (renders through its own backend, no per-node positions) and
 `rust-sugiyama` (pulls in petgraph). Used from `switchyard-app` only; layout runs on the
 background executor (a dense 150-table graph takes ~1.4 s in release).
+
+## 2026-10-08 — MySQL driver crate (`mysql_async`)
+
+The user asked for MySQL support, which needs a client crate not on the approved list. Chose
+`mysql_async` 0.37 (MIT OR Apache-2.0): pure-Rust protocol on tokio, so no native library
+and nothing for the Driver Manager to install. Built with `default-features = false` and
+`minimal-rust`, `rustls-tls`, `ring`, `tls12`; new transitive crates are MIT / Apache-2.0
+plus `webpki-roots` (CDLA-Permissive-2.0, data only; its roots are switched off in favour
+of the OS store, like the other drivers). Rejected `sqlx` (pulls in its whole runtime and
+macro stack for one engine).
+
+- TLS keeps verification on. MySQL servers ship self-signed certificates by default, so
+  `prefer` fails on an untrusted certificate with a hint to trust the CA per connection or
+  turn TLS off; it falls back to plain TCP only when the server has no TLS at all. Through
+  a tunnel the certificate is checked against the profile's host.
+- A MySQL "schema" is a database: the explorer lists databases as schemas, `USE` switches
+  them, and `Dialect::default_schema` is empty (unqualified names resolve in the
+  connection's database).
+- TIME columns are durations (up to ±838 h), so they are shown as text, not as a time of
+  day. Zero dates in DATE / DATETIME columns read as NULL.
