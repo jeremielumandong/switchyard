@@ -42,6 +42,9 @@ pub async fn capture(
             "visual plans are not available for MongoDB yet; add .explain() to a find or aggregate"
                 .into(),
         )),
+        Engine::Sqlite => Err(PlanError::Unsupported(
+            "query plans are not available for SQLite yet".into(),
+        )),
         Engine::Snowflake => Err(PlanError::Unsupported(
             "query plans are not available for Snowflake yet".into(),
         )),

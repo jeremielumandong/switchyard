@@ -1,0 +1,36 @@
+---
+source: crates/store/src/snippets.rs
+expression: rendered
+---
+-- Select rows (sel) [builtin:sqlite:sel]
+SELECT ${2:*}
+FROM ${1:table_name}
+LIMIT ${3:100};
+
+-- Insert row (ins) [builtin:sqlite:ins]
+INSERT INTO ${1:table_name} (${2:column1}, ${3:column2})
+VALUES (${4:value1}, ${5:value2});
+
+-- Update with WHERE (upd) [builtin:sqlite:upd]
+UPDATE ${1:table_name}
+SET ${2:column1} = ${3:value1}
+WHERE ${4:condition};
+
+-- Common table expression (cte) [builtin:sqlite:cte]
+WITH ${1:cte_name} AS (
+    SELECT ${2:*}
+    FROM ${3:table_name}
+)
+SELECT *
+FROM ${1:cte_name};
+
+-- Create index (idx) [builtin:sqlite:idx]
+CREATE INDEX ${1:index_name}
+    ON ${2:table_name} (${3:column1});
+
+-- Transaction (tran) [builtin:sqlite:tran]
+BEGIN;
+
+${1:-- statements}
+
+COMMIT;

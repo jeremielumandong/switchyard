@@ -123,6 +123,9 @@ pub fn describe(p: &Profile, profiles: &Profiles) -> String {
                 "via {}",
                 profiles.host(h).map(|h| h.name.as_str()).unwrap_or("host")
             ),
+            None if d.engine.is_local_file() => std::path::Path::new(d.database.trim())
+                .file_name()
+                .map_or_else(|| d.database.clone(), |f| f.to_string_lossy().into_owned()),
             None => format!("{}:{}", d.server, d.port),
         },
         Profile::File(f) => match &f.protocol {

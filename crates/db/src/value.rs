@@ -22,6 +22,8 @@ pub enum Engine {
     MySql,
     /// MongoDB: documents queried with a mongosh-style shell syntax.
     MongoDb,
+    /// A local SQLite database file.
+    Sqlite,
 }
 
 impl Engine {
@@ -35,6 +37,7 @@ impl Engine {
             Engine::Oracle => "Oracle",
             Engine::MySql => "MySQL",
             Engine::MongoDb => "MongoDB",
+            Engine::Sqlite => "SQLite",
         }
     }
 
@@ -48,6 +51,7 @@ impl Engine {
             Engine::Oracle => "OR",
             Engine::MySql => "MY",
             Engine::MongoDb => "MG",
+            Engine::Sqlite => "SL",
         }
     }
 
@@ -60,6 +64,8 @@ impl Engine {
             Engine::Oracle => 1521,
             Engine::MySql => 3306,
             Engine::MongoDb => 27017,
+            // A file, not a server.
+            Engine::Sqlite => 0,
         }
     }
 
@@ -81,6 +87,12 @@ impl Engine {
     /// plus an API token) rather than host, port and user.
     pub fn is_cloud_api(self) -> bool {
         matches!(self, Engine::D1)
+    }
+
+    /// Whether the engine opens a local file (`DbConnection::database` is its path) rather
+    /// than reaching a server.
+    pub fn is_local_file(self) -> bool {
+        matches!(self, Engine::Sqlite)
     }
 }
 
