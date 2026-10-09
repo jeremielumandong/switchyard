@@ -905,3 +905,40 @@ PY"#;
     // No real cookie for this display here, so the fake one was stripped, never passed on.
     assert_eq!(seen.lock().unwrap().clone(), Some((Vec::new(), Vec::new())));
 }
+
+#[tokio::test]
+#[ignore = "needs ssh servers"]
+async fn run_command_splits_streams_caps_and_times_out() {
+    let dir = tempfile::tempdir().unwrap();
+    let m = SshManager::new(known(&dir), Prompter::new(HostKeyDecision::TrustOnce));
+    let t = target("run", main_port(), key("id_ed25519"));
+    let conn = m.session(&t).await.unwrap();
+    let out = conn
+        .run_command(
+            "echo out; echo err >&2; exit 3",
+            1024,
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap();
+    assert_eq!(out.exit_status, Some(3));
+    assert_eq!(out.stdout, b"out\n");
+    assert_eq!(out.stderr, b"err\n");
+    assert!(!out.truncated && !out.timed_out);
+
+    let out = conn
+        .run_command("head -c 5000 /dev/zero", 100, Duration::from_secs(10))
+        .await
+        .unwrap();
+    assert_eq!(out.stdout.len(), 100);
+    assert!(out.truncated);
+
+    let out = conn
+        .run_command("echo start; sleep 30", 1024, Duration::from_millis(1500))
+        .await
+        .unwrap();
+    assert!(out.timed_out);
+    assert_eq!(out.stdout, b"start\n");
+    // The session is still usable.
+    assert_eq!(whoami(&m, &t).await.unwrap(), t.user);
+}

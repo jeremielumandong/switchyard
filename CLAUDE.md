@@ -101,6 +101,9 @@ Dependency direction: `app → core → {store, db, remote, term, drivers, plan,
   wrapped in a transaction and rolled back.
 - Agents see connection names only: never hostnames, users, or secrets.
 - No tool executes DDL. Index and statistics suggestions are returned as text.
+- Redis agents run read-only commands only (no `KEYS`); MongoDB agents one read-only statement.
+- Shell commands on a Host (`run_ssh_command`) run only in app-started runs, each one after the
+  user approves that exact command in the app; the app runs it and records it in history.
 - Every agent call is written to query history tagged `agent`.
 - Safety lives in the MCP server, never in agent settings: every tool is read-only server-side,
   whatever a coding CLI is configured to allow.

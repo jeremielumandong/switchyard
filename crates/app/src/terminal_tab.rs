@@ -109,6 +109,14 @@ pub struct TerminalTab {
 }
 
 impl TerminalTab {
+    /// The Host this terminal is on (`None` for a local shell).
+    pub fn host_id(&self) -> Option<&ProfileId> {
+        match &self.target {
+            TermTarget::Host(id) => Some(id),
+            TermTarget::Local { .. } => None,
+        }
+    }
+
     /// A terminal for a Host or the local machine; the first pane connects right away.
     pub fn new(
         core: RuntimeHandle,

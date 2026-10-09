@@ -426,7 +426,9 @@ async fn mcp_lists_only_agent_enabled_connections() {
             "run_query",
             "explain",
             "workload",
-            "what_if"
+            "what_if",
+            "redis_command",
+            "run_ssh_command"
         ]
     );
     let (err, text) = m.call("list_connections", json!({}));

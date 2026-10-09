@@ -251,3 +251,107 @@ impl Service {
         })
     }
 }
+
+/// Why a coding agent may not run `args`, if it may not.
+fn agent_refusal(args: &[Vec<u8>]) -> Option<String> {
+    match command::classify(args) {
+        // A read, but it blocks the server while it walks every key.
+        CommandClass::Read if command::name(args) == "KEYS" => {
+            Some("KEYS blocks the server; use SCAN with MATCH and COUNT instead".to_owned())
+        }
+        CommandClass::Read => None,
+        _ => Some(format!(
+            "{} is not a read-only command; agents may only read",
+            command::name(args)
+        )),
+    }
+}
+
+impl Service {
+    /// [`crate::Command::AgentRedis`]: one read-only command, always recorded in history.
+    pub(super) async fn agent_redis(
+        &self,
+        session: SessionId,
+        request: RequestId,
+        line: String,
+        tags: Vec<String>,
+    ) {
+        let outcome = match self.agent_redis_inner(session, &line, tags).await {
+            Ok(o) => o,
+            Err(e) => RedisOutcome::Failed(e.to_string()),
+        };
+        self.emit(Event::RedisReply {
+            session,
+            request,
+            outcome,
+        });
+    }
+
+    async fn agent_redis_inner(
+        &self,
+        session: SessionId,
+        line: &str,
+        tags: Vec<String>,
+    ) -> Result<RedisOutcome> {
+        let args = command::split(line)?;
+        if args.is_empty() {
+            return Ok(RedisOutcome::Failed("the command is empty".into()));
+        }
+        let slot = self.redis_slot(session)?;
+        let started_at = now_ms();
+        let started = Instant::now();
+        let reply = match agent_refusal(&args) {
+            Some(why) => Err(why),
+            None => {
+                let mut c = self.redis_client(&slot).await?;
+                redis::run_console(&mut c, &args)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+        };
+        let elapsed = started.elapsed();
+        let (status, error) = match &reply {
+            Ok(redis::Reply::Error(e)) => (HistoryStatus::Error, Some(e.clone())),
+            Ok(_) => (HistoryStatus::Ok, None),
+            Err(e) => (HistoryStatus::Error, Some(e.clone())),
+        };
+        self.agent_history(
+            &slot.connection,
+            command::redacted(&args),
+            started_at,
+            elapsed,
+            None,
+            status,
+            error,
+            tags,
+        )
+        .await;
+        Ok(match reply {
+            Ok(r) => RedisOutcome::Output {
+                error: matches!(r, redis::Reply::Error(_)),
+                text: redis::format_reply(&r),
+                ms: elapsed.as_millis() as u64,
+            },
+            Err(e) => RedisOutcome::Failed(e),
+        })
+    }
+}
+
+#[cfg(test)]
+mod agent_tests {
+    use super::*;
+
+    #[test]
+    fn agents_only_read() {
+        let refused = |l: &str| agent_refusal(&command::split(l).unwrap_or_default());
+        assert_eq!(refused("GET k"), None);
+        assert_eq!(refused("SCAN 0 MATCH user:* COUNT 100"), None);
+        assert_eq!(refused("hgetall h"), None);
+        assert!(refused("KEYS *").is_some_and(|w| w.contains("SCAN")));
+        assert!(refused("SET k v").is_some());
+        assert!(refused("FLUSHALL").is_some());
+        assert!(refused("CONFIG SET maxmemory 1").is_some());
+        assert!(refused("SUBSCRIBE ch").is_some());
+        assert!(refused("EVAL 'return 1' 0").is_some());
+    }
+}

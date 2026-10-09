@@ -749,6 +749,17 @@ impl Workspace {
                 self.assistant_panel
                     .update(cx, |p, cx| p.on_agent_event(run, agent, event, cx));
             }
+            Event::AgentApproval(approval) => {
+                // A command waits for the user: make sure they see it.
+                self.assistant_open = true;
+                self.assistant_panel
+                    .update(cx, |p, cx| p.on_approval(approval, cx));
+                cx.notify();
+            }
+            Event::AgentApprovalClosed { id } => {
+                self.assistant_panel
+                    .update(cx, |p, cx| p.on_approval_closed(id, cx));
+            }
             Event::Components(_)
             | Event::ComponentProgress { .. }
             | Event::ComponentInstalled { .. }
@@ -1702,9 +1713,7 @@ impl Workspace {
     /// Point the assistant panel at the active SQL tab's connection, and at the Workbench's
     /// collection in the API workspace.
     pub(crate) fn sync_assistant(&mut self, cx: &mut Context<Self>) {
-        let conn = self
-            .active_sql()
-            .and_then(|t| t.read(cx).connection.clone());
+        let conn = self.assistant_target(cx);
         let api_context = match (self.mode, &self.api) {
             (AppMode::Api, Some(api)) => Some(api.read(cx).ai_context()),
             _ => None,
@@ -1715,6 +1724,23 @@ impl Workspace {
                 p.set_api_context(context);
             }
         });
+    }
+
+    /// What the assistant is asked about: the active tab's database or SSH Host.
+    fn assistant_target(&self, cx: &App) -> Option<crate::assistant_panel::AssistantTarget> {
+        use crate::assistant_panel::AssistantTarget as T;
+        match self.tabs.get(self.active)? {
+            Tab::Sql(t) => t.read(cx).connection.clone().map(T::Db),
+            Tab::Redis(t) => Some(T::Db(t.read(cx).connection.clone())),
+            Tab::Object(t) => Some(T::Db(t.read(cx).connection.clone())),
+            Tab::Activity(t) => Some(T::Db(t.read(cx).connection.clone())),
+            Tab::Er(t) => Some(T::Db(t.read(cx).connection.clone())),
+            Tab::Terminal(t) => {
+                let id = t.read(cx).host_id()?;
+                self.profiles.host(id).cloned().map(T::Host)
+            }
+            _ => None,
+        }
     }
 
     /// The Workbench's AI buttons: questions go to the assistant panel beside it.
@@ -1786,12 +1812,11 @@ impl Workspace {
             }
             E::Replan { base } => compare(self, base.clone(), AfterPlan::Replan, cx),
             E::OpenTerminal(agent) => {
-                let conn = self
-                    .active_sql()
-                    .and_then(|t| t.read(cx).connection.clone());
-                let kind = agent.unwrap_or_else(|| self.assistant.agent_for(conn.as_ref()));
+                let target = self.assistant_target(cx);
+                let db = target.as_ref().and_then(|t| t.db());
+                let kind = agent.unwrap_or_else(|| self.assistant.agent_for(db));
                 let core = self.core.clone();
-                let (agent, conn_id) = (*agent, conn.map(|c| c.id));
+                let (agent, conn_id) = (*agent, target.map(|t| t.id().clone()));
                 let t = cx.new(|cx| {
                     TerminalTab::new_agent(core, kind.display_name().to_owned(), agent, conn_id, cx)
                 });

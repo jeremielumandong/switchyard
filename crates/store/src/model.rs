@@ -182,6 +182,10 @@ pub struct Host {
     /// X display to forward to instead of `DISPLAY` (`:1`, `localhost:0`).
     #[serde(default)]
     pub x11_display: Option<String>,
+    /// Coding agents may run commands here; each one waits for the user's approval in the
+    /// app. Off by default.
+    #[serde(default)]
+    pub agent_access: bool,
 }
 
 /// Direction of a saved port forward.
@@ -316,6 +320,7 @@ impl Host {
             forward_agent: false,
             forward_x11: false,
             x11_display: None,
+            agent_access: false,
         }
     }
 }
@@ -717,12 +722,6 @@ impl Profile {
                 if d.server.trim().is_empty() {
                     return Err(ValidationError::new("server", "Host is required"));
                 }
-                if d.agent_access {
-                    return Err(ValidationError::new(
-                        "agent_access",
-                        "Coding agents work with SQL connections only",
-                    ));
-                }
                 if d.port == 0 {
                     return Err(ValidationError::new("port", "Port must be 1–65535"));
                 }
@@ -779,12 +778,6 @@ impl Profile {
                     return Err(ValidationError::new(
                         "auth",
                         "Redis signs in with a password (and an optional ACL user)",
-                    ));
-                }
-                if d.agent_access {
-                    return Err(ValidationError::new(
-                        "agent_access",
-                        "Coding agents work with SQL connections only",
                     ));
                 }
             }
@@ -946,23 +939,25 @@ mod tests {
             "database"
         );
         r.database = "2".into();
+        // Agents read Redis through read-only commands.
         r.agent_access = true;
-        assert_eq!(
-            Profile::Db(r.clone()).validate().unwrap_err().field,
-            "agent_access"
-        );
-        r.agent_access = false;
+        assert!(Profile::Db(r.clone()).validate().is_ok());
         let back: DbConnection = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
         assert_eq!(back.engine, Engine::Redis);
     }
 
     #[test]
-    fn mongodb_has_no_agent_access() {
+    fn every_datasource_allows_agents() {
         let mut m = DbConnection::new("docs", Engine::MongoDb);
         m.server = "localhost".into();
-        assert!(Profile::Db(m.clone()).validate().is_ok());
         m.agent_access = true;
-        assert_eq!(Profile::Db(m).validate().unwrap_err().field, "agent_access");
+        assert!(Profile::Db(m).validate().is_ok());
+        // Hosts saved before agent access existed load with it off.
+        let h = Host::new("web", "web.example", "deploy");
+        let mut v = serde_json::to_value(&h).unwrap();
+        v.as_object_mut().unwrap().remove("agent_access");
+        let back: Host = serde_json::from_value(v).unwrap();
+        assert!(!back.agent_access);
     }
 
     #[test]

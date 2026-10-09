@@ -18,8 +18,8 @@ pub mod ssh_import;
 pub mod terminals;
 
 pub use bus::{
-    Command, Event, FetchLimit, FsOp, FsRef, OnConflict, PromptAnswer, QueryEvent, QueryId,
-    RequestId, SaveError, SessionContext, SessionId, StatementRequest, TermId, TermStatus,
+    AgentApproval, Command, Event, FetchLimit, FsOp, FsRef, OnConflict, PromptAnswer, QueryEvent,
+    QueryId, RequestId, SaveError, SessionContext, SessionId, StatementRequest, TermId, TermStatus,
     TermTarget, TextFile, TransferError,
 };
 pub use error::{CoreError, Result};

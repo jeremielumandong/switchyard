@@ -8,6 +8,9 @@
 //! - `run_query` takes one SELECT/WITH and goes through the core's read-only, rolled-back,
 //!   capped, timed agent query;
 //! - plans are estimated only (an actual plan needs approval in the app); no tool runs DDL;
+//! - Redis takes read-only commands only (`redis_command`), MongoDB read-only statements;
+//! - `run_ssh_command` runs on a Host only in a run the app started, and only after the user
+//!   approved that exact command in the app (which runs it and records it);
 //! - every call is recorded in history tagged `agent` and `agent:<cli>`;
 //! - output names connections only: hosts, ports and users of every saved profile are
 //!   scrubbed from all text, errors included.
@@ -20,9 +23,12 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use switchyard_core::agent_run::{TokenScope, verify_token};
+use switchyard_core::db::Engine;
 use switchyard_core::db::guard::{is_single_plannable, is_single_select};
 use switchyard_core::db::{CatalogChunk, IntrospectScope, ObjectKind, dialect_for};
-use switchyard_core::store::{DbConnection, Profile};
+use switchyard_core::handoff::{AgentCommand, AgentCommandOutput, ask_agent_command};
+use switchyard_core::service::agent_ssh::{APPROVAL_WAIT, MAX_COMMAND_TIME};
+use switchyard_core::store::{DbConnection, Host, Profile};
 use switchyard_core::{Command, SessionId};
 
 use crate::client::Client;
@@ -37,6 +43,8 @@ pub const MAX_ROW_CAP: usize = 1000;
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 /// The longest `run_query` timeout.
 pub const MAX_TIMEOUT: Duration = Duration::from_secs(120);
+/// `run_ssh_command` timeout unless asked otherwise.
+pub const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// History tag for the coding CLI driving this server, from `SWITCHYARD_AGENT`.
 pub fn agent_tag() -> String {
@@ -174,6 +182,50 @@ fn kind_name(k: ObjectKind) -> &'static str {
 }
 
 const CONNECTION: &str = "Connection name from list_connections.";
+const HOST: &str = "SSH host name from list_connections (kind \"ssh\").";
+
+/// Tools that need a SQL engine's catalog or planner.
+fn sql_only(conn: &DbConnection, tool: &str) -> Result<(), String> {
+    match conn.engine {
+        Engine::Redis => Err(format!(
+            "{tool} is for SQL connections; {} is Redis: use redis_command",
+            conn.name
+        )),
+        e if e.is_document_store() && tool != "list_tables" && tool != "describe_table" => {
+            Err(format!(
+                "{tool} is for SQL connections; {} is MongoDB: use run_query with a read-only \
+                 mongosh statement (db.coll.find(…), aggregate, countDocuments)",
+                conn.name
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// An approved command's result as the agent reads it.
+fn command_text(o: &AgentCommandOutput) -> String {
+    let mut out = match (o.timed_out, o.exit_status) {
+        (true, _) => "Stopped at the timeout.\n".to_owned(),
+        (false, Some(c)) => format!("Exit status {c}.\n"),
+        (false, None) => "No exit status (the command was killed).\n".to_owned(),
+    };
+    if !o.stdout.is_empty() {
+        let _ = write!(out, "--- stdout ---\n{}", o.stdout);
+        if !o.stdout.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    if !o.stderr.is_empty() {
+        let _ = write!(out, "--- stderr ---\n{}", o.stderr);
+        if !o.stderr.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    if o.truncated {
+        out.push_str("(output cut at 64 KB per stream; narrow the command)\n");
+    }
+    out
+}
 
 impl Tools {
     /// Serve `client`'s agent-enabled connections, narrowed to `session`'s when given.
@@ -201,6 +253,22 @@ impl Tools {
             .into_iter()
             .filter(|c| c.agent_access)
             .filter(|c| self.session.as_ref().is_none_or(|s| s.scope.allows(&c.id)))
+            .collect()
+    }
+
+    /// Hosts agents may use: only in an app-started run (the app approves each command),
+    /// with agent access on and in the run's scope.
+    fn visible_hosts(&self) -> Vec<&Host> {
+        let Some(session) = &self.session else {
+            return Vec::new();
+        };
+        self.client
+            .profiles()
+            .iter()
+            .filter_map(|p| match p {
+                Profile::Host(h) if h.agent_access && session.scope.allows(&h.id) => Some(h),
+                _ => None,
+            })
             .collect()
     }
 
@@ -232,7 +300,12 @@ impl Tools {
         if let Some(s) = self.sessions.get(&conn.id.0) {
             return Ok(*s);
         }
-        let s = self.client.open(conn).await.map_err(|e| e.to_string())?;
+        let s = if conn.engine == Engine::Redis {
+            self.client.open_redis(conn).await
+        } else {
+            self.client.open(conn).await
+        }
+        .map_err(|e| e.to_string())?;
         self.sessions.insert(conn.id.0.clone(), s);
         Ok(s)
     }
@@ -261,15 +334,23 @@ impl Tools {
             .map(|c| {
                 json!({
                     "name": c.name,
+                    "kind": "database",
                     "engine": c.engine.display_name(),
                     "environment": c.environment.name(),
                 })
             })
+            .chain(self.visible_hosts().into_iter().map(|h| {
+                json!({
+                    "name": h.name,
+                    "kind": "ssh",
+                    "environment": h.environment.name(),
+                })
+            }))
             .collect();
         if list.is_empty() {
             return Ok(
                 "No connections are enabled for agents. In Switchyard, edit a \
-                       connection and turn on \"Allow coding agents\"."
+                       connection or Host and turn on \"Allow coding agents\"."
                     .into(),
             );
         }
@@ -278,6 +359,7 @@ impl Tools {
 
     async fn list_tables(&mut self, args: &Value) -> Result<String, String> {
         let conn = self.connection(args)?;
+        sql_only(&conn, "list_tables")?;
         let session = self.session(&conn).await?;
         let schemas: Vec<String> = match s(args, "schema") {
             Some(schema) => vec![schema.to_owned()],
@@ -333,6 +415,7 @@ impl Tools {
 
     async fn describe_table(&mut self, args: &Value) -> Result<String, String> {
         let conn = self.connection(args)?;
+        sql_only(&conn, "describe_table")?;
         let table = required(args, "table")?;
         let (schema, name) = match (s(args, "schema"), table.split_once('.')) {
             (Some(sc), _) => (sc.to_owned(), table.to_owned()),
@@ -377,7 +460,11 @@ impl Tools {
     async fn run_query(&mut self, args: &Value) -> Result<String, String> {
         let conn = self.connection(args)?;
         let sql = required(args, "sql")?.to_owned();
-        if !is_single_select(dialect_for(conn.engine), &sql) {
+        if conn.engine == Engine::Redis {
+            return sql_only(&conn, "run_query").map(|()| String::new());
+        }
+        // MongoDB statements are checked by the core (one statement that only reads).
+        if !conn.engine.is_document_store() && !is_single_select(dialect_for(conn.engine), &sql) {
             let session = self.session(&conn).await?;
             let err = "run_query accepts one SELECT or WITH … SELECT statement only; \
                        writes, DDL and multiple statements are refused";
@@ -411,6 +498,7 @@ impl Tools {
 
     async fn explain(&mut self, args: &Value) -> Result<String, String> {
         let conn = self.connection(args)?;
+        sql_only(&conn, "explain")?;
         let sql = required(args, "sql")?.to_owned();
         let session = self.session(&conn).await?;
         if args.get("analyze").and_then(Value::as_bool) == Some(true) {
@@ -443,6 +531,7 @@ impl Tools {
 
     async fn workload(&mut self, args: &Value) -> Result<String, String> {
         let conn = self.connection(args)?;
+        sql_only(&conn, "workload")?;
         let session = self.session(&conn).await?;
         let r = self.client.workload(session).await;
         self.record(
@@ -456,6 +545,7 @@ impl Tools {
 
     async fn what_if(&mut self, args: &Value) -> Result<String, String> {
         let conn = self.connection(args)?;
+        sql_only(&conn, "what_if")?;
         let sql = required(args, "sql")?.to_owned();
         let indexes: Vec<String> = args
             .get("indexes")
@@ -511,6 +601,72 @@ impl Tools {
     }
 }
 
+impl Tools {
+    async fn redis_command(&mut self, args: &Value) -> Result<String, String> {
+        let conn = self.connection(args)?;
+        if conn.engine != Engine::Redis {
+            return Err(format!(
+                "{} is not a Redis connection; use run_query",
+                conn.name
+            ));
+        }
+        let line = required(args, "command")?.to_owned();
+        let session = self.session(&conn).await?;
+        self.client
+            .agent_redis(session, &line, self.tags.clone())
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    async fn run_ssh_command(&mut self, args: &Value) -> Result<String, String> {
+        let Some(session) = &self.session else {
+            return Err(
+                "run_ssh_command works only in assistant runs started by the \
+                        Switchyard app, where the user approves each command"
+                    .into(),
+            );
+        };
+        let name = required(args, "host")?;
+        let host = self
+            .visible_hosts()
+            .into_iter()
+            .find(|h| h.name.eq_ignore_ascii_case(name))
+            .map(|h| h.name.clone())
+            .ok_or_else(|| {
+                format!("no SSH host named {name:?} is available to agents (see list_connections)")
+            })?;
+        let command = required(args, "command")?.to_owned();
+        let timeout = args
+            .get("timeout_seconds")
+            .and_then(Value::as_u64)
+            .map_or(DEFAULT_COMMAND_TIME_SECS, |n| {
+                n.clamp(1, MAX_COMMAND_TIME.as_secs())
+            });
+        let req = AgentCommand {
+            session_token: session.token.clone(),
+            host,
+            command,
+            timeout_secs: timeout,
+        };
+        // The user's answer, the command, and some slack for the SSH login.
+        let wait = APPROVAL_WAIT + Duration::from_secs(timeout) + Duration::from_secs(60);
+        let data = self.client.data_dir().to_owned();
+        let out = tokio::task::spawn_blocking(move || ask_agent_command(&data, req, wait))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| match e {
+                switchyard_core::handoff::HandoffError::NotRunning => {
+                    "the Switchyard app is not running; it must be open to approve the command"
+                        .to_owned()
+                }
+                other => other.to_string(),
+            })?;
+        Ok(command_text(&out))
+    }
+}
+
+const DEFAULT_COMMAND_TIME_SECS: u64 = DEFAULT_COMMAND_TIMEOUT.as_secs();
+
 impl ToolHost for Tools {
     fn tools(&self) -> Vec<ToolDef> {
         let conn_only = json!({
@@ -521,8 +677,8 @@ impl ToolHost for Tools {
         vec![
             ToolDef {
                 name: "list_connections",
-                description: "List the database connections available to agents (name, engine, \
-                              environment).",
+                description: "List the connections available to agents: databases (name, \
+                              engine, environment) and SSH hosts (kind \"ssh\").",
                 input_schema: json!({ "type": "object", "properties": {} }),
             },
             ToolDef {
@@ -553,8 +709,10 @@ impl ToolHost for Tools {
             ToolDef {
                 name: "run_query",
                 description: "Run one read-only SELECT/WITH query (read-only transaction, rolled \
-                              back). Returns JSON with columns and rows; capped at max_rows \
-                              (default 200, at most 1000).",
+                              back), or on MongoDB one mongosh statement that reads \
+                              (db.coll.find(…), aggregate, countDocuments, distinct). Returns \
+                              JSON with columns and rows; capped at max_rows (default 200, at \
+                              most 1000).",
                 input_schema: json!({
                     "type": "object",
                     "properties": {
@@ -600,6 +758,37 @@ impl ToolHost for Tools {
                     "required": ["connection", "sql", "indexes"]
                 }),
             },
+            ToolDef {
+                name: "redis_command",
+                description: "Redis connections: run one read-only command in redis-cli syntax \
+                              (SCAN 0 MATCH user:* COUNT 100, TYPE, GET, HGETALL, LRANGE, \
+                              ZRANGE … WITHSCORES, TTL, MEMORY USAGE, INFO, SLOWLOG GET). \
+                              Writes and KEYS are refused.",
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "connection": { "type": "string", "description": CONNECTION },
+                        "command": { "type": "string" }
+                    },
+                    "required": ["connection", "command"]
+                }),
+            },
+            ToolDef {
+                name: "run_ssh_command",
+                description: "Run one shell command on an SSH host. The user sees the exact \
+                              command in Switchyard and must approve it before it runs; a \
+                              declined command returns an error. Prefer short read-only \
+                              commands, one per call, and say why you need each.",
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "host": { "type": "string", "description": HOST },
+                        "command": { "type": "string" },
+                        "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": MAX_COMMAND_TIME.as_secs() }
+                    },
+                    "required": ["host", "command"]
+                }),
+            },
         ]
     }
 
@@ -615,6 +804,8 @@ impl ToolHost for Tools {
             "explain" => self.explain(args).await,
             "workload" => self.workload(args).await,
             "what_if" => self.what_if(args).await,
+            "redis_command" => self.redis_command(args).await,
+            "run_ssh_command" => self.run_ssh_command(args).await,
             other => Err(format!("unknown tool: {other}")),
         };
         match r {
@@ -649,6 +840,47 @@ mod tests {
 
     /// The activity monitor's cancel / kill (DBX-5b) is app-only: no MCP tool exposes it
     /// and `swy` never sends its commands.
+    #[test]
+    fn sql_tools_refuse_redis_and_mongodb() {
+        let redis = DbConnection::new("cache", Engine::Redis);
+        let mongo = DbConnection::new("docs", Engine::MongoDb);
+        let pg = DbConnection::new("app", Engine::Postgres);
+        assert!(
+            sql_only(&redis, "explain")
+                .unwrap_err()
+                .contains("redis_command")
+        );
+        assert!(sql_only(&redis, "list_tables").is_err());
+        assert!(sql_only(&mongo, "list_tables").is_ok());
+        assert!(
+            sql_only(&mongo, "workload")
+                .unwrap_err()
+                .contains("run_query")
+        );
+        assert!(sql_only(&pg, "what_if").is_ok());
+    }
+
+    #[test]
+    fn command_output_reads_plainly() {
+        let text = command_text(&AgentCommandOutput {
+            exit_status: Some(1),
+            stdout: "a".into(),
+            stderr: "boom\n".into(),
+            truncated: true,
+            timed_out: false,
+        });
+        assert_eq!(
+            text,
+            "Exit status 1.\n--- stdout ---\na\n--- stderr ---\nboom\n\
+             (output cut at 64 KB per stream; narrow the command)\n"
+        );
+        let timed = command_text(&AgentCommandOutput {
+            timed_out: true,
+            ..Default::default()
+        });
+        assert_eq!(timed, "Stopped at the timeout.\n");
+    }
+
     #[test]
     fn no_session_kill_over_mcp() {
         let sources = [
