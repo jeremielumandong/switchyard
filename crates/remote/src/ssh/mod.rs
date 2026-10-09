@@ -510,6 +510,71 @@ impl SshConn {
     }
 }
 
+/// What a command run with [`SshConn::run_command`] printed and returned.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommandOutput {
+    /// Exit status; `None` when the server sent none (killed by a signal, or timed out).
+    pub exit_status: Option<u32>,
+    /// Standard output, up to the cap.
+    pub stdout: Vec<u8>,
+    /// Standard error, up to the cap.
+    pub stderr: Vec<u8>,
+    /// Output past the cap was dropped.
+    pub truncated: bool,
+    /// The command was still running at the deadline; its channel was closed.
+    pub timed_out: bool,
+}
+
+impl SshConn {
+    /// Run `command` in its own channel (no PTY), keeping at most `cap` bytes of each
+    /// stream. At `timeout` the channel is closed and what arrived so far is returned.
+    pub async fn run_command(
+        &self,
+        command: &str,
+        cap: usize,
+        timeout: Duration,
+    ) -> Result<CommandOutput, SshError> {
+        let mut ch = self
+            .handle()?
+            .channel_open_session()
+            .await
+            .map_err(|e| SshError::Channel(e.to_string()))?;
+        ch.exec(true, command)
+            .await
+            .map_err(|e| SshError::Channel(e.to_string()))?;
+        let mut out = CommandOutput::default();
+        let keep = |buf: &mut Vec<u8>, data: &[u8], truncated: &mut bool| {
+            let room = cap.saturating_sub(buf.len());
+            if data.len() > room {
+                *truncated = true;
+            }
+            buf.extend_from_slice(&data[..data.len().min(room)]);
+        };
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            match tokio::time::timeout_at(deadline, ch.wait()).await {
+                Ok(Some(ChannelMsg::Data { data })) => {
+                    keep(&mut out.stdout, &data, &mut out.truncated);
+                }
+                Ok(Some(ChannelMsg::ExtendedData { data, .. })) => {
+                    keep(&mut out.stderr, &data, &mut out.truncated);
+                }
+                Ok(Some(ChannelMsg::ExitStatus { exit_status })) => {
+                    out.exit_status = Some(exit_status);
+                }
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(_) => {
+                    out.timed_out = true;
+                    let _ = ch.close().await;
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
 /// Connect and authenticate one hop. `via` is the previous hop, when jumping.
 async fn connect_one(
     target: &SshTarget,

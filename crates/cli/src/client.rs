@@ -9,6 +9,7 @@ use std::time::Duration;
 use anyhow::{Context as _, Result, anyhow, bail};
 use futures::StreamExt as _;
 use secrecy::SecretString;
+use switchyard_core::bus::RedisOutcome;
 use switchyard_core::db::{CatalogChunk, Engine, IntrospectScope, dialect_for};
 use switchyard_core::plan::access::Workload;
 use switchyard_core::plan::whatif::WhatIf;
@@ -146,6 +147,55 @@ impl Client {
             _ => None,
         })
         .await?
+    }
+
+    /// Open a Redis session (closed with [`Client::close`]).
+    pub async fn open_redis(&mut self, conn: &DbConnection) -> Result<SessionId> {
+        let session = next_id();
+        self.send(Command::RedisOpen {
+            session,
+            connection: conn.id.clone(),
+        });
+        self.wait(|e| match e {
+            Event::RedisOpened { session: s, result } if s == session => {
+                Some(result.map(|_| session).map_err(|m| anyhow!("{m}")))
+            }
+            _ => None,
+        })
+        .await?
+    }
+
+    /// Run one read-only Redis command for an agent; the reply as `redis-cli` prints it.
+    pub async fn agent_redis(
+        &mut self,
+        session: SessionId,
+        line: &str,
+        tags: Vec<String>,
+    ) -> Result<String> {
+        let request = next_id();
+        self.send(Command::AgentRedis {
+            session,
+            request,
+            line: line.to_owned(),
+            tags,
+        });
+        let outcome = self
+            .wait(|e| match e {
+                Event::RedisReply {
+                    request: r,
+                    outcome,
+                    ..
+                } if r == request => Some(outcome),
+                _ => None,
+            })
+            .await?;
+        match outcome {
+            RedisOutcome::Output { text, error, .. } if !error => Ok(text),
+            RedisOutcome::Output { text, .. } => Err(anyhow!("{text}")),
+            RedisOutcome::NeedsConfirmation { reason } | RedisOutcome::Failed(reason) => {
+                Err(anyhow!("{reason}"))
+            }
+        }
     }
 
     /// Close a session.

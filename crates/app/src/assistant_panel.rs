@@ -7,6 +7,10 @@
 //! the Workbench's Explain / Debug failure / Review buttons ask it, "Describe a request"
 //! writes a new one, and ```http blocks in the answer become cards that open in the
 //! Workbench. Those runs reach no database connection.
+//!
+//! The database conversation follows the active tab: a SQL editor, a Redis browser or an
+//! SSH terminal. Commands an agent wants to run on a Host show here as approval cards and
+//! run only when the user clicks Run.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -19,8 +23,9 @@ use gpui_kit::{
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
 };
 use switchyard_core::agents::{AgentEvent, AgentKind, RunSummary};
-use switchyard_core::store::DbConnection;
-use switchyard_core::{Command, RuntimeHandle};
+use switchyard_core::db::Engine;
+use switchyard_core::store::{DbConnection, EnvironmentLabel, Host, ProfileId};
+use switchyard_core::{AgentApproval, Command, RuntimeHandle};
 
 use crate::api::generated::{GeneratedRequest, http_requests};
 use crate::theme::{MONO, palette};
@@ -164,6 +169,76 @@ pub fn segments(text: &str) -> Vec<Segment> {
     out
 }
 
+/// What the assistant is asked about: a database connection or an SSH Host.
+#[derive(Clone, Debug)]
+pub enum AssistantTarget {
+    /// A database (SQL, MongoDB or Redis).
+    Db(DbConnection),
+    /// An SSH Host: the agent runs commands there, each approved here first.
+    Host(Host),
+}
+
+impl AssistantTarget {
+    /// Profile id.
+    pub fn id(&self) -> &ProfileId {
+        match self {
+            Self::Db(c) => &c.id,
+            Self::Host(h) => &h.id,
+        }
+    }
+
+    /// Display name.
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Db(c) => &c.name,
+            Self::Host(h) => &h.name,
+        }
+    }
+
+    /// The database connection, when it is one.
+    pub fn db(&self) -> Option<&DbConnection> {
+        match self {
+            Self::Db(c) => Some(c),
+            Self::Host(_) => None,
+        }
+    }
+
+    /// A SQL database (Optimize, Plan a query and suggestion cards apply).
+    fn is_sql(&self) -> bool {
+        self.db()
+            .is_some_and(|c| c.engine.is_sql() && !c.engine.is_document_store())
+    }
+}
+
+/// The first prompt of a question about `target` (follow-ups go as typed).
+fn ask_prompt(target: &AssistantTarget, mode: Mode, text: &str) -> String {
+    match target {
+        AssistantTarget::Host(h) => format!(
+            "On the SSH host named \"{}\": {text}\n\n{SSH_RULES}",
+            h.name
+        ),
+        AssistantTarget::Db(c) if c.engine == Engine::Redis => format!(
+            "On the Redis connection named \"{}\": {text}\n\n{REDIS_RULES}",
+            c.name
+        ),
+        AssistantTarget::Db(c) if c.engine.is_document_store() => format!(
+            "On the MongoDB connection named \"{}\": {text}\n\n{MONGO_RULES}",
+            c.name
+        ),
+        AssistantTarget::Db(c) if mode == Mode::PlanQuery => format!(
+            "Write a {} query on the connection named \"{}\" that does this: {text}\n\n\
+             Look at the schema first (list_tables, describe_table), check the plan with the \
+             explain tool, and give the final query in a ```sql block. {SQL_RULES}",
+            c.engine.display_name(),
+            c.name
+        ),
+        AssistantTarget::Db(c) => format!(
+            "On the connection named \"{}\": {text}\n\n{SQL_RULES}",
+            c.name
+        ),
+    }
+}
+
 /// What the panel is doing for its connection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -245,7 +320,9 @@ pub enum AssistantPanelEvent {
 /// The assistant panel.
 pub struct AssistantPanel {
     core: RuntimeHandle,
-    connection: Option<DbConnection>,
+    connection: Option<AssistantTarget>,
+    /// Agent commands on Hosts waiting for the user (any run, "Open in terminal" too).
+    approvals: Vec<AgentApproval>,
     /// The CLI chosen in the panel; `None`: the connection's or the default.
     choice: Option<AgentKind>,
     /// The CLI the last run used.
@@ -275,6 +352,18 @@ pub struct AssistantPanel {
 
 impl EventEmitter<AssistantPanelEvent> for AssistantPanel {}
 
+const SSH_RULES: &str = "Use the run_ssh_command tool to look at the host. The user approves \
+every command before it runs, so run one focused, preferably read-only command at a time and \
+say why you need it. Give any change for the user to make as a ```sh block instead of running it.";
+
+const REDIS_RULES: &str = "Use the redis_command tool (read-only commands; SCAN, never KEYS) \
+to look at the keys and the server before you answer. Give any change as redis-cli commands in \
+a ```redis block for the user to run.";
+
+const MONGO_RULES: &str = "Use list_tables for the collections and run_query with read-only \
+mongosh statements (find, aggregate, countDocuments) to look at the data before you answer. \
+Give any change as mongosh in a ```js block for the user to run.";
+
 const SQL_RULES: &str = "Use Switchyard's tools to look at the tables and plans before you answer. \
 Give every suggested index, statistics change or rewritten query as SQL in its own ```sql block \
 (one statement per block), each with a short reason.";
@@ -293,6 +382,7 @@ impl AssistantPanel {
         Self {
             core,
             connection: None,
+            approvals: Vec::new(),
             choice: None,
             used: None,
             run: None,
@@ -377,9 +467,10 @@ impl AssistantPanel {
         cx.notify();
     }
 
-    /// The connection questions are about (the active editor's).
-    pub fn set_connection(&mut self, connection: Option<DbConnection>, cx: &mut Context<Self>) {
-        let changed = self.connection.as_ref().map(|c| &c.id) != connection.as_ref().map(|c| &c.id);
+    /// The connection or Host questions are about (the active tab's).
+    pub fn set_connection(&mut self, connection: Option<AssistantTarget>, cx: &mut Context<Self>) {
+        let changed = self.connection.as_ref().map(AssistantTarget::id)
+            != connection.as_ref().map(AssistantTarget::id);
         self.connection = connection;
         if changed {
             // Another database: another conversation.
@@ -391,7 +482,11 @@ impl AssistantPanel {
 
     /// The CLI the next run will use, for the header.
     fn agent_label(&self, settings: &switchyard_core::agent_run::AssistantSettings) -> String {
-        let conn = self.connection.as_ref().filter(|_| !self.api);
+        let conn = self
+            .connection
+            .as_ref()
+            .and_then(AssistantTarget::db)
+            .filter(|_| !self.api);
         let kind = self.choice.unwrap_or_else(|| settings.agent_for(conn));
         kind.display_name().to_owned()
     }
@@ -416,7 +511,7 @@ impl AssistantPanel {
             connection: if self.api {
                 None
             } else {
-                self.connection.as_ref().map(|c| c.id.clone())
+                self.connection.as_ref().map(|c| c.id().clone())
             },
             prompt,
             resume: if resume { self.session.clone() } else { None },
@@ -428,7 +523,14 @@ impl AssistantPanel {
 
     /// Optimize `sql` (from the editor, or the plan view with its findings).
     pub fn optimize(&mut self, sql: String, findings: Vec<String>, cx: &mut Context<Self>) {
-        let Some(conn) = self.connection.clone().filter(|_| !self.api) else {
+        let Some(conn) = self
+            .connection
+            .as_ref()
+            .filter(|t| t.is_sql())
+            .and_then(AssistantTarget::db)
+            .cloned()
+            .filter(|_| !self.api)
+        else {
             return;
         };
         self.mode = Mode::Optimize;
@@ -478,21 +580,13 @@ impl AssistantPanel {
             self.start(text, prompt, continuing, cx);
             return;
         }
-        let conn = self.connection.clone();
-        let prompt = match (self.mode, continuing, conn) {
-            (_, true, _) => text.clone(),
-            (Mode::PlanQuery, false, Some(c)) => format!(
-                "Write a {} query on the connection named \"{}\" that does this: {text}\n\n\
-                 Look at the schema first (list_tables, describe_table), check the plan with the \
-                 explain tool, and give the final query in a ```sql block. {SQL_RULES}",
-                c.engine.display_name(),
-                c.name
-            ),
-            (Mode::Optimize | Mode::DescribeRequest, false, Some(c)) => format!(
-                "On the connection named \"{}\": {text}\n\n{SQL_RULES}",
-                c.name
-            ),
-            (_, _, None) => return,
+        let Some(target) = self.connection.as_ref() else {
+            return;
+        };
+        let prompt = if continuing {
+            text.clone()
+        } else {
+            ask_prompt(target, self.mode, &text)
         };
         self.start(text, prompt, continuing, cx);
     }
@@ -514,6 +608,103 @@ impl AssistantPanel {
             self.mode = Mode::Optimize;
         }
         cx.notify();
+    }
+
+    /// A command an agent wants to run on a Host.
+    pub fn on_approval(&mut self, approval: AgentApproval, cx: &mut Context<Self>) {
+        self.approvals.retain(|a| a.id != approval.id);
+        self.approvals.push(approval);
+        cx.notify();
+    }
+
+    /// An approval is no longer waiting.
+    pub fn on_approval_closed(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.approvals.retain(|a| a.id != id);
+        cx.notify();
+    }
+
+    fn answer(&mut self, id: u64, approve: bool, cx: &mut Context<Self>) {
+        self.core.send(Command::AnswerAgentApproval { id, approve });
+        self.approvals.retain(|a| a.id != id);
+        cx.notify();
+    }
+
+    fn render_approvals(
+        &self,
+        p: &crate::theme::Palette,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui_kit::Div> {
+        if self.approvals.is_empty() {
+            return None;
+        }
+        let mut list = div()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .px(px(12.))
+            .py(px(8.))
+            .border_t_1()
+            .border_color(p.bd);
+        for a in &self.approvals {
+            let prod = a.environment == EnvironmentLabel::Production;
+            let id = a.id;
+            list = list.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .p(px(9.))
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(if prod { p.prod } else { p.acc })
+                    .bg(if prod { p.prod_bg } else { p.surface })
+                    .child(div().text_size(px(11.5)).text_color(p.fg2).child(format!(
+                        "{} wants to run on {}{}:",
+                        a.agent.display_name(),
+                        a.host_name,
+                        if prod { " (Production)" } else { "" }
+                    )))
+                    .child(
+                        div()
+                            .px(px(7.))
+                            .py(px(5.))
+                            .rounded(px(4.))
+                            .bg(p.bg)
+                            .font_family(MONO)
+                            .text_size(px(12.))
+                            .child(a.command.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(6.))
+                            .child(
+                                ui::button(
+                                    SharedString::from(format!("asst-run-{id}")),
+                                    "Run",
+                                    Kind::Primary,
+                                    p,
+                                )
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| this.answer(id, true, cx)),
+                                ),
+                            )
+                            .child(
+                                ui::button(
+                                    SharedString::from(format!("asst-deny-{id}")),
+                                    "Deny",
+                                    Kind::Secondary,
+                                    p,
+                                )
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| this.answer(id, false, cx)),
+                                ),
+                            ),
+                    ),
+            );
+        }
+        Some(list)
     }
 
     /// An event of one of this panel's runs; others are ignored.
@@ -709,7 +900,7 @@ impl Render for AssistantPanel {
         } else {
             self.connection
                 .as_ref()
-                .map(|c| c.name.clone())
+                .map(|c| c.name().to_owned())
                 .unwrap_or_else(|| "No connection".into())
         };
         let header = div()
@@ -803,21 +994,24 @@ impl Render for AssistantPanel {
             .gap(px(6.))
             .px(px(12.))
             .py(px(8.))
-            .when(!self.api, |d| {
-                d.child(
-                    ui::button(
-                        "asst-plan",
-                        "Plan a query",
-                        if self.mode == Mode::PlanQuery {
-                            Kind::Primary
-                        } else {
-                            Kind::Secondary
-                        },
-                        &p,
+            .when(
+                !self.api && self.connection.as_ref().is_none_or(AssistantTarget::is_sql),
+                |d| {
+                    d.child(
+                        ui::button(
+                            "asst-plan",
+                            "Plan a query",
+                            if self.mode == Mode::PlanQuery {
+                                Kind::Primary
+                            } else {
+                                Kind::Secondary
+                            },
+                            &p,
+                        )
+                        .on_click(cx.listener(|this, _, w, cx| this.plan_query(w, cx))),
                     )
-                    .on_click(cx.listener(|this, _, w, cx| this.plan_query(w, cx))),
-                )
-            })
+                },
+            )
             .when(self.api, |d| {
                 d.child(
                     ui::button(
@@ -867,6 +1061,8 @@ impl Render for AssistantPanel {
                     .text_size(px(12.))
                     .text_color(p.fg2)
                     .child(match (self.api, self.mode) {
+                        (false, _) if matches!(self.connection, Some(AssistantTarget::Host(_))) => "Ask about this host below. The assistant uses your coding CLI and asks you to approve every command it wants to run here; nothing runs until you click Run.",
+                        (false, _) if self.connection.as_ref().is_some_and(|t| !t.is_sql()) => "Ask about this database below. The assistant uses your coding CLI with Switchyard's read-only tools; it cannot change your data.",
                         (true, Mode::DescribeRequest) => "Describe the request you need below (\u{201c}create a customer with a random email\u{201d}); the assistant writes it to fit this collection, and you open it in the Workbench.",
                         (true, _) => "Use Explain, Debug failure or Review in the Workbench, or ask about an API below. Requests in the answer open as new Workbench requests; nothing is sent for you. Secrets stay redacted and no database is reachable.",
                         (false, Mode::PlanQuery) => "Describe the query you need below; the assistant looks at the schema and plans it.",
@@ -1205,6 +1401,7 @@ impl Render for AssistantPanel {
                     .when(!can_ask, |b| b.opacity(0.5))
                     .on_click(cx.listener(|this, _, w, cx| this.submit(w, cx))),
             );
+        let approvals = self.render_approvals(&p, cx);
         div()
             .size_full()
             .flex()
@@ -1213,6 +1410,7 @@ impl Render for AssistantPanel {
             .child(header)
             .child(modes)
             .child(transcript)
+            .children(approvals)
             .child(footer)
     }
 }
@@ -1220,6 +1418,22 @@ impl Render for AssistantPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prompts_follow_the_datasource() {
+        let host = AssistantTarget::Host(Host::new("web", "web.example", "deploy"));
+        let p = ask_prompt(&host, Mode::Optimize, "why is disk full?");
+        assert!(p.contains("SSH host named \"web\"") && p.contains("run_ssh_command"));
+        assert!(!p.contains("web.example"), "names only");
+        let redis = AssistantTarget::Db(DbConnection::new("cache", Engine::Redis));
+        let p = ask_prompt(&redis, Mode::PlanQuery, "biggest keys?");
+        assert!(p.contains("redis_command") && !p.contains("```sql"));
+        let mongo = AssistantTarget::Db(DbConnection::new("docs", Engine::MongoDb));
+        assert!(ask_prompt(&mongo, Mode::Optimize, "x").contains("mongosh"));
+        let pg = AssistantTarget::Db(DbConnection::new("app", Engine::Postgres));
+        assert!(ask_prompt(&pg, Mode::PlanQuery, "x").contains("Write a PostgreSQL query"));
+        assert!(pg.is_sql() && !redis.is_sql() && !mongo.is_sql() && !host.is_sql());
+    }
 
     #[test]
     fn copied_answer_keeps_only_the_answer_text() {
