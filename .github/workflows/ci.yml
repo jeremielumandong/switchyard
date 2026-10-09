@@ -65,7 +65,7 @@ jobs:
           }
 
   integration:
-    name: integration (PostgreSQL, SSH, tunnels)
+    name: integration (PostgreSQL, SSH, tunnels, FTP)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -79,6 +79,15 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y openssh-server
       - name: Start SSH test servers
         run: sudo DIR=/tmp/switchyard-ssh scripts/ssh-test-servers.sh
+      # Explicit TLS, implicit TLS and plain FTP (host network, for active mode), with a
+      # certificate from a throwaway CA so verification stays on.
+      - name: Start FTP test servers
+        run: |
+          scripts/ftp-test-certs.sh
+          docker compose -f docker/compose.yml up -d ftp ftp-implicit ftp-plain
+      - run: cargo test -p switchyard-remote --test ftp -- --ignored --test-threads 1
+        env:
+          SWITCHYARD_FTP_CA: docker/ftp/ca.pem
       - run: cargo test -p switchyard-db --lib --test pg --test d1 -- --ignored --test-threads 1
       - run: cargo test -p switchyard-db --test activity -- --ignored --test-threads 1 postgres
       - run: cargo test -p switchyard-plan --test capture -- --ignored --test-threads 1 postgres
@@ -88,7 +97,7 @@ jobs:
       # so it runs in the SQL Server job.
       - run: >-
           cargo test -p switchyard-core -p switchyard-remote --lib
-          --test flow --test pg_edits --test session_context --test ssh_files --test ssh_forwards
+          --test flow --test ftp_files --test pg_edits --test session_context --test ssh_files --test ssh_forwards
           --test ssh_terminal --test tunnel_pg --test ssh
           -- --ignored --test-threads 1
         env:

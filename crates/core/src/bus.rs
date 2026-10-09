@@ -13,8 +13,8 @@ use switchyard_drivers::{Component, InstallProgress};
 use switchyard_remote::FileEntry;
 use switchyard_remote::ssh::{HostKeyDecision, HostKeyRequest, InteractiveRequest, TunnelInfo};
 use switchyard_store::{
-    BufferState, DbConnection, Favorite, HistoryEntry, Host, HostPatch, Macro, Profile, ProfileId,
-    Snippet, Workspace,
+    BufferState, DbConnection, Favorite, FileConnection, HistoryEntry, Host, HostPatch, Macro,
+    Profile, ProfileId, Snippet, Workspace,
 };
 use switchyard_term::{TermSize, Terminal};
 
@@ -28,6 +28,15 @@ pub enum FsRef {
     Local,
     /// A saved Host, over SFTP on its shared SSH session.
     Host(ProfileId),
+    /// A saved FTP / FTPS file connection, with its own login.
+    Ftp(ProfileId),
+}
+
+impl FsRef {
+    /// Whether this is a remote file system (SFTP or FTP): its paths are POSIX.
+    pub fn is_remote(&self) -> bool {
+        !matches!(self, FsRef::Local)
+    }
 }
 
 /// A file operation.
@@ -258,6 +267,16 @@ pub enum Command {
         /// Host under edit.
         host: Host,
         /// Password or passphrase typed in the form (falls back to the stored one).
+        secret: Option<SecretString>,
+    },
+    /// Log in to an FTP / FTPS file connection under edit (not necessarily saved) and
+    /// report the result as [`Event::TestResult`].
+    TestFiles {
+        /// Request id.
+        request: RequestId,
+        /// File connection under edit.
+        connection: FileConnection,
+        /// Password typed in the form (falls back to the stored one).
         secret: Option<SecretString>,
     },
     /// Open a session for a saved connection.

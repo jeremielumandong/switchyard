@@ -269,3 +269,9 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
   text sits beside an input focuses itself on mouse down (`assistant_panel.rs` transcript).
 - Pageant comes with russh on Windows (`AgentClient::connect_pageant`, `pageant` crate,
   Apache-2.0); no feature flag.
+- suppaftp 12: `connect_secure_implicit` sends no `PBSZ 0` / `PROT P` but still wraps data
+  connections in TLS, so the server waits in clear text and the handshake hangs; `ftp.rs`
+  sends both itself. Awaiting `QUIT` after a TLS transfer can stall until the server's idle
+  timeout: it is best effort with a 2 s limit.
+- vsftpd applies `-o` options and the config file in argument order: put the file first or
+  its `background=YES` overrides `-obackground=NO` and the container exits.

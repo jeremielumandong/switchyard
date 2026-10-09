@@ -120,6 +120,9 @@ services:
     volumes:
       - ./ssh:/config/seed:ro
 
+  # FTP servers (vsftpd). Run scripts/ftp-test-certs.sh first: it writes the TLS
+  # certificate and its test CA into docker/ftp. Tests: crates/remote/tests/ftp.rs.
+  # Explicit TLS (AUTH TLS) required, on 2121.
   ftp:
     image: delfer/alpine-ftp-server:latest
     environment:
@@ -132,6 +135,54 @@ services:
       - "21000-21010:21000-21010"
     volumes:
       - ./ftp:/etc/ftp-tls:ro
+
+  # Implicit TLS (FTPS) on 2990.
+  ftp-implicit:
+    image: delfer/alpine-ftp-server:latest
+    environment:
+      USERS: "deploy|switchyard|/home/deploy"
+    command:
+      - vsftpd
+      # The file first: options after it override its settings (background=YES).
+      - /etc/vsftpd/vsftpd.conf
+      - -obackground=NO
+      - -olisten_port=990
+      - -oimplicit_ssl=YES
+      - -opasv_min_port=21011
+      - -opasv_max_port=21019
+      - -opasv_address=localhost
+      - -orsa_cert_file=/etc/ftp-tls/cert.pem
+      - -orsa_private_key_file=/etc/ftp-tls/key.pem
+      - -ossl_enable=YES
+      - -oforce_local_data_ssl=YES
+      - -oforce_local_logins_ssl=YES
+      - -ossl_tlsv1=NO
+      - -ossl_sslv2=NO
+      - -ossl_sslv3=NO
+    ports:
+      - "2990:990"
+      - "21011-21019:21011-21019"
+    volumes:
+      - ./ftp:/etc/ftp-tls:ro
+
+  # Plain FTP on 127.0.0.1:2120, on the host network so active mode works (the server
+  # connects back to the client's address).
+  ftp-plain:
+    image: delfer/alpine-ftp-server:latest
+    network_mode: host
+    environment:
+      USERS: "deploy|switchyard|/home/deploy"
+    command:
+      - vsftpd
+      # The file first: options after it override its settings (background=YES).
+      - /etc/vsftpd/vsftpd.conf
+      - -obackground=NO
+      - -olisten_address=127.0.0.1
+      - -olisten_port=2120
+      - -oconnect_from_port_20=NO
+      - -opasv_min_port=21020
+      - -opasv_max_port=21030
+      - -opasv_address=127.0.0.1
 
   redis:
     image: redis:7-alpine

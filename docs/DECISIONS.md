@@ -1203,3 +1203,32 @@ commands.
   never removes the other's password.
 - Font zoom per tab and a per-Host font override were left for after the parallel UI zoom /
   font-size work (Follow-ups).
+
+
+## 2026-10-09 — FTP / FTPS (M4-2)
+
+- **Crate:** `suppaftp` 12 (MIT OR Apache-2.0, approved) with `tokio-rustls-ring`, so FTPS
+  uses the same rustls + ring stack as the rest of the tree. Its `deprecated` feature is on
+  only because it gates `connect_secure_implicit` (implicit TLS); nothing else uses it.
+- **Connections:** browsing (list, stat, mkdir, rename, delete) shares one control
+  connection, reopened once when the server dropped it (`421` idle timeout, reset). Each
+  read or write stream opens its own logged-in connection: FTP allows one data transfer per
+  control connection, and the transfer queue runs four at once. A stream checks the
+  server's completion reply at end of file (reads) or on `shutdown` (writes).
+- **Listing:** `MLSD` / `MLST` when `FEAT` offers them; otherwise `CWD` + `LIST -a` (dot
+  files; plain `LIST` if `-a` is refused), parsed as POSIX or DOS lines. `stat` without
+  MLST is `SIZE` + `MDTM` for files and `CWD` for folders (no data connection).
+- **Resume:** downloads `REST` + `RETR`; uploads `APPE` when the partial file is exactly the
+  resume offset (what the transfer queue does), `REST` + `STOR` when it is longer.
+- **Passive mode** connects to the control connection's address with the announced port
+  (servers behind NAT announce private addresses), and uses `EPSV` over IPv6.
+- **Trust:** TLS verification is always on: the OS store (honours `SSL_CERT_FILE`) plus an
+  optional per-connection PEM (`FtpConfig::trusted_ca_pem`), the same model as
+  `DbConfig::trusted_ca_pem`. Like the database one, it is not yet stored in profiles or
+  editable in the UI (Follow-ups).
+- **Files tab:** `FsRef::Ftp(ProfileId)` names a saved FTP connection; the right pane's
+  source picker lists Hosts and FTP connections. The connection editor's Test logs in and
+  lists the start folder (`Command::TestFiles`).
+- **Tests:** three vsftpd containers (explicit TLS required on 2121, implicit TLS on 2990,
+  plain FTP on 127.0.0.1:2120 on the host network so active mode can connect back), with a
+  certificate from a throwaway CA made by `scripts/ftp-test-certs.sh`.

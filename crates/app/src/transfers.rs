@@ -84,9 +84,9 @@ impl Item {
             .then(|| (total.saturating_sub(self.done) as f64 / self.speed) as u64)
     }
 
-    /// Upload (towards a Host) or download.
+    /// Upload (towards a Host or FTP server) or download.
     pub fn upload(&self) -> bool {
-        matches!(self.to, FsRef::Host(_))
+        self.to.is_remote()
     }
 }
 
@@ -102,7 +102,7 @@ fn part_path(it: &Item) -> Option<PathBuf> {
     };
     let name = format!("{}{}", it.name, ".swypart");
     Some(match it.to {
-        FsRef::Host(_) => {
+        FsRef::Host(_) | FsRef::Ftp(_) => {
             let d = dir.to_string_lossy().replace('\\', "/");
             PathBuf::from(format!("{}/{name}", d.trim_end_matches('/')))
         }

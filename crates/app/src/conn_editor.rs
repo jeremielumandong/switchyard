@@ -482,7 +482,7 @@ impl ConnEditor {
                 self.selects.insert("host", sel(hosts, &host));
             }
             ConnKind::Ftp => {
-                let (name, server, port, tls, mode, user) = match existing {
+                let (name, server, port, tls, mode, user, path) = match existing {
                     Some(Profile::File(FileConnection {
                         name,
                         protocol:
@@ -493,6 +493,7 @@ impl ConnEditor {
                                 mode,
                                 user,
                             },
+                        default_path,
                         ..
                     })) => (
                         name.clone(),
@@ -501,6 +502,7 @@ impl ConnEditor {
                         *tls,
                         *mode,
                         user.clone(),
+                        default_path.clone().unwrap_or_default(),
                     ),
                     _ => (
                         String::new(),
@@ -509,6 +511,7 @@ impl ConnEditor {
                         FtpTls::Explicit,
                         FtpMode::Passive,
                         String::new(),
+                        String::new(),
                     ),
                 };
                 add(self, "name", &name, "assets.acme.dev", false);
@@ -516,6 +519,7 @@ impl ConnEditor {
                 add(self, "port", &port.to_string(), "21", false);
                 add(self, "user", &user, "deploy-assets", false);
                 add(self, "password", "", "", true);
+                add(self, "path", &path, "/public_html", false);
                 self.selects.insert(
                     "tls",
                     sel(
@@ -753,7 +757,7 @@ impl ConnEditor {
                     },
                     user: self.value("user", cx),
                 },
-                default_path: None,
+                default_path: Some(self.value("path", cx)).filter(|p| !p.is_empty()),
                 environment: self.env,
                 folder: None,
                 secret: existing.and_then(|p| p.secret().cloned()),
@@ -819,8 +823,14 @@ impl ConnEditor {
             (ConnKind::Sftp, Ok(_)) => {
                 self.test = TestState::Failed("SFTP ships in milestone M4 (russh-sftp)".into())
             }
-            (ConnKind::Ftp, Ok(_)) => {
-                self.test = TestState::Failed("FTP/FTPS ships in milestone M4 (suppaftp)".into())
+            (ConnKind::Ftp, Ok(Profile::File(connection))) => {
+                let request = next_id();
+                self.test = TestState::Testing(request);
+                self.core.send(Command::TestFiles {
+                    request,
+                    connection,
+                    secret: self.secret(cx),
+                });
             }
             (_, Err((f, m))) => self.error = Some((f, m)),
             _ => {}
@@ -1231,6 +1241,11 @@ impl ConnEditor {
                 v.push(Field::new("mode", "Mode").span(3));
                 v.push(Field::new("user", "User").span(3));
                 v.push(Field::new("password", "Password").span(3));
+                v.push(
+                    Field::new("path", "Default remote path")
+                        .mono()
+                        .hint("Empty: the login folder"),
+                );
             }
         }
         v
