@@ -6,10 +6,12 @@
 pub mod error;
 pub mod input;
 pub mod links;
+pub mod log;
 pub mod pty;
 pub mod terminal;
 
 pub use error::{Result, TermError};
+pub use log::{LogMode, SessionLog};
 pub use pty::{LocalShell, PtyInput, spawn_local};
 pub use terminal::{
     Attrs, Cursor, CursorShape, DEFAULT_SCROLLBACK, EventSink, Feeder, Mark, Modes, Run, SnapLine,

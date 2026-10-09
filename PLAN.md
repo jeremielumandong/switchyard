@@ -508,16 +508,43 @@ server or bundled Unix tools on Windows (Tier 3).
   XWayland hints). Test servers allow agent and X11 forwarding. Tests: forwarded agent signs
   a nested `ssh` on the server (and fails without forwarding); an X client on the server
   reaches a fake local display with the fake cookie stripped; X11 unit tests.
-- [ ] **MX-3 Terminal logging.** Per-session "log to file" (plain text, ANSI stripped, or
+- [x] **MX-3 Terminal logging.** Per-session "log to file" (plain text, ANSI stripped, or
   raw), file name template with host and timestamp, started from settings or the tab menu.
-- [ ] **MX-4 Terminal conveniences.** Copy on select, right-click paste (settings, default
+  Note: `term::log::SessionLog` is fed on the I/O side with the bytes the terminal parses
+  (plain: escape sequences stripped, `\r` redraws and backspaces resolved per line, optional
+  timestamps; raw: every byte). `Command::StartTerminalLog`/`StopTerminalLog` open/finish the
+  file on a blocking task; `Event::TerminalLog`. Settings → Terminal: log every session,
+  format, timestamps, folder (default `<data>/terminal-logs`), file name template
+  (`{host}` `{date}` `{time}` `{datetime}`; never overwrites). Tab header "Log" button per pane.
+- [x] **MX-4 Terminal conveniences.** Copy on select, right-click paste (settings, default
   off like today), paste confirmation for multi-line text, keyword highlighting of output
   (error/warning/fail/ok… with user rules), font zoom per tab.
-- [ ] **MX-5 Macros.** Record keystrokes in a terminal, save with a name, replay into the
+  Note: Settings → Terminal: copy on select, right-click paste (both off), "ask before
+  pasting more than one line" (on; Enter/Escape answer it), keyword highlighting (off by
+  default) with comma-separated words per color (`term_settings::highlight_spans`: whole
+  words, ASCII case-insensitive, only default-colored text, never on the alternate screen).
+  Deferred: font zoom per tab (UI zoom/font settings were being reworked in parallel;
+  Follow-ups).
+- [x] **MX-5 Macros.** Record keystrokes in a terminal, save with a name, replay into the
   current terminal or all broadcast panes, run one on connect.
-- [ ] **MX-6 Session folders and per-session settings.** Folders and favorites in the
+  Note: tab header Record / ■ Stop records encoded keys and pastes (not mouse reports, 64 KB
+  cap), then asks for a name. `store::Macro` in the new `macros` table (migration 5), input
+  kept as an escaped string (`\r`, `\e`, `\xHH`). Macros ▾ menu: play into the active pane
+  (all panes when broadcasting), "All panes", delete. Host "Macro on connect" is typed into
+  every new shell (reconnects too). Replay sends everything at once (no per-key delays).
+- [x] **MX-6 Session folders and per-session settings.** Folders and favorites in the
   sidebar; per-Host startup command, remote start directory, terminal font/colors override,
   environment variables; duplicate and bulk edit.
+  Note: Host gains `favorite`, `startup_command`, `start_directory`, `env`,
+  `terminal_colors` (editor fields; `folder` now editable). Sidebar: "★ Favorites" group (one
+  click opens a terminal), then Hosts outside folders, then collapsible folders (by name).
+  New shells get `cd -- '<dir>'`, the startup command and the connect macro typed in; env
+  goes as SSH `env` requests (server `AcceptEnv`). Host menu: Duplicate (copies the stored
+  secret under the new id), Add/Remove Favorites, "Folder and session settings…"; folder
+  menu: "Edit Hosts in folder…" (bulk edit: folder, user, start folder, startup command,
+  environment, favorite; only changed fields, `Command::UpdateHosts` + `store::HostPatch`),
+  "Open all terminals". Deferred: terminal font override (font settings were being reworked
+  in parallel), multi-select bulk edit outside a folder.
 - [ ] **MX-7 Session import.** PuTTY sessions (Windows registry, `~/.putty/sessions`) and
   MobaXterm bookmarks (`MobaXterm.ini` / `.mxtsessions`) into Hosts, with the same preview
   as the `~/.ssh/config` import.
@@ -832,3 +859,7 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   sign release installers with minisign and set `SWITCHYARD_UPDATE_PUBKEY` so M6-4 can offer
   verified installers; run `release-macos.yml` once with real Apple secrets; Windows icon
   resource (`app/build.rs`) only checked with `llvm-cvtres`, not linked on Windows yet.
+
+- Terminal (MX-4/MX-6): font zoom per tab and a per-Host terminal font override, once the
+  UI zoom / font-size settings land; multi-select in the sidebar for bulk edit outside a
+  folder; per-key delays when replaying macros (some programs drop fast input).

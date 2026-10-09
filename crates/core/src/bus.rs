@@ -13,7 +13,8 @@ use switchyard_drivers::{Component, InstallProgress};
 use switchyard_remote::FileEntry;
 use switchyard_remote::ssh::{HostKeyDecision, HostKeyRequest, InteractiveRequest, TunnelInfo};
 use switchyard_store::{
-    BufferState, DbConnection, Favorite, HistoryEntry, Host, Profile, ProfileId, Snippet, Workspace,
+    BufferState, DbConnection, Favorite, HistoryEntry, Host, HostPatch, Macro, Profile, ProfileId,
+    Snippet, Workspace,
 };
 use switchyard_term::{TermSize, Terminal};
 
@@ -108,6 +109,17 @@ pub enum PromptAnswer {
     Cancel,
 }
 
+/// Session logging state of a terminal (MX-3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TermLogState {
+    /// Output is being written to this file.
+    Started(std::path::PathBuf),
+    /// Logging stopped.
+    Stopped,
+    /// Logging could not start or stopped after a write error.
+    Failed(String),
+}
+
 /// Connection state of an SSH terminal.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TermStatus {
@@ -196,6 +208,18 @@ pub enum Command {
     DeleteProfile {
         /// Profile id.
         id: ProfileId,
+    },
+    /// Save a copy of a profile (and its stored secret) named "<name> copy".
+    DuplicateProfile {
+        /// Profile id.
+        id: ProfileId,
+    },
+    /// Apply one change to several Hosts (sidebar bulk edit).
+    UpdateHosts {
+        /// Hosts.
+        ids: Vec<ProfileId>,
+        /// Fields to change.
+        patch: HostPatch,
     },
     /// Persist sidebar order.
     ReorderProfiles {
@@ -473,6 +497,15 @@ pub enum Command {
         /// Snippet id.
         id: String,
     },
+    /// Load the terminal macros ([`Event::Macros`]).
+    LoadMacros,
+    /// Save a terminal macro (new when its id is empty), then reload.
+    SaveMacro(Macro),
+    /// Delete a terminal macro, then reload.
+    DeleteMacro {
+        /// Macro id.
+        id: String,
+    },
     /// Load the pinned schema-tree objects ([`Event::Favorites`]).
     LoadFavorites,
     /// Pin an object at the end of the Favorites (a pin it already has is kept), then reload.
@@ -690,6 +723,18 @@ pub enum Command {
     },
     /// Retry a dropped SSH terminal now instead of waiting for the backoff.
     ReconnectTerminal {
+        /// Terminal.
+        term: TermId,
+    },
+    /// Log a terminal's output to a new file ([`Event::TerminalLog`]).
+    StartTerminalLog {
+        /// Terminal.
+        term: TermId,
+        /// Format, folder and file name.
+        settings: crate::term_settings::LogSettings,
+    },
+    /// Stop logging a terminal ([`Event::TerminalLog`]).
+    StopTerminalLog {
         /// Terminal.
         term: TermId,
     },
@@ -1049,6 +1094,8 @@ pub enum Event {
     Snippets(Vec<Snippet>),
     /// The pinned schema-tree objects in order, answering the favorite commands.
     Favorites(Vec<Favorite>),
+    /// The terminal macros by name, answering the macro commands.
+    Macros(Vec<Macro>),
     /// History search results.
     History {
         /// Request id.
@@ -1289,6 +1336,13 @@ pub enum Event {
     TerminalBell {
         /// Terminal.
         term: TermId,
+    },
+    /// A terminal's session log started, stopped or failed.
+    TerminalLog {
+        /// Terminal.
+        term: TermId,
+        /// New state.
+        state: TermLogState,
     },
     /// The program asked to copy text (OSC 52).
     TerminalClipboard {
