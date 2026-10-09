@@ -934,3 +934,74 @@ macro stack for one engine).
   connection's database).
 - TIME columns are durations (up to ±838 h), so they are shown as text, not as a time of
   day. Zero dates in DATE / DATETIME columns read as NULL.
+
+## 2026-10-08 — MongoDB engine (`mongodb` crate)
+
+Jeremie asked for MongoDB support in the project chat. Added `mongodb` 3.9 (the official
+driver, Apache-2.0) with its default features: `rustls-tls` (ring, like the rest of the
+tree), `dns-resolver` (hickory, for `mongodb+srv://` seed lists) and `bson` 2. No native
+libraries, nothing loaded at runtime. Choices:
+
+- Statements are a mongosh subset parsed in `db::mongo::shell` (`db.c.find(...).sort(...)`,
+  `aggregate`, `countDocuments`, `distinct`, `insertOne`/`Many`, `updateOne`/`Many`,
+  `replaceOne`, `deleteOne`/`Many`, index helpers, `runCommand`, `show dbs`, `use`), with
+  relaxed-JSON arguments and the shell constructors (`ObjectId`, `ISODate`, `NumberLong`…).
+  Each statement becomes one server command; nothing runs as JavaScript, so read-only checks
+  and Production confirmations come from the parser (`Dialect::classify`), not `sqlparser`.
+- Rows: nested documents flatten into dotted columns (three levels), arrays stay whole as
+  JSON, types come from the first batch; a trailing `(document)` JSON column keeps each whole
+  document, which the row inspector's JSON view shows as is.
+- Explorer: databases are the schemas, collections the tables ("Collections" folder), views
+  the views. Fields come from a `$sample` of 200 documents. No primary key is reported, so
+  grid edits (SQL statements) stay off for now.
+- Not yet: transactions (need a replica set), visual plans (`.explain()` returns the raw
+  plan as a document), agent `run_query`, the activity monitor, editing documents in the grid.
+  `prefer` TLS means off (MongoDB cannot negotiate TLS), or on for SRV.
+
+## 2026-10-08 — Local SQLite as an engine (user request)
+
+The user asked for SQLite next to the server engines. Choices:
+
+- `Engine::Sqlite` (serde `sqlite`) through `rusqlite` with `bundled`, already approved and
+  used by `store`; `switchyard-db` turns on its `column_decltype` and `column_metadata`
+  features. Nothing is runtime-loaded, so SQLite needs no Driver Manager entry.
+- The profile's `database` field holds the file path (`~/` expanded, `:memory:` and `file:`
+  URIs accepted); `server`, `port` and `user` stay empty. No SSH tunnel: the file is opened on
+  this computer. A missing file is created unless the connection is read-only; read-only
+  opens with `SQLITE_OPEN_READ_ONLY` plus `PRAGMA query_only`.
+- `rusqlite` blocks, so each session owns a worker thread holding the `Connection`; jobs go
+  in over a channel and results come back over a bounded tokio channel (backpressure), keeping
+  I/O off both the UI thread and the tokio workers. Cancel calls `sqlite3_interrupt`.
+- SQLite types values, not columns: each result column is typed from the storage classes in
+  its first batch (declared type only for an all-NULL column). A later cell of another class
+  shows as NULL and the result ends with a warning naming the column, rather than a silently
+  wrong value.
+- `SqliteDialect` now carries its engine (`SqliteDialect::D1`, `SqliteDialect::LOCAL`) so
+  `Dialect::engine()` answers correctly: D1 has no transactions, a local file does.
+- Inline editing works: result columns carry an id hashed from their origin table
+  (`sqlite3_column_table_name`). Agent `run_query` begins a transaction that is rolled back,
+  like SQL Server. Attached databases appear as schemas.
+
+## 2026-10-08 — Redis: own RESP client, `Engine::Redis`, key browser instead of SQL
+
+The user asked for Redis next to SQLite and MongoDB.
+
+- **No Redis crate.** RESP2 is small (five reply types), so `db::redis` speaks it directly over
+  tokio, with rustls for TLS through `tokio-rustls` 0.26 (already in the lockfile through
+  `tokio-postgres-rustls`; now a direct workspace dependency). This avoids an unapproved
+  dependency and its own TLS stack and keeps tunnels and certificate handling the same as the
+  other drivers. Replies are size- and depth-limited.
+- **Profiles reuse `DbConnection`** with `Engine::Redis`: host, port, ACL user, password
+  (keychain), Database = logical db number, `ssl_mode`, `via_host`, environment, read-only.
+  `Engine::is_sql()` is false, so the explorer, snippets, activity, plans and agent tools skip
+  it; validation refuses agent access (MCP tools are SQL-only).
+- **TLS:** Redis has no STARTTLS, so Disable and Prefer mean plain TCP; Require and Verify
+  full mean TLS with verification on (the certificate must name the profile's host, also
+  through a tunnel). New profiles default to Disable.
+- **UI:** a Redis connection opens a key browser tab, not a SQL tab: SCAN-based list (never
+  `KEYS`), typed value pane, and a console. The console refuses commands that block or change
+  the connection (SUBSCRIBE, MONITOR, SELECT, AUTH, MULTI, blocking pops); read-only profiles
+  allow only read commands; on Production, destructive commands (FLUSHALL, DEL, CONFIG SET…)
+  ask first. Console history masks passwords (AUTH, HELLO AUTH, ACL SETUSER, CONFIG SET).
+  Values are read up to 1,000 elements (strings 64 KB) per key.
+

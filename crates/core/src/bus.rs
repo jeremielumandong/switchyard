@@ -248,6 +248,58 @@ pub enum Command {
         /// Session.
         session: SessionId,
     },
+    /// Open a Redis key browser session ([`Event::RedisOpened`]); closed with
+    /// [`Command::CloseSession`].
+    RedisOpen {
+        /// New session id chosen by the UI.
+        session: SessionId,
+        /// Redis connection.
+        connection: ProfileId,
+    },
+    /// One `SCAN` page of keys matching `pattern` ([`Event::RedisKeys`]).
+    RedisScan {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// Glob pattern (`user:*`); empty for all keys.
+        pattern: String,
+        /// Cursor from the previous page; 0 starts over.
+        cursor: u64,
+    },
+    /// A key's type, TTL and value ([`Event::RedisKey`]).
+    RedisLoad {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// Key bytes.
+        key: Vec<u8>,
+    },
+    /// Change a key from the browser ([`Event::RedisEdited`]).
+    RedisEdit {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// Key bytes.
+        key: Vec<u8>,
+        /// The change.
+        edit: switchyard_db::redis::KeyEdit,
+        /// A new key: refused when the key exists.
+        create: bool,
+    },
+    /// Run one console command line ([`Event::RedisReply`]).
+    RedisRun {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// The line, `redis-cli` quoting.
+        line: String,
+        /// The user confirmed a destructive command on Production.
+        confirmed: bool,
+    },
     /// Switch the session's current database and/or schema ([`Event::SessionContext`]).
     /// Runs the dialect's `USE` statement, or reconnects the same session id to the other
     /// database (through the same tunnel) where the engine needs a new connection.
@@ -817,6 +869,51 @@ pub enum Event {
         /// Message.
         message: String,
     },
+    /// Result of [`Command::RedisOpen`].
+    RedisOpened {
+        /// Session.
+        session: SessionId,
+        /// Server details, or why it failed.
+        result: Result<RedisInfo, String>,
+    },
+    /// Result of [`Command::RedisScan`].
+    RedisKeys {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// The page, or why it failed.
+        result: Result<switchyard_db::redis::ScanPage, String>,
+    },
+    /// Result of [`Command::RedisLoad`].
+    RedisKey {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// The key, or why it failed.
+        result: Result<Arc<switchyard_db::redis::KeyDetails>, String>,
+    },
+    /// Result of [`Command::RedisEdit`].
+    RedisEdited {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// The key that changed (its new name after a rename).
+        key: Vec<u8>,
+        /// What was done, or why it failed.
+        result: Result<String, String>,
+    },
+    /// Result of [`Command::RedisRun`].
+    RedisReply {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// What happened.
+        outcome: RedisOutcome,
+    },
     /// Result of [`Command::SetSessionContext`].
     SessionContext {
         /// Session.
@@ -1172,4 +1269,38 @@ pub enum Event {
         /// Message.
         message: String,
     },
+}
+
+/// A connected Redis server ([`Event::RedisOpened`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RedisInfo {
+    /// `Redis 7.2.4`.
+    pub version: String,
+    /// Selected logical database.
+    pub db: u32,
+    /// Keys in that database.
+    pub keys: u64,
+    /// The connection is locked read-only.
+    pub read_only: bool,
+}
+
+/// What a console command did ([`Event::RedisReply`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RedisOutcome {
+    /// The server answered (an error reply is `error: true`; the connection is fine).
+    Output {
+        /// The reply as `redis-cli` prints it.
+        text: String,
+        /// The reply was a server error.
+        error: bool,
+        /// Round trip in ms.
+        ms: u64,
+    },
+    /// A destructive command on Production: run again with `confirmed` to proceed.
+    NeedsConfirmation {
+        /// What would happen.
+        reason: String,
+    },
+    /// The command was refused or the connection failed.
+    Failed(String),
 }

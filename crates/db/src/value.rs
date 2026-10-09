@@ -20,6 +20,12 @@ pub enum Engine {
     Oracle,
     /// MySQL (and MariaDB, which speaks the same protocol).
     MySql,
+    /// MongoDB: documents queried with a mongosh-style shell syntax.
+    MongoDb,
+    /// A local SQLite database file.
+    Sqlite,
+    /// Redis (key-value; browsed with [`crate::redis`], not SQL).
+    Redis,
 }
 
 impl Engine {
@@ -32,6 +38,9 @@ impl Engine {
             Engine::Snowflake => "Snowflake",
             Engine::Oracle => "Oracle",
             Engine::MySql => "MySQL",
+            Engine::MongoDb => "MongoDB",
+            Engine::Sqlite => "SQLite",
+            Engine::Redis => "Redis",
         }
     }
 
@@ -44,6 +53,9 @@ impl Engine {
             Engine::Snowflake => "SF",
             Engine::Oracle => "OR",
             Engine::MySql => "MY",
+            Engine::MongoDb => "MG",
+            Engine::Sqlite => "SL",
+            Engine::Redis => "RD",
         }
     }
 
@@ -55,19 +67,47 @@ impl Engine {
             Engine::D1 | Engine::Snowflake => 443,
             Engine::Oracle => 1521,
             Engine::MySql => 3306,
+            Engine::MongoDb => 27017,
+            // A file, not a server.
+            Engine::Sqlite => 0,
+            Engine::Redis => 6379,
         }
     }
 
     /// Whether the engine supports interactive transactions (BEGIN ... COMMIT across
-    /// requests). D1's and Snowflake's HTTP APIs run every request on its own.
+    /// requests). D1's and Snowflake's HTTP APIs run every request on its own; MongoDB
+    /// statements are single operations (multi-document transactions need a replica set
+    /// and are not offered yet).
     pub fn supports_transactions(self) -> bool {
-        !matches!(self, Engine::D1 | Engine::Snowflake)
+        !matches!(
+            self,
+            Engine::D1 | Engine::Snowflake | Engine::MongoDb | Engine::Redis
+        )
+    }
+
+    /// Whether statements are documents and shell calls rather than SQL (MongoDB): SQL
+    /// parsing, formatting and SQL-only tools (plans, agents) do not apply.
+    pub fn is_document_store(self) -> bool {
+        matches!(self, Engine::MongoDb)
     }
 
     /// Whether the engine is reached through a cloud HTTP API (account and database ids
     /// plus an API token) rather than host, port and user.
     pub fn is_cloud_api(self) -> bool {
         matches!(self, Engine::D1)
+    }
+
+    /// Whether the engine opens a local file (`DbConnection::database` is its path) rather
+    /// than reaching a server.
+    pub fn is_local_file(self) -> bool {
+        matches!(self, Engine::Sqlite)
+    }
+
+    /// Whether the engine opens the query editor and schema explorer (SQL engines, and
+    /// MongoDB with its shell syntax). Key-value stores (Redis) open a key browser instead
+    /// and have no catalog, plans or activity views.
+    pub fn is_sql(self) -> bool {
+        !matches!(self, Engine::Redis)
     }
 }
 

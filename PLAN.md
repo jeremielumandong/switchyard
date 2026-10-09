@@ -254,6 +254,15 @@ Exit: integrated auth works on a Linux machine that started without Kerberos lib
   Note: tests run against a local stand-in (`crates/db/tests/d1.rs`); the real API was
   reached and its auth error parsed, but no query has run against a real D1 database yet. No transactions or inline editing (see DECISIONS).
 
+## Extra — SQLite (user request, 2026-10-08)
+
+- [x] **SQ-1 Local SQLite engine.** `Engine::Sqlite` through `rusqlite` (bundled, already
+  approved for the store), one worker thread per session, streamed batches, cancel via
+  `sqlite3_interrupt`, transactions, catalog over attached databases, inline editing,
+  connection editor with a file picker. See DECISIONS 2026-10-08.
+  Note: no query plans (`EXPLAIN QUERY PLAN` into `PlanNode` is a follow-up), no activity
+  monitor or workload stats (nothing to show for an in-process engine).
+
 ## M4 — File transfer
 
 Exit: resume an interrupted 1 GB upload.
@@ -541,6 +550,20 @@ server or bundled Unix tools on Windows (Tier 3).
   request), empty Compose state with quick actions; request tabs open only on demand.
 - [x] UX-8 Workbench restores each project's open request tabs (saved requests only; order and
   active tab) from `workbench_tab_sessions` (store schema 7); no session opens with no tabs.
+- [x] UX-9 Connection dialog: one "Database" entry in the type rail with an engine picker
+  (tiles) above the form; each engine's form is its own `EngineForm` in
+  `app/src/conn_editor/engines/` (fields, layout, apply, required Driver Manager component),
+  registered in `engines.rs`. Switching engines keeps Name, Host and User.
+
+## Extra — Redis (user request, 2026-10-08)
+
+- [x] RD-1 Redis connections: `Engine::Redis` (non-SQL, `Engine::is_sql`), own RESP2 client
+  in `db::redis` (TCP or TLS, SSH tunnel, ACL user + password, logical db, 30 s command
+  timeout with reconnect), `Redis*` commands/events in core, Test connection, docker service.
+- [x] RD-2 Key browser tab: SCAN with glob filter and Load more, type badges; value pane per
+  type (string/JSON text editor, hash/list/set/zset/stream tables) with edits, new key,
+  rename (RENAMENX), expiry, delete; `redis-cli`-style console with Production confirmation
+  for destructive commands, read-only enforcement and masked history.
 
 ## DBX — Database explorer and editors at DBeaver / SSMS level (user request)
 
@@ -687,6 +710,8 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 
 ## Follow-ups
 
+- SQLite: `EXPLAIN QUERY PLAN` into `PlanNode`; a "New database file" save dialog in the connection editor (today a typed path is created on connect).
+
 - API Workbench: rename and delete workspaces (API-5 only adds and switches them).
 - `core/tests/flow.rs` `cancel_stops_a_running_query_quickly` times out (5 s) when the
   machine is busy building (seen twice); passes alone. Look at what it waits on before
@@ -697,6 +722,9 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   running app's unlocked secrets over the loopback handoff, scoped by the session token.
 
 (Add items here instead of doing them mid-task.)
+- Redis: prefix tree (`:`-separated groups) in the key list; Pub/Sub and MONITOR viewers;
+  Cluster and Sentinel; per-element pagination past 1,000 items; console up/down history;
+  RESP3 (`HELLO 3`) types; integration test for TLS.
 - `db --test pg` integration tests share one database: run in parallel, `introspection_snapshots`
   can see another test's scratch objects. CI runs them with `--test-threads 1`; isolate them in
   per-test schemas if they need to run in parallel.
@@ -717,6 +745,9 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   exercise the driver against a real account; OAuth (external browser) sign-in.
 - API workspace: port AgentOps's Workbench UI tests; persist workbench preferences (they live
   in session memory for now); per-project collections (`current_project()` returns None).
+- MongoDB: transactions on replica sets, `explain` → `PlanNode`, agent `run_query` with the
+  shell parser's read-only check, document edits from the grid (by `_id`), `$currentOp`
+  activity monitor, X.509 / AWS / OIDC sign-in.
 - Release workflow for macOS (`build-macos.sh` + notarization) next to the Linux and Windows ones.
 - Log file for release builds (Windows GUI subsystem hides stdout).
 - Real app icon to replace the generated placeholder in `packaging/icons/`.
