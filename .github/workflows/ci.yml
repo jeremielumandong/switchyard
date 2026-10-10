@@ -129,6 +129,30 @@ jobs:
       - run: cargo test -p switchyard-db --test mongo -- --ignored --test-threads 1
       - run: cargo test -p switchyard-db --test redis -- --ignored --test-threads 1
 
+  integration-cloud:
+    name: integration (S3, Azure Blob, App Configuration)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: Swatinem/rust-cache@v2
+      # Azurite and the App Configuration emulator come from mcr.microsoft.com (no Docker
+      # Hub limit); moto (S3, Secrets Manager, Parameter Store) from PyPI.
+      - name: Start Azurite and the App Configuration emulator
+        run: docker compose -f docker/compose.yml up -d azurite appconfig
+      - name: Start moto
+        run: scripts/moto-server.sh
+      - name: Wait for the emulators
+        run: |
+          for _ in $(seq 1 60); do
+            curl -s -o /dev/null http://127.0.0.1:10000/ && curl -s -o /dev/null http://127.0.0.1:8483/kv && exit 0
+            sleep 2
+          done
+          docker compose -f docker/compose.yml logs --no-color azurite appconfig
+          exit 1
+      - run: cargo test -p switchyard-cloud --test services -- --ignored --test-threads 1
+      - run: cargo test -p switchyard-core --test cloud -- --ignored --test-threads 1
+
   integration-oracle:
     name: integration (Oracle)
     runs-on: ubuntu-latest

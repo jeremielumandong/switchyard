@@ -1560,6 +1560,10 @@ impl Workspace {
                     let r = r.read(cx);
                     r.is_open().then(|| r.connection.id.clone())
                 }
+                Tab::Cloud(c) => {
+                    let c = c.read(cx);
+                    c.is_open().then(|| c.connection.id.clone())
+                }
                 _ => None,
             })
             .collect();
@@ -1576,6 +1580,12 @@ impl Workspace {
                     ConnAction::Open,
                 ),
                 Profile::File(f) => (f.name.clone(), String::new(), ConnAction::Files),
+                // Storage opens in Files, the key / value tools in their own tab.
+                Profile::Cloud(c) => (
+                    c.name.clone(),
+                    c.service.short_name().to_owned(),
+                    ConnAction::Files,
+                ),
                 Profile::Terminal(t) => (
                     t.name.clone(),
                     String::new(),
@@ -1768,6 +1778,36 @@ impl Workspace {
                 indent: 0.,
                 folder: None,
             });
+        }
+        let clouds: Vec<&Profile> = self
+            .profiles
+            .all
+            .iter()
+            .filter(|p| matches!(p, Profile::Cloud(_)))
+            .collect();
+        if !clouds.is_empty() {
+            let key = "g:cloud".to_owned();
+            rows.push(ConnRow {
+                is_group: true,
+                key: key.clone(),
+                badge: "",
+                label: "Cloud".into(),
+                sub: "".into(),
+                env: None,
+                live: clouds.iter().any(|k| live.contains(k.id())),
+                profile: None,
+                action: ConnAction::Toggle,
+                drag: None,
+                indent: 0.,
+                folder: None,
+            });
+            if !self.collapsed.contains(&key) {
+                rows.extend(clouds.into_iter().map(|p| {
+                    let mut r = leaf(p, "g:cloud");
+                    r.env = Some(p.environment());
+                    r
+                }));
+            }
         }
         rows
     }

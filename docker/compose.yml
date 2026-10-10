@@ -210,3 +210,21 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+
+  # Azure Storage emulator (Blob Storage on 127.0.0.1:10000, the well-known dev account).
+  # From mcr.microsoft.com, so CI avoids Docker Hub's pull limit.
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:3.35.0
+    command: ["azurite-blob", "--blobHost", "0.0.0.0", "--skipApiVersionCheck", "--loose"]
+    ports: ["127.0.0.1:10000:10000"]
+
+  # Azure App Configuration emulator on 127.0.0.1:8483, HMAC access key only (the
+  # connection string the tests use: Endpoint=http://127.0.0.1:8483;Id=emulator;Secret=…).
+  appconfig:
+    image: mcr.microsoft.com/azure-app-configuration/app-configuration-emulator:1.0.0-preview
+    environment:
+      Tenant__AnonymousAuthEnabled: "false"
+      Tenant__HmacSha256Enabled: "true"
+      Tenant__AccessKeys__0__Id: emulator
+      Tenant__AccessKeys__0__Secret: c2VjcmV0c2VjcmV0c2VjcmV0
+    ports: ["127.0.0.1:8483:8483"]

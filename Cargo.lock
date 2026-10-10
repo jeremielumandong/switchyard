@@ -9566,6 +9566,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchyard-cloud"
+version = "0.1.8"
+dependencies = [
+ "data-encoding",
+ "futures",
+ "quick-xml 0.42.0",
+ "reqwest",
+ "ring",
+ "rustls",
+ "rustls-native-certs",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "switchyard-remote",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "switchyard-core"
 version = "0.1.8"
 dependencies = [
@@ -9578,6 +9599,7 @@ dependencies = [
  "sha2 0.10.9",
  "switchyard-agents",
  "switchyard-api",
+ "switchyard-cloud",
  "switchyard-db",
  "switchyard-drivers",
  "switchyard-plan",
@@ -9588,6 +9610,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]

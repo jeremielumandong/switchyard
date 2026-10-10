@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use switchyard_remote::fs::file_name;
-use switchyard_remote::{FileEntry, FsError, FtpFs, RemoteFs, SftpFs};
+use switchyard_remote::{FileEntry, FsError, RemoteFs, SftpFs};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use crate::bus::{OnConflict, SaveError, TextFile, TransferError};
@@ -31,8 +31,8 @@ pub(crate) type Control = Arc<AtomicU8>;
 /// Open SFTP file systems (one per Host), FTP connections and the transfer queue.
 pub(crate) struct Files {
     pub(crate) sftp: tokio::sync::Mutex<HashMap<String, Arc<SftpFs>>>,
-    /// FTP / FTPS file systems by file connection id.
-    pub(crate) ftp: tokio::sync::Mutex<HashMap<String, Arc<FtpFs>>>,
+    /// FTP / FTPS and object storage file systems by connection id.
+    pub(crate) conns: tokio::sync::Mutex<HashMap<String, Arc<dyn RemoteFs>>>,
     controls: Mutex<HashMap<u64, Control>>,
     pub(crate) slots: Arc<tokio::sync::Semaphore>,
 }
@@ -41,7 +41,7 @@ impl Default for Files {
     fn default() -> Self {
         Self {
             sftp: tokio::sync::Mutex::default(),
-            ftp: tokio::sync::Mutex::default(),
+            conns: tokio::sync::Mutex::default(),
             controls: Mutex::default(),
             slots: Arc::new(tokio::sync::Semaphore::new(PARALLEL_TRANSFERS)),
         }
@@ -201,6 +201,9 @@ impl Copy<'_> {
             (self.report)(self.done);
             return Ok(());
         }
+        if self.dst.atomic_writes() {
+            return self.file_direct(from, to).await;
+        }
         let part = part_of(to);
         // Only a resume continues a partial file: a fresh transfer of a changed source
         // must not keep stale bytes.
@@ -242,6 +245,32 @@ impl Copy<'_> {
             self.dst.delete(to).await.map_err(fail)?;
         }
         self.dst.rename(&part, to).await.map_err(fail)?;
+        Ok(())
+    }
+
+    /// Copy one file straight to `to` on a target where a file appears only once it is
+    /// complete (object storage). Stopping drops the writer, which abandons the upload; a
+    /// paused copy starts over when resumed.
+    async fn file_direct(&mut self, from: &Path, to: &Path) -> Result<(), TransferError> {
+        let fail = |e: FsError| TransferError::Failed(e.to_string());
+        let io = |e: std::io::Error| TransferError::Failed(e.to_string());
+        let mut r = self.src.open_read(from).await.map_err(fail)?;
+        let mut w = self.dst.create(to).await.map_err(fail)?;
+        let mut buf = vec![0u8; CHUNK];
+        loop {
+            if let Some(stop) = self.stopped() {
+                drop(w);
+                return Err(stop);
+            }
+            let n = r.read(&mut buf).await.map_err(io)?;
+            if n == 0 {
+                break;
+            }
+            w.write_all(&buf[..n]).await.map_err(io)?;
+            self.done += n as u64;
+            (self.report)(self.done);
+        }
+        w.shutdown().await.map_err(io)?;
         Ok(())
     }
 

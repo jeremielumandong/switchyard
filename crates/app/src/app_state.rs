@@ -82,7 +82,7 @@ impl Profiles {
                     matches!(&f.protocol, FileProtocol::Sftp { host_id } if host_id == host)
                 }
                 Profile::Terminal(t) => t.host_id.as_ref() == Some(host),
-                Profile::Host(_) => false,
+                Profile::Host(_) | Profile::Cloud(_) => false,
             })
             .collect()
     }
@@ -95,7 +95,7 @@ impl Profiles {
                 Profile::Db(d) => d.via_host.is_none(),
                 Profile::File(f) => matches!(f.protocol, FileProtocol::Ftp { .. }),
                 Profile::Terminal(t) => t.host_id.is_none(),
-                Profile::Host(_) => false,
+                Profile::Host(_) | Profile::Cloud(_) => false,
             })
             .collect()
     }
@@ -111,6 +111,7 @@ pub fn badge_of(p: &Profile) -> &'static str {
             FileProtocol::Ftp { .. } => "FTP",
         },
         Profile::Terminal(_) => "SH",
+        Profile::Cloud(c) => c.service.badge(),
     }
 }
 
@@ -139,6 +140,18 @@ pub fn describe(p: &Profile, profiles: &Profiles) -> String {
                 }
             ),
         },
+        Profile::Cloud(c) => {
+            let mut s = format!(
+                "{} · {}",
+                c.service.provider().display_name(),
+                c.service.short_name()
+            );
+            if !c.region.trim().is_empty() {
+                s.push_str(" · ");
+                s.push_str(c.region.trim());
+            }
+            s
+        }
         Profile::Terminal(t) => {
             if t.shell.is_empty() {
                 "login shell".into()

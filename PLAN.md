@@ -656,6 +656,31 @@ server or bundled Unix tools on Windows (Tier 3).
   Note: no transactions, so edits apply in order and a failure reports how many were saved;
   the document column itself is read-only (no `replaceOne` editing yet).
 
+## Extra — Cloud storage and developer tools (user request, 2026-10-10)
+
+- [x] CL-1 `switchyard-cloud` crate: no cloud SDKs, own REST clients on reqwest + ring.
+  AWS SigV4 (checked against AWS's test vectors), Azure Shared Key and App Configuration
+  HMAC signing. Object storage as `RemoteFs`: S3 and S3-compatible endpoints, Cloudflare R2
+  (`S3Fs`), Azure Blob Storage (`BlobFs`); buckets / containers are the top folders,
+  streamed multipart (S3) or block-list (Azure) uploads above 8 MiB, cancel aborts them.
+- [x] CL-2 Key / value tools behind `KvService`: Azure App Configuration (key and label
+  filters, create / edit / delete with etags, locks, feature flags), Azure Key Vault
+  secrets, AWS Secrets Manager, AWS Parameter Store, Cloudflare Workers KV.
+- [x] CL-3 Sign-in: access keys, AWS CLI profiles (static keys, `credential_process`, SSO and
+  roles through `aws configure export-credentials`), Cloudflare API tokens (R2 derives its
+  S3 keys from the token), Azure connection strings, account keys, SAS, Microsoft Entra
+  (browser or device code, one refresh token for every resource; service principal) and
+  the Azure CLI (`az account get-access-token`).
+- [x] CL-4 Core and app: `Profile::Cloud` (`CloudConnection`), `TestCloud` and `Cloud*`
+  commands; storage opens in the Files tab (transfers both ways, direct writes without
+  `.swypart`), the other services in a new key / value tab (virtualized list, secrets
+  hidden until shown, Production saves and every delete confirmed, read-only option).
+  Connection dialog: a Cloud entry with a service picker and per-sign-in fields; sidebar
+  "Cloud" group. Integration tests: `cloud --test services`, `core --test cloud` against
+  moto, Azurite and the App Configuration emulator (CI job `integration (S3, Azure Blob,
+  App Configuration)`).
+  Note: the app UI was checked with clippy and unit tests only, not on screen.
+
 ## DBX — Database explorer and editors at DBeaver / SSMS level (user request)
 
 Gap analysis (2026-10-08): the explorer is a lazy, virtualized, single-connection tree
@@ -888,3 +913,13 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   compose service); MySQL 8.4 cannot `EXPLAIN ANALYZE` a single-table DELETE (Analyze
   reports it and points to Explain); MongoDB SBE (`slotBasedPlan`) execution stages are
   only summarized on the root; What-if and the workload view stay PostgreSQL / SQL Server.
+
+- Cloud (CL-1..4): folder rename and resumed uploads on object storage (a paused copy
+  restarts); S3 / Blob object properties (metadata, storage tier, presigned / SAS links);
+  App Configuration snapshots, Key Vault references resolved in place, import / export
+  (JSON, `.env`); Key Vault keys and certificates; Workers KV metadata and expiry edits;
+  AWS SSO device sign-in inside the app (today: `aws sso login`); a picker of `~/.aws`
+  profiles (read off the UI thread); MCP agent access to cloud tools (read-only list / get).
+  Proposed next tools: queues (SQS, Service Bus, Storage Queues, Cloudflare Queues), NoSQL
+  tables (DynamoDB, Cosmos DB, Table Storage), logs (CloudWatch Logs, Log Analytics),
+  functions (Lambda, Azure Functions, Workers) and Azure Container Apps / ECS status.
