@@ -84,10 +84,11 @@ async fn s3_browse_and_transfer() {
     next(&mut rx, 15, |e| match e {
         Event::FsOpDone {
             request: 3, result, ..
-        } => Some(result.unwrap()),
+        } => Some(result),
         _ => None,
     })
-    .await;
+    .await
+    .unwrap();
 
     // Upload a local folder: object storage writes each file directly (no .swypart).
     let local = tempfile::tempdir().unwrap();

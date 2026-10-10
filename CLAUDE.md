@@ -60,12 +60,13 @@ switchyard/
     plan/      switchyard-plan     Plan capture, normalized PlanNode tree, findings rules, access-stats queries
     cli/       switchyard-cli      `swy` binary and MCP server (stdio)
     agents/    switchyard-agents   AgentAdapter trait, runner, Claude Code / Codex / Gemini / custom adapters
-  docker/compose.yml      # postgres, mssql, openssh, ftp for integration tests
+    cloud/     switchyard-cloud    S3 / R2 / Azure Blob as RemoteFs; App Config, Key Vault, Secrets Manager, Parameter Store, Workers KV
+  docker/compose.yml      # postgres, mssql, openssh, ftp, azurite, appconfig for integration tests
   docs/SPEC.md, docs/DECISIONS.md
 ```
 
 Dependency direction: `app → core → {store, db, remote, term, drivers, plan, agents}` and
-`cli → core`. `plan` depends on `db` only. `db` may depend on
+`cli → core`. `plan` depends on `db` only; `cloud` on `remote` only. `db` may depend on
 `remote` only through the `TunnelEndpoint` type re-exported by `core`. Nothing depends on `app`.
 
 ## Architecture rules (do not break these)
@@ -285,3 +286,21 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
 - GPUI on Linux renders through Vulkan: under Xvfb the window fails with "Failed to create
   surface" unless a Vulkan driver is installed (`mesa-vulkan-drivers` gives lavapipe).
   `SWITCHYARD_THEME` and `SWITCHYARD_ZOOM` pin theme and zoom for screenshots.
+
+- Azure App Configuration: the null label is "no `label` parameter" on single-setting calls
+  (GET / PUT / DELETE / locks); `label=%00` there stores a literal "\0" label (the emulator
+  does). Only list filters use `\0` for "no label".
+- moto's Secrets Manager rejects `PutSecretValue` / `UpdateSecret` with
+  `ResourceExistsException` unless each call carries a fresh `ClientRequestToken` (botocore
+  adds one); `secrets_manager.rs` always sends a UUID.
+- Azurite answers a bad Shared Key with `AuthorizationFailure` (403), Azure with
+  `AuthenticationFailed`; `blob.rs` treats both as "key refused".
+- quick-xml 0.42: `local_name().as_ref()` is a `&str` and `.decode()` is gone; text comes
+  from `BytesText::xml10_content()`.
+- MinIO's images are not pullable here (quay.io 401, not on mirror.gcr.io); S3 tests use
+  moto (`scripts/moto-server.sh`), which does not check SigV4, so the signer keeps unit
+  tests against AWS's published vectors.
+- Linking the workspace's debug test binaries needs a lot of disk; a full disk shows up as
+  `ld terminated with signal 7 [Bus error]`, not "no space". `CARGO_PROFILE_DEV_DEBUG=0`
+  halves `target/`.
+

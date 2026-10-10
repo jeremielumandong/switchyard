@@ -130,6 +130,7 @@ impl PaletteView {
                             Profile::Host(_) => "SSH".into(),
                             Profile::File(_) => "Files".into(),
                             Profile::Terminal(_) => "Terminal".into(),
+                            Profile::Cloud(c) => c.service.display_name().to_owned(),
                         };
                         (
                             s,

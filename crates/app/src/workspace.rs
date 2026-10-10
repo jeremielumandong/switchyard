@@ -67,6 +67,8 @@ pub enum Tab {
     Er(Entity<crate::er_tab::ErTab>),
     /// Redis key browser and console.
     Redis(Entity<crate::redis_tab::RedisTab>),
+    /// Key / value tool of a cloud connection (App Configuration, secrets, Workers KV).
+    Cloud(Entity<crate::cloud_tab::CloudTab>),
 }
 
 /// The root view.
@@ -345,6 +347,10 @@ impl Workspace {
             | Event::RedisKey { .. }
             | Event::RedisEdited { .. }
             | Event::RedisReply { .. }) => self.on_redis_event(ev, window, cx),
+            ev @ (Event::CloudOpened { .. }
+            | Event::CloudItems { .. }
+            | Event::CloudItem { .. }
+            | Event::CloudEdited { .. }) => self.on_cloud_event(ev, window, cx),
             Event::TerminalOpened {
                 term,
                 terminal,
@@ -1157,6 +1163,7 @@ impl Workspace {
             Some(Tab::Activity(a)) => a.clone().into_any_element(),
             Some(Tab::Er(e)) => e.clone().into_any_element(),
             Some(Tab::Redis(r)) => r.clone().into_any_element(),
+            Some(Tab::Cloud(c)) => c.clone().into_any_element(),
             _ => self.render_welcome(p, cx),
         }
     }
@@ -1520,6 +1527,9 @@ impl Workspace {
         if let Tab::Redis(r) = &self.tabs[ix] {
             r.update(cx, |r, _| r.shutdown());
         }
+        if let Tab::Cloud(c) = &self.tabs[ix] {
+            c.update(cx, |c, _| c.shutdown());
+        }
         if let Tab::Editor(e) = &self.tabs[ix] {
             e.update(cx, |e, cx| e.shutdown(cx));
         }
@@ -1666,21 +1676,25 @@ impl Workspace {
         self.open_files_for(host, cx);
     }
 
-    /// What the Files tab's right pane can show: Hosts (SFTP) and FTP connections.
-    fn file_sources(&self) -> Vec<(FsRef, String)> {
+    /// What the Files tab's right pane can show: Hosts (SFTP), FTP connections and cloud
+    /// object storage (S3, R2, Azure Blob).
+    fn file_sources(&self) -> Vec<crate::files_tab::Source> {
         let hosts = self
             .profiles
             .hosts()
-            .map(|h| (FsRef::Host(h.id.clone()), h.name.clone()));
-        let ftp = self.profiles.all.iter().filter_map(|p| match p {
+            .map(|h| (FsRef::Host(h.id.clone()), h.name.clone(), "SSH"));
+        let conns = self.profiles.all.iter().filter_map(|p| match p {
             Profile::File(f)
                 if matches!(f.protocol, switchyard_core::store::FileProtocol::Ftp { .. }) =>
             {
-                Some((FsRef::Conn(f.id.clone()), f.name.clone()))
+                Some((FsRef::Conn(f.id.clone()), f.name.clone(), "FTP"))
+            }
+            Profile::Cloud(c) if c.service.is_storage() => {
+                Some((FsRef::Conn(c.id.clone()), c.name.clone(), c.service.badge()))
             }
             _ => None,
         });
-        hosts.chain(ftp).collect()
+        hosts.chain(conns).collect()
     }
 
     /// The Files tab, with `host` on the right (or what it already shows).
@@ -1795,6 +1809,11 @@ impl Workspace {
                 }
             },
             Some(Profile::Terminal(t)) => self.open_terminal(t.host_id, cx),
+            // Object storage opens in Files; the other services in their own tab.
+            Some(Profile::Cloud(c)) if c.service.is_storage() => {
+                self.open_files_on(Some(FsRef::Conn(c.id)), cx)
+            }
+            Some(Profile::Cloud(c)) => self.open_cloud(c, window, cx),
             None => {}
         }
     }
@@ -2618,6 +2637,15 @@ impl Workspace {
                 let c = &r.read(cx).connection;
                 (
                     "RD".into(),
+                    c.name.clone().into(),
+                    Some(c.environment),
+                    false,
+                )
+            }
+            Tab::Cloud(t) => {
+                let c = &t.read(cx).connection;
+                (
+                    c.service.badge().into(),
                     c.name.clone().into(),
                     Some(c.environment),
                     false,
