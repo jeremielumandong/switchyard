@@ -410,9 +410,12 @@ red = "#d20f39"
         std::fs::write(themes.join("light.mode"), "").expect("write");
         let current = root.path().join("current");
         std::fs::create_dir_all(&current).expect("mkdir");
-        let link = current.join("theme");
         #[cfg(unix)]
-        std::os::unix::fs::symlink(&themes, &link).expect("symlink");
+        let link = {
+            let link = current.join("theme");
+            std::os::unix::fs::symlink(&themes, &link).expect("symlink");
+            link
+        };
         #[cfg(not(unix))]
         let link = themes.clone();
         let c = read_theme(&link).expect("read");
