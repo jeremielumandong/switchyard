@@ -1,5 +1,5 @@
-//! Connection editor dialog: a rail of connection types (Database, SSH Host, SFTP, FTP), a
-//! database engine picker with a form per engine (`engines/`), environment label, Driver
+//! Connection editor dialog: a rail of connection types (Database, SSH Host, SFTP, FTP,
+//! Cloud), a database engine picker, a cloud service picker (`cloud.rs`) with a form per engine (`engines/`), environment label, Driver
 //! Manager card, Test connection and Save.
 
 use std::collections::HashMap;
@@ -16,11 +16,12 @@ use secrecy::SecretString;
 use switchyard_core::db::Engine;
 use switchyard_core::drivers::{Component, ComponentStatus};
 use switchyard_core::store::{
-    EnvironmentLabel, FileConnection, FileProtocol, FtpMode, FtpTls, Host, Profile, ProfileId,
-    SshAuth, TerminalColors,
+    CloudConnection, CloudService, EnvironmentLabel, FileConnection, FileProtocol, FtpMode, FtpTls,
+    Host, Profile, ProfileId, SshAuth, TerminalColors,
 };
 use switchyard_core::{Command, RequestId, RuntimeHandle};
 
+mod cloud;
 mod driver_card;
 mod engines;
 mod form;
@@ -42,21 +43,25 @@ pub enum ConnKind {
     Sftp,
     /// FTP / FTPS.
     Ftp,
+    /// A cloud service: object storage or a key / value tool.
+    Cloud(CloudService),
 }
 
 impl ConnKind {
     /// The rail's entries: one for every database engine, then the remote kinds.
-    const RAIL: [ConnKind; 4] = [
+    const RAIL: [ConnKind; 5] = [
         ConnKind::Db(Engine::Postgres),
         ConnKind::Ssh,
         ConnKind::Sftp,
         ConnKind::Ftp,
+        ConnKind::Cloud(CloudService::S3),
     ];
 
     /// Whether `self` and `other` share a rail entry.
     fn same_rail(self, other: ConnKind) -> bool {
         match (self, other) {
             (ConnKind::Db(_), ConnKind::Db(_)) => true,
+            (ConnKind::Cloud(_), ConnKind::Cloud(_)) => true,
             _ => self == other,
         }
     }
@@ -67,6 +72,7 @@ impl ConnKind {
             ConnKind::Ssh => "SSH",
             ConnKind::Sftp => "SFTP",
             ConnKind::Ftp => "FTP",
+            ConnKind::Cloud(_) => "CLD",
         }
     }
 
@@ -76,12 +82,14 @@ impl ConnKind {
             ConnKind::Ssh => "SSH Host",
             ConnKind::Sftp => "SFTP",
             ConnKind::Ftp => "FTP / FTPS",
+            ConnKind::Cloud(s) => s.display_name(),
         }
     }
 
     fn rail_label(self) -> &'static str {
         match self {
             ConnKind::Db(_) => "Database",
+            ConnKind::Cloud(_) => "Cloud",
             k => k.label(),
         }
     }
@@ -106,6 +114,7 @@ impl ConnKind {
             ConnKind::Ssh => "Terminal + tunnels",
             ConnKind::Sftp => "Files over a Host",
             ConnKind::Ftp => "Files, own login",
+            ConnKind::Cloud(_) => "AWS, Azure, Cloudflare",
         }
     }
 }
@@ -140,6 +149,8 @@ pub struct ConnEditor {
     kind: ConnKind,
     /// The database engine last picked, restored when the rail goes back to Database.
     engine: Engine,
+    /// The cloud service last picked, restored when the rail goes back to Cloud.
+    service: CloudService,
     existing_id: Option<ProfileId>,
     inputs: HashMap<&'static str, Entity<InputState>>,
     selects: HashMap<&'static str, Select>,
@@ -203,6 +214,7 @@ impl ConnEditor {
                 FileProtocol::Sftp { .. } => ConnKind::Sftp,
                 FileProtocol::Ftp { .. } => ConnKind::Ftp,
             },
+            Some(Profile::Cloud(c)) => ConnKind::Cloud(c.service),
             _ => kind,
         };
         let mut this = Self {
@@ -213,6 +225,10 @@ impl ConnEditor {
                 ConnKind::Db(e) => e,
                 _ => Engine::Postgres,
             },
+            service: match kind {
+                ConnKind::Cloud(s) => s,
+                _ => CloudService::S3,
+            },
             existing_id: existing.as_ref().map(|p| p.id().clone()),
             inputs: HashMap::new(),
             selects: HashMap::new(),
@@ -221,7 +237,11 @@ impl ConnEditor {
                 .as_ref()
                 .map(|p| p.environment())
                 .unwrap_or(EnvironmentLabel::Development),
-            read_only: matches!(&existing, Some(Profile::Db(d)) if d.read_only),
+            read_only: match &existing {
+                Some(Profile::Db(d)) => d.read_only,
+                Some(Profile::Cloud(c)) => c.read_only,
+                _ => false,
+            },
             history: !matches!(&existing, Some(Profile::Db(d)) if !d.history_enabled),
             agents: match &existing {
                 Some(Profile::Db(d)) => d.agent_access,
@@ -482,6 +502,20 @@ impl ConnEditor {
                 }
                 self.selects.insert("host", sel(hosts, &host));
             }
+            ConnKind::Cloud(service) => {
+                let c = match existing {
+                    Some(Profile::Cloud(c)) => c.clone(),
+                    _ => CloudConnection::new("", service),
+                };
+                cloud::init(
+                    &c,
+                    &mut FieldSet {
+                        editor: self,
+                        window,
+                        cx,
+                    },
+                );
+            }
             ConnKind::Ftp => {
                 let (name, server, port, tls, mode, user, path) = match existing {
                     Some(Profile::File(FileConnection {
@@ -740,6 +774,19 @@ impl ConnEditor {
                     secret: existing.and_then(|p| p.secret().cloned()),
                 })
             }
+            ConnKind::Cloud(service) => {
+                let mut c = match existing {
+                    Some(Profile::Cloud(c)) => c.clone(),
+                    _ => CloudConnection::new("", service),
+                };
+                c.id = id;
+                c.service = service;
+                c.name = self.value("name", cx);
+                cloud::apply(&Values { editor: self, cx }, &mut c)?;
+                c.environment = self.env;
+                c.read_only = self.read_only;
+                Profile::Cloud(c)
+            }
             ConnKind::Ftp => Profile::File(FileConnection {
                 id,
                 name: self.value("name", cx),
@@ -833,6 +880,19 @@ impl ConnEditor {
                     secret: self.secret(cx),
                 });
             }
+            (ConnKind::Cloud(_), Ok(Profile::Cloud(connection))) => {
+                if let Err(v) = Profile::Cloud(connection.clone()).validate() {
+                    self.error = Some((Some(v.field), v.message));
+                } else {
+                    let request = next_id();
+                    self.test = TestState::Testing(request);
+                    self.core.send(Command::TestCloud {
+                        request,
+                        connection,
+                        secret: self.secret(cx),
+                    });
+                }
+            }
             (_, Err((f, m))) => self.error = Some((f, m)),
             _ => {}
         }
@@ -871,18 +931,23 @@ impl ConnEditor {
         if self.existing_id.is_some() || kind == self.kind {
             return;
         }
-        // Moving between engines keeps what was typed into fields they share.
-        let carried: Vec<(&str, String)> = if kind.is_db() && self.kind.is_db() {
-            ["name", "host", "user"]
-                .into_iter()
-                .map(|k| (k, self.value(k, cx)))
-                .filter(|(_, v)| !v.is_empty())
-                .collect()
-        } else {
-            Vec::new()
+        // Moving between engines (or cloud services) keeps what was typed into fields
+        // they share.
+        let shared: &[&'static str] = match (kind, self.kind) {
+            (ConnKind::Db(_), ConnKind::Db(_)) => &["name", "host", "user"],
+            (ConnKind::Cloud(_), ConnKind::Cloud(_)) => &["name"],
+            _ => &[],
         };
+        let carried: Vec<(&str, String)> = shared
+            .iter()
+            .map(|k| (*k, self.value(k, cx)))
+            .filter(|(_, v)| !v.is_empty())
+            .collect();
         if let ConnKind::Db(e) = kind {
             self.engine = e;
+        }
+        if let ConnKind::Cloud(s) = kind {
+            self.service = s;
         }
         self.kind = kind;
         self.build_fields(None, window, cx);
@@ -1139,6 +1204,84 @@ impl ConnEditor {
             .into_any_element()
     }
 
+    /// The cloud services, as a grid of tiles grouped by provider above the form.
+    fn render_service_picker(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap(rpx(6.))
+            .child(
+                div()
+                    .text_size(ts::LABEL)
+                    .text_color(p.fg2)
+                    .font_weight(FontWeight::MEDIUM)
+                    .child("Service"),
+            )
+            .child(
+                div()
+                    .grid()
+                    .grid_cols(3)
+                    .gap(rpx(6.))
+                    .children(CloudService::ALL.iter().map(|s| {
+                        let s = *s;
+                        let active = self.kind == ConnKind::Cloud(s);
+                        div()
+                            .id(SharedString::from(format!("svc-{}", s.badge())))
+                            .min_w_0()
+                            .h(rpx(36.))
+                            .flex()
+                            .items_center()
+                            .gap(rpx(8.))
+                            .px(rpx(8.))
+                            .border_1()
+                            .border_color(if active { p.acc } else { p.bd2 })
+                            .rounded(px(6.))
+                            .bg(if active { p.sel } else { p.bg })
+                            .when(!active, |d| d.hover(|st| st.bg(p.hover)))
+                            .on_click(cx.listener(move |this, _, w, cx| {
+                                this.set_kind(ConnKind::Cloud(s), w, cx)
+                            }))
+                            .child(
+                                div()
+                                    .w(rpx(32.))
+                                    .flex_none()
+                                    .flex()
+                                    .justify_center()
+                                    .border_1()
+                                    .border_color(if active { p.acc } else { p.bd2 })
+                                    .rounded(px(3.))
+                                    .text_color(if active { p.acc } else { p.fg2 })
+                                    .font_family(MONO)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_size(ts::MICRO)
+                                    .line_height(rpx(16.))
+                                    .child(s.badge()),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .min_w_0()
+                                    .child(
+                                        div()
+                                            .text_size(ts::UI)
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .truncate()
+                                            .child(s.short_name()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(ts::SMALL)
+                                            .text_color(p.fg3)
+                                            .truncate()
+                                            .child(s.provider().display_name()),
+                                    ),
+                            )
+                    })),
+            )
+            .into_any_element()
+    }
+
     /// The form's fields, in grid order.
     fn layout(&self, cx: &Context<Self>) -> Vec<Field> {
         let mut v = Vec::new();
@@ -1229,6 +1372,13 @@ impl ConnEditor {
                     );
                 }
             }
+            ConnKind::Cloud(service) => {
+                v.push(Field::new("name", "Name"));
+                v.extend(cloud::layout(
+                    service,
+                    cloud::chosen_auth(service, &self.chosen("auth")),
+                ));
+            }
             ConnKind::Sftp => {
                 v.push(Field::new("name", "Name"));
                 v.push(Field::new("host", "Host").hint("No second login"));
@@ -1272,6 +1422,9 @@ impl Render for ConnEditor {
         });
         let engine_picker = (self.kind.is_db() && self.existing_id.is_none())
             .then(|| self.render_engine_picker(&p, cx));
+        let service_picker = (matches!(self.kind, ConnKind::Cloud(_))
+            && self.existing_id.is_none())
+        .then(|| self.render_service_picker(&p, cx));
         let forwards = (self.kind == ConnKind::Ssh).then(|| {
             crate::forwards_editor::render(&self.forwards, &p, cx, |this: &mut Self, a, w, cx| {
                 this.forward_action(a, w, cx)
@@ -1357,6 +1510,8 @@ impl Render for ConnEditor {
                                 let k = match k {
                                     ConnKind::Db(_) if active => self.kind,
                                     ConnKind::Db(_) => ConnKind::Db(self.engine),
+                                    ConnKind::Cloud(_) if active => self.kind,
+                                    ConnKind::Cloud(_) => ConnKind::Cloud(self.service),
                                     k => *k,
                                 };
                                 let disabled = self.existing_id.is_some() && !active;
@@ -1424,6 +1579,7 @@ impl Render for ConnEditor {
                             .flex_col()
                             .gap(rpx(14.))
                             .children(engine_picker)
+                            .children(service_picker)
                             .child(div().grid().grid_cols(6).gap(rpx(12.)).children(fields))
                             .children(forwards)
                             .when(self.kind == ConnKind::Ssh, |d| {
@@ -1570,6 +1726,20 @@ impl Render for ConnEditor {
                                             cx.notify();
                                         },
                                     )),
+                                )
+                            })
+                            .when(matches!(self.kind, ConnKind::Cloud(_)), |d| {
+                                d.child(
+                                    ui::checkbox(
+                                        "cloud-ro",
+                                        self.read_only,
+                                        "Read-only: refuse uploads, edits and deletes",
+                                        &p,
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.read_only = !this.read_only;
+                                        cx.notify();
+                                    })),
                                 )
                             })
                             .when(self.kind.agents_apply(), |d| {

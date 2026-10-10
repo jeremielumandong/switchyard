@@ -80,7 +80,7 @@ async fn browse_transfer_and_resume_over_ftp() {
         matches!(e, Event::ProfileSaved { request: 2, .. }).then_some(())
     })
     .await;
-    let fs = FsRef::Ftp(id);
+    let fs = FsRef::Conn(id);
 
     h.send(Command::ListDir {
         request: 3,

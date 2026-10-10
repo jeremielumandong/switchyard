@@ -120,6 +120,13 @@ pub trait RemoteFs: Send + Sync {
         offset: u64,
     ) -> BoxFuture<'a, Result<FsWriter, FsError>>;
 
+    /// Whether a new file only appears once fully written (object storage). Copies then
+    /// write the target directly instead of through a `.swypart` file and a rename, and
+    /// cannot resume from an offset.
+    fn atomic_writes(&self) -> bool {
+        false
+    }
+
     /// Read a whole file, refusing files over `max` bytes.
     fn read_file<'a>(
         &'a self,

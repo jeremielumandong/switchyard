@@ -9,7 +9,9 @@ use std::time::{Duration, Instant};
 use secrecy::SecretString;
 use switchyard_db::DbAuthMethod;
 use switchyard_db::entra::{Entra, EntraApp, Token};
-use switchyard_store::{DbConnection, ProfileId, SecretRef, SecretStore};
+use switchyard_store::{
+    CloudAuth, CloudConnection, DbConnection, ProfileId, SecretRef, SecretStore,
+};
 use tokio::sync::oneshot;
 use tracing::{debug, info};
 
@@ -131,6 +133,78 @@ impl EntraSignIn {
         Ok(access)
     }
 
+    /// An access token for a cloud connection's resource `scope`
+    /// (`https://storage.azure.com/.default`). One sign-in serves every scope: the stored
+    /// refresh token is exchanged per resource.
+    pub(crate) async fn cloud_token(
+        &self,
+        c: &CloudConnection,
+        scope: &str,
+        secret: Option<SecretString>,
+    ) -> Result<SecretString> {
+        let _one = self.busy.lock().await;
+        let cache_key = ProfileId(format!("{}#{scope}", c.id.0));
+        if let Some(t) = self.cache().get(&cache_key)
+            && t.expires_at > Instant::now() + EXPIRY_MARGIN
+        {
+            return Ok(t.access.clone());
+        }
+        let entra = Entra::new()?;
+        let token = match c.auth {
+            CloudAuth::EntraServicePrincipal => {
+                let app = EntraApp::for_resource(c.tenant.as_deref(), Some(&c.user), scope);
+                let secret = secret.ok_or_else(|| missing("client secret"))?;
+                entra.client_credentials(&app, &secret).await?
+            }
+            CloudAuth::EntraInteractive | CloudAuth::EntraDeviceCode => {
+                let app = EntraApp::for_resource(
+                    c.tenant.as_deref(),
+                    c.entra_client_id.as_deref(),
+                    scope,
+                );
+                match self.refreshed(&entra, &app, &c.id).await {
+                    Some(t) => t,
+                    None => {
+                        info!(connection = %c.name, method = ?c.auth, "entra sign-in (cloud)");
+                        self.prompt_sign_in(
+                            &entra,
+                            &app,
+                            c.name.clone(),
+                            c.auth == CloudAuth::EntraDeviceCode,
+                            None,
+                        )
+                        .await?
+                    }
+                }
+            }
+            other => {
+                return Err(CoreError::Internal(format!(
+                    "{other:?} is not a Microsoft Entra method"
+                )));
+            }
+        };
+        if let Some(refresh) = &token.refresh {
+            let key = SecretRef::for_profile(&c.id, REFRESH_PURPOSE);
+            let refresh = refresh.clone();
+            self.blocking(move |s| s.set(&key, &refresh)).await?;
+        }
+        let access = token.access.clone();
+        self.cache().insert(
+            cache_key,
+            Cached {
+                access: token.access,
+                expires_at: token.expires_at,
+            },
+        );
+        Ok(access)
+    }
+
+    /// Drop a cloud connection's in-memory tokens (every scope).
+    pub(crate) fn drop_cloud(&self, id: &ProfileId) {
+        let prefix = format!("{}#", id.0);
+        self.cache().retain(|k, _| !k.0.starts_with(&prefix));
+    }
+
     fn app(&self, c: &DbConnection) -> Result<EntraApp> {
         Ok(EntraApp::resolve(
             c.tenant.as_deref(),
@@ -159,7 +233,27 @@ impl EntraSignIn {
         } else {
             c.name.clone()
         };
-        if c.auth == DbAuthMethod::EntraDeviceCode {
+        let hint = (!c.user.trim().is_empty()).then_some(c.user.as_str());
+        self.prompt_sign_in(
+            entra,
+            app,
+            connection,
+            c.auth == DbAuthMethod::EntraDeviceCode,
+            hint,
+        )
+        .await
+    }
+
+    /// Browser or device-code sign-in with its prompt.
+    async fn prompt_sign_in(
+        &self,
+        entra: &Entra,
+        app: &EntraApp,
+        connection: String,
+        device_code: bool,
+        hint: Option<&str>,
+    ) -> Result<Token> {
+        if device_code {
             let dc = entra.device_code(app).await?;
             let (request, answer) = self.prompter.ask_with_id(|request| Event::EntraDeviceCode {
                 request,
@@ -172,7 +266,6 @@ impl EntraSignIn {
             self.prompter.close(request);
             r
         } else {
-            let hint = (!c.user.trim().is_empty()).then_some(c.user.as_str());
             let flow = entra.begin_interactive(app, hint).await?;
             let url = flow.url.clone();
             let (request, answer) = self.prompter.ask_with_id(|request| Event::EntraSignIn {
