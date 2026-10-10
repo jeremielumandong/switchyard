@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use secrecy::SecretString;
+use switchyard_cloud::{KvCaps, KvItem, KvPage, KvQuery, KvWrite};
 use switchyard_db::guard::Destructive;
 use switchyard_db::{
     CatalogChunk, ColumnMeta, Completion, DbError, IntrospectScope, Notice, RowBatch, Value,
@@ -13,8 +14,8 @@ use switchyard_drivers::{Component, InstallProgress};
 use switchyard_remote::FileEntry;
 use switchyard_remote::ssh::{HostKeyDecision, HostKeyRequest, InteractiveRequest, TunnelInfo};
 use switchyard_store::{
-    BufferState, DbConnection, Favorite, FileConnection, HistoryEntry, Host, HostPatch, Macro,
-    Profile, ProfileId, Snippet, Workspace,
+    BufferState, CloudConnection, CloudService, DbConnection, Favorite, FileConnection,
+    HistoryEntry, Host, HostPatch, Macro, Profile, ProfileId, Snippet, Workspace,
 };
 use switchyard_term::{TermSize, Terminal};
 
@@ -28,12 +29,14 @@ pub enum FsRef {
     Local,
     /// A saved Host, over SFTP on its shared SSH session.
     Host(ProfileId),
-    /// A saved FTP / FTPS file connection, with its own login.
-    Ftp(ProfileId),
+    /// A saved connection with its own login: FTP / FTPS, or cloud object storage (S3,
+    /// R2, Azure Blob).
+    Conn(ProfileId),
 }
 
 impl FsRef {
-    /// Whether this is a remote file system (SFTP or FTP): its paths are POSIX.
+    /// Whether this is a remote file system (SFTP, FTP, object storage): its paths are
+    /// POSIX.
     pub fn is_remote(&self) -> bool {
         !matches!(self, FsRef::Local)
     }
@@ -278,6 +281,55 @@ pub enum Command {
         connection: FileConnection,
         /// Password typed in the form (falls back to the stored one).
         secret: Option<SecretString>,
+    },
+    /// Sign in to a cloud connection under edit (not necessarily saved) and report the
+    /// result as [`Event::TestResult`].
+    TestCloud {
+        /// Request id.
+        request: RequestId,
+        /// Cloud connection under edit.
+        connection: CloudConnection,
+        /// Key, token or connection string typed in the form (falls back to the stored one).
+        secret: Option<SecretString>,
+    },
+    /// Open a key / value tool on a cloud connection ([`Event::CloudOpened`]); closed with
+    /// [`Command::CloseSession`].
+    CloudOpen {
+        /// New session id chosen by the UI.
+        session: SessionId,
+        /// Cloud connection.
+        connection: ProfileId,
+    },
+    /// One page of items ([`Event::CloudItems`]).
+    CloudList {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// Filter and continuation.
+        query: KvQuery,
+    },
+    /// One item with its value ([`Event::CloudItem`]).
+    CloudGet {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// Namespace (Workers KV).
+        scope: Option<String>,
+        /// Key.
+        key: String,
+        /// Label (App Configuration).
+        label: Option<String>,
+    },
+    /// Change an item ([`Event::CloudEdited`]).
+    CloudEdit {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// The change.
+        edit: CloudEdit,
     },
     /// Open a session for a saved connection.
     OpenSession {
@@ -971,6 +1023,40 @@ pub enum Event {
         /// Message.
         message: String,
     },
+    /// Result of [`Command::CloudOpen`].
+    CloudOpened {
+        /// Session.
+        session: SessionId,
+        /// What the service offers, or why it failed.
+        result: Result<CloudInfo, String>,
+    },
+    /// Result of [`Command::CloudList`].
+    CloudItems {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// The page, or why it failed.
+        result: Result<KvPage, String>,
+    },
+    /// Result of [`Command::CloudGet`].
+    CloudItem {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// The item, or why it failed.
+        result: Result<KvItem, String>,
+    },
+    /// Result of [`Command::CloudEdit`].
+    CloudEdited {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// What was done, or why it failed.
+        result: Result<String, String>,
+    },
     /// Result of [`Command::RedisOpen`].
     RedisOpened {
         /// Session.
@@ -1420,6 +1506,44 @@ pub enum ApprovalKind {
     ActualPlan {
         /// The statement writes (rolled back, but triggers and sequences still fire).
         writes: bool,
+    },
+}
+
+/// A key / value tool on a cloud connection ([`Event::CloudOpened`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CloudInfo {
+    /// The service.
+    pub service: CloudService,
+    /// What it supports.
+    pub caps: KvCaps,
+    /// Namespaces (id, title) for services that have them.
+    pub scopes: Vec<(String, String)>,
+    /// The connection is read-only.
+    pub read_only: bool,
+}
+
+/// A change made in the key / value tool ([`Command::CloudEdit`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum CloudEdit {
+    /// Create or update.
+    Put(KvWrite),
+    /// Delete.
+    Delete {
+        /// Namespace (Workers KV).
+        scope: Option<String>,
+        /// Key.
+        key: String,
+        /// Label (App Configuration).
+        label: Option<String>,
+    },
+    /// Lock or unlock (App Configuration).
+    Lock {
+        /// Key.
+        key: String,
+        /// Label.
+        label: Option<String>,
+        /// Lock (true) or unlock.
+        locked: bool,
     },
 }
 

@@ -37,6 +37,12 @@ pub const BUILTIN_CLIENT_ID: Option<&str> = option_env!("SWITCHYARD_ENTRA_CLIENT
 /// connection nor the build names an app.
 pub const MICROSOFT_SQL_CLIENT_ID: &str = "2fd908ad-0664-4344-b9be-cd3e8b574c38";
 
+/// The Azure CLI's public client: a Microsoft first-party app pre-authorized for Azure
+/// Storage, App Configuration, Key Vault and Resource Manager, with the `http://localhost`
+/// redirect and device code. Cloud connections sign in with it unless they name their own
+/// app (see DECISIONS 2026-10-10).
+pub const AZURE_CLI_CLIENT_ID: &str = "04b07795-8ddb-461a-bbee-02f9e1bf7b46";
+
 /// The Microsoft identity platform.
 pub const LOGIN_BASE: &str = "https://login.microsoftonline.com";
 
@@ -52,6 +58,8 @@ pub struct EntraApp {
     pub tenant: String,
     /// Application (client) id.
     pub client_id: String,
+    /// Resource scope (`https://database.windows.net//.default`).
+    pub scope: String,
 }
 
 impl EntraApp {
@@ -66,7 +74,26 @@ impl EntraApp {
             .unwrap_or(MICROSOFT_SQL_CLIENT_ID)
             .to_owned();
         let tenant = nonempty(tenant).unwrap_or(ANY_ORGANIZATION).to_owned();
-        Ok(Self { tenant, client_id })
+        Ok(Self {
+            tenant,
+            client_id,
+            scope: SQL_SCOPE.to_owned(),
+        })
+    }
+
+    /// The app for an Azure resource `scope` (`https://storage.azure.com/.default`): the
+    /// connection's own client id, else the Azure CLI's public client.
+    pub fn for_resource(tenant: Option<&str>, client_id: Option<&str>, scope: &str) -> Self {
+        fn nonempty(s: Option<&str>) -> Option<&str> {
+            s.map(str::trim).filter(|s| !s.is_empty())
+        }
+        Self {
+            tenant: nonempty(tenant).unwrap_or(ANY_ORGANIZATION).to_owned(),
+            client_id: nonempty(client_id)
+                .unwrap_or(AZURE_CLI_CLIENT_ID)
+                .to_owned(),
+            scope: scope.to_owned(),
+        }
     }
 }
 
@@ -205,7 +232,7 @@ impl Entra {
                 ("client_id", &app.client_id),
                 ("grant_type", "refresh_token"),
                 ("refresh_token", refresh.expose_secret()),
-                ("scope", &user_scope()),
+                ("scope", &user_scope(app)),
             ],
         )
         .await
@@ -225,7 +252,7 @@ impl Entra {
                 ("grant_type", "password"),
                 ("username", user),
                 ("password", password.expose_secret()),
-                ("scope", &user_scope()),
+                ("scope", &user_scope(app)),
             ],
         )
         .await
@@ -239,7 +266,7 @@ impl Entra {
                 ("client_id", &app.client_id),
                 ("grant_type", "client_credentials"),
                 ("client_secret", secret.expose_secret()),
-                ("scope", SQL_SCOPE),
+                ("scope", &app.scope),
             ],
         )
         .await
@@ -250,7 +277,7 @@ impl Entra {
         let (status, json) = self
             .post(
                 &self.endpoint(app, "devicecode"),
-                &[("client_id", &app.client_id), ("scope", &user_scope())],
+                &[("client_id", &app.client_id), ("scope", &user_scope(app))],
             )
             .await?;
         if status != 200 {
@@ -341,7 +368,7 @@ impl Entra {
             ("state", state.as_str()),
             ("prompt", "select_account"),
         ];
-        let scope = user_scope();
+        let scope = user_scope(app);
         query.push(("scope", &scope));
         if let Some(hint) = login_hint.filter(|h| !h.trim().is_empty()) {
             query.push(("login_hint", hint));
@@ -403,16 +430,16 @@ impl Entra {
                 ("code", code.expose_secret()),
                 ("redirect_uri", &flow.redirect_uri),
                 ("code_verifier", flow.verifier.expose_secret()),
-                ("scope", &user_scope()),
+                ("scope", &user_scope(app)),
             ],
         )
         .await
     }
 }
 
-/// Delegated scope: Azure SQL plus a refresh token.
-fn user_scope() -> String {
-    format!("{SQL_SCOPE} offline_access")
+/// Delegated scope: the app's resource plus a refresh token.
+fn user_scope(app: &EntraApp) -> String {
+    format!("{} offline_access", app.scope)
 }
 
 fn seconds(json: &Json, key: &str) -> Option<u64> {
@@ -694,7 +721,24 @@ mod tests {
         EntraApp {
             tenant: "contoso.com".into(),
             client_id: "client-1".into(),
+            scope: SQL_SCOPE.into(),
         }
+    }
+
+    #[test]
+    fn resource_apps_default_to_the_azure_cli_client() {
+        let a = EntraApp::for_resource(None, Some(" "), "https://storage.azure.com/.default");
+        assert_eq!(a.client_id, AZURE_CLI_CLIENT_ID);
+        assert_eq!(a.tenant, ANY_ORGANIZATION);
+        assert_eq!(
+            user_scope(&a),
+            "https://storage.azure.com/.default offline_access"
+        );
+        let own = EntraApp::for_resource(Some("contoso.com"), Some("abc"), "s");
+        assert_eq!(
+            (own.tenant.as_str(), own.client_id.as_str()),
+            ("contoso.com", "abc")
+        );
     }
 
     #[tokio::test]

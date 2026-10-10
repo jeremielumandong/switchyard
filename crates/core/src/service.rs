@@ -49,6 +49,7 @@ pub mod agent;
 pub mod agent_plan;
 pub mod agent_ssh;
 mod assistant;
+mod cloud;
 mod redis;
 
 /// The SSH layer's description of a saved forward.
@@ -191,6 +192,8 @@ pub struct Service {
     sessions: Mutex<HashMap<SessionId, Arc<SessionSlot>>>,
     /// Open Redis key browsers.
     redis: Mutex<HashMap<SessionId, Arc<redis::RedisSlot>>>,
+    /// Open cloud key / value tools.
+    cloud: Mutex<HashMap<SessionId, Arc<cloud::CloudSlot>>>,
     /// Running assistant runs, to cancel.
     agent_runs: Mutex<HashMap<crate::bus::AgentRunId, switchyard_agents::CancelHandle>>,
     /// Agent commands on Hosts waiting for the user's approval.
@@ -209,7 +212,7 @@ pub struct Service {
     tunnel_open: tokio::sync::Mutex<()>,
     next_tunnel: std::sync::atomic::AtomicU64,
     prompter: Arc<BusPrompter>,
-    entra: EntraSignIn,
+    entra: Arc<EntraSignIn>,
     components: Arc<Registry>,
     package_runner: Arc<dyn CommandRunner>,
     files: Arc<crate::files::Files>,
@@ -317,6 +320,7 @@ impl Service {
             drivers,
             sessions: Mutex::default(),
             redis: Mutex::default(),
+            cloud: Mutex::default(),
             agent_runs: Mutex::default(),
             agent_approvals: Mutex::default(),
             data_dir: config.data_dir.clone(),
@@ -328,7 +332,7 @@ impl Service {
             forwards: Mutex::default(),
             tunnel_open: tokio::sync::Mutex::new(()),
             next_tunnel: std::sync::atomic::AtomicU64::new(1),
-            entra: EntraSignIn::new(prompter.clone(), secrets.clone()),
+            entra: Arc::new(EntraSignIn::new(prompter.clone(), secrets.clone())),
             components,
             files: Arc::default(),
             package_runner: config
@@ -493,13 +497,16 @@ impl Service {
                 if let Profile::Db(d) = &profile {
                     self.entra.drop_cached(&d.id);
                 }
+                if let Profile::Cloud(c) = &profile {
+                    self.entra.drop_cloud(&c.id);
+                }
                 self.save_profile(request, profile, secret).await
             }
             Command::DeleteProfile { id } => {
                 let removed = self.with_store(move |s| s.delete_profile(&id)).await;
                 match removed {
                     Ok(Some(p)) => {
-                        self.files.ftp.lock().await.remove(&p.id().0);
+                        self.files.conns.lock().await.remove(&p.id().0);
                         if let Some(key) = p.secret().cloned() {
                             let _ = self.with_secrets(move |s| s.delete(&key)).await;
                         }
@@ -507,6 +514,12 @@ impl Service {
                             && d.auth.is_entra()
                         {
                             let _ = self.entra.forget(&d.id).await;
+                        }
+                        if let Profile::Cloud(c) = &p
+                            && c.auth.is_entra()
+                        {
+                            self.entra.drop_cloud(&c.id);
+                            let _ = self.entra.forget(&c.id).await;
                         }
                         self.emit(Event::Toast(format!("Deleted {}", p.name())));
                     }
@@ -600,6 +613,44 @@ impl Service {
                     result: result.map_err(|e| e.to_string()),
                 });
             }
+            Command::TestCloud {
+                request,
+                connection,
+                secret,
+            } => {
+                let result = self.test_cloud(connection, secret).await;
+                self.emit(Event::TestResult {
+                    request,
+                    result: result.map_err(|e| e.to_string()),
+                });
+            }
+            Command::CloudOpen {
+                session,
+                connection,
+            } => {
+                let result = self.cloud_open(session, connection).await;
+                self.emit(Event::CloudOpened {
+                    session,
+                    result: result.map_err(|e| e.to_string()),
+                });
+            }
+            Command::CloudList {
+                session,
+                request,
+                query,
+            } => self.cloud_list(session, request, query).await,
+            Command::CloudGet {
+                session,
+                request,
+                scope,
+                key,
+                label,
+            } => self.cloud_get(session, request, scope, key, label).await,
+            Command::CloudEdit {
+                session,
+                request,
+                edit,
+            } => self.cloud_edit(session, request, edit).await,
             Command::TestHost {
                 request,
                 host,
@@ -703,6 +754,7 @@ impl Service {
             Command::CloseSession { session } => {
                 lock(&self.sessions).remove(&session);
                 lock(&self.redis).remove(&session);
+                lock(&self.cloud).remove(&session);
             }
             Command::RedisOpen {
                 session,
@@ -1185,7 +1237,7 @@ impl Service {
         let id = match fs {
             crate::bus::FsRef::Local => return Ok((Arc::new(LocalFs), cfg!(unix))),
             crate::bus::FsRef::Host(id) => id,
-            crate::bus::FsRef::Ftp(id) => return Ok((self.ftp_fs(id).await?, true)),
+            crate::bus::FsRef::Conn(id) => return Ok((self.conn_fs(id).await?, true)),
         };
         let mut open = self.files.sftp.lock().await;
         if let Some(f) = open.get(&id.0)
@@ -1209,17 +1261,19 @@ impl Service {
         Ok((f, true))
     }
 
-    /// The FTP file system of a saved file connection, logged in once and reused.
-    async fn ftp_fs(&self, id: &ProfileId) -> Result<Arc<dyn switchyard_remote::RemoteFs>> {
-        let mut open = self.files.ftp.lock().await;
+    /// The file system of a saved FTP or object storage connection, opened once and reused.
+    async fn conn_fs(&self, id: &ProfileId) -> Result<Arc<dyn switchyard_remote::RemoteFs>> {
+        let mut open = self.files.conns.lock().await;
         if let Some(f) = open.get(&id.0) {
             return Ok(f.clone());
         }
         let id2 = id.clone();
-        let Some(Profile::File(conn)) = self.with_store(move |s| s.profile(&id2)).await? else {
-            return Err(CoreError::NotFound(format!("file connection {}", id.0)));
-        };
-        let f = Arc::new(self.ftp_connect(&conn, None).await?);
+        let f: Arc<dyn switchyard_remote::RemoteFs> =
+            match self.with_store(move |s| s.profile(&id2)).await? {
+                Some(Profile::File(conn)) => Arc::new(self.ftp_connect(&conn, None).await?),
+                Some(Profile::Cloud(_)) => self.cloud_fs_by_id(id).await?,
+                _ => return Err(CoreError::NotFound(format!("file connection {}", id.0))),
+            };
         open.insert(id.0.clone(), f.clone());
         Ok(f)
     }
@@ -1539,18 +1593,13 @@ impl Service {
                 self.emit_secret_backend();
                 return;
             }
-            match &mut profile {
-                Profile::Host(h) => h.secret = Some(key),
-                Profile::Db(d) => d.secret = Some(key),
-                Profile::File(f) => f.secret = Some(key),
-                Profile::Terminal(_) => {}
-            }
+            profile.set_secret(key);
         }
         let id = profile.id().clone();
         match self.with_store(move |s| s.save_profile(&profile)).await {
             Ok(()) => {
                 // An edited FTP connection logs in again with its new settings.
-                self.files.ftp.lock().await.remove(&id.0);
+                self.files.conns.lock().await.remove(&id.0);
                 self.emit(Event::ProfileSaved { request, id })
             }
             Err(CoreError::Store(StoreError::Validation(v))) => self.emit(Event::ProfileError {
@@ -1735,6 +1784,12 @@ impl Service {
                 t.name = format!("{} copy", t.name);
                 Profile::Terminal(t)
             }
+            Profile::Cloud(mut c) => {
+                c.id = ProfileId::new();
+                c.name = format!("{} copy", c.name);
+                c.secret = None;
+                Profile::Cloud(c)
+            }
         };
         if let Some(old) = old_secret
             && let Some(value) = self.with_secrets(move |s| s.get(&old)).await?
@@ -1747,12 +1802,7 @@ impl Service {
             let key = SecretRef::for_profile(copy.id(), purpose);
             let k = key.clone();
             self.with_secrets(move |s| s.set(&k, &value)).await?;
-            match &mut copy {
-                Profile::Host(h) => h.secret = Some(key),
-                Profile::Db(d) => d.secret = Some(key),
-                Profile::File(f) => f.secret = Some(key),
-                Profile::Terminal(_) => {}
-            }
+            copy.set_secret(key);
         }
         let name = copy.name().to_owned();
         self.with_store(move |s| s.save_profile(&copy)).await?;
