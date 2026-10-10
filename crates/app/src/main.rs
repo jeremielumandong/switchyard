@@ -30,6 +30,7 @@ mod grid;
 mod log_file;
 mod object_search;
 mod object_tab;
+mod omarchy;
 mod overlays;
 mod palette;
 mod plan_view;

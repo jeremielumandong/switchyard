@@ -1744,13 +1744,37 @@ impl Workspace {
                                 .text_color(p.fg2)
                                 .child("Theme"),
                         )
-                        .child(div().flex().flex_wrap().gap(rpx(10.)).children(
-                            ThemeId::ALL.into_iter().map(|id| {
-                                theme_card(id, id == p.id, p).on_click(
-                                    cx.listener(move |this, _, w, cx| this.set_theme(id, w, cx)),
-                                )
-                            }),
-                        )),
+                        .child(
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .gap(rpx(10.))
+                                .children(ThemeId::ALL.into_iter().map(|id| {
+                                    theme_card(id, id.palette(), id.label().into(), id == p.id, p)
+                                        .on_click(cx.listener(move |this, _, w, cx| {
+                                            this.set_theme(id, w, cx)
+                                        }))
+                                }))
+                                // Shown once an Omarchy theme has been found (or while chosen).
+                                .when_some(
+                                    crate::omarchy::palette(cx).or_else(|| {
+                                        (p.id == ThemeId::Omarchy)
+                                            .then(|| ThemeId::Omarchy.palette())
+                                    }),
+                                    |d, t| {
+                                        let id = ThemeId::Omarchy;
+                                        let label = match crate::omarchy::name(cx) {
+                                            Some(n) if !n.is_empty() => format!("Omarchy · {n}"),
+                                            _ => id.label().to_owned(),
+                                        };
+                                        d.child(theme_card(id, t, label, id == p.id, p).on_click(
+                                            cx.listener(move |this, _, w, cx| {
+                                                this.set_theme(id, w, cx)
+                                            }),
+                                        ))
+                                    },
+                                ),
+                        ),
                 )
                 .child(self.render_text_size(p, cx))
                 .into_any_element(),
@@ -2494,8 +2518,13 @@ fn setting_row(label: &str, value: &str, mono: bool, p: &Palette) -> AnyElement 
 }
 
 /// A theme preview: its own background, text, a selected line and syntax colors.
-fn theme_card(id: ThemeId, current: bool, p: &Palette) -> gpui_kit::Stateful<gpui_kit::Div> {
-    let t = id.palette();
+fn theme_card(
+    id: ThemeId,
+    t: Palette,
+    label: String,
+    current: bool,
+    p: &Palette,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
     let line = |w: f32, color: gpui_kit::Hsla| div().h(rpx(5.)).w(px(w)).rounded(px(2.)).bg(color);
     div()
         .id(SharedString::from(format!("theme-{}", id.key())))
@@ -2576,7 +2605,7 @@ fn theme_card(id: ThemeId, current: bool, p: &Palette) -> gpui_kit::Stateful<gpu
                 .gap(rpx(6.))
                 .text_size(ts::BODY)
                 .when(current, |d| d.child(ui::dot(p.acc, 6.)))
-                .child(id.label()),
+                .child(label),
         )
 }
 
