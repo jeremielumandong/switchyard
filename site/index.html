@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Switchyard</title>
+<meta name="description" content="A fast, native desktop app for databases, SSH terminals, tunnels and file transfer, with query plans and a read-only MCP server for coding CLIs.">
+<link rel="icon" type="image/svg+xml" href="icon.svg">
+<meta property="og:title" content="Switchyard">
+<meta property="og:description" content="Databases, SSH terminals, tunnels and file transfer behind one connection model.">
+<meta property="og:image" content="screenshots/query.png">
+<style>
+  :root {
+    --bg: #ffffff; --fg: #16181d; --muted: #5b6270; --card: #f5f6f8; --border: #e2e5ea;
+    --accent: #2f6fed; --accent-fg: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --fg: #e8eaee; --muted: #9aa2b1; --card: #171a20; --border: #262a33;
+      --accent: #5b8cff; --accent-fg: #0f1115;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg); line-height: 1.55;
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  a { color: var(--accent); }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px; }
+  header { display: flex; align-items: center; gap: 12px; padding: 20px 0; }
+  header img { width: 36px; height: 36px; }
+  header strong { font-size: 20px; flex: 1; }
+  header nav a { color: var(--muted); text-decoration: none; margin-left: 16px; }
+  .hero { text-align: center; padding: 48px 0 32px; }
+  .hero h1 { font-size: clamp(28px, 5vw, 46px); line-height: 1.15; margin: 0 0 16px; letter-spacing: -0.02em; }
+  .hero p { color: var(--muted); font-size: 18px; max-width: 680px; margin: 0 auto 28px; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
+  .btn {
+    display: inline-block; padding: 10px 18px; border-radius: 8px; text-decoration: none;
+    border: 1px solid var(--border); color: var(--fg); background: var(--card); font-weight: 500;
+  }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+  .shot { width: 100%; border-radius: 10px; border: 1px solid var(--border); display: block; }
+  .hero-shot { margin-top: 40px; }
+  pre {
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px 16px; overflow-x: auto; font-size: 14px; text-align: left; margin: 24px auto 0; max-width: 760px;
+  }
+  section { padding: 48px 0; }
+  h2 { font-size: 26px; margin: 0 0 24px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px; }
+  figure { margin: 0; }
+  figcaption { color: var(--muted); font-size: 14px; margin-top: 8px; }
+  figcaption b { color: var(--fg); }
+  .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+  .feature { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
+  .feature h3 { margin: 0 0 6px; font-size: 16px; }
+  .feature p { margin: 0; color: var(--muted); font-size: 14px; }
+  footer { border-top: 1px solid var(--border); color: var(--muted); font-size: 14px; padding: 24px 0 40px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <img src="icon.svg" alt="">
+    <strong>Switchyard</strong>
+    <nav>
+      <a href="#features">Features</a>
+      <a href="https://github.com/jeremielumandong/switchyard">GitHub</a>
+    </nav>
+  </header>
+
+  <div class="hero">
+    <h1>Databases, terminals and file transfer.<br>One connection model.</h1>
+    <p>A fast, native desktop app for PostgreSQL, SQL Server, MySQL, Oracle, SQLite and more,
+      with SSH terminals, tunnels, SFTP and FTP. It visualizes query plans, finds hotspots, and
+      lets coding CLIs optimize queries through a read-only MCP server.</p>
+    <div class="buttons">
+      <a class="btn primary" href="https://github.com/jeremielumandong/switchyard/releases/latest/download/Switchyard-windows-x64-setup.exe">Download for Windows</a>
+      <a class="btn" href="https://github.com/jeremielumandong/switchyard/releases/latest">All releases</a>
+      <a class="btn" href="https://github.com/jeremielumandong/switchyard">Source on GitHub</a>
+    </div>
+    <pre><code># Linux x86_64
+curl -fsSL https://raw.githubusercontent.com/jeremielumandong/switchyard/main/install.sh | sh</code></pre>
+    <img class="shot hero-shot" src="screenshots/query.png" alt="A PostgreSQL query and its results in the SQL editor">
+  </div>
+
+  <section>
+    <div class="grid">
+      <figure><img class="shot" src="screenshots/plan.png" alt="Query plan with hotspots, flame view and node details" loading="lazy">
+        <figcaption><b>Query plans</b>: hotspots, flame view and per-node details from EXPLAIN ANALYZE.</figcaption></figure>
+      <figure><img class="shot" src="screenshots/table-data.png" alt="Table data in the results grid" loading="lazy">
+        <figcaption><b>Results grid</b>: typed columns, WHERE filter, paging and inline edits.</figcaption></figure>
+      <figure><img class="shot" src="screenshots/schema.png" alt="Schema explorer with a table's context menu" loading="lazy">
+        <figcaption><b>Schema explorer</b>: lazy tree, row counts and actions on every object.</figcaption></figure>
+      <figure><img class="shot" src="screenshots/terminal.png" alt="Local shell terminal tab" loading="lazy">
+        <figcaption><b>Terminals</b>: local shells and SSH sessions next to your queries.</figcaption></figure>
+      <figure><img class="shot" src="screenshots/new-connection.png" alt="New connection dialog" loading="lazy">
+        <figcaption><b>One connection model</b>: servers, databases, file servers and cloud services.</figcaption></figure>
+      <figure><img class="shot" src="screenshots/palette.png" alt="Open anything palette" loading="lazy">
+        <figcaption><b>Open anything</b> (Ctrl/⌘+P): connections, tools and commands in one list.</figcaption></figure>
+    </div>
+  </section>
+
+  <section id="features">
+    <h2>Features</h2>
+    <div class="features">
+      <div class="feature"><h3>Many engines</h3><p>PostgreSQL, SQL Server, MySQL/MariaDB, Oracle, Snowflake, Cloudflare D1, SQLite, MongoDB and Redis.</p></div>
+      <div class="feature"><h3>Hosts and tunnels</h3><p>One SSH session per Host, shared by terminals, file browsers and tunneled database connections.</p></div>
+      <div class="feature"><h3>File transfer</h3><p>SFTP, FTP and FTPS, plus S3, R2 and Azure Blob as file systems.</p></div>
+      <div class="feature"><h3>Query plans</h3><p>PostgreSQL and SQL Server plans in one view, with findings and index suggestions.</p></div>
+      <div class="feature"><h3>Coding CLIs</h3><p>Claude Code, Codex CLI and Gemini CLI plan and optimize queries through a read-only MCP server.</p></div>
+      <div class="feature"><h3>Streaming results</h3><p>Rows appear as they arrive; the grid scrolls a million rows without dropping frames.</p></div>
+      <div class="feature"><h3>Safe by default</h3><p>Secrets in the OS keychain, strict host keys, and Production connections that confirm destructive statements.</p></div>
+      <div class="feature"><h3>Native and fast</h3><p>Written in Rust on GPUI. Runs on macOS, Windows and Linux.</p></div>
+    </div>
+  </section>
+
+  <footer>
+    Switchyard is open source under the Apache-2.0 license.
+    <a href="https://github.com/jeremielumandong/switchyard">github.com/jeremielumandong/switchyard</a>
+  </footer>
+</div>
+</body>
+</html>
