@@ -484,6 +484,7 @@ impl Workspace {
                 }
             }
             Event::Profiles(list) => {
+                crate::named_secrets::on_profiles(&list, cx);
                 self.profiles = Profiles { all: list };
                 self.profiles_loaded = true;
                 // The schema explorer lists SQL databases; Redis opens its own browser.
@@ -741,6 +742,15 @@ impl Workspace {
                 }
             }
             Event::Snippets(list) => crate::snippets::on_snippets(list, cx),
+            Event::NamedSecrets(list) => crate::named_secrets::on_list(list, cx),
+            Event::NamedSecretError {
+                request,
+                field: _,
+                message,
+            } => crate::named_secrets::on_answer(request, Err(message), cx),
+            Event::NamedSecretTested {
+                request, result, ..
+            } => crate::named_secrets::on_answer(request, result, cx),
             Event::Favorites(list) => {
                 let core = self.core.clone();
                 self.explorer.set_favorites(list, &core);
@@ -1912,7 +1922,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        use crate::api::workbench::{AskAgentRequested, DescribeRequestRequested};
+        use crate::api::workbench::{
+            AskAgentRequested, DescribeRequestRequested, OpenVaultRequested,
+        };
         let ask = cx.subscribe_in(api, window, |this, _, ev: &AskAgentRequested, _, cx| {
             this.assistant_open = true;
             this.sync_assistant(cx);
@@ -1932,8 +1944,12 @@ impl Workspace {
                 cx.notify();
             },
         );
+        let vault = cx.subscribe_in(api, window, |this, _, _: &OpenVaultRequested, _, cx| {
+            crate::named_secrets::open_manager(this.core.clone(), cx);
+        });
         self._subs.push(ask);
         self._subs.push(describe);
+        self._subs.push(vault);
     }
 
     /// The assistant panel asks for something.
@@ -2197,6 +2213,7 @@ impl Workspace {
             CommandId::Settings => self.open_settings(SettingsPage::General, window, cx),
             CommandId::SettingsDrivers => self.open_settings(SettingsPage::Drivers, window, cx),
             CommandId::ManageSnippets => crate::snippets::open_manager(self.core.clone(), cx),
+            CommandId::ManageSecrets => crate::named_secrets::open_manager(self.core.clone(), cx),
             CommandId::ToggleTheme => {
                 let next = if palette(cx).dark {
                     ThemeId::SwitchyardLight

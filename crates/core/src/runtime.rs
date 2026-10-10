@@ -39,6 +39,7 @@ pub struct RuntimeHandle {
     commands: mpsc::UnboundedSender<Command>,
     handle: tokio::runtime::Handle,
     secrets: Arc<dyn switchyard_store::SecretStore>,
+    named: crate::service::NamedSecrets,
 }
 
 impl RuntimeHandle {
@@ -70,7 +71,10 @@ impl RuntimeHandle {
 
     /// The API workspace's secret store (the app's keychain or vault).
     pub fn api_secrets(&self) -> Arc<dyn switchyard_api::SecretStore> {
-        Arc::new(crate::api_secrets::ApiSecrets::new(self.secrets.clone()))
+        Arc::new(
+            crate::api_secrets::ApiSecrets::new(self.secrets.clone())
+                .with_named(self.named.clone()),
+        )
     }
 
     /// The tokio runtime handle (for libraries that drive async work from blocking code).
@@ -103,11 +107,13 @@ impl Core {
         };
         let service = Arc::new(service);
         let secrets = service.secret_backend();
+        let named = crate::service::NamedSecrets::new(&service, runtime.handle().clone());
         runtime.spawn(Service::run(service, cmd_rx));
         let handle = RuntimeHandle {
             commands: cmd_tx,
             handle: runtime.handle().clone(),
             secrets,
+            named,
         };
         Ok((
             Self {

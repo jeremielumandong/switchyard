@@ -15,7 +15,7 @@ use switchyard_remote::FileEntry;
 use switchyard_remote::ssh::{HostKeyDecision, HostKeyRequest, InteractiveRequest, TunnelInfo};
 use switchyard_store::{
     BufferState, CloudConnection, CloudService, DbConnection, Favorite, FileConnection,
-    HistoryEntry, Host, HostPatch, Macro, Profile, ProfileId, Snippet, Workspace,
+    HistoryEntry, Host, HostPatch, Macro, NamedSecret, Profile, ProfileId, Snippet, Workspace,
 };
 use switchyard_term::{TermSize, Terminal};
 
@@ -567,6 +567,33 @@ pub enum Command {
     DeleteSnippet {
         /// Snippet id.
         id: String,
+    },
+    /// Load the named-secret catalog ([`Event::NamedSecrets`]).
+    LoadNamedSecrets,
+    /// Add or replace a named secret, then reload. A local secret's `value`, when given,
+    /// goes to the keychain; `previous` is its old name when it was renamed.
+    SaveNamedSecret {
+        /// Request id ([`Event::NamedSecretError`] on failure).
+        request: RequestId,
+        /// The entry.
+        secret: NamedSecret,
+        /// New value of a local secret (`None` keeps the stored one).
+        value: Option<SecretString>,
+        /// Old name, when renamed.
+        previous: Option<String>,
+    },
+    /// Delete a named secret (and a local one's stored value), then reload.
+    DeleteNamedSecret {
+        /// Name.
+        name: String,
+    },
+    /// Read a named secret to check it resolves ([`Event::NamedSecretTested`]); the value
+    /// itself is never sent to the UI.
+    TestNamedSecret {
+        /// Request id.
+        request: RequestId,
+        /// Name.
+        name: String,
     },
     /// Load the terminal macros ([`Event::Macros`]).
     LoadMacros,
@@ -1201,6 +1228,26 @@ pub enum Event {
     Favorites(Vec<Favorite>),
     /// The terminal macros by name, answering the macro commands.
     Macros(Vec<Macro>),
+    /// The named-secret catalog by name, answering the named-secret commands.
+    NamedSecrets(Vec<NamedSecret>),
+    /// Saving a named secret failed.
+    NamedSecretError {
+        /// Request id.
+        request: RequestId,
+        /// Field, when a validation error.
+        field: Option<&'static str>,
+        /// Message.
+        message: String,
+    },
+    /// Result of [`Command::TestNamedSecret`]: a description (never the value) or an error.
+    NamedSecretTested {
+        /// Request id.
+        request: RequestId,
+        /// Name.
+        name: String,
+        /// "Read 24 characters from …", or why it failed.
+        result: Result<String, String>,
+    },
     /// History search results.
     History {
         /// Request id.

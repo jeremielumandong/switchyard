@@ -198,6 +198,8 @@ pub enum CommandId {
     ShowActivity,
     /// Open the snippet manager (DBX-4b).
     ManageSnippets,
+    /// Open the secret vault (named secrets).
+    ManageSecrets,
     /// ER diagram of the schema under the tree cursor (DBX-5d).
     ErDiagram,
     SplitRight,
@@ -343,6 +345,7 @@ pub fn palette_commands() -> Vec<PaletteCommand> {
         ),
         c(ShowActivity, "Activity Monitor", "Editor", "".into()),
         c(ManageSnippets, "Manage Snippets…", "Editor", "".into()),
+        c(ManageSecrets, "Secret Vault…", "Connections", "".into()),
         c(RefreshSchema, "Refresh Schema", "Schema", "".into()),
         c(
             ErDiagram,
