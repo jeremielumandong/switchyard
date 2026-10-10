@@ -1,10 +1,12 @@
-//! Cloudflare D1 driver over the REST API
-//! (`POST /accounts/{account_id}/d1/database/{database_id}/raw`).
+//! Cloudflare's SQLite over the REST API: D1 databases
+//! (`POST /accounts/{account_id}/d1/database/{database_id}/raw`) and the SQLite storage of
+//! one Durable Object ([`DurableObjectDriver`],
+//! `POST /accounts/{account_id}/workers/durable_objects/namespaces/{namespace_id}/query/v2`).
 //!
-//! A D1 "connection" is stateless: every statement is one HTTPS request authenticated with
+//! A "connection" is stateless: every statement is one HTTPS request authenticated with
 //! an API token. `DbConfig::host` carries the account id, `DbConfig::database` the database
-//! id and `DbConfig::password` the API token. Interactive transactions do not exist; each
-//! request commits on its own.
+//! (or namespace) id and `DbConfig::password` the API token. Interactive transactions do
+//! not exist; each request commits on its own.
 
 pub(crate) mod catalog;
 mod wire;
@@ -28,7 +30,7 @@ use crate::driver::{CancelHandle, ComponentId, DbConfig, DbSession, Driver, Tunn
 use crate::error::{DbError, ErrorPosition, Result, ServerError};
 use crate::stream::{Completion, DEFAULT_BATCH_ROWS, Notice, ResultEvent, ResultStream};
 use crate::value::{DataType, Engine, Value};
-use wire::{Envelope, RawResult, Statement};
+use wire::{DoEnvelope, Envelope, RawResult, Statement};
 
 /// Production API base URL.
 pub const API_BASE: &str = "https://api.cloudflare.com/client/v4";
@@ -62,6 +64,164 @@ impl D1Driver {
 
 fn is_id(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// The HTTP client for one connection.
+fn http_client(cfg: &DbConfig) -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .tls_backend_preconfigured(crate::tls::client_config()?)
+        .connect_timeout(cfg.connect_timeout)
+        .timeout(REQUEST_TIMEOUT)
+        .user_agent(format!(
+            "{}/{}",
+            cfg.application_name,
+            env!("CARGO_PKG_VERSION")
+        ))
+        .build()
+        .map_err(|e| DbError::Connect(e.to_string()))
+}
+
+/// Checks the credentials with a plain query (D1 refuses most SQLite introspection
+/// functions, `sqlite_version()` among them) and names the server.
+async fn open(mut session: D1Session, version: &str) -> Result<Box<dyn DbSession>> {
+    session.scalar("SELECT 1").await.map_err(|e| match e {
+        DbError::Server(s) => DbError::Connect(s.message),
+        other => other,
+    })?;
+    session.version = version.into();
+    Ok(Box::new(session) as Box<dyn DbSession>)
+}
+
+/// `DbConfig::options` key: the Durable Object to open, by name (`idFromName`) or by its
+/// 64-hex-digit id.
+pub const OBJECT_OPTION: &str = "object";
+/// `DbConfig::options` key: `name` (default) or `id`, how [`OBJECT_OPTION`] is meant.
+pub const OBJECT_KIND_OPTION: &str = "object_kind";
+/// `DbConfig::options` key: the jurisdiction a named object lives in (`eu`, `fedramp`;
+/// empty: none).
+pub const JURISDICTION_OPTION: &str = "jurisdiction";
+
+/// Where requests go.
+#[derive(Clone, Debug)]
+enum Target {
+    /// A D1 database (`raw` endpoint).
+    D1,
+    /// One Durable Object (`query/v2`): the selector fields of the request body.
+    DurableObject(serde_json::Map<String, Json>),
+}
+
+/// The SQLite storage of one Durable Object, through Cloudflare's query API (the one the
+/// dashboard's Data Studio uses). `DbConfig::host` is the account id,
+/// `DbConfig::database` the namespace id and [`OBJECT_OPTION`] the object; the API token
+/// needs Workers Scripts Write. Only SQLite-backed namespaces work, and only data stored
+/// through the SQL API is visible (not the key-value API).
+#[derive(Clone, Debug)]
+pub struct DurableObjectDriver {
+    base: String,
+}
+
+impl Default for DurableObjectDriver {
+    fn default() -> Self {
+        Self {
+            base: API_BASE.into(),
+        }
+    }
+}
+
+impl DurableObjectDriver {
+    /// A driver talking to another API base (tests use a local server).
+    pub fn with_base(base: impl Into<String>) -> Self {
+        Self {
+            base: base.into().trim_end_matches('/').to_owned(),
+        }
+    }
+}
+
+/// The request body fields that pick the object.
+fn object_selector(cfg: &DbConfig) -> Result<serde_json::Map<String, Json>> {
+    let object = cfg
+        .option(OBJECT_OPTION)
+        .ok_or_else(|| DbError::Connect("enter the Durable Object's name or id".into()))?;
+    let mut m = serde_json::Map::new();
+    if cfg.option(OBJECT_KIND_OPTION) == Some("id") {
+        if object.len() != 64 || !object.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(DbError::Connect(
+                "a Durable Object id is 64 hexadecimal digits".into(),
+            ));
+        }
+        m.insert("durable_object_id".into(), Json::from(object));
+    } else {
+        m.insert("durable_object_name".into(), Json::from(object));
+        let jurisdiction = match cfg.option(JURISDICTION_OPTION) {
+            None | Some("none") => "none",
+            Some("eu") => "eu",
+            Some("fedramp") => "fedramp",
+            Some(other) => {
+                return Err(DbError::Connect(format!(
+                    "unknown jurisdiction \"{other}\" (eu, fedramp or none)"
+                )));
+            }
+        };
+        m.insert("jurisdiction".into(), Json::from(jurisdiction));
+    }
+    Ok(m)
+}
+
+impl Driver for DurableObjectDriver {
+    fn engine(&self) -> Engine {
+        Engine::DurableObject
+    }
+
+    fn dialect(&self) -> &dyn Dialect {
+        &SqliteDialect::DURABLE_OBJECT
+    }
+
+    fn requirements(&self, _cfg: &DbConfig) -> Vec<ComponentId> {
+        Vec::new()
+    }
+
+    fn connect<'a>(
+        &'a self,
+        cfg: &'a DbConfig,
+        via: Option<TunnelEndpoint>,
+    ) -> BoxFuture<'a, Result<Box<dyn DbSession>>> {
+        Box::pin(async move {
+            if via.is_some() {
+                return Err(DbError::Unsupported(
+                    "Durable Objects are reached over HTTPS and cannot use an SSH tunnel".into(),
+                ));
+            }
+            let account = cfg.host.trim();
+            let namespace = cfg.database.trim();
+            if !is_id(account) {
+                return Err(DbError::Connect("account id is missing or invalid".into()));
+            }
+            if !is_id(namespace) {
+                return Err(DbError::Connect(
+                    "namespace id is missing or invalid".into(),
+                ));
+            }
+            let target = Target::DurableObject(object_selector(cfg)?);
+            let token = cfg
+                .password
+                .clone()
+                .ok_or_else(|| DbError::Connect("an API token is required".into()))?;
+            let session = D1Session {
+                http: http_client(cfg)?,
+                url: format!(
+                    "{}/accounts/{account}/workers/durable_objects/namespaces/{namespace}/query/v2",
+                    self.base
+                ),
+                target,
+                token,
+                cancel: Arc::new(AtomicBool::new(false)),
+                notify: Arc::new(Notify::new()),
+                version: String::new(),
+                closed: false,
+            };
+            open(session, "Cloudflare Durable Object (SQLite)").await
+        })
+    }
 }
 
 impl Driver for D1Driver {
@@ -100,45 +260,29 @@ impl Driver for D1Driver {
                 .password
                 .clone()
                 .ok_or_else(|| DbError::Connect("an API token is required".into()))?;
-            let http = reqwest::Client::builder()
-                .tls_backend_preconfigured(crate::tls::client_config()?)
-                .connect_timeout(cfg.connect_timeout)
-                .timeout(REQUEST_TIMEOUT)
-                .user_agent(format!(
-                    "{}/{}",
-                    cfg.application_name,
-                    env!("CARGO_PKG_VERSION")
-                ))
-                .build()
-                .map_err(|e| DbError::Connect(e.to_string()))?;
-            let mut session = D1Session {
-                http,
+            let session = D1Session {
+                http: http_client(cfg)?,
                 url: format!(
                     "{}/accounts/{account}/d1/database/{database}/raw",
                     self.base
                 ),
+                target: Target::D1,
                 token,
                 cancel: Arc::new(AtomicBool::new(false)),
                 notify: Arc::new(Notify::new()),
                 version: String::new(),
                 closed: false,
             };
-            // D1 refuses most SQLite introspection functions (`sqlite_version()` among
-            // them), so the credentials are checked with a plain query.
-            session.scalar("SELECT 1").await.map_err(|e| match e {
-                DbError::Server(s) => DbError::Connect(s.message),
-                other => other,
-            })?;
-            session.version = "Cloudflare D1".into();
-            Ok(Box::new(session) as Box<dyn DbSession>)
+            open(session, "Cloudflare D1").await
         })
     }
 }
 
-/// One D1 database.
+/// One D1 database or Durable Object.
 pub struct D1Session {
     http: reqwest::Client,
     url: String,
+    target: Target,
     token: SecretString,
     cancel: Arc<AtomicBool>,
     notify: Arc<Notify>,
@@ -157,12 +301,37 @@ impl D1Session {
     /// Send one request body and return its per-statement results. Abandoned when the
     /// cancel handle fires; D1 has no server-side cancel, so a statement that already
     /// reached the database still runs to completion there.
-    async fn send(&self, body: &wire::Request<'_>, sql_for_errors: &str) -> Result<Vec<RawResult>> {
+    async fn send(
+        &self,
+        statements: Vec<Statement<'_>>,
+        sql_for_errors: &str,
+    ) -> Result<Vec<RawResult>> {
+        let body = match &self.target {
+            Target::D1 if statements.len() == 1 => {
+                let mut statements = statements;
+                serde_json::to_value(wire::Request::Single(statements.remove(0)))
+            }
+            Target::D1 => serde_json::to_value(wire::Request::Batch { batch: statements }),
+            Target::DurableObject(selector) => {
+                let mut body = selector.clone();
+                body.insert(
+                    "queries".into(),
+                    Json::Array(
+                        statements
+                            .iter()
+                            .map(|s| serde_json::json!({ "sql": s.sql, "params": s.params }))
+                            .collect(),
+                    ),
+                );
+                Ok(Json::Object(body))
+            }
+        }
+        .map_err(|e| DbError::Protocol(e.to_string()))?;
         let request = self
             .http
             .post(&self.url)
             .header(AUTHORIZATION, self.auth_header()?)
-            .json(body)
+            .json(&body)
             .send();
         let notify = self.notify.clone();
         let flag = self.cancel.clone();
@@ -191,12 +360,29 @@ impl D1Session {
             .text()
             .await
             .map_err(|e| DbError::Protocol(e.to_string()))?;
-        let envelope: Envelope = serde_json::from_str(&text).map_err(|_| {
+        let unexpected = || {
             DbError::Protocol(format!(
                 "unexpected response from Cloudflare (HTTP {})",
                 status.as_u16()
             ))
-        })?;
+        };
+        if matches!(self.target, Target::DurableObject(_)) {
+            let envelope: DoEnvelope = serde_json::from_str(&text).map_err(|_| unexpected())?;
+            if !envelope.success || !status.is_success() {
+                let e = Envelope {
+                    success: false,
+                    errors: envelope.errors,
+                    result: None,
+                };
+                return Err(api_error(status.as_u16(), &e, sql_for_errors));
+            }
+            let result = envelope.result.unwrap_or_default();
+            if let Some(message) = result.error {
+                return Err(server_error(None, &message, sql_for_errors));
+            }
+            return Ok(result.results.into_iter().map(RawResult::from).collect());
+        }
+        let envelope: Envelope = serde_json::from_str(&text).map_err(|_| unexpected())?;
         if !envelope.success || !status.is_success() {
             return Err(api_error(status.as_u16(), &envelope, sql_for_errors));
         }
@@ -213,15 +399,14 @@ impl D1Session {
 
     async fn query(&self, sql: &str, params: Vec<Json>) -> Result<Vec<RawResult>> {
         self.cancel.store(false, Ordering::SeqCst);
-        let body = wire::Request::Single(Statement { sql, params });
-        self.send(&body, sql).await
+        self.send(vec![Statement { sql, params }], sql).await
     }
 
-    /// Several statements in one request. D1 runs a batch as a single transaction.
+    /// Several statements in one request. D1 runs a batch as a single transaction; a
+    /// Durable Object runs them in order and stops at the first error.
     async fn batch(&self, statements: Vec<Statement<'_>>) -> Result<Vec<RawResult>> {
         self.cancel.store(false, Ordering::SeqCst);
-        let body = wire::Request::Batch { batch: statements };
-        self.send(&body, "").await
+        self.send(statements, "").await
     }
 
     async fn scalar(&self, sql: &str) -> Result<String> {
@@ -252,7 +437,7 @@ fn api_error(status: u16, envelope: &Envelope, sql: &str) -> DbError {
         .unwrap_or_else(|| format!("request failed with HTTP {status}"));
     match status {
         401 | 403 => DbError::Connect(format!("Cloudflare rejected the API token: {message}")),
-        404 => DbError::Connect(format!("account or database not found: {message}")),
+        404 => DbError::Connect(format!("account, database or object not found: {message}")),
         429 => DbError::Protocol(format!("rate limited by Cloudflare: {message}")),
         _ => server_error(first.and_then(|e| e.code), &message, sql),
     }
@@ -500,7 +685,8 @@ impl DbSession for D1Session {
     fn begin(&mut self) -> BoxFuture<'_, Result<()>> {
         Box::pin(async {
             Err(DbError::Unsupported(
-                "Cloudflare D1 has no interactive transactions; each statement commits on its own"
+                "Cloudflare's SQL API has no interactive transactions; each statement commits \
+                 on its own"
                     .into(),
             ))
         })

@@ -7,6 +7,7 @@ use switchyard_core::db::Engine;
 use super::form::EngineForm;
 
 mod d1;
+mod durable_object;
 mod mongo;
 mod mysql;
 mod oracle;
@@ -24,6 +25,7 @@ pub(super) const ALL: &[Engine] = &[
     Engine::Oracle,
     Engine::Snowflake,
     Engine::D1,
+    Engine::DurableObject,
     Engine::Sqlite,
     Engine::MongoDb,
     Engine::Redis,
@@ -38,6 +40,7 @@ pub(super) fn form(engine: Engine) -> &'static dyn EngineForm {
         Engine::Oracle => &oracle::Oracle,
         Engine::Snowflake => &snowflake::Snowflake,
         Engine::D1 => &d1::D1,
+        Engine::DurableObject => &durable_object::DurableObject,
         Engine::Sqlite => &sqlite::Sqlite,
         Engine::MongoDb => &mongo::Mongo,
         Engine::Redis => &redis::Redis,

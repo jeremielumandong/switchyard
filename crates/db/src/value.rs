@@ -14,6 +14,9 @@ pub enum Engine {
     SqlServer,
     /// Cloudflare D1 (SQLite) over the Cloudflare REST API.
     D1,
+    /// The SQLite storage of one Cloudflare Durable Object, over the Cloudflare REST API.
+    #[serde(rename = "durable-object")]
+    DurableObject,
     /// Snowflake over its SQL REST API.
     Snowflake,
     /// Oracle Database through Oracle Instant Client, loaded at runtime.
@@ -35,6 +38,7 @@ impl Engine {
             Engine::Postgres => "PostgreSQL",
             Engine::SqlServer => "SQL Server",
             Engine::D1 => "Cloudflare D1",
+            Engine::DurableObject => "Durable Object",
             Engine::Snowflake => "Snowflake",
             Engine::Oracle => "Oracle",
             Engine::MySql => "MySQL",
@@ -50,6 +54,7 @@ impl Engine {
             Engine::Postgres => "PG",
             Engine::SqlServer => "MS",
             Engine::D1 => "D1",
+            Engine::DurableObject => "DO",
             Engine::Snowflake => "SF",
             Engine::Oracle => "OR",
             Engine::MySql => "MY",
@@ -64,7 +69,7 @@ impl Engine {
         match self {
             Engine::Postgres => 5432,
             Engine::SqlServer => 1433,
-            Engine::D1 | Engine::Snowflake => 443,
+            Engine::D1 | Engine::DurableObject | Engine::Snowflake => 443,
             Engine::Oracle => 1521,
             Engine::MySql => 3306,
             Engine::MongoDb => 27017,
@@ -81,7 +86,11 @@ impl Engine {
     pub fn supports_transactions(self) -> bool {
         !matches!(
             self,
-            Engine::D1 | Engine::Snowflake | Engine::MongoDb | Engine::Redis
+            Engine::D1
+                | Engine::DurableObject
+                | Engine::Snowflake
+                | Engine::MongoDb
+                | Engine::Redis
         )
     }
 
@@ -94,7 +103,7 @@ impl Engine {
     /// Whether the engine is reached through a cloud HTTP API (account and database ids
     /// plus an API token) rather than host, port and user.
     pub fn is_cloud_api(self) -> bool {
-        matches!(self, Engine::D1)
+        matches!(self, Engine::D1 | Engine::DurableObject)
     }
 
     /// Whether the engine opens a local file (`DbConnection::database` is its path) rather
