@@ -350,7 +350,7 @@ then the Driver Manager detects it, explains why, installs it and retries the co
 
 ## Status
 
-Switchyard is pre-beta (v0.1.9). Not finished yet (see [`PLAN.md`](PLAN.md)):
+Switchyard is pre-beta (v0.1.10). Not finished yet (see [`PLAN.md`](PLAN.md)):
 
 - Corporate CA import and per-connection certificate pinning.
 - Query plans and workload stats for Oracle and Snowflake; workload stats for MySQL; in-app
@@ -404,7 +404,7 @@ under [Quick start](#quick-start)):
 
 ```sh
 ./install.sh --build                         # build the AppImage, then install it
-./install.sh dist/Switchyard-0.1.9-x86_64.AppImage   # install an AppImage you already have
+./install.sh dist/Switchyard-0.1.10-x86_64.AppImage   # install an AppImage you already have
 ./install.sh --uninstall
 ```
 
