@@ -1,4 +1,4 @@
-//! JSON shapes of the D1 `raw` endpoint.
+//! JSON shapes of the D1 `raw` endpoint and the Durable Object `query/v2` endpoint.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
@@ -84,4 +84,61 @@ pub(super) struct Meta {
 pub(super) struct Timings {
     #[serde(default)]
     pub sql_duration_ms: Option<f64>,
+}
+
+/// The `query/v2` envelope: `result` is one object, not a list.
+#[derive(Debug, Deserialize)]
+pub(super) struct DoEnvelope {
+    pub success: bool,
+    #[serde(default)]
+    pub errors: Vec<ApiMessage>,
+    #[serde(default)]
+    pub result: Option<DoResult>,
+}
+
+/// Results of the queries that ran, and the error that stopped the rest.
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct DoResult {
+    #[serde(default)]
+    pub results: Vec<DoRows>,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// One query's rows and counters.
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct DoRows {
+    #[serde(default)]
+    pub columns: Vec<String>,
+    #[serde(default)]
+    pub rows: Vec<Vec<Json>>,
+    #[serde(default)]
+    pub meta: Option<DoMeta>,
+}
+
+/// Rows read and written by one query.
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct DoMeta {
+    #[serde(default)]
+    pub rows_read: Option<u64>,
+    #[serde(default)]
+    pub rows_written: Option<u64>,
+}
+
+impl From<DoRows> for RawResult {
+    fn from(r: DoRows) -> Self {
+        RawResult {
+            success: Some(true),
+            error: None,
+            meta: r.meta.map(|m| Meta {
+                rows_read: m.rows_read,
+                rows_written: m.rows_written,
+                ..Meta::default()
+            }),
+            results: Some(Rows {
+                columns: r.columns,
+                rows: r.rows,
+            }),
+        }
+    }
 }

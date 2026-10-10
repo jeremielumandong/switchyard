@@ -218,7 +218,7 @@ pub struct Activity {
 pub fn supported(engine: Engine) -> bool {
     !matches!(
         engine,
-        Engine::D1 | Engine::MongoDb | Engine::Sqlite | Engine::Redis
+        Engine::D1 | Engine::DurableObject | Engine::MongoDb | Engine::Sqlite | Engine::Redis
     )
 }
 
@@ -235,7 +235,10 @@ pub fn supports(engine: Engine, action: ActivityAction, server_version: &str) ->
         (Engine::Snowflake, ActivityAction::CancelQuery) => true,
         (Engine::Snowflake, ActivityAction::Terminate) => false,
         (Engine::MySql, _) => true,
-        (Engine::D1 | Engine::MongoDb | Engine::Sqlite | Engine::Redis, _) => false,
+        (
+            Engine::D1 | Engine::DurableObject | Engine::MongoDb | Engine::Sqlite | Engine::Redis,
+            _,
+        ) => false,
     }
 }
 
@@ -362,7 +365,9 @@ pub fn list_sql(engine: Engine) -> Option<&'static str> {
         Engine::Oracle => Some(ORACLE_LIST),
         Engine::Snowflake => Some(SNOWFLAKE_LIST),
         Engine::MySql => Some(MYSQL_LIST),
-        Engine::D1 | Engine::MongoDb | Engine::Sqlite | Engine::Redis => None,
+        Engine::D1 | Engine::DurableObject | Engine::MongoDb | Engine::Sqlite | Engine::Redis => {
+            None
+        }
     }
 }
 
@@ -374,7 +379,9 @@ pub fn own_session_sql(engine: Engine) -> Option<&'static str> {
         Engine::Oracle => Some("SELECT SYS_CONTEXT('USERENV', 'SID') AS id FROM dual"),
         Engine::Snowflake => Some("SELECT CURRENT_SESSION() AS id"),
         Engine::MySql => Some("SELECT CAST(CONNECTION_ID() AS CHAR) AS id"),
-        Engine::D1 | Engine::MongoDb | Engine::Sqlite | Engine::Redis => None,
+        Engine::D1 | Engine::DurableObject | Engine::MongoDb | Engine::Sqlite | Engine::Redis => {
+            None
+        }
     }
 }
 
@@ -480,7 +487,7 @@ pub fn parse_target(engine: Engine, id: &str, session: Option<&str>) -> Result<S
             query_id: validate_query_id(id.trim())?.to_owned(),
             session: parse_int(session.unwrap_or_default())?,
         }),
-        Engine::D1 | Engine::MongoDb | Engine::Sqlite | Engine::Redis => {
+        Engine::D1 | Engine::DurableObject | Engine::MongoDb | Engine::Sqlite | Engine::Redis => {
             Err(ActivityError::Unsupported(format!(
                 "the activity monitor is not available for {}",
                 engine.display_name()
@@ -722,7 +729,9 @@ fn denied_hint(engine: Engine, e: &DbError) -> ActivityHint {
              privilege.",
             Some("GRANT PROCESS ON *.* TO <user>;"),
         ),
-        Engine::D1 | Engine::MongoDb | Engine::Sqlite | Engine::Redis => ("Not available.", None),
+        Engine::D1 | Engine::DurableObject | Engine::MongoDb | Engine::Sqlite | Engine::Redis => {
+            ("Not available.", None)
+        }
     };
     ActivityHint {
         message: format!("{message} ({e})"),

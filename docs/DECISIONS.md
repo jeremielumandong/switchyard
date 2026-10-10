@@ -1301,3 +1301,21 @@ Decision:
 Consequences: each service's REST quirks live in this repo (see CLAUDE.md gotchas); new
 services need a client module rather than a dependency bump.
 
+## 2026-10-10 — Durable Object SQLite through Cloudflare's query API
+
+Context: the user asked for SQLite-backed Durable Objects as a data source. A Durable
+Object's storage is private to its class, so the usual route is a Worker endpoint the user
+adds. Cloudflare's API now has `POST /accounts/{account}/workers/durable_objects/namespaces/
+{namespace}/query/v2` (generally available, the one Data Studio uses): it runs SQL in one
+object picked by id, or by name plus jurisdiction, with an API token holding Workers Scripts
+Write.
+
+Decision: a new engine `Engine::DurableObject` on that endpoint, sharing the D1 driver
+(request and response shapes differ; rows, types, errors and the catalog are the same). No
+Worker changes or helper deployment. Transactions are refused, as for D1; a multi-statement
+request runs in order and stops at the first error, without rollback.
+
+Consequences: only SQLite-backed namespaces work, and only data stored through the SQL API
+(not the key-value API) is visible. The API's exact error texts were inferred from its
+OpenAPI schema; the driver has not been run against Cloudflare itself.
+

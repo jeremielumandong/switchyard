@@ -191,7 +191,7 @@ pub async fn workload(session: &mut dyn DbSession, engine: Engine) -> Result<Wor
     match engine {
         Engine::Postgres => postgres(session).await,
         Engine::SqlServer => sql_server(session).await,
-        Engine::D1 | Engine::Redis => Err(PlanError::Unsupported(format!(
+        Engine::D1 | Engine::DurableObject | Engine::Redis => Err(PlanError::Unsupported(format!(
             "workload statistics are not available for {}",
             engine.display_name()
         ))),
