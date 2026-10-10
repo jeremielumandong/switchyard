@@ -18,7 +18,7 @@ switchyard-api.workspace = true
 switchyard-agents.workspace = true
 switchyard-cloud.workspace = true
 url.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["process"] }
 futures.workspace = true
 secrecy.workspace = true
 sha2.workspace = true

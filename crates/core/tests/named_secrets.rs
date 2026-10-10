@@ -303,3 +303,61 @@ async fn secret_linked_to_secrets_manager() {
         "from-the-cloud"
     );
 }
+
+/// A stand-in `op`: answers one reference, fails like `op` for any other.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn secret_read_from_1password() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().unwrap();
+    let op = dir.path().join("op");
+    std::fs::write(
+        &op,
+        "#!/bin/sh\n\
+         [ \"$1\" = read ] && [ \"$2\" = --no-newline ] || exit 64\n\
+         for a in \"$@\"; do last=$a; done\n\
+         if [ \"$last\" = 'op://dev/Orders DB/password' ]; then printf 'from-1password'; exit 0; fi\n\
+         echo \"[ERROR] 2026/10/10 could not read secret '$last': item not found\" >&2\n\
+         exit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&op, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let config = ServiceConfig {
+        one_password: Some(op),
+        ..ServiceConfig::in_memory()
+    };
+    let (core, mut rx) = Core::start(config).unwrap();
+    let h = core.handle();
+    for (request, name, reference) in [
+        (1, "orders-db", "op://dev/Orders DB/password"),
+        (2, "missing", "op://dev/Nope/password"),
+    ] {
+        h.send(Command::SaveNamedSecret {
+            request,
+            secret: NamedSecret {
+                name: name.into(),
+                description: String::new(),
+                source: NamedSecretSource::OnePassword {
+                    reference: reference.into(),
+                    account: None,
+                },
+            },
+            value: None,
+            previous: None,
+        });
+        list(&mut rx).await;
+    }
+    assert_eq!(
+        test(&h, &mut rx, 3, "orders-db").await.unwrap(),
+        "Read 14 characters from 1Password"
+    );
+    assert_eq!(
+        workbench_read(&h, "orders-db").await.unwrap(),
+        "from-1password"
+    );
+    let e = test(&h, &mut rx, 4, "missing").await.unwrap_err();
+    assert!(
+        e.starts_with("1Password: [ERROR]") && e.contains("item not found"),
+        "{e}"
+    );
+}

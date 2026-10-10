@@ -1367,3 +1367,8 @@ Decisions:
   secret, never from a cloud one (no chains or loops).
 - The API workbench resolves secrets synchronously on the blocking pool; core runs the
   read on the runtime and the caller waits on a channel (no `block_on`).
+- 1Password (user asked for it before the offline vault): read with the `op` CLI
+  (`op read --no-newline -- <op://…>`), never a stored token, so the 1Password app does
+  the unlock (Touch ID / Windows Hello) and Switchyard never sees the account password. No
+  new crate; values are cached like cloud ones. `ServiceConfig::one_password` overrides the
+  executable (tests use a stand-in script).

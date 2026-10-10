@@ -1,6 +1,7 @@
 //! Named secrets (`{{vault.name}}`): credentials kept once and referenced by name from the
 //! API workbench and from connection settings. A named secret's value is either in
-//! Switchyard's keychain or fallback vault ([`NamedSecretSource::Local`]) or read from a
+//! Switchyard's keychain or fallback vault ([`NamedSecretSource::Local`]), read from
+//! 1Password with the `op` CLI ([`NamedSecretSource::OnePassword`]), or read from a
 //! cloud secret store when it is used ([`NamedSecretSource::Cloud`]: Azure Key Vault, AWS
 //! Secrets Manager or Parameter Store, through a saved cloud connection).
 //!
@@ -37,6 +38,15 @@ pub enum NamedSecretSource {
         /// secrets); `None` uses the whole value.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         field: Option<String>,
+    },
+    /// An item field in 1Password, read with the `op` CLI (unlocked by the 1Password
+    /// desktop app, or a service account token in the environment).
+    OnePassword {
+        /// Secret reference: `op://<vault>/<item>/[<section>/]<field>`.
+        reference: String,
+        /// Account (sign-in address or id) when several are signed in.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
     },
 }
 
@@ -81,8 +91,36 @@ impl NamedSecret {
                 });
             }
         }
+        if let NamedSecretSource::OnePassword { reference, account } = &self.source {
+            if !valid_op_reference(reference) {
+                return Err(ValidationError {
+                    field: "reference",
+                    message: "Use a 1Password secret reference: op://vault/item/field".into(),
+                });
+            }
+            if account.as_deref().is_some_and(|a| a.trim().is_empty()) {
+                return Err(ValidationError {
+                    field: "account",
+                    message: "Leave the account empty to use the default one".into(),
+                });
+            }
+        }
         Ok(())
     }
+}
+
+/// Whether `reference` is a 1Password secret reference (`op://vault/item/field`, with an
+/// optional section): no blank parts, no whitespace at the ends, nothing that `op` could
+/// take as an option.
+pub fn valid_op_reference(reference: &str) -> bool {
+    let Some(path) = reference.strip_prefix("op://") else {
+        return false;
+    };
+    let parts: Vec<&str> = path.split('/').collect();
+    (3..=4).contains(&parts.len())
+        && parts.iter().all(|p| !p.trim().is_empty())
+        && reference.trim() == reference
+        && !reference.contains(['\n', '\r', '\0'])
 }
 
 /// Whether `name` can be used in `{{vault.name}}` (the API workbench's rule).
@@ -243,6 +281,35 @@ mod tests {
         assert!(s.delete_named_secret("a").unwrap().is_some());
         assert!(s.delete_named_secret("a").unwrap().is_none());
         assert_eq!(s.named_secrets().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn one_password_references() {
+        for ok in [
+            "op://Private/Orders DB/password",
+            "op://dev/api/credentials/token",
+        ] {
+            assert!(valid_op_reference(ok), "{ok}");
+        }
+        for bad in [
+            "op://vault/item",
+            "op://vault//field",
+            "op://a/b/c/d/e",
+            "vault/item/field",
+            " op://v/i/f",
+            "op://v/i/f\n",
+        ] {
+            assert!(!valid_op_reference(bad), "{bad:?}");
+        }
+        let s = NamedSecret {
+            name: "db".into(),
+            description: String::new(),
+            source: NamedSecretSource::OnePassword {
+                reference: "op://v/i".into(),
+                account: None,
+            },
+        };
+        assert_eq!(s.validate().unwrap_err().field, "reference");
     }
 
     #[test]
