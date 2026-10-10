@@ -1,0 +1,31 @@
+[package]
+name = "switchyard-cloud"
+description = "Cloud storage and developer services: S3 / R2 / Azure Blob file systems, Azure App Configuration, Key Vault, AWS Secrets Manager and Parameter Store, Workers KV"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+switchyard-remote.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+ring.workspace = true
+data-encoding.workspace = true
+quick-xml.workspace = true
+url.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+secrecy.workspace = true
+futures.workspace = true
+tokio = { workspace = true, features = ["process", "io-util", "time", "sync", "rt", "macros"] }
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+url.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[lints]
+workspace = true
