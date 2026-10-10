@@ -9,6 +9,23 @@ Written in Rust on [GPUI](https://www.gpui.rs/) and
 [gpui-component](https://github.com/longbridge/gpui-kit). Runs on macOS, Windows and Linux.
 Licensed under Apache-2.0.
 
+![Switchyard: a PostgreSQL query and its results in the SQL editor](docs/screenshots/query.png)
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/plan.png" alt="Query plan with hotspots, flame view and node details"><br><sub><b>Query plans</b>: hotspots, flame view and per-node details from <code>EXPLAIN ANALYZE</code>.</sub></td>
+    <td width="50%"><img src="docs/screenshots/table-data.png" alt="Table data in the results grid with WHERE filter and paging"><br><sub><b>Results grid</b>: typed columns, WHERE filter, paging and inline edits.</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/schema.png" alt="Schema explorer with a table's context menu"><br><sub><b>Schema explorer</b>: lazy tree, row counts and actions on every object.</sub></td>
+    <td><img src="docs/screenshots/terminal.png" alt="Local shell terminal tab"><br><sub><b>Terminals</b>: local shells and SSH sessions next to your queries.</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/new-connection.png" alt="New connection dialog: server, database, file server, cloud service"><br><sub><b>One connection model</b>: servers, databases, file servers and cloud services.</sub></td>
+    <td><img src="docs/screenshots/palette.png" alt="Open anything palette filtering connections, tools and commands"><br><sub><b>Open anything</b> (Ctrl/⌘+P): connections, tools and commands in one list.</sub></td>
+  </tr>
+</table>
+
 ## Quick install (Linux x86_64)
 
 ```sh
@@ -51,9 +68,14 @@ administrator rights.
 | SQL Server | SQL login, Windows account (SSPI / NTLM), Kerberos integrated auth, Azure SQL with Entra ID (browser + PKCE, device code with MFA, password, service principal), `GO` batches, multiple result sets, cancel, showplan, workload stats, Query Store |
 | Oracle | Oracle Instant Client installed and loaded at runtime, PL/SQL blocks, `q'[..]'` quoting, `DBMS_OUTPUT` as notices, cancel, catalog and `DBMS_METADATA` DDL |
 | Snowflake | SQL API v2 with async polling, gzip result partitions, multi-statement requests, server-side cancel, key-pair JWT or programmatic access token, `INFORMATION_SCHEMA` catalog and `GET_DDL` |
+| MySQL / MariaDB | Pure-Rust driver with TLS, multi-result scripts, `DELIMITER` scripts, warnings as notices, `KILL QUERY` cancel, catalog and `SHOW CREATE` DDL, plans (`EXPLAIN FORMAT=JSON` / `ANALYZE`), activity monitor |
+| SQLite | Local database files, cancel, transactions, attached databases in the catalog, inline editing, estimated plans |
 | Cloudflare D1 | REST API, SQLite dialect, type inference, catalog |
+| Durable Object SQLite | The SQLite storage of one Cloudflare Durable Object through Cloudflare's `query/v2` API, so your Worker needs no change |
+| MongoDB | `mongosh`-style statements (`db.orders.find(...)`), `mongodb+srv://` seed lists, documents in the grid with edits by `_id`, plans |
+| Redis | Key browser in the style of Redis Insight (tree by `:` folders, type filter, TTL and size), per-type value editors, `redis-cli`-style console |
 
-All engines sit behind the same `Driver` / `Dialect` traits, so quoting, LIMIT vs TOP vs
+All SQL engines sit behind the same `Driver` / `Dialect` traits, so quoting, LIMIT vs TOP vs
 FETCH FIRST, script splitting and catalog queries are engine-aware everywhere.
 
 ### SQL editor
@@ -179,7 +201,8 @@ MCP tools: `list_connections`, `list_tables`, `describe_table`, `run_query`, `ex
 
 ### File transfer
 
-- SFTP on the Host's existing SSH session (no second login).
+- SFTP on the Host's existing SSH session (no second login), and FTP / FTPS (explicit or
+  implicit TLS, passive or active).
 - Dual-pane Files tab (this computer and any Host): breadcrumbs, sortable columns, hidden-file
   toggle, multi-select, new folder, rename, delete, drag and drop between panes and from the OS.
 - **Transfer queue**: 4 parallel transfers, pause, resume, retry, cancel; progress, speed and
@@ -187,6 +210,17 @@ MCP tools: `list_connections`, `list_tables`, `describe_table`, `run_query`, `ex
   app was killed.
 - **Remote edit**: open a remote file in the editor; saving checks the remote modification
   time and offers Overwrite or Discard and reload on conflict.
+
+### Cloud storage and developer tools
+
+- **Object storage** in the Files tab: Amazon S3 and S3-compatible endpoints, Cloudflare R2
+  and Azure Blob Storage, with streamed multipart uploads and transfers both ways.
+- **Key / value tools**: Azure App Configuration (labels, locks, feature flags), Azure Key
+  Vault secrets, AWS Secrets Manager, AWS Parameter Store and Cloudflare Workers KV.
+  Secrets stay hidden until shown; Production saves and every delete are confirmed.
+- Sign in with access keys, AWS CLI profiles (including SSO), Cloudflare API tokens, Azure
+  connection strings, SAS, Microsoft Entra or the Azure CLI. No cloud SDKs: small REST
+  clients with their own request signing.
 
 ### API workspace
 
@@ -213,10 +247,18 @@ then the Driver Manager detects it, explains why, installs it and retries the co
 
 ### Workspace and UI
 
-- Title bar, collapsible sidebar, tabbed center area that splits right or down, inspector
-  panel, status bar with connection, environment, transaction, tunnels and transfers.
-- Command palette (Ctrl/⌘+Shift+P) and quick switcher (Ctrl/⌘+P) reach every action.
-- Dark and light themes.
+- **Activity rail** with Explorer, Schema, Tools and Activity panes. The Explorer groups
+  everything by place (servers, cloud accounts, direct connections) or by type (databases,
+  terminals, files and storage, config and secrets), with one filter over all of it.
+- **Tools** pane: port forwards, history, workload statistics, activity monitor, snippets,
+  drivers, and one entry per cloud service. **Activity** pane: sessions, running queries,
+  tunnels and transfers.
+- Title bar menus, **Open anything** (Ctrl/⌘+P) over connections, tools and commands, and a
+  **New** button (Ctrl/⌘+N) that asks what you want to connect to.
+- Tabbed center area that splits right or down, inspector panel, status bar with
+  connection, environment, transaction, tunnels and transfers.
+- Command palette (Ctrl/⌘+Shift+P) reaches every action.
+- Dark and light themes, and UI zoom.
 
 ### Security
 
@@ -248,7 +290,7 @@ then the Driver Manager detects it, explains why, installs it and retries the co
 
 Switchyard is pre-beta (v0.1.9). Not finished yet (see [`PLAN.md`](PLAN.md)):
 
-- FTP / FTPS, corporate CA import and per-connection certificate pinning.
+- Corporate CA import and per-connection certificate pinning.
 - Query plans and workload stats for Oracle and Snowflake; in-app approval for agent actual plans.
 - Explorer: per-relation column/index children, object properties tab, script-as, server-side
   paging, foreign-key navigation, ER diagram, activity monitor, snippets.
@@ -345,7 +387,7 @@ cargo test --workspace -- --ignored
 | `switchyard-app` | GPUI application: windows, panels, editor, grid, plan view, terminal view, file browser, assistant |
 | `switchyard-core` | Hosts, connections, sessions, environment rules, tokio runtime, event bus |
 | `switchyard-store` | SQLite profiles, schema cache, query history, keychain / vault |
-| `switchyard-db` | `Driver` / `DbSession` / `Dialect` traits, `Value`, `RowBatch`; PostgreSQL, SQL Server, Oracle, Snowflake and D1 drivers |
+| `switchyard-db` | `Driver` / `DbSession` / `Dialect` traits, `Value`, `RowBatch`; PostgreSQL, SQL Server, MySQL, Oracle, Snowflake, SQLite, D1 / Durable Object, MongoDB and Redis drivers |
 | `switchyard-remote` | SSH sessions, tunnels and forwarding, SFTP, `RemoteFs` |
 | `switchyard-term` | Terminal state, local PTY |
 | `switchyard-drivers` | Driver Manager: manifests, detection, install, verify, runtime loading |
@@ -353,3 +395,4 @@ cargo test --workspace -- --ignored
 | `switchyard-cli` | `swy` binary and MCP server |
 | `switchyard-agents` | `AgentAdapter` trait and Claude Code / Codex / Gemini / custom adapters |
 | `switchyard-api` | API workspace: collections, requests, environments, OAuth, scripts |
+| `switchyard-cloud` | S3, R2 and Azure Blob as `RemoteFs`; App Configuration, Key Vault, Secrets Manager, Parameter Store, Workers KV |
