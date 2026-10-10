@@ -233,7 +233,7 @@ async fn read_only(
             .await
             .map_err(|e| e.to_string())?,
         // No transactions across requests: the SELECT-only check is the guard.
-        Engine::D1 | Engine::Snowflake | Engine::MongoDb => {}
+        Engine::D1 | Engine::DurableObject | Engine::Snowflake | Engine::MongoDb => {}
         // Never a SQL session; agent tools are SQL only.
         Engine::Redis => return Err("Redis connections have no SQL tools".into()),
     }

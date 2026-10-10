@@ -681,6 +681,17 @@ server or bundled Unix tools on Windows (Tier 3).
   App Configuration)`).
   Note: the app UI was checked with clippy and unit tests only, not on screen.
 
+## Extra — Durable Object SQLite (user request, 2026-10-10)
+
+- [x] DO-1 `Engine::DurableObject`: the SQLite storage of one Cloudflare Durable Object as a
+  SQL connection (editor, grid, schema explorer, agents), through Cloudflare's public
+  `query/v2` API, so the user's Worker needs no change. Account ID, namespace ID, object by
+  name (`idFromName`, with jurisdiction) or by id, API token with Workers Scripts Write.
+  Shares the D1 driver (`db::d1`, `Target::DurableObject`) and catalog; `_cf_*` tables are
+  hidden. Tests: `db --test durable_object` against a stand-in that runs the queries on
+  SQLite. Note: not run against the real Cloudflare API; no transactions (each request
+  commits on its own); only data written through the SQL API is visible.
+
 ## DBX — Database explorer and editors at DBeaver / SSMS level (user request)
 
 Gap analysis (2026-10-08): the explorer is a lazy, virtualized, single-connection tree
@@ -923,3 +934,8 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   Proposed next tools: queues (SQS, Service Bus, Storage Queues, Cloudflare Queues), NoSQL
   tables (DynamoDB, Cosmos DB, Table Storage), logs (CloudWatch Logs, Log Analytics),
   functions (Lambda, Azure Functions, Workers) and Azure Container Apps / ECS status.
+
+
+- Durable Objects (DO-1): pick the namespace and object from lists in the connection form
+  (`GET …/durable_objects/namespaces`, `…/namespaces/{id}/objects`, which only lists objects
+  that have stored data); open several objects of one namespace from the sidebar.

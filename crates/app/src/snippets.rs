@@ -22,13 +22,14 @@ use crate::theme::{MONO, Palette, palette};
 use crate::ui::{self, Kind};
 
 /// Engines in the order the editor offers them.
-const ENGINES: [Engine; 8] = [
+const ENGINES: [Engine; 9] = [
     Engine::Postgres,
     Engine::SqlServer,
     Engine::MySql,
     Engine::Oracle,
     Engine::Snowflake,
     Engine::D1,
+    Engine::DurableObject,
     Engine::MongoDb,
     Engine::Sqlite,
 ];

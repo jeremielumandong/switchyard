@@ -18,6 +18,10 @@ pub struct SqliteDialect {
 impl SqliteDialect {
     /// Cloudflare D1.
     pub const D1: Self = Self { engine: Engine::D1 };
+    /// A Durable Object's SQLite storage (same rules as D1).
+    pub const DURABLE_OBJECT: Self = Self {
+        engine: Engine::DurableObject,
+    };
     /// A local SQLite file.
     pub const LOCAL: Self = Self {
         engine: Engine::Sqlite,
