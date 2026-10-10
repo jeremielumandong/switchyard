@@ -24,6 +24,10 @@ Licensed under Apache-2.0.
     <td><img src="docs/screenshots/new-connection.png" alt="New connection dialog: server, database, file server, cloud service"><br><sub><b>One connection model</b>: servers, databases, file servers and cloud services.</sub></td>
     <td><img src="docs/screenshots/palette.png" alt="Open anything palette filtering connections, tools and commands"><br><sub><b>Open anything</b> (Ctrl/⌘+P): connections, tools and commands in one list.</sub></td>
   </tr>
+  <tr>
+    <td><img src="docs/screenshots/api-request.png" alt="API explorer: a GET request with query parameters, a pretty JSON response and passing tests"><br><sub><b>API explorer</b>: collections, environments, scripts and tests, next to your databases.</sub></td>
+    <td><img src="docs/screenshots/api-runner.png" alt="API explorer collection runner with per-request results"><br><sub><b>Collection runs</b> with iteration data and AI-generated sample data.</sub></td>
+  </tr>
 </table>
 
 ## Quick install (Linux x86_64)
@@ -97,6 +101,8 @@ FETCH FIRST, script splitting and catalog queries are engine-aware everywhere.
   (Ctrl/⌘+Shift+H); can be turned off per connection.
 - **Buffers autosave** and come back after a crash or restart.
 - Drop a schema object onto the editor to insert its qualified name.
+- **Snippets**: built-in and your own, per engine, offered in completion.
+- Unsaved tabs show a dot and ask Save / Discard / Cancel before closing.
 
 ### Results grid
 
@@ -105,30 +111,41 @@ FETCH FIRST, script splitting and catalog queries are engine-aware everywhere.
 - Fetch limit (default 10,000) with *Fetch all*; Stop is always available (Ctrl/⌘+.).
 - NULL styled distinctly from empty strings; numbers right-aligned.
 - Column resize, reorder and pin; client-side sort and filter on loaded rows.
+- **Table data** opens with a server-side WHERE filter, sort and paging bar (page size 100,
+  500 or 1,000).
 - Cell and range selection (Shift+click, Shift+arrows); copy as TSV.
 - **Value viewer**: JSON (pretty), XML (indented and colored), text, hex, and image previews
   (PNG, JPEG, GIF, WebP, BMP, TIFF, SVG).
 - **Copy / export** as CSV, JSON, Markdown and SQL INSERT statements.
 - **Multiple result sets** in their own tabs; **pin** a result tab and **compare** two results.
 - **Inline editing** for single-table results with a primary key: staged and highlighted edits,
-  SQL preview, committed in one transaction or discarded.
+  insert, duplicate and delete rows, SQL preview, committed in one transaction or discarded.
+- **Foreign-key navigation**: jump from a cell to the row it references.
 - Status line with row count, fetch state, elapsed time, affected rows and server notices.
 
 ### Schema explorer
 
-- Lazy tree (loads each level on expand) with a local SQLite catalog cache.
+- Lazy tree (loads each level on expand) with a local SQLite catalog cache; several
+  connections side by side, with favorites.
 - Folders per engine: tables, views, materialized views, functions, procedures, sequences,
-  types, synonyms.
+  types, synonyms, users and roles, SQL Server Agent jobs, Oracle packages, Snowflake stages
+  and tasks. Columns, keys, indexes, foreign keys and triggers under every table.
 - Global object search on the server (debounced) with a local fuzzy fallback.
 - Actions: open table data, generate SELECT / INSERT / UPDATE / DELETE templates from the
-  real columns and primary key, copy qualified name, view DDL in a read-only tab, truncate and
-  drop (confirmed; double-confirmed on Production).
+  real columns and primary key, **Script as** (CREATE, DROP, DROP + CREATE and more), copy
+  qualified name, view DDL in a read-only tab, truncate and drop (confirmed; double-confirmed
+  on Production).
+- **Object properties** tab (columns, indexes, constraints, foreign keys, triggers, DDL) and
+  **dependencies** (uses / used by).
+- **ER diagram** laid out from foreign keys.
+- **Activity monitor** with kill session (double-confirmed on Production, never available to
+  agents).
 - Keyboard navigation: arrows, Enter, Ctrl/⌘+C, F5 to refresh.
 
 ### Query plans and optimization
 
-- **One plan model**: PostgreSQL JSON plans and SQL Server showplan XML both convert to a
-  normalized operator tree.
+- **One plan model**: PostgreSQL JSON plans, SQL Server showplan XML, MySQL, SQLite and
+  MongoDB plans all convert to one normalized operator tree.
 - **Explain** (Ctrl/⌘+E) and **Explain Analyze** (Ctrl/⌘+Shift+E). Actual plans of DML run
   inside a transaction that is always rolled back.
 - **Plan view**: graph colored by share of time or cost with edge width by rows, pan and zoom,
@@ -148,6 +165,13 @@ FETCH FIRST, script splitting and catalog queries are engine-aware everywhere.
 
 - Use the CLI you already have and are logged in to: **Claude Code**, **Codex CLI**,
   **Gemini CLI**, or a **custom** CLI defined by a command template.
+- Works on every data source: SQL databases, MongoDB, Redis (read-only commands) and SSH
+  Hosts, where each shell command the agent proposes runs only after you approve it in the
+  app. The panel follows the tab in front.
+- In the API explorer the same panel explains responses, debugs failures, reviews imports,
+  writes tests, generates bodies and data, and turns a plain-language description into a new
+  request.
+- The whole transcript is selectable and copyable; answers and SQL cards have Copy buttons.
 - **Assistant panel** (Ctrl/⌘+J): *Optimize* a statement or plan (sends the statement and
   its findings), *Plan a query*, streaming answers with tool calls, follow-ups that resume
   the CLI's session, Stop.
@@ -175,7 +199,8 @@ swy mcp                                          # MCP server on stdio
 
 `swy` shares the app's core and profile store. `--open` hands the plan to the running app.
 MCP tools: `list_connections`, `list_tables`, `describe_table`, `run_query`, `explain`
-(estimated plans), `workload`, `what_if`.
+(estimated plans), `workload`, `what_if`, `redis_command` (read-only commands) and
+`run_ssh_command` (approved in the app, one command at a time).
 
 ### SSH and terminals
 
@@ -188,6 +213,13 @@ MCP tools: `list_connections`, `list_tables`, `describe_table`, `run_query`, `ex
 - GPU-rendered terminal on `alacritty_terminal`: true color, mouse reporting, bracketed paste,
   10,000-line scrollback with search, clickable links; local shell tabs.
 - Up to four split panes per tab with opt-in input broadcast.
+- **Session logging** to a file (plain text with escape codes stripped, or raw) with a
+  file name template; **macros** recorded from keystrokes and replayed into one pane or all,
+  or run on connect.
+- Copy on select, right-click paste, a confirmation before pasting several lines, and
+  keyword highlighting of output (all optional).
+- Host folders and favorites; per-Host startup command, start folder, environment variables
+  and terminal colors; duplicate a Host or bulk-edit every Host in a folder.
 - **Agent forwarding** and **X11 forwarding** per Host (X server detection on Windows and macOS).
 
 ### Tunnels
@@ -222,15 +254,43 @@ MCP tools: `list_connections`, `list_tables`, `describe_table`, `run_query`, `ex
   connection strings, SAS, Microsoft Entra or the Azure CLI. No cloud SDKs: small REST
   clients with their own request signing.
 
-### API workspace
+### API explorer
 
-A second workspace (switch from the title bar) for HTTP APIs:
+A second workspace for HTTP APIs, one click away in the title bar (or *Switch to API
+Workspace* in Open anything). It shares the app's keychain, assistant and look, so you can
+test the API in front of a database without opening another tool.
 
-- Projects with collections, folders and requests; inline rename; open tabs restored per project.
-- Environments with labels (Production confirms unsafe methods before sending).
-- Import / export collections, paste cURL, copy as cURL; cookies; OAuth.
-- `pm.*` pre-request and test scripts in a sandboxed worker; collection runs.
-- Response panel with Pretty / Raw views, headers, console, trace and test results, copy actions.
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/api-request.png" alt="GET request with query parameters, environment and a pretty JSON response with passing tests"></td>
+    <td width="50%"><img src="docs/screenshots/api-body.png" alt="POST request with a JSON body and a 201 Created response"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/api-import.png" alt="Import review of a Postman collection with parser findings"></td>
+    <td><img src="docs/screenshots/api-runner.png" alt="Collection runner results"></td>
+  </tr>
+</table>
+
+- **Projects** hold collections, folders and requests; rename in place (double-click or F2);
+  each project reopens its request tabs. A first-run page offers Create project, Import
+  collection, Paste cURL or a sample request.
+- **Requests**: params, headers, body (JSON, XML, text, form, multipart, file, GraphQL),
+  auth (including OAuth), variables, scripts and per-request settings; Ctrl/⌘+L focuses the
+  URL, Ctrl/⌘+Enter sends.
+- **Environments** with labels (Production, Staging, Development, Local). Production is red
+  on the environment chip, URL bar and request, and confirms before sending unsafe methods.
+  Secret values live in the keychain or vault.
+- **Import** OpenAPI 3.0 / 3.1 (JSON or YAML), Postman 2.1 collections and environments,
+  Insomnia v4, HAR captures, AgentOps bundles or a cURL command. Every import is parsed and
+  reviewed first (requests, folders, warnings, destructive calls flagged) and written in one
+  transaction. Export collections and copy any request as cURL.
+- **Scripts and tests**: `pm.*` pre-request and test scripts run in a sandboxed worker; test
+  results show next to the response.
+- **Runner**: run a folder or collection with CSV or JSON iteration data, a seed, a delay and
+  stop on first error; describe a scenario and let the assistant generate the data.
+- **Response panel**: Pretty (JSONPath / XPath filter) and Raw views, headers, trace, test
+  results and console, with copy actions everywhere. Cookies carry between requests;
+  History and Diff tabs sit beside Compose.
 
 ### Driver Manager
 
@@ -258,7 +318,9 @@ then the Driver Manager detects it, explains why, installs it and retries the co
 - Tabbed center area that splits right or down, inspector panel, status bar with
   connection, environment, transaction, tunnels and transfers.
 - Command palette (Ctrl/⌘+Shift+P) reaches every action.
-- Dark and light themes, and UI zoom.
+- Dark and light themes. UI zoom from 70 % to 200 % (Ctrl/⌘ + `=` / `-` / `0`) scales the
+  whole window, editors, grid and terminal; editor font family and size in Settings →
+  Appearance.
 
 ### Security
 
@@ -291,10 +353,10 @@ then the Driver Manager detects it, explains why, installs it and retries the co
 Switchyard is pre-beta (v0.1.9). Not finished yet (see [`PLAN.md`](PLAN.md)):
 
 - Corporate CA import and per-connection certificate pinning.
-- Query plans and workload stats for Oracle and Snowflake; in-app approval for agent actual plans.
-- Explorer: per-relation column/index children, object properties tab, script-as, server-side
-  paging, foreign-key navigation, ER diagram, activity monitor, snippets.
-- Terminal extras (logging, macros, key generator, PuTTY/MobaXterm import, Telnet, SCP).
+- Query plans and workload stats for Oracle and Snowflake; workload stats for MySQL; in-app
+  approval for agent actual plans.
+- Terminal extras: SSH key generator, PuTTY / MobaXterm session import, Telnet, SCP, a
+  shell picker, the SFTP pane following the shell's folder, external RDP / Mosh viewers.
 - Packaging: MSI/winget, `.deb`/`.rpm`/AUR, Homebrew cask, auto-update, portable mode,
   performance gates in CI.
 
