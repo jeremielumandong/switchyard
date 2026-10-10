@@ -302,6 +302,9 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
 - MinIO's images are not pullable here (quay.io 401, not on mirror.gcr.io); S3 tests use
   moto (`scripts/moto-server.sh`), which does not check SigV4, so the signer keeps unit
   tests against AWS's published vectors.
+- Apps started from the desktop often get a short `PATH` without Homebrew's `/opt/homebrew/bin`,
+  so `op` (1Password CLI) is also looked for in the installers' folders (`named_secrets.rs`).
+  `op read` waits for the 1Password app's approval prompt; it runs with a 2 min timeout.
 - Linking the workspace's debug test binaries needs a lot of disk; a full disk shows up as
   `ld terminated with signal 7 [Bus error]`, not "no space". `CARGO_PROFILE_DEV_DEBUG=0`
   halves `target/`.

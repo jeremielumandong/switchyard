@@ -1346,6 +1346,33 @@ Decisions (inferred where the design is silent):
 - Rail icons are Lucide SVGs (ISC) shipped in `crates/app/assets/icons` and served by
   `rail::AppAssets` ahead of gpui-kit's set.
 
+## 2026-10-10 — Secret vault: named secrets from Key Vault or the keychain
+
+Context: the user asked for a key vault the API workbench and connection settings can pull
+secrets from, instead of each connection storing its own copy. Not specified: which vault
+first; the coordinator's default was Azure Key Vault with room for others.
+
+Decisions:
+- One concept, the API workbench's existing `{{vault.name}}`, extended: a named secret is
+  either a keychain item (as before) or a link to a secret in a cloud store reached through
+  a saved cloud connection. Key Vault, Secrets Manager and Parameter Store are all offered
+  because they already share `KvService`; adding a store means allowing its service.
+- The catalog (names, descriptions, where each value lives; never values) is a JSON
+  setting (`named_secrets`), so no schema migration.
+- A connection references a named secret by saving `SecretRef("vault:<name>")` as its
+  secret; keychain keys are `<profile id>:<purpose>`, so the two cannot collide.
+- Cloud values are read when used and cached in memory for 60 s, so rotation is picked up
+  quickly without a request per query. Nothing is copied to the keychain or disk.
+- A cloud connection used as a source may take its own credential from a local named
+  secret, never from a cloud one (no chains or loops).
+- The API workbench resolves secrets synchronously on the blocking pool; core runs the
+  read on the runtime and the caller waits on a channel (no `block_on`).
+- 1Password (user asked for it before the offline vault): read with the `op` CLI
+  (`op read --no-newline -- <op://…>`), never a stored token, so the 1Password app does
+  the unlock (Touch ID / Windows Hello) and Switchyard never sees the account password. No
+  new crate; values are cached like cloud ones. `ServiceConfig::one_password` overrides the
+  executable (tests use a stand-in script).
+
 ## 2026-10-10 — Follow Omarchy theme (user request)
 
 - Settings → Appearance shows a "Follow Omarchy" card once `~/.config/omarchy/current/theme`

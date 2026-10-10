@@ -12,7 +12,7 @@ use crate::entra::EntraSignIn;
 use crate::prompts::BusPrompter;
 use crate::terminals::{SshTerminalSpec, TermInput, Terminals};
 use futures::StreamExt;
-use secrecy::SecretString;
+use secrecy::{ExposeSecret as _, SecretString};
 use switchyard_db::d1::D1Driver;
 use switchyard_db::guard;
 use switchyard_db::mssql::MssqlDriver;
@@ -50,6 +50,8 @@ pub mod agent_plan;
 pub mod agent_ssh;
 mod assistant;
 mod cloud;
+mod named_secrets;
+pub(crate) use named_secrets::NamedSecrets;
 mod redis;
 
 /// The SSH layer's description of a saved forward.
@@ -110,6 +112,8 @@ pub struct ServiceConfig {
     pub data_dir: PathBuf,
     /// The `swy` executable for assistant runs; `None` finds it next to the app or on PATH.
     pub swy: Option<PathBuf>,
+    /// The 1Password CLI (`op`) for named secrets; `None` finds it on PATH.
+    pub one_password: Option<PathBuf>,
 }
 
 impl ServiceConfig {
@@ -129,6 +133,7 @@ impl ServiceConfig {
             package_runner: None,
             data_dir: std::env::temp_dir().join(format!("switchyard-data-{}", std::process::id())),
             swy: None,
+            one_password: None,
         }
     }
 
@@ -152,6 +157,7 @@ impl ServiceConfig {
             package_runner: None,
             data_dir: paths.data.clone(),
             swy: None,
+            one_password: None,
         }
     }
 }
@@ -202,6 +208,8 @@ pub struct Service {
     data_dir: PathBuf,
     /// `swy` override for assistant runs.
     swy: Option<PathBuf>,
+    /// `op` override for 1Password named secrets.
+    one_password: Option<PathBuf>,
     queries: Mutex<HashMap<QueryId, QueryControl>>,
     terminals: Arc<Terminals>,
     ssh: Arc<SshManager>,
@@ -216,6 +224,8 @@ pub struct Service {
     components: Arc<Registry>,
     package_runner: Arc<dyn CommandRunner>,
     files: Arc<crate::files::Files>,
+    /// Named secrets read from cloud stores, with when they were read.
+    named_cache: Mutex<HashMap<String, (Instant, SecretString)>>,
 }
 
 /// Run one statement and drain its results (session settings such as `USE`).
@@ -329,6 +339,7 @@ impl Service {
             agent_approvals: Mutex::default(),
             data_dir: config.data_dir.clone(),
             swy: config.swy.clone(),
+            one_password: config.one_password.clone(),
             queries: Mutex::default(),
             terminals: Arc::default(),
             ssh,
@@ -339,6 +350,7 @@ impl Service {
             entra: Arc::new(EntraSignIn::new(prompter.clone(), secrets.clone())),
             components,
             files: Arc::default(),
+            named_cache: Mutex::default(),
             package_runner: config
                 .package_runner
                 .clone()
@@ -511,7 +523,9 @@ impl Service {
                 match removed {
                     Ok(Some(p)) => {
                         self.files.conns.lock().await.remove(&p.id().0);
-                        if let Some(key) = p.secret().cloned() {
+                        if let Some(key) = p.secret().cloned()
+                            && key.named_secret().is_none()
+                        {
                             let _ = self.with_secrets(move |s| s.delete(&key)).await;
                         }
                         if let Profile::Db(d) = &p
@@ -948,6 +962,20 @@ impl Service {
                     Err(e) => self.error("Snippets", e),
                 }
             }
+            Command::LoadNamedSecrets => self.emit_named_secrets().await,
+            Command::SaveNamedSecret {
+                request,
+                secret,
+                value,
+                previous,
+            } => {
+                self.save_named_secret(request, secret, value, previous)
+                    .await
+            }
+            Command::DeleteNamedSecret { name } => self.delete_named_secret(name).await,
+            Command::TestNamedSecret { request, name } => {
+                self.test_named_secret(request, name).await
+            }
             Command::LoadMacros => self.emit_macros().await,
             Command::SaveMacro(m) => match self.with_store(move |s| s.save_macro(&m)).await {
                 Ok(_) => self.emit_macros().await,
@@ -1303,13 +1331,7 @@ impl Service {
                 c.name
             )));
         };
-        let password = match secret {
-            Some(s) => Some(s),
-            None => match c.secret.clone() {
-                Some(key) => self.with_secrets(move |s| s.get(&key)).await?,
-                None => None,
-            },
-        };
+        let password = self.secret_value(secret, c.secret.clone()).await?;
         let mut cfg = FtpConfig::new(
             server.trim(),
             *port,
@@ -1581,7 +1603,20 @@ impl Service {
         mut profile: Profile,
         secret: Option<SecretString>,
     ) {
-        if let Some(secret) = secret {
+        let named = secret
+            .as_ref()
+            .and_then(|t| switchyard_store::named_secrets::parse_expression(t.expose_secret()))
+            .map(SecretRef::named);
+        if let Some(named) = named {
+            // `{{vault.name}}`: keep the reference, drop a password stored before.
+            if let Some(old) = profile.secret().cloned()
+                && old.named_secret().is_none()
+                && let Err(e) = self.with_secrets(move |s| s.delete(&old)).await
+            {
+                warn!(error = %e, "could not remove the replaced stored secret");
+            }
+            profile.set_secret(named);
+        } else if let Some(secret) = secret {
             let purpose = match &profile {
                 Profile::Host(_) => "passphrase",
                 _ => "password",
@@ -1719,7 +1754,7 @@ impl Service {
     async fn test_host(&self, host: Host, secret: Option<SecretString>) -> Result<String> {
         let mut target = self.one_target(&host).await?;
         if secret.is_some() {
-            target.secret = secret;
+            target.secret = self.secret_value(secret, None).await?;
         }
         let mut jump: Option<Box<SshTarget>> = None;
         for jid in host.jump_hosts.iter().take(8) {
@@ -1795,7 +1830,10 @@ impl Service {
                 Profile::Cloud(c)
             }
         };
-        if let Some(old) = old_secret
+        if let Some(old) = old_secret.clone().filter(|r| r.named_secret().is_some()) {
+            // A named secret is a reference, not a value: the copy uses the same one.
+            copy.set_secret(old);
+        } else if let Some(old) = old_secret
             && let Some(value) = self.with_secrets(move |s| s.get(&old)).await?
         {
             let purpose = if matches!(copy, Profile::Host(_)) {
@@ -1838,10 +1876,7 @@ impl Service {
     }
 
     async fn one_target(&self, h: &Host) -> Result<SshTarget> {
-        let secret = match h.secret.clone() {
-            Some(key) => self.with_secrets(move |s| s.get(&key)).await?,
-            None => None,
-        };
+        let secret = self.secret_value(None, h.secret.clone()).await?;
         Ok(SshTarget {
             id: h.id.0.clone(),
             label: h.name.clone(),
@@ -1995,13 +2030,7 @@ impl Service {
     }
 
     async fn db_config(&self, c: &DbConnection, secret: Option<SecretString>) -> Result<DbConfig> {
-        let password = match secret {
-            Some(s) => Some(s),
-            None => match c.secret.clone() {
-                Some(key) => self.with_secrets(move |s| s.get(&key)).await?,
-                None => None,
-            },
-        };
+        let password = self.secret_value(secret, c.secret.clone()).await?;
         let mut cfg = DbConfig::new(c.engine, c.server.clone(), c.database.clone());
         cfg.port = c.port;
         cfg.user = c.user.clone();
