@@ -218,6 +218,9 @@ pub enum ThemeId {
     CatppuccinLatte,
     /// Solarized Light.
     SolarizedLight,
+    /// Follows the active Omarchy theme (`~/.config/omarchy/current/theme`). Not in
+    /// [`ThemeId::ALL`]: its colors come from disk, see [`crate::omarchy`].
+    Omarchy,
 }
 
 impl ThemeId {
@@ -248,6 +251,7 @@ impl ThemeId {
             ThemeId::HighContrast => "high-contrast",
             ThemeId::CatppuccinLatte => "catppuccin-latte",
             ThemeId::SolarizedLight => "solarized-light",
+            ThemeId::Omarchy => "omarchy",
         }
     }
 
@@ -264,6 +268,7 @@ impl ThemeId {
             ThemeId::HighContrast => "High Contrast",
             ThemeId::CatppuccinLatte => "Catppuccin Latte",
             ThemeId::SolarizedLight => "Solarized Light",
+            ThemeId::Omarchy => "Follow Omarchy",
         }
     }
 
@@ -271,11 +276,13 @@ impl ThemeId {
     pub fn from_key(key: &str) -> ThemeId {
         ThemeId::ALL
             .into_iter()
+            .chain([ThemeId::Omarchy])
             .find(|t| t.key() == key)
             .unwrap_or(ThemeId::SwitchyardDark)
     }
 
-    /// Its colors.
+    /// Its colors. [`ThemeId::Omarchy`] gets the default dark colors under its own id
+    /// until the Omarchy theme has been read; use [`resolve`] where the app has it.
     pub fn palette(self) -> Palette {
         match self {
             ThemeId::SwitchyardDark => Palette::dark(),
@@ -288,38 +295,50 @@ impl ThemeId {
             ThemeId::HighContrast => build(self, &HIGH_CONTRAST),
             ThemeId::CatppuccinLatte => build(self, &LATTE),
             ThemeId::SolarizedLight => build(self, &SOLARIZED_LIGHT),
+            ThemeId::Omarchy => Palette {
+                id: self,
+                ..Palette::dark()
+            },
         }
+    }
+}
+
+/// The colors of `id`, using the last Omarchy theme read for [`ThemeId::Omarchy`].
+pub fn resolve(id: ThemeId, cx: &App) -> Palette {
+    match id {
+        ThemeId::Omarchy => crate::omarchy::palette(cx).unwrap_or_else(|| id.palette()),
+        _ => id.palette(),
     }
 }
 
 /// The few colors a theme defines; everything else is derived. Values were tuned so that
 /// text reads at 7:1 or better on every background and on the selection (see the tests).
-struct Spec {
-    dark: bool,
-    bg: u32,
-    panel: u32,
-    surface: u32,
-    elev: u32,
-    bd: u32,
-    bd2: u32,
-    fg: u32,
-    fg2: u32,
-    fg3: u32,
-    acc: u32,
-    acc_fg: u32,
-    red: u32,
-    yellow: u32,
-    green: u32,
-    blue: u32,
-    magenta: u32,
-    cyan: u32,
-    kw: u32,
-    string: u32,
-    number: u32,
-    func: u32,
-    comment: u32,
+pub(crate) struct Spec {
+    pub(crate) dark: bool,
+    pub(crate) bg: u32,
+    pub(crate) panel: u32,
+    pub(crate) surface: u32,
+    pub(crate) elev: u32,
+    pub(crate) bd: u32,
+    pub(crate) bd2: u32,
+    pub(crate) fg: u32,
+    pub(crate) fg2: u32,
+    pub(crate) fg3: u32,
+    pub(crate) acc: u32,
+    pub(crate) acc_fg: u32,
+    pub(crate) red: u32,
+    pub(crate) yellow: u32,
+    pub(crate) green: u32,
+    pub(crate) blue: u32,
+    pub(crate) magenta: u32,
+    pub(crate) cyan: u32,
+    pub(crate) kw: u32,
+    pub(crate) string: u32,
+    pub(crate) number: u32,
+    pub(crate) func: u32,
+    pub(crate) comment: u32,
     /// Opacity of the accent used as the selection background.
-    sel: f32,
+    pub(crate) sel: f32,
 }
 
 const NORD: Spec = Spec {
@@ -538,7 +557,7 @@ const SOLARIZED_LIGHT: Spec = Spec {
     sel: 0.22,
 };
 
-fn build(id: ThemeId, s: &Spec) -> Palette {
+pub(crate) fn build(id: ThemeId, s: &Spec) -> Palette {
     let fg_a = |a: f32| alpha(s.fg, a);
     Palette {
         id,
