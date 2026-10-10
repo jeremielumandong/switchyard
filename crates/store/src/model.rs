@@ -1310,7 +1310,22 @@ impl Profile {
                     return Err(ValidationError::new("server", "Account ID is required"));
                 }
                 if d.database.trim().is_empty() {
-                    return Err(ValidationError::new("database", "Database ID is required"));
+                    return Err(ValidationError::new(
+                        "database",
+                        if d.engine == Engine::DurableObject {
+                            "Namespace ID is required"
+                        } else {
+                            "Database ID is required"
+                        },
+                    ));
+                }
+                if d.engine == Engine::DurableObject
+                    && d.option(switchyard_db::d1::OBJECT_OPTION).is_none()
+                {
+                    return Err(ValidationError::new(
+                        "object",
+                        "Enter the object's name (idFromName) or id",
+                    ));
                 }
                 if d.via_host.is_some() {
                     return Err(ValidationError::new(

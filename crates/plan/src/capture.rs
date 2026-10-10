@@ -60,7 +60,7 @@ pub async fn capture(
         Engine::MySql => mysql(session, sql, mode).await,
         Engine::Sqlite => sqlite(session, sql).await,
         Engine::MongoDb => mongo(session, sql, mode).await,
-        Engine::D1 | Engine::Redis | Engine::Snowflake | Engine::Oracle => {
+        Engine::D1 | Engine::DurableObject | Engine::Redis | Engine::Snowflake | Engine::Oracle => {
             Err(PlanError::Unsupported(format!(
                 "query plans are not available for {} yet",
                 engine.display_name()

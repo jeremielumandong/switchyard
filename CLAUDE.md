@@ -10,7 +10,8 @@ or a custom one) can plan and optimize queries. Written in Rust with GPUI + gpui
 - Task plan: `PLAN.md` (work through it in order)
 - Decisions log: `docs/DECISIONS.md` (append when you make or need a non-obvious call)
 
-Engines: PostgreSQL, SQL Server, MySQL/MariaDB, Oracle, Snowflake, Cloudflare D1, local
+Engines: PostgreSQL, SQL Server, MySQL/MariaDB, Oracle, Snowflake, Cloudflare D1, Durable
+Object SQLite (Cloudflare's `query/v2` API), local
 SQLite files, MongoDB and Redis (a key browser, not SQL: `Engine::is_sql`). Oracle was moved
 before beta at the user's request (see `docs/DECISIONS.md`); its client library (Instant
 Client) is always runtime-loaded through the Driver Manager, never linked at build time.
