@@ -1269,3 +1269,35 @@ commands.
 - **Every resolved address.** `localhost` resolves to `::1` first on the runners, where the
   host-network test server listens on 127.0.0.1 only; connecting now tries each address
   until one answers (a TLS or protocol error stops the search).
+
+## 2026-10-10 — Cloud storage and tools: own REST clients, starter set per cloud
+
+Context: the user asked for Cloudflare R2, Amazon S3, Azure Storage and Azure App
+Configuration (full management) with account sign-in or keys, plus the tools developers use
+most on each cloud.
+
+Decision:
+- A new crate `switchyard-cloud` (`core → cloud → remote`) with hand-written REST clients
+  on the approved `reqwest`, `ring`, `quick-xml`, `url` and `secrecy`; no AWS or Azure SDK
+  (dozens of crates, their own HTTP and TLS stacks, aws-lc already twice in the tree).
+  Signing is small and tested against published vectors.
+- Starter set: AWS S3, Secrets Manager, Parameter Store; Azure Blob Storage, App
+  Configuration, Key Vault secrets; Cloudflare R2 and Workers KV (D1 already exists).
+  Queues, NoSQL tables, logs and functions are proposed in PLAN.md follow-ups.
+- Object storage is a `RemoteFs`, so the Files tab, transfers and the editor work on it
+  unchanged. `RemoteFs::atomic_writes` tells transfers to write in place (an object upload
+  is all-or-nothing; a `.swypart` rename would copy the whole object).
+- Microsoft Entra sign-in for cloud connections reuses the SQL Server flow with the Azure
+  CLI's public client id (`04b07795-8ddb-461a-bbee-02f9e1bf7b46`, pre-authorized for
+  Storage, App Configuration and Key Vault), scopes per resource; a custom client id can
+  be set per connection. Tokens are cached per connection and scope; the refresh token is
+  one keychain item per connection.
+- AWS "account sign-in" is through the AWS CLI's profiles (SSO and roles via
+  `aws configure export-credentials`, or `credential_process`); Switchyard does not run
+  the SSO device flow itself yet. Cloudflare has no third-party OAuth for its API, so it
+  is API tokens; R2's S3 keys are derived from a token as Cloudflare documents (id, and
+  SHA-256 of the value).
+
+Consequences: each service's REST quirks live in this repo (see CLAUDE.md gotchas); new
+services need a client module rather than a dependency bump.
+

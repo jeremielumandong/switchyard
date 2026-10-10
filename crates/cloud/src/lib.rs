@@ -32,3 +32,4 @@ mod xml;
 
 pub use error::{CloudError, Result};
 pub use kv::{KvCaps, KvItem, KvPage, KvQuery, KvService, KvWrite};
+pub use time::display_ms;

@@ -174,7 +174,7 @@ pub struct FilesTab {
     panes: [Pane; 2],
     active: usize,
     /// What the right pane can show: Hosts (SFTP) and FTP connections, with names.
-    sources: Vec<(FsRef, String)>,
+    sources: Vec<Source>,
     picker_open: bool,
     edit: Option<(usize, Edit, Entity<InputState>)>,
     /// A pane's "go to folder" box while it is open.
@@ -187,14 +187,17 @@ pub struct FilesTab {
 
 impl EventEmitter<FilesTabEvent> for FilesTab {}
 
+/// A file system the right pane can show: where, its name and its badge.
+pub type Source = (FsRef, String, &'static str);
+
 /// The display name of `fs` among `sources`.
-fn source_name(sources: &[(FsRef, String)], fs: &FsRef) -> String {
+fn source_name(sources: &[Source], fs: &FsRef) -> String {
     match fs {
         FsRef::Local => "This computer".into(),
         _ => sources
             .iter()
-            .find(|(s, _)| s == fs)
-            .map(|(_, n)| n.clone())
+            .find(|(s, _, _)| s == fs)
+            .map(|(_, n, _)| n.clone())
             .unwrap_or_default(),
     }
 }
@@ -211,7 +214,7 @@ impl FilesTab {
     pub fn new(
         core: RuntimeHandle,
         transfers: Entity<Transfers>,
-        sources: Vec<(FsRef, String)>,
+        sources: Vec<Source>,
         right: FsRef,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -256,10 +259,10 @@ impl FilesTab {
         self.list(1, None, cx);
     }
 
-    /// Hosts and FTP connections for the right pane's picker.
-    pub fn set_sources(&mut self, sources: Vec<(FsRef, String)>, cx: &mut Context<Self>) {
+    /// Hosts, FTP and cloud storage connections for the right pane's picker.
+    pub fn set_sources(&mut self, sources: Vec<Source>, cx: &mut Context<Self>) {
         if self.panes[1].fs.is_remote()
-            && let Some((_, n)) = sources.iter().find(|(fs, _)| *fs == self.panes[1].fs)
+            && let Some((_, n, _)) = sources.iter().find(|(fs, _, _)| *fs == self.panes[1].fs)
         {
             self.panes[1].label = n.clone();
         }
@@ -855,7 +858,7 @@ impl FilesTab {
                 .text_color(p.fg3)
                 .child(match pane.fs {
                     FsRef::Host(_) => "Opening SFTP on the Host's session…",
-                    FsRef::Conn(_) => "Connecting to the FTP server…",
+                    FsRef::Conn(_) => "Connecting…",
                     FsRef::Local => "Loading…",
                 })
                 .into_any_element()
@@ -976,7 +979,7 @@ impl FilesTab {
         };
 
         let picker: Option<AnyElement> = (ix == 1 && self.picker_open).then(|| {
-            let mut items: Vec<(FsRef, String)> = vec![(FsRef::Local, "This computer".into())];
+            let mut items: Vec<Source> = vec![(FsRef::Local, "This computer".into(), "FS")];
             items.extend(self.sources.iter().cloned());
             deferred(
                 div()
@@ -990,12 +993,7 @@ impl FilesTab {
                     .border_color(p.bd2)
                     .rounded(px(6.))
                     .shadow(ui::shadow(p))
-                    .children(items.into_iter().enumerate().map(|(i, (fs, name))| {
-                        let badge = match fs {
-                            FsRef::Local => "FS",
-                            FsRef::Host(_) => "SSH",
-                            FsRef::Conn(_) => "FTP",
-                        };
+                    .children(items.into_iter().enumerate().map(|(i, (fs, name, badge))| {
                         div()
                             .id(SharedString::from(format!("files-pick-{i}")))
                             .px(rpx(10.))
