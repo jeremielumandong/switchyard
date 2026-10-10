@@ -158,6 +158,8 @@ pub struct Workspace {
     /// The value viewer's decoded image, kept while the same cell stays selected.
     pub(crate) viewer_image: Option<(u64, std::sync::Arc<gpui_kit::Image>)>,
     _events: Task<()>,
+    /// Re-reads the Omarchy theme so "Follow Omarchy" tracks theme switches.
+    _omarchy: Option<Task<()>>,
     _subs: Vec<Subscription>,
 }
 
@@ -342,6 +344,30 @@ impl Workspace {
             split: None,
             viewer_image: None,
             _events: task,
+            _omarchy: crate::omarchy::supported().then(|| {
+                cx.spawn_in(window, async move |this, cx| {
+                    let mut last = None;
+                    loop {
+                        let colors = crate::api::compat::blocking(crate::omarchy::load).await;
+                        if colors != last {
+                            last = colors.clone();
+                            let alive = this.update_in(cx, |_, window, cx| {
+                                let p = crate::omarchy::set(colors, cx);
+                                match p {
+                                    Some(p) if palette(cx).id == ThemeId::Omarchy => {
+                                        theme::apply(p, Some(window), cx)
+                                    }
+                                    _ => cx.notify(),
+                                }
+                            });
+                            if alive.is_err() {
+                                break;
+                            }
+                        }
+                        cx.background_executor().timer(crate::omarchy::POLL).await;
+                    }
+                })
+            }),
             _subs: vec![search_sub, filter_sub, toast_sub, assistant_sub],
         }
     }
@@ -613,7 +639,7 @@ impl Workspace {
                 {
                     let id = ThemeId::from_key(v);
                     if id != palette(cx).id {
-                        theme::apply(id.palette(), Some(window), cx);
+                        theme::apply(theme::resolve(id, cx), Some(window), cx);
                     }
                 }
             }
@@ -2097,7 +2123,7 @@ impl Workspace {
     }
 
     pub(crate) fn set_theme(&mut self, id: ThemeId, window: &mut Window, cx: &mut Context<Self>) {
-        theme::apply(id.palette(), Some(window), cx);
+        theme::apply(theme::resolve(id, cx), Some(window), cx);
         self.core.send(Command::SetSetting {
             key: "theme".into(),
             value: id.key().into(),
