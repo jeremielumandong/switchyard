@@ -89,6 +89,8 @@ pub enum Overlay {
     SshImport(SshImportPreview),
     /// Bulk edit of Hosts (MX-6).
     BulkEdit(Entity<crate::bulk_edit::BulkEditView>),
+    /// "What do you want to connect to?" (design v3).
+    NewChooser,
     /// Disconnect a connection whose tabs hold an open transaction or staged edits.
     ConfirmDisconnect {
         /// The connection.
@@ -110,7 +112,7 @@ pub struct SshImportPreview {
     pub chosen: std::collections::HashSet<String>,
 }
 
-fn scrim(p: &Palette, top: bool) -> gpui_kit::Stateful<gpui_kit::Div> {
+pub(crate) fn scrim(p: &Palette, top: bool) -> gpui_kit::Stateful<gpui_kit::Div> {
     div()
         .id("scrim")
         .absolute()
@@ -299,6 +301,7 @@ impl Workspace {
             Some(Overlay::Components) => Some(self.render_components(p, cx)),
             Some(Overlay::History(input)) => Some(self.render_history(input.clone(), p, cx)),
             Some(Overlay::SshImport(preview)) => Some(self.render_ssh_import(preview, p, cx)),
+            Some(Overlay::NewChooser) => Some(self.render_new_chooser(p, cx)),
             Some(Overlay::ConfirmDisconnect {
                 profile,
                 name,

@@ -692,6 +692,24 @@ server or bundled Unix tools on Windows (Tier 3).
   SQLite. Note: not run against the real Cloudflare API; no transactions (each request
   commits on its own); only data written through the SQL API is visible.
 
+## Extra — UI v3 for many source types (user request, 2026-10-10)
+
+- [x] UI3-1 Window chrome from `docs/design/Switchyard_v3.dc.html`: a 48px activity rail
+  (Explorer, Schema, Tools, Activity, Settings); the Explorer grouped by Place (Pinned,
+  Servers · SSH, Cloud accounts → service groups, Direct connections) or by Type
+  (Databases, Terminals, Files & storage, Config & secrets), remembered in
+  `explorer.group`, with "Filter everything" (always by type, with a count); a Tools pane
+  (server and database tools, one entry per cloud service: Open or Add); an Activity pane
+  (sessions, running queries, tunnels, transfers; red dot on the rail when one failed);
+  title bar menus (File, View, Go, Query or Terminal for the tab in front, Help), "Open
+  anything" (⌘P) and a New button (⌘N) opening "What do you want to connect to?"; the
+  palette lists connections, tools and commands with chips (Tab cycles, `>` for
+  commands); status bar summary `N tunnels · N running · N transferring` opens Activity.
+  Tests: `explorer_tree`, `rail`, `palette` unit tests. Not done from the design: Edit
+  menu, the full-page Tools tab, the cloud tab redesigns (S3/R2/Blob details panel, App
+  Configuration compare and flags, Key Vault, CloudWatch tail), `~/.aws/config` and
+  `~/.pgpass` imports, credential expiry in the status bar (see Follow-ups).
+
 ## DBX — Database explorer and editors at DBeaver / SSMS level (user request)
 
 Gap analysis (2026-10-08): the explorer is a lazy, virtualized, single-connection tree
@@ -853,6 +871,12 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   running app's unlocked secrets over the loopback handoff, scoped by the session token.
 
 (Add items here instead of doing them mid-task.)
+- UI v3 (UI3-1) leftovers from the design: an Edit menu (undo/redo/copy/paste routed to the
+  focused view); a full-page Tools tab with one card per cloud and its sign-in state;
+  cloud account entities (today an account is inferred from provider plus folder) with
+  sign-in expiry in the Explorer, Activity and status bar; `~/.aws/config` and `~/.pgpass`
+  imports in the New chooser; the design's S3/R2/Blob, App Configuration, Key Vault and
+  CloudWatch tab layouts.
 - Redis: Pub/Sub and MONITOR viewers;
   Cluster and Sentinel; per-element pagination past 1,000 items;
   RESP3 (`HELLO 3`) types; integration test for TLS.

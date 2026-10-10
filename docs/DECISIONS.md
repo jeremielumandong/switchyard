@@ -1319,3 +1319,29 @@ Consequences: only SQLite-backed namespaces work, and only data stored through t
 (not the key-value API) is visible. The API's exact error texts were inferred from its
 OpenAPI schema; the driver has not been run against Cloudflare itself.
 
+
+## 2026-10-10 — UI v3: rail, Explorer by place or type, inferred cloud accounts
+
+Context: with databases, Redis, SSH, FTP, cloud storage, config stores and Durable Objects,
+one "Hosts / Local & direct / Cloud" list no longer fit. The user supplied
+`docs/design/Switchyard_v3.dc.html` (rail, Explorer grouped by place or type, Tools,
+Activity, menus, Open anything, New chooser).
+
+Decisions (inferred where the design is silent):
+- The design has no schema view; the app keeps one as a fourth rail item (Schema) between
+  Explorer and Tools, so the object tree and a terminal's Host files stay one click away.
+- There is no saved "cloud account" yet. The Explorer infers one from the provider plus the
+  profile's folder (`AWS`, `Azure · sandbox`); S3 with a custom endpoint is its own
+  `S3-compatible` account; D1 and Durable Object connections list under Cloudflare. The
+  account's dot shows its most exposed environment.
+- Pinned shows the favorite Hosts (the only pins profiles have today).
+- The Tools pane lists only features that exist: server and database tools, and one entry
+  per cloud service that opens the first saved connection or the editor ("Add"). Starter
+  tools from the design that the app lacks (SQS peek, Lambda invoke, cache purge, …) are
+  left out rather than shown as dead entries.
+- ⌘N opens the New chooser (was: the database editor); "New Connection…" stays in the
+  palette. ⌘P opens Open anything on All; ⇧⌘P opens it on Commands.
+- The title bar drops its theme and settings icons (View menu and the rail have them);
+  the Edit menu is left out until its commands can reach the focused editor.
+- Rail icons are Lucide SVGs (ISC) shipped in `crates/app/assets/icons` and served by
+  `rail::AppAssets` ahead of gpui-kit's set.

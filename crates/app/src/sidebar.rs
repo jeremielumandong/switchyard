@@ -14,18 +14,18 @@ use switchyard_core::db::{
     CatalogChunk, Engine, IntrospectScope, ObjectDetail, ObjectInfo, ObjectKind, SchemaInfo, Value,
     dialect_for,
 };
-use switchyard_core::store::{DbConnection, Favorite, Host, Profile, ProfileId, now_ms};
+use switchyard_core::store::{DbConnection, Favorite, Host, ProfileId, now_ms};
 use switchyard_core::{Command, SessionId};
 
 use crate::actions::{
     TreeCollapse, TreeCopy, TreeDown, TreeExpand, TreeOpen, TreePin, TreeRefresh, TreeUp,
 };
-use crate::app_state::{SessionState, badge_of, next_id};
+use crate::app_state::{SessionState, next_id};
 use crate::appearance::{rpx, ts};
-use crate::conn_editor::ConnKind;
 use crate::ddl_tab::DdlTab;
 pub(crate) use crate::explorer::CoreSink;
 use crate::explorer::{ObjRef, RowId};
+use crate::explorer_tree::{ConnAction, ConnRow, ExplorerGroup, RowKind, explorer_rows};
 use crate::sql_tab::ViewerFormat;
 use crate::theme::{MONO, Palette};
 use crate::ui;
@@ -34,11 +34,18 @@ use crate::workspace::{Tab, Workspace};
 /// Which sidebar list is shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SideTab {
-    /// Connections tree.
-    Connections,
-    /// Schema explorer.
+    /// Every saved source, by place or by type (design v3).
+    Explorer,
+    /// Schema explorer of the database in front (the Host's files for a terminal).
     Schema,
+    /// Tools for servers, databases and cloud accounts.
+    Tools,
+    /// Sessions, running queries, tunnels and transfers.
+    Activity,
 }
+
+/// Setting key of the Explorer's grouping (`place` or `type`).
+pub(crate) const EXPLORER_GROUP_KEY: &str = "explorer.group";
 
 /// Loading state of a lazy tree level.
 #[derive(Clone, Debug, Default)]
@@ -1144,26 +1151,6 @@ fn schema_tree_rows(
     }
 }
 
-/// A connections-tree row.
-#[derive(Clone)]
-struct ConnRow {
-    is_group: bool,
-    key: String,
-    badge: &'static str,
-    label: SharedString,
-    sub: SharedString,
-    env: Option<switchyard_core::store::EnvironmentLabel>,
-    live: bool,
-    profile: Option<ProfileId>,
-    action: ConnAction,
-    /// Can be dragged to reorder among the rows of the same group (`group`).
-    drag: Option<DraggedProfile>,
-    /// Extra left indent (rows inside a folder).
-    indent: f32,
-    /// A session folder's name (its group row; right click edits its Hosts).
-    folder: Option<String>,
-}
-
 /// Hosts split into those outside any folder (in order) and folders (sorted by name,
 /// ignoring case) with their Hosts in order.
 pub(crate) fn folder_groups<'a>(
@@ -1214,14 +1201,6 @@ pub(crate) fn move_to(
     let t = v.iter().position(|i| i == target).unwrap_or(v.len());
     v.insert(if from < to { t + 1 } else { t }, item);
     v
-}
-
-#[derive(Clone)]
-enum ConnAction {
-    Toggle,
-    Open,
-    Terminal(Option<ProfileId>),
-    Files,
 }
 
 /// Context-menu target.
@@ -1567,249 +1546,14 @@ impl Workspace {
                 _ => None,
             })
             .collect();
-        let mut rows = Vec::new();
-        let leaf = |p: &Profile, group: &str| -> ConnRow {
-            let (label, sub, action) = match p {
-                Profile::Db(d) => (
-                    d.name.clone(),
-                    if d.via_host.is_some() {
-                        String::new()
-                    } else {
-                        format!(":{}", d.port)
-                    },
-                    ConnAction::Open,
-                ),
-                Profile::File(f) => (f.name.clone(), String::new(), ConnAction::Files),
-                // Storage opens in Files, the key / value tools in their own tab.
-                Profile::Cloud(c) => (
-                    c.name.clone(),
-                    c.service.short_name().to_owned(),
-                    ConnAction::Files,
-                ),
-                Profile::Terminal(t) => (
-                    t.name.clone(),
-                    String::new(),
-                    ConnAction::Terminal(t.host_id.clone()),
-                ),
-                Profile::Host(h) => (
-                    h.name.clone(),
-                    String::new(),
-                    ConnAction::Terminal(Some(h.id.clone())),
-                ),
-            };
-            let label: SharedString = label.into();
-            ConnRow {
-                is_group: false,
-                key: p.id().0.clone(),
-                badge: badge_of(p),
-                label: label.clone(),
-                sub: sub.into(),
-                env: None,
-                live: live.contains(p.id()),
-                profile: Some(p.id().clone()),
-                action,
-                drag: Some(DraggedProfile {
-                    id: p.id().clone(),
-                    group: group.to_owned(),
-                    label,
-                }),
-                indent: 0.,
-                folder: None,
-            }
-        };
-        // Favorite Hosts first (MX-6): one click opens a terminal.
-        let favorites: Vec<&Host> = self.profiles.hosts().filter(|h| h.favorite).collect();
-        if !favorites.is_empty() {
-            let key = "g:fav".to_owned();
-            rows.push(ConnRow {
-                is_group: true,
-                key: key.clone(),
-                badge: "",
-                label: "★ Favorites".into(),
-                sub: "".into(),
-                env: None,
-                live: false,
-                profile: None,
-                action: ConnAction::Toggle,
-                drag: None,
-                indent: 0.,
-                folder: None,
-            });
-            if !self.collapsed.contains(&key) {
-                rows.extend(favorites.into_iter().map(|h| ConnRow {
-                    is_group: false,
-                    key: format!("fav:{}", h.id),
-                    badge: "SSH",
-                    label: h.name.clone().into(),
-                    sub: h.address.clone().into(),
-                    env: Some(h.environment),
-                    live: false,
-                    profile: Some(h.id.clone()),
-                    action: ConnAction::Terminal(Some(h.id.clone())),
-                    drag: None,
-                    indent: 0.,
-                    folder: None,
-                }));
-            }
-        }
-        let (loose, folders) = folder_groups(self.profiles.hosts());
-        let mut groups: Vec<(Option<String>, Vec<&Host>)> = vec![(None, loose)];
-        groups.extend(folders.into_iter().map(|(f, hs)| (Some(f), hs)));
-        for (folder, hosts) in groups {
-            let indent = if let Some(name) = &folder {
-                let key = format!("fd:{name}");
-                let count = hosts.len();
-                rows.push(ConnRow {
-                    is_group: true,
-                    key: key.clone(),
-                    badge: "",
-                    label: format!("▣ {name}").into(),
-                    sub: count.to_string().into(),
-                    env: None,
-                    live: false,
-                    profile: None,
-                    action: ConnAction::Toggle,
-                    drag: None,
-                    indent: 0.,
-                    folder: Some(name.clone()),
-                });
-                if self.collapsed.contains(&key) {
-                    continue;
-                }
-                14.
-            } else {
-                0.
-            };
-            for h in hosts {
-                let key = format!("h:{}", h.id);
-                let collapsed = self.collapsed.contains(&key);
-                let kids = self.profiles.host_children(&h.id);
-                let any_live = kids.iter().any(|k| live.contains(k.id()));
-                rows.push(ConnRow {
-                    is_group: true,
-                    key: key.clone(),
-                    badge: "",
-                    label: h.name.clone().into(),
-                    sub: h.address.clone().into(),
-                    env: Some(h.environment),
-                    live: any_live,
-                    profile: Some(h.id.clone()),
-                    action: ConnAction::Toggle,
-                    drag: Some(DraggedProfile {
-                        id: h.id.clone(),
-                        group: "hosts".into(),
-                        label: h.name.clone().into(),
-                    }),
-                    indent,
-                    folder: None,
-                });
-                if !collapsed {
-                    rows.push(ConnRow {
-                        is_group: false,
-                        key: format!("{key}:term"),
-                        badge: "SSH",
-                        label: "Terminal".into(),
-                        sub: "".into(),
-                        env: None,
-                        live: false,
-                        profile: Some(h.id.clone()),
-                        action: ConnAction::Terminal(Some(h.id.clone())),
-                        drag: None,
-                        indent,
-                        folder: None,
-                    });
-                    rows.extend(kids.into_iter().map(|k| {
-                        let mut r = leaf(k, &key);
-                        r.indent = indent;
-                        r
-                    }));
-                }
-            }
-        }
-        let direct = self.profiles.direct();
-        let key = "g:direct".to_owned();
-        rows.push(ConnRow {
-            is_group: true,
-            key: key.clone(),
-            badge: "",
-            label: "Local & direct".into(),
-            sub: "".into(),
-            env: Some(switchyard_core::store::EnvironmentLabel::Local),
-            live: direct.iter().any(|k| live.contains(k.id())),
-            profile: None,
-            action: ConnAction::Toggle,
-            drag: None,
-            indent: 0.,
-            folder: None,
-        });
-        if !self.collapsed.contains(&key) {
-            rows.push(ConnRow {
-                is_group: false,
-                key: "local-shell".into(),
-                badge: "SH",
-                label: "Local shell".into(),
-                sub: "".into(),
-                env: None,
-                live: false,
-                profile: None,
-                action: ConnAction::Terminal(None),
-                drag: None,
-                indent: 0.,
-                folder: None,
-            });
-            rows.extend(direct.into_iter().map(|p| {
-                let mut r = leaf(p, "g:direct");
-                if let Profile::Db(d) = p {
-                    r.env = Some(d.environment);
-                }
-                r
-            }));
-            rows.push(ConnRow {
-                is_group: false,
-                key: "local-files".into(),
-                badge: "FS",
-                label: "Local files".into(),
-                sub: "".into(),
-                env: None,
-                live: false,
-                profile: None,
-                action: ConnAction::Files,
-                drag: None,
-                indent: 0.,
-                folder: None,
-            });
-        }
-        let clouds: Vec<&Profile> = self
-            .profiles
-            .all
-            .iter()
-            .filter(|p| matches!(p, Profile::Cloud(_)))
-            .collect();
-        if !clouds.is_empty() {
-            let key = "g:cloud".to_owned();
-            rows.push(ConnRow {
-                is_group: true,
-                key: key.clone(),
-                badge: "",
-                label: "Cloud".into(),
-                sub: "".into(),
-                env: None,
-                live: clouds.iter().any(|k| live.contains(k.id())),
-                profile: None,
-                action: ConnAction::Toggle,
-                drag: None,
-                indent: 0.,
-                folder: None,
-            });
-            if !self.collapsed.contains(&key) {
-                rows.extend(clouds.into_iter().map(|p| {
-                    let mut r = leaf(p, "g:cloud");
-                    r.env = Some(p.environment());
-                    r
-                }));
-            }
-        }
-        rows
+        let filter = self.explorer_filter.read(cx).value().to_string();
+        explorer_rows(
+            &self.profiles,
+            &self.collapsed,
+            &live,
+            self.explorer_group,
+            &filter,
+        )
     }
 
     /// Run a context-menu action on a schema object, on the object's own connection
@@ -2029,10 +1773,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let side = self.side_tab;
-        // With an SSH terminal in front, the second tab browses that Host's files.
+        // With an SSH terminal in front, the schema view browses that Host's files.
         let ssh = self.active_ssh_host(cx);
         let list: AnyElement = match (side, &ssh) {
-            (SideTab::Connections, _) => self.render_conn_list(p, cx),
+            (SideTab::Explorer, _) => self.render_conn_list(p, cx),
             (SideTab::Schema, Some(host)) => {
                 let name = self
                     .profiles
@@ -2043,8 +1787,104 @@ impl Workspace {
                 panel.update(cx, |f, cx| f.render_panel(&name, cx))
             }
             (SideTab::Schema, None) => self.render_schema(p, cx),
+            (SideTab::Tools, _) => self.render_tools_pane(p, cx),
+            (SideTab::Activity, _) => self.render_activity_pane(p, cx),
         };
-        let second = if ssh.is_some() { "Files" } else { "Schema" };
+        let title = match (side, &ssh) {
+            (SideTab::Explorer, _) => "EXPLORER",
+            (SideTab::Schema, Some(_)) => "FILES",
+            (SideTab::Schema, None) => "SCHEMA",
+            (SideTab::Tools, _) => "TOOLS",
+            (SideTab::Activity, _) => "ACTIVITY",
+        };
+        let group = self.explorer_group;
+        let explorer = side == SideTab::Explorer;
+        let header =
+            div()
+                .h(rpx(34.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(rpx(8.))
+                .pl(rpx(12.))
+                .pr(rpx(8.))
+                .text_size(ts::SMALL)
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(p.fg3)
+                .child(div().flex_1().child(title))
+                .when(explorer, |d| {
+                    d.child(ui::segmented(
+                        "explorer-group",
+                        [ExplorerGroup::Place, ExplorerGroup::Type]
+                            .into_iter()
+                            .map(|g| {
+                                let label = match g {
+                                    ExplorerGroup::Place => "Place",
+                                    ExplorerGroup::Type => "Type",
+                                };
+                                (
+                                    SharedString::from(label),
+                                    group == g,
+                                    Box::new(cx.listener(move |this, _, _, cx| {
+                                        this.set_explorer_group(g, cx)
+                                    })) as ui::OnClick,
+                                )
+                            })
+                            .collect(),
+                        18.,
+                        p,
+                    ))
+                })
+                .child(
+                    div()
+                        .id("side-new")
+                        .px(rpx(5.))
+                        .rounded(px(4.))
+                        .text_size(ts::TITLE_PLUS)
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(p.fg2)
+                        .cursor_pointer()
+                        .hover(|s| s.bg(p.hover))
+                        .tooltip(|w, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new("New…").build(w, cx)
+                        })
+                        .on_click(cx.listener(|this, _, w, cx| this.open_new_chooser(w, cx)))
+                        .child("+"),
+                );
+        let filter = explorer.then(|| {
+            let count = if self.explorer_filter.read(cx).value().trim().is_empty() {
+                String::new()
+            } else {
+                crate::explorer_tree::leaf_count(&self.conn_rows(cx)).to_string()
+            };
+            div().px(rpx(8.)).pb(rpx(4.)).flex_none().child(
+                div()
+                    .h(rpx(26.))
+                    .flex()
+                    .items_center()
+                    .gap(rpx(8.))
+                    .px(rpx(8.))
+                    .border_1()
+                    .border_color(p.bd)
+                    .rounded(px(6.))
+                    .bg(p.bg)
+                    .text_size(ts::BODY)
+                    .child(
+                        div().flex_1().min_w_0().child(
+                            Input::new(&self.explorer_filter)
+                                .appearance(false)
+                                .text_size(ts::BODY),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .font_family(MONO)
+                            .text_size(ts::CAPTION_PLUS)
+                            .text_color(p.fg3)
+                            .child(count),
+                    ),
+            )
+        });
         div()
             .w(rpx(self.sidebar_width))
             .relative()
@@ -2074,102 +1914,63 @@ impl Workspace {
             .border_r_1()
             .border_color(p.bd)
             .min_h_0()
-            .child(
-                div()
-                    .px(rpx(8.))
-                    .pt(rpx(8.))
-                    .pb(rpx(6.))
-                    .flex_none()
-                    .child(ui::segmented(
-                        "side-tabs",
-                        vec![
-                            (
-                                "Connections".into(),
-                                side == SideTab::Connections,
-                                Box::new(cx.listener(|this, _, _, cx| {
-                                    this.side_tab = SideTab::Connections;
-                                    cx.notify();
-                                })),
-                            ),
-                            (
-                                second.into(),
-                                side == SideTab::Schema,
-                                Box::new(cx.listener(|this, _, _, cx| {
-                                    this.side_tab = SideTab::Schema;
-                                    cx.notify();
-                                })),
-                            ),
-                        ],
-                        22.,
-                        p,
-                    )),
-            )
+            .child(header)
+            .children(filter)
             .child(list)
-            .child(
-                div()
-                    .flex_none()
-                    .p(rpx(8.))
-                    .border_t_1()
-                    .border_color(p.bd)
-                    .flex()
-                    .gap(rpx(6.))
-                    .child(
-                        ui::button("new-conn", "New connection", ui::Kind::Secondary, p)
-                            .flex_1()
-                            .on_click(cx.listener(|this, _, w, cx| {
-                                this.open_conn_editor(
-                                    ConnKind::Db(switchyard_core::db::Engine::Postgres),
-                                    None,
-                                    w,
-                                    cx,
-                                )
-                            })),
-                    )
-                    .child(
-                        ui::button("new-host", "New host", ui::Kind::Secondary, p).on_click(
-                            cx.listener(|this, _, w, cx| {
-                                this.open_conn_editor(ConnKind::Ssh, None, w, cx)
-                            }),
-                        ),
-                    ),
-            )
+            .when(explorer, |d| {
+                d.child(
+                    div()
+                        .flex_none()
+                        .px(rpx(12.))
+                        .py(rpx(7.))
+                        .border_t_1()
+                        .border_color(p.bd)
+                        .text_size(ts::SMALL)
+                        .text_color(p.fg3)
+                        .child("Right-click anything for its actions"),
+                )
+            })
             .into_any_element()
+    }
+
+    /// Group the Explorer by place or by type, and remember it.
+    pub(crate) fn set_explorer_group(&mut self, g: ExplorerGroup, cx: &mut Context<Self>) {
+        self.explorer_group = g;
+        self.side_tab = SideTab::Explorer;
+        self.sidebar_open = true;
+        self.core.send(Command::SetSetting {
+            key: EXPLORER_GROUP_KEY.into(),
+            value: g.key().into(),
+        });
+        cx.notify();
     }
 
     fn render_conn_list(&mut self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let rows = self.conn_rows(cx);
         let count = rows.len();
         let p = *p;
-        div()
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .px(rpx(12.))
-                    .pt(rpx(6.))
-                    .pb(rpx(4.))
-                    .child(ui::caption("HOSTS", &p))
-                    .child(ui::caption("by host", &p).font_family(MONO)),
-            )
-            .child(
-                uniform_list(
-                    "conn-rows",
-                    count,
-                    cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
-                        range
-                            .map(|i| this.render_conn_row(&rows[i], i, &p, cx))
-                            .collect::<Vec<_>>()
-                    }),
-                )
+        if count == 0 {
+            return div()
                 .flex_1()
-                .pb(rpx(8.)),
-            )
-            .into_any_element()
+                .px(rpx(12.))
+                .py(rpx(16.))
+                .text_size(ts::BODY)
+                .text_color(p.fg3)
+                .child("Nothing matches the filter")
+                .into_any_element();
+        }
+        uniform_list(
+            "conn-rows",
+            count,
+            cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                range
+                    .map(|i| this.render_conn_row(&rows[i], i, &p, cx))
+                    .collect::<Vec<_>>()
+            }),
+        )
+        .flex_1()
+        .pb(rpx(8.))
+        .into_any_element()
     }
 
     fn render_conn_row(
@@ -2179,11 +1980,12 @@ impl Workspace {
         p: &Palette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let active = !r.is_group
+        let active = r.kind == RowKind::Leaf
             && match (&r.profile, self.active_sql()) {
                 (Some(id), Some(t)) => t.read(cx).connection.as_ref().is_some_and(|c| &c.id == id),
                 _ => false,
             };
+        let head = r.kind == RowKind::Head;
         let key = r.key.clone();
         let action = r.action.clone();
         let profile = r.profile.clone();
@@ -2191,11 +1993,22 @@ impl Workspace {
         let ctx_profile = r.profile.clone();
         let ctx_folder = r.folder.clone();
         let drop_line = p.acc;
-        let drop_target = r.drag.clone();
-        let over_target = r.drag.clone();
+        let drag = r
+            .drag_group
+            .as_ref()
+            .zip(r.profile.as_ref())
+            .map(|(g, id)| DraggedProfile {
+                id: id.clone(),
+                group: g.clone(),
+                label: r.label.clone(),
+            });
+        let drop_target = drag.clone();
+        let over_target = drag.clone();
+        // A row's dot: its environment at the top level of a section.
+        let dot = r.env.filter(|_| r.depth == 0 || r.kind == RowKind::Leaf);
         div()
             .id(("conn-row", i))
-            .when_some(r.drag.clone(), |d, drag| {
+            .when_some(drag, |d, drag| {
                 d.on_drag(drag, |d: &DraggedProfile, _, _, cx| {
                     let label = d.label.to_string();
                     cx.new(|_| crate::files_tab::DragPreview(label))
@@ -2215,15 +2028,25 @@ impl Workspace {
                 }
             }))
             .w_full()
-            .h(rpx(26.))
             .flex()
             .items_center()
             .gap(rpx(7.))
-            .pl(rpx(r.indent + if r.is_group { 8. } else { 26. }))
             .pr(rpx(10.))
-            .text_size(ts::UI)
+            .when(head, |d| {
+                d.h(rpx(30.))
+                    .pt(rpx(8.))
+                    .pl(rpx(12.))
+                    .text_size(ts::SMALL)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(p.fg3)
+            })
+            .when(!head, |d| {
+                d.h(rpx(26.))
+                    .pl(rpx(8. + f32::from(r.depth) * 14.))
+                    .text_size(ts::UI)
+                    .hover(|s| s.bg(p.hover))
+            })
             .when(active, |d| d.bg(p.sel))
-            .hover(|s| s.bg(p.hover))
             .on_click(cx.listener(move |this, _, w, cx| {
                 match &action {
                     ConnAction::Toggle => {
@@ -2242,6 +2065,11 @@ impl Workspace {
                         Some(id) => this.open_profile(id, w, cx),
                         None => this.open_files(w, cx),
                     },
+                    ConnAction::Profile => {
+                        if let Some(id) = &profile {
+                            this.open_profile(id, w, cx);
+                        }
+                    }
                 }
                 cx.notify();
             }))
@@ -2257,49 +2085,49 @@ impl Workspace {
                     }
                 }),
             )
-            .child(
-                div()
-                    .w(rpx(10.))
-                    .flex_none()
-                    .text_color(p.fg3)
-                    .text_size(ts::TINY)
-                    .child(if r.is_group {
-                        if collapsed { "▸" } else { "▾" }
-                    } else {
-                        ""
-                    }),
-            )
-            .when(r.is_group, |d| {
-                d.child(ui::dot(r.env.map_or(p.loc, |e| p.env(e)), 7.))
+            .when(!head, |d| {
+                d.child(
+                    div()
+                        .w(rpx(10.))
+                        .flex_none()
+                        .text_color(p.fg3)
+                        .text_size(ts::TINY)
+                        .child(if r.kind == RowKind::Group {
+                            if collapsed { "▸" } else { "▾" }
+                        } else {
+                            ""
+                        }),
+                )
             })
-            .when(!r.is_group, |d| {
-                d.child(ui::monogram(r.badge, 28., p))
-                    .when_some(r.env, |d, e| d.child(ui::dot(p.env(e), 5.)))
+            .when_some(dot, |d, e| d.child(ui::dot(p.env(e), 7.)))
+            .when(!r.badge.is_empty(), |d| {
+                d.child(ui::monogram(r.badge, 26., p))
             })
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .when(r.is_group, |d| d.font_weight(FontWeight::SEMIBOLD))
+                    .when(r.kind == RowKind::Group && r.depth == 0, |d| {
+                        d.font_weight(FontWeight::SEMIBOLD)
+                    })
+                    .when(r.kind == RowKind::Group && r.depth > 0, |d| {
+                        d.text_color(p.fg2)
+                    })
                     .child(r.label.clone()),
             )
             .child(
                 div()
+                    .flex_shrink(1.)
+                    .max_w(gpui_kit::relative(0.46))
+                    .truncate()
                     .font_family(MONO)
+                    .font_weight(FontWeight::NORMAL)
                     .text_size(ts::SMALL)
                     .text_color(p.fg3)
-                    .whitespace_nowrap()
                     .child(r.sub.clone()),
             )
-            .child(ui::dot(
-                if r.live {
-                    p.dev
-                } else {
-                    gpui_kit::transparent_black()
-                },
-                6.,
-            ))
+            .when(r.live, |d| d.child(ui::dot(p.dev, 6.)))
             .into_any_element()
     }
 
