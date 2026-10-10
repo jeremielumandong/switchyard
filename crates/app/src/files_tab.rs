@@ -239,7 +239,7 @@ impl FilesTab {
     pub fn right_host(&self) -> Option<&ProfileId> {
         match &self.panes[1].fs {
             FsRef::Host(h) => Some(h),
-            FsRef::Local | FsRef::Ftp(_) => None,
+            FsRef::Local | FsRef::Conn(_) => None,
         }
     }
 
@@ -855,7 +855,7 @@ impl FilesTab {
                 .text_color(p.fg3)
                 .child(match pane.fs {
                     FsRef::Host(_) => "Opening SFTP on the Host's session…",
-                    FsRef::Ftp(_) => "Connecting to the FTP server…",
+                    FsRef::Conn(_) => "Connecting to the FTP server…",
                     FsRef::Local => "Loading…",
                 })
                 .into_any_element()
@@ -994,7 +994,7 @@ impl FilesTab {
                         let badge = match fs {
                             FsRef::Local => "FS",
                             FsRef::Host(_) => "SSH",
-                            FsRef::Ftp(_) => "FTP",
+                            FsRef::Conn(_) => "FTP",
                         };
                         div()
                             .id(SharedString::from(format!("files-pick-{i}")))

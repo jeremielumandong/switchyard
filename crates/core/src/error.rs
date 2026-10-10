@@ -15,6 +15,9 @@ pub enum CoreError {
     /// Database failure.
     #[error(transparent)]
     Db(#[from] DbError),
+    /// Cloud service failure.
+    #[error(transparent)]
+    Cloud(#[from] switchyard_cloud::CloudError),
     /// Something that does not exist.
     #[error("{0} not found")]
     NotFound(String),

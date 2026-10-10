@@ -632,6 +632,365 @@ pub struct FileConnection {
     pub secret: Option<SecretRef>,
 }
 
+/// Cloud provider of a [`CloudService`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CloudProvider {
+    /// Amazon Web Services.
+    Aws,
+    /// Microsoft Azure.
+    Azure,
+    /// Cloudflare.
+    Cloudflare,
+}
+
+impl CloudProvider {
+    /// `AWS`, `Azure`, `Cloudflare`.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            CloudProvider::Aws => "AWS",
+            CloudProvider::Azure => "Azure",
+            CloudProvider::Cloudflare => "Cloudflare",
+        }
+    }
+}
+
+/// What a cloud connection opens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CloudService {
+    /// Amazon S3, or any S3-compatible endpoint (MinIO, Wasabi…).
+    S3,
+    /// Cloudflare R2.
+    R2,
+    /// Azure Blob Storage (a storage account).
+    AzureBlob,
+    /// Azure App Configuration.
+    AppConfig,
+    /// Azure Key Vault secrets.
+    KeyVault,
+    /// AWS Secrets Manager.
+    SecretsManager,
+    /// AWS Systems Manager Parameter Store.
+    ParameterStore,
+    /// Cloudflare Workers KV.
+    WorkersKv,
+}
+
+impl CloudService {
+    /// Every service, grouped by provider.
+    pub const ALL: [CloudService; 8] = [
+        CloudService::S3,
+        CloudService::SecretsManager,
+        CloudService::ParameterStore,
+        CloudService::AzureBlob,
+        CloudService::AppConfig,
+        CloudService::KeyVault,
+        CloudService::R2,
+        CloudService::WorkersKv,
+    ];
+
+    /// The provider.
+    pub fn provider(self) -> CloudProvider {
+        match self {
+            CloudService::S3 | CloudService::SecretsManager | CloudService::ParameterStore => {
+                CloudProvider::Aws
+            }
+            CloudService::AzureBlob | CloudService::AppConfig | CloudService::KeyVault => {
+                CloudProvider::Azure
+            }
+            CloudService::R2 | CloudService::WorkersKv => CloudProvider::Cloudflare,
+        }
+    }
+
+    /// Full name.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            CloudService::S3 => "Amazon S3",
+            CloudService::R2 => "Cloudflare R2",
+            CloudService::AzureBlob => "Azure Blob Storage",
+            CloudService::AppConfig => "Azure App Configuration",
+            CloudService::KeyVault => "Azure Key Vault",
+            CloudService::SecretsManager => "AWS Secrets Manager",
+            CloudService::ParameterStore => "AWS Parameter Store",
+            CloudService::WorkersKv => "Cloudflare Workers KV",
+        }
+    }
+
+    /// Short name without the provider.
+    pub fn short_name(self) -> &'static str {
+        match self {
+            CloudService::S3 => "S3",
+            CloudService::R2 => "R2",
+            CloudService::AzureBlob => "Blob Storage",
+            CloudService::AppConfig => "App Configuration",
+            CloudService::KeyVault => "Key Vault",
+            CloudService::SecretsManager => "Secrets Manager",
+            CloudService::ParameterStore => "Parameter Store",
+            CloudService::WorkersKv => "Workers KV",
+        }
+    }
+
+    /// Monogram for lists.
+    pub fn badge(self) -> &'static str {
+        match self {
+            CloudService::S3 => "S3",
+            CloudService::R2 => "R2",
+            CloudService::AzureBlob => "BLOB",
+            CloudService::AppConfig => "APPC",
+            CloudService::KeyVault => "AKV",
+            CloudService::SecretsManager => "SM",
+            CloudService::ParameterStore => "SSM",
+            CloudService::WorkersKv => "WKV",
+        }
+    }
+
+    /// Object storage, browsed in the Files tab (the rest open the key / value tool).
+    pub fn is_storage(self) -> bool {
+        matches!(
+            self,
+            CloudService::S3 | CloudService::R2 | CloudService::AzureBlob
+        )
+    }
+
+    /// Sign-in methods, the default first.
+    pub fn auth_methods(self) -> &'static [CloudAuth] {
+        use CloudAuth::*;
+        match self {
+            CloudService::S3 | CloudService::SecretsManager | CloudService::ParameterStore => {
+                &[AwsProfile, AccessKey]
+            }
+            CloudService::R2 => &[AccessKey, ApiToken],
+            CloudService::WorkersKv => &[ApiToken],
+            CloudService::AzureBlob => &[
+                EntraInteractive,
+                EntraDeviceCode,
+                AzureCli,
+                ConnectionString,
+                SharedKey,
+                Sas,
+                EntraServicePrincipal,
+            ],
+            CloudService::AppConfig => &[
+                EntraInteractive,
+                EntraDeviceCode,
+                AzureCli,
+                ConnectionString,
+                EntraServicePrincipal,
+            ],
+            CloudService::KeyVault => &[
+                EntraInteractive,
+                EntraDeviceCode,
+                AzureCli,
+                EntraServicePrincipal,
+            ],
+        }
+    }
+}
+
+/// How a cloud connection signs in. Secrets (keys, tokens, connection strings) are in the
+/// keychain under the profile's secret.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CloudAuth {
+    /// Access key id (`user`) and secret access key.
+    #[default]
+    AccessKey,
+    /// A profile of the AWS CLI (`user`; SSO, roles and `credential_process` included).
+    AwsProfile,
+    /// Cloudflare API token (R2 derives S3 keys from it).
+    ApiToken,
+    /// An Azure connection string (storage account or App Configuration store).
+    ConnectionString,
+    /// Storage account key.
+    SharedKey,
+    /// Shared access signature.
+    Sas,
+    /// Microsoft Entra in the browser (MFA, conditional access).
+    EntraInteractive,
+    /// Microsoft Entra with a device code.
+    EntraDeviceCode,
+    /// Microsoft Entra service principal: client id (`user`) and secret, in `tenant`.
+    EntraServicePrincipal,
+    /// The Azure CLI's signed-in account (`az login`).
+    AzureCli,
+}
+
+impl CloudAuth {
+    /// Label in the connection editor.
+    pub fn label(self) -> &'static str {
+        match self {
+            CloudAuth::AccessKey => "Access key",
+            CloudAuth::AwsProfile => "AWS profile (SSO, role, keys)",
+            CloudAuth::ApiToken => "Cloudflare API token",
+            CloudAuth::ConnectionString => "Connection string",
+            CloudAuth::SharedKey => "Account key",
+            CloudAuth::Sas => "SAS token",
+            CloudAuth::EntraInteractive => "Microsoft sign-in (browser)",
+            CloudAuth::EntraDeviceCode => "Microsoft sign-in (device code)",
+            CloudAuth::EntraServicePrincipal => "Service principal",
+            CloudAuth::AzureCli => "Azure CLI (az login)",
+        }
+    }
+
+    /// Whether it uses a saved secret.
+    pub fn needs_secret(self) -> bool {
+        matches!(
+            self,
+            CloudAuth::AccessKey
+                | CloudAuth::ApiToken
+                | CloudAuth::ConnectionString
+                | CloudAuth::SharedKey
+                | CloudAuth::Sas
+                | CloudAuth::EntraServicePrincipal
+        )
+    }
+
+    /// Microsoft Entra sign-in done by Switchyard.
+    pub fn is_entra(self) -> bool {
+        matches!(
+            self,
+            CloudAuth::EntraInteractive
+                | CloudAuth::EntraDeviceCode
+                | CloudAuth::EntraServicePrincipal
+        )
+    }
+}
+
+/// A cloud service endpoint: object storage (opened in the Files tab) or a key / value
+/// tool (App Configuration, Key Vault, Secrets Manager, Parameter Store, Workers KV).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CloudConnection {
+    /// Id.
+    pub id: ProfileId,
+    /// Display name.
+    pub name: String,
+    /// Service.
+    pub service: CloudService,
+    /// Sign-in method.
+    #[serde(default)]
+    pub auth: CloudAuth,
+    /// Where the service is: S3 a custom endpoint URL (empty for AWS); R2 and Workers KV
+    /// the account id; Blob Storage the account name or blob endpoint; App Configuration
+    /// the store name or endpoint; Key Vault the vault name or URL.
+    #[serde(default)]
+    pub endpoint: String,
+    /// AWS region (empty: the profile's, else `us-east-1`).
+    #[serde(default)]
+    pub region: String,
+    /// Access key id, AWS profile name, storage account (account key) or client id
+    /// (service principal).
+    #[serde(default)]
+    pub user: String,
+    /// Microsoft Entra tenant (directory id or domain); empty: the account's home tenant.
+    #[serde(default)]
+    pub tenant: Option<String>,
+    /// Entra application (client) id replacing the default public client.
+    #[serde(default)]
+    pub entra_client_id: Option<String>,
+    /// Bucket or container (and folder) opened first, or the Workers KV namespace id.
+    #[serde(default)]
+    pub default_path: Option<String>,
+    /// Environment label.
+    pub environment: EnvironmentLabel,
+    /// Refuse every change (uploads, deletes, edits).
+    #[serde(default)]
+    pub read_only: bool,
+    /// Folder for grouping in the sidebar.
+    #[serde(default)]
+    pub folder: Option<String>,
+    /// Secret: key, token, SAS, connection string or client secret.
+    #[serde(default)]
+    pub secret: Option<SecretRef>,
+}
+
+impl CloudConnection {
+    /// A new connection with the service's default sign-in.
+    pub fn new(name: impl Into<String>, service: CloudService) -> Self {
+        Self {
+            id: ProfileId::new(),
+            name: name.into(),
+            service,
+            auth: service.auth_methods()[0],
+            endpoint: String::new(),
+            region: String::new(),
+            user: String::new(),
+            tenant: None,
+            entra_client_id: None,
+            default_path: None,
+            environment: EnvironmentLabel::Development,
+            read_only: false,
+            folder: None,
+            secret: None,
+        }
+    }
+
+    fn validate(&self) -> Result<(), ValidationError> {
+        if !self.service.auth_methods().contains(&self.auth) {
+            return Err(ValidationError::new(
+                "auth",
+                &format!(
+                    "{} does not sign in with {}",
+                    self.service.display_name(),
+                    self.auth.label()
+                ),
+            ));
+        }
+        let endpoint = self.endpoint.trim();
+        let needs_endpoint = match self.service {
+            CloudService::S3 | CloudService::SecretsManager | CloudService::ParameterStore => None,
+            CloudService::R2 | CloudService::WorkersKv => Some("Account ID is required"),
+            CloudService::AzureBlob if self.auth == CloudAuth::ConnectionString => None,
+            CloudService::AzureBlob => Some("Storage account is required"),
+            CloudService::AppConfig if self.auth == CloudAuth::ConnectionString => None,
+            CloudService::AppConfig => Some("Store name or endpoint is required"),
+            CloudService::KeyVault => Some("Vault name or URL is required"),
+        };
+        if let Some(msg) = needs_endpoint
+            && endpoint.is_empty()
+        {
+            return Err(ValidationError::new("endpoint", msg));
+        }
+        if matches!(self.service, CloudService::R2 | CloudService::WorkersKv)
+            && !endpoint.chars().all(|c| c.is_ascii_alphanumeric())
+        {
+            return Err(ValidationError::new(
+                "endpoint",
+                "The account ID is letters and digits (Cloudflare dashboard → Overview)",
+            ));
+        }
+        if self.service == CloudService::S3
+            && !endpoint.is_empty()
+            && !(endpoint.starts_with("https://") || endpoint.starts_with("http://"))
+        {
+            return Err(ValidationError::new(
+                "endpoint",
+                "A custom endpoint is a URL (https://…); leave it empty for AWS",
+            ));
+        }
+        match self.auth {
+            CloudAuth::AccessKey if self.user.trim().is_empty() => {
+                return Err(ValidationError::new("user", "Access key ID is required"));
+            }
+            CloudAuth::EntraServicePrincipal if self.user.trim().is_empty() => {
+                return Err(ValidationError::new(
+                    "user",
+                    "Application (client) id is required",
+                ));
+            }
+            CloudAuth::EntraServicePrincipal
+                if self.tenant.as_deref().is_none_or(|t| t.trim().is_empty()) =>
+            {
+                return Err(ValidationError::new(
+                    "tenant",
+                    "A service principal needs its tenant (directory) id",
+                ));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
 /// A shell to open on a Host or locally.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TerminalProfile {
@@ -699,6 +1058,8 @@ pub enum Profile {
     File(FileConnection),
     /// Terminal profile.
     Terminal(TerminalProfile),
+    /// Cloud storage or developer service.
+    Cloud(CloudConnection),
 }
 
 impl Profile {
@@ -709,6 +1070,7 @@ impl Profile {
             Profile::Db(p) => &p.id,
             Profile::File(p) => &p.id,
             Profile::Terminal(p) => &p.id,
+            Profile::Cloud(p) => &p.id,
         }
     }
 
@@ -719,6 +1081,7 @@ impl Profile {
             Profile::Db(p) => &p.name,
             Profile::File(p) => &p.name,
             Profile::Terminal(p) => &p.name,
+            Profile::Cloud(p) => &p.name,
         }
     }
 
@@ -729,6 +1092,7 @@ impl Profile {
             Profile::Db(_) => "db",
             Profile::File(_) => "file",
             Profile::Terminal(_) => "terminal",
+            Profile::Cloud(_) => "cloud",
         }
     }
 
@@ -738,6 +1102,7 @@ impl Profile {
             Profile::Host(p) => p.secret.as_ref(),
             Profile::Db(p) => p.secret.as_ref(),
             Profile::File(p) => p.secret.as_ref(),
+            Profile::Cloud(p) => p.secret.as_ref(),
             Profile::Terminal(_) => None,
         }
     }
@@ -749,9 +1114,21 @@ impl Profile {
             Profile::Host(h) => h.secret = None,
             Profile::Db(d) => d.secret = None,
             Profile::File(f) => f.secret = None,
+            Profile::Cloud(c) => c.secret = None,
             Profile::Terminal(_) => {}
         }
         p
+    }
+
+    /// Point the profile at a stored secret.
+    pub fn set_secret(&mut self, key: SecretRef) {
+        match self {
+            Profile::Host(h) => h.secret = Some(key),
+            Profile::Db(d) => d.secret = Some(key),
+            Profile::File(f) => f.secret = Some(key),
+            Profile::Cloud(c) => c.secret = Some(key),
+            Profile::Terminal(_) => {}
+        }
     }
 
     /// Validate fields that do not need other profiles.
@@ -1023,6 +1400,7 @@ impl Profile {
                     }
                 }
             }
+            Profile::Cloud(c) => c.validate()?,
             Profile::Terminal(_) => {}
         }
         Ok(())
@@ -1038,6 +1416,7 @@ impl Profile {
                 FileProtocol::Ftp { .. } => vec![],
             },
             Profile::Terminal(t) => t.host_id.iter().collect(),
+            Profile::Cloud(_) => vec![],
         }
     }
 
@@ -1047,6 +1426,7 @@ impl Profile {
             Profile::Host(p) => p.environment,
             Profile::Db(p) => p.environment,
             Profile::File(p) => p.environment,
+            Profile::Cloud(p) => p.environment,
             Profile::Terminal(_) => EnvironmentLabel::Local,
         }
     }
@@ -1074,6 +1454,57 @@ impl ValidationError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cloud_validation() {
+        let mut c = CloudConnection::new("assets", CloudService::R2);
+        assert_eq!(c.auth, CloudAuth::AccessKey);
+        assert_eq!(
+            Profile::Cloud(c.clone()).validate().unwrap_err().field,
+            "endpoint"
+        );
+        c.endpoint = "0123456789abcdef0123456789abcdef".into();
+        assert_eq!(
+            Profile::Cloud(c.clone()).validate().unwrap_err().field,
+            "user"
+        );
+        c.auth = CloudAuth::ApiToken;
+        assert!(Profile::Cloud(c.clone()).validate().is_ok());
+        c.auth = CloudAuth::AzureCli;
+        assert_eq!(
+            Profile::Cloud(c.clone()).validate().unwrap_err().field,
+            "auth"
+        );
+
+        let mut s3 = CloudConnection::new("s3", CloudService::S3);
+        assert_eq!(s3.auth, CloudAuth::AwsProfile);
+        assert!(
+            Profile::Cloud(s3.clone()).validate().is_ok(),
+            "AWS needs no endpoint"
+        );
+        s3.endpoint = "minio.local:9000".into();
+        assert_eq!(
+            Profile::Cloud(s3.clone()).validate().unwrap_err().field,
+            "endpoint"
+        );
+
+        let mut ac = CloudConnection::new("cfg", CloudService::AppConfig);
+        assert_eq!(ac.auth, CloudAuth::EntraInteractive);
+        assert_eq!(
+            Profile::Cloud(ac.clone()).validate().unwrap_err().field,
+            "endpoint"
+        );
+        ac.auth = CloudAuth::ConnectionString;
+        assert!(Profile::Cloud(ac.clone()).validate().is_ok());
+        let json = serde_json::to_string(&Profile::Cloud(ac.clone())).unwrap();
+        assert!(json.contains("\"kind\":\"cloud\""));
+        assert!(json.contains("\"service\":\"app-config\""));
+        let back: Profile = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, Profile::Cloud(ac));
+        for s in CloudService::ALL {
+            assert!(!s.auth_methods().is_empty());
+        }
+    }
 
     #[test]
     fn redis_validation() {

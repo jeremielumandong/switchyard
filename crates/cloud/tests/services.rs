@@ -8,6 +8,8 @@
 //!
 //! `cargo test -p switchyard-cloud --test services -- --ignored --test-threads 1`
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 

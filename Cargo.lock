@@ -9599,6 +9599,7 @@ dependencies = [
  "sha2 0.10.9",
  "switchyard-agents",
  "switchyard-api",
+ "switchyard-cloud",
  "switchyard-db",
  "switchyard-drivers",
  "switchyard-plan",
@@ -9609,6 +9610,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]

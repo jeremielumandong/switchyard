@@ -1588,7 +1588,7 @@ impl Workspace {
             Some(Tab::Terminal(t)) => t.read(cx).host().cloned(),
             Some(Tab::Editor(e)) => match &e.read(cx).fs {
                 FsRef::Host(h) => Some(h.clone()),
-                FsRef::Local | FsRef::Ftp(_) => None,
+                FsRef::Local | FsRef::Conn(_) => None,
             },
             Some(Tab::Files(f)) => f.read(cx).right_host().cloned(),
             _ => None,
@@ -1645,7 +1645,7 @@ impl Workspace {
                 .host(h)
                 .map(|h| (h.name.clone(), h.environment))
                 .unwrap_or_default(),
-            FsRef::Ftp(id) => self
+            FsRef::Conn(id) => self
                 .profiles
                 .all
                 .iter()
@@ -1676,7 +1676,7 @@ impl Workspace {
             Profile::File(f)
                 if matches!(f.protocol, switchyard_core::store::FileProtocol::Ftp { .. }) =>
             {
-                Some((FsRef::Ftp(f.id.clone()), f.name.clone()))
+                Some((FsRef::Conn(f.id.clone()), f.name.clone()))
             }
             _ => None,
         });
@@ -1791,7 +1791,7 @@ impl Workspace {
                     self.open_files_for(Some(host_id.clone()), cx)
                 }
                 switchyard_core::store::FileProtocol::Ftp { .. } => {
-                    self.open_files_on(Some(FsRef::Ftp(f.id.clone())), cx)
+                    self.open_files_on(Some(FsRef::Conn(f.id.clone())), cx)
                 }
             },
             Some(Profile::Terminal(t)) => self.open_terminal(t.host_id, cx),
@@ -2563,7 +2563,7 @@ impl Workspace {
             Tab::Files(f) => {
                 let right = match f.read(cx).right_source() {
                     FsRef::Local => "local".to_owned(),
-                    FsRef::Host(id) | FsRef::Ftp(id) => self
+                    FsRef::Host(id) | FsRef::Conn(id) => self
                         .profiles
                         .all
                         .iter()
