@@ -1372,3 +1372,17 @@ Decisions:
   the unlock (Touch ID / Windows Hello) and Switchyard never sees the account password. No
   new crate; values are cached like cloud ones. `ServiceConfig::one_password` overrides the
   executable (tests use a stand-in script).
+
+## 2026-10-10 — Follow Omarchy theme (user request)
+
+- Settings → Appearance shows a "Follow Omarchy" card once `~/.config/omarchy/current/theme`
+  is readable (Linux only). Choosing it saves `theme = "omarchy"`.
+- Colors come from the theme's `colors.toml` (Omarchy 3.x: `background`, `foreground`,
+  `accent`, `color0`..`color15`), else its `alacritty.toml`, which every Omarchy theme has.
+  `light.mode` (or a light background) makes it a light theme. A small line parser reads
+  both files rather than adding a TOML crate.
+- The background is the editor surface; panels and borders are shaded from it; terminal
+  colors drive status and syntax colors, nudged towards the foreground until they meet the
+  contrast floors of the built-in themes. The terminal uses the theme's own 16 colors.
+- Live updates poll the directory every 2 s on the core runtime (no file-watcher crate is
+  approved; Omarchy swaps a symlink, which watchers handle poorly anyway).
