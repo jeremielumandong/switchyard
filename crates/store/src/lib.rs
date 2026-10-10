@@ -5,6 +5,7 @@ pub mod error;
 pub mod favorites;
 pub mod macros;
 pub mod model;
+pub mod named_secrets;
 pub mod paths;
 pub mod random;
 pub mod secrets;
@@ -20,6 +21,7 @@ pub use model::{
     HostPatch, PortForward, Profile, ProfileId, SecretRef, SshAuth, TerminalColors,
     TerminalProfile, ValidationError, Workspace,
 };
+pub use named_secrets::{NamedSecret, NamedSecretSource};
 pub use paths::AppPaths;
 pub use secrets::{KeychainStore, MemoryStore, SecretStore, VaultStore};
 pub use snippets::Snippet;

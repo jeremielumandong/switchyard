@@ -431,11 +431,7 @@ impl ConnEditor {
                     self,
                     "password",
                     "",
-                    if h.secret.is_some() {
-                        "•••••••• (stored)"
-                    } else {
-                        ""
-                    },
+                    &form::secret_placeholder(h.secret.as_ref(), ""),
                     true,
                 );
                 let auth = match h.auth {
@@ -553,7 +549,14 @@ impl ConnEditor {
                 add(self, "server", &server, "ftp.assets.acme.dev", false);
                 add(self, "port", &port.to_string(), "21", false);
                 add(self, "user", &user, "deploy-assets", false);
-                add(self, "password", "", "", true);
+                let stored = existing.and_then(|p| p.secret().cloned());
+                add(
+                    self,
+                    "password",
+                    "",
+                    &form::secret_placeholder(stored.as_ref(), ""),
+                    true,
+                );
                 add(self, "path", &path, "/public_html", false);
                 self.selects.insert(
                     "tls",

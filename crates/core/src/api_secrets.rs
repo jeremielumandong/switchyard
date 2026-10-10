@@ -12,6 +12,9 @@ use switchyard_api::{SecretRef, SecretScope, SecretStore, SecretStoreError, Secr
 use switchyard_store::SecretStore as Backend;
 use switchyard_store::model::SecretRef as Key;
 
+use crate::error::CoreError;
+use crate::service::NamedSecrets;
+
 /// Prefix of named vault references (`switchyard_api::secrets`).
 const VAULT_PREFIX: &str = "switchyard.vault.";
 /// Largest value accepted (as AgentOps did).
@@ -20,12 +23,25 @@ const MAX_BYTES: usize = 1024 * 1024;
 /// [`SecretStore`] over the app's secret backend.
 pub struct ApiSecrets {
     backend: Arc<dyn Backend>,
+    /// Reads named secrets from the secret vault (a cloud store or the keychain); without
+    /// it they are keychain items only.
+    named: Option<NamedSecrets>,
 }
 
 impl ApiSecrets {
     /// Wrap the app's secret backend.
     pub fn new(backend: Arc<dyn Backend>) -> Self {
-        Self { backend }
+        Self {
+            backend,
+            named: None,
+        }
+    }
+
+    /// Read named references through the secret vault, so `{{vault.name}}` can come from
+    /// Azure Key Vault, AWS Secrets Manager or Parameter Store.
+    pub(crate) fn with_named(mut self, named: NamedSecrets) -> Self {
+        self.named = Some(named);
+        self
     }
 
     fn key(scope: &SecretScope, reference: &SecretRef) -> Key {
@@ -57,6 +73,18 @@ impl SecretStore for ApiSecrets {
         workspace: &SecretScope,
         reference: &SecretRef,
     ) -> Result<SecretValue, SecretStoreError> {
+        if let (Some(named), Some(name)) =
+            (&self.named, reference.as_str().strip_prefix(VAULT_PREFIX))
+        {
+            return match named.resolve_blocking(name) {
+                Ok(v) => Ok(SecretValue::new(v.expose_secret())),
+                Err(CoreError::NotFound(_)) => Err(SecretStoreError::Missing),
+                Err(e) => {
+                    tracing::warn!(name, error = %e, "named secret unavailable");
+                    Err(SecretStoreError::BackendUnavailable)
+                }
+            };
+        }
         match self.backend.get(&Self::key(workspace, reference)) {
             Ok(Some(v)) => Ok(SecretValue::new(v.expose_secret())),
             Ok(None) => Err(SecretStoreError::Missing),

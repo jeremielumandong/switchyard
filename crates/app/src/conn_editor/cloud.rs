@@ -66,12 +66,8 @@ pub(super) fn init(c: &CloudConnection, f: &mut FieldSet<'_, '_, '_>) {
             _ => "Bucket list",
         },
     );
-    let ph = if c.secret.is_some() {
-        "•••••••• (stored)"
-    } else {
-        ""
-    };
-    let i = text_input(f.window, f.cx, "", ph, true);
+    let ph = super::form::secret_placeholder(c.secret.as_ref(), "");
+    let i = text_input(f.window, f.cx, "", &ph, true);
     f.editor.inputs.insert("password", i);
 }
 
@@ -214,7 +210,7 @@ pub(super) fn layout(service: CloudService, auth: CloudAuth) -> Vec<Field> {
         CloudAuth::EntraServicePrincipal => {
             v.push(Field::new("tenant", "Tenant").span(3).mono());
             v.push(Field::new("user", "Application (client) ID").span(3).mono());
-            v.push(Field::new("password", "Client secret").hint("Stored in the OS keychain"));
+            v.push(Field::new("password", "Client secret").hint(super::form::SECRET_HINT));
         }
     }
     match service {
