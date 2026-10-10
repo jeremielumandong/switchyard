@@ -265,7 +265,8 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
   to `libaio.so.1t64` (Oracle's fix is a symlink). Oracle tests:
   `LD_LIBRARY_PATH=<ic> SWITCHYARD_ORACLE_CLIENT=<ic> cargo test -p switchyard-db --test oracle -- --ignored`.
 - Docker Hub rate-limits anonymous pulls in CI and cloud sessions; gvenzl's Oracle images are
-  also on ghcr.io.
+  also on ghcr.io. CI points the Docker daemon at `mirror.gcr.io` (`registry-mirrors`),
+  which also covers BuildKit's `FROM postgres:16`.
 - gpui-base's window text selection copies on the `Root` context's Ctrl/Cmd+C, but a focused
   `Input` takes that key first and copies its own (empty) selection. A view whose selectable
   text sits beside an input focuses itself on mouse down (`assistant_panel.rs` transcript).
