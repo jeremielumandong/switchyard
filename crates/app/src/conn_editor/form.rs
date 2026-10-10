@@ -5,7 +5,8 @@
 
 use gpui_kit::{App, Context, Window};
 use switchyard_core::db::{Engine, SslMode};
-use switchyard_core::store::{DbConnection, ProfileId};
+use switchyard_core::store::named_secrets::expression;
+use switchyard_core::store::{DbConnection, ProfileId, SecretRef};
 
 use super::{ConnEditor, Select, text_input};
 
@@ -103,14 +104,28 @@ impl Field {
 
     /// `password`, half width, stored in the keychain.
     pub(crate) fn password(label: &'static str) -> Self {
-        Self::new("password", label)
-            .span(3)
-            .hint("Stored in the OS keychain")
+        Self::new("password", label).span(3).hint(SECRET_HINT)
     }
 
     /// The `via` select from [`FieldSet::via`].
     pub(crate) fn via() -> Self {
         Self::new("via", "Connect via Host").hint("Opens an ephemeral local port automatically")
+    }
+}
+
+/// Hint of a secret field.
+pub(crate) const SECRET_HINT: &str =
+    "Stored in the OS keychain, or {{vault.name}} from the secret vault";
+
+/// Placeholder of a masked secret input: the named secret it is linked to, a note that a
+/// value is stored (never the value), or `otherwise`.
+pub(crate) fn secret_placeholder(secret: Option<&SecretRef>, otherwise: &str) -> String {
+    match secret {
+        Some(r) => match r.named_secret() {
+            Some(name) => format!("{} · leave blank to keep", expression(name)),
+            None => "•••••••• (stored)".into(),
+        },
+        None => otherwise.into(),
     }
 }
 
@@ -131,12 +146,8 @@ impl FieldSet<'_, '_, '_> {
     /// The masked `password` input. A stored secret is never shown, only noted in the
     /// placeholder; otherwise `placeholder` is used.
     pub(crate) fn secret(&mut self, d: &DbConnection, placeholder: &str) {
-        let ph = if d.secret.is_some() {
-            "•••••••• (stored)"
-        } else {
-            placeholder
-        };
-        let i = text_input(self.window, self.cx, "", ph, true);
+        let ph = secret_placeholder(d.secret.as_ref(), placeholder);
+        let i = text_input(self.window, self.cx, "", &ph, true);
         self.editor.inputs.insert("password", i);
     }
 

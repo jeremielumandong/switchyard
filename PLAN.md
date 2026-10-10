@@ -692,6 +692,21 @@ server or bundled Unix tools on Windows (Tier 3).
   SQLite. Note: not run against the real Cloudflare API; no transactions (each request
   commits on its own); only data written through the SQL API is visible.
 
+## Extra — Secret vault (user request, 2026-10-10)
+
+- [x] SV-1 Named secrets (`{{vault.name}}`) usable from connection settings and the API
+  workbench. A named secret lives in the keychain, or is linked to a secret in Azure Key
+  Vault, AWS Secrets Manager or Parameter Store through a saved cloud connection (optional
+  JSON field for key/value secrets) and read when used (cached in memory for 60 s, never
+  written to disk). Typing `{{vault.name}}` in any connection's password / token / key
+  field saves a reference (`SecretRef::named`) instead of a value; the editor shows the
+  linked name. The workbench's existing `{{vault.name}}` references resolve through the
+  same catalog. A "Secret vault" window (Tools pane, palette, workbench button) adds,
+  edits, tests and deletes them. Tests: `store` unit tests, `core --test named_secrets`
+  (moto Secrets Manager test ignored). Note: the Key Vault link is not run against real
+  Azure here (no emulator); Workers KV and App Configuration are not offered as sources;
+  agents and `swy` never see values.
+
 ## Extra — UI v3 for many source types (user request, 2026-10-10)
 
 - [x] UI3-1 Window chrome from `docs/design/Switchyard_v3.dc.html`: a 48px activity rail

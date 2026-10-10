@@ -63,19 +63,13 @@ fn url(s: &str, what: &str) -> Result<url::Url> {
 }
 
 impl Service {
-    /// The secret typed in the editor, else the stored one.
+    /// The secret typed in the editor, else the stored one (either may be a named secret).
     async fn cloud_secret(
         &self,
         c: &CloudConnection,
         typed: Option<SecretString>,
     ) -> Result<Option<SecretString>> {
-        if typed.is_some() {
-            return Ok(typed);
-        }
-        match c.secret.clone() {
-            Some(key) => self.with_secrets(move |s| s.get(&key)).await,
-            None => Ok(None),
-        }
+        self.secret_value(typed, c.secret.clone()).await
     }
 
     /// Bearer tokens for an Azure `scope`, per the connection's sign-in method.
@@ -242,6 +236,15 @@ impl Service {
         typed: Option<SecretString>,
     ) -> Result<Arc<dyn KvService>> {
         let secret = self.cloud_secret(c, typed).await?;
+        self.cloud_kv_resolved(c, secret).await
+    }
+
+    /// [`Self::cloud_kv`] with the connection's secret already read.
+    pub(super) async fn cloud_kv_resolved(
+        &self,
+        c: &CloudConnection,
+        secret: Option<SecretString>,
+    ) -> Result<Arc<dyn KvService>> {
         let svc: Box<dyn KvService> = match c.service {
             CloudService::AppConfig => {
                 let (endpoint, auth) = match c.auth {
