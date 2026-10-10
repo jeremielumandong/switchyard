@@ -203,13 +203,17 @@ async fn connection_password_can_be_a_named_secret() {
         matches!(e, Event::ProfileSaved { request: 2, .. }).then_some(())
     })
     .await;
+    // A Profiles event from the first save can still be queued, so wait for the one that
+    // carries the reference (the timeout fails the test if none does).
     h.send(Command::LoadProfiles);
-    let saved = next(&mut rx, 5, |e| match e {
-        Event::Profiles(l) => l.into_iter().find(|p| p.id() == &id),
+    let named = SecretRef::named("orders-db");
+    next(&mut rx, 5, |e| match e {
+        Event::Profiles(l) => l
+            .into_iter()
+            .find(|p| p.id() == &id && p.secret() == Some(&named)),
         _ => None,
     })
     .await;
-    assert_eq!(saved.secret(), Some(&SecretRef::named("orders-db")));
 }
 
 #[tokio::test(flavor = "multi_thread")]
