@@ -170,7 +170,7 @@ async fn invalid_and_unreachable_cloud_links() {
     assert!(e.contains("Cloud connection missing"), "{e}");
     assert_eq!(
         workbench_read(&h, "gone").await.unwrap_err(),
-        SecretStoreError::BackendUnavailable
+        SecretStoreError::Missing
     );
 }
 
@@ -178,7 +178,9 @@ async fn invalid_and_unreachable_cloud_links() {
 async fn connection_password_can_be_a_named_secret() {
     let (core, mut rx) = Core::start(ServiceConfig::in_memory()).unwrap();
     let h = core.handle();
-    let d = DbConnection::new("orders", Engine::Postgres);
+    let mut d = DbConnection::new("orders", Engine::Postgres);
+    d.server = "db.example.com".into();
+    d.user = "app".into();
     let id = d.id.clone();
     // A password stored first is replaced by the reference.
     h.send(Command::SaveProfile {
@@ -191,7 +193,6 @@ async fn connection_password_can_be_a_named_secret() {
     })
     .await;
     let stored = SecretRef::for_profile(&id, "password");
-    let mut d = d;
     d.secret = Some(stored);
     h.send(Command::SaveProfile {
         request: 2,
