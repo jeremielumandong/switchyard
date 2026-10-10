@@ -112,6 +112,8 @@ pub struct ServiceConfig {
     pub data_dir: PathBuf,
     /// The `swy` executable for assistant runs; `None` finds it next to the app or on PATH.
     pub swy: Option<PathBuf>,
+    /// The 1Password CLI (`op`) for named secrets; `None` finds it on PATH.
+    pub one_password: Option<PathBuf>,
 }
 
 impl ServiceConfig {
@@ -131,6 +133,7 @@ impl ServiceConfig {
             package_runner: None,
             data_dir: std::env::temp_dir().join(format!("switchyard-data-{}", std::process::id())),
             swy: None,
+            one_password: None,
         }
     }
 
@@ -154,6 +157,7 @@ impl ServiceConfig {
             package_runner: None,
             data_dir: paths.data.clone(),
             swy: None,
+            one_password: None,
         }
     }
 }
@@ -204,6 +208,8 @@ pub struct Service {
     data_dir: PathBuf,
     /// `swy` override for assistant runs.
     swy: Option<PathBuf>,
+    /// `op` override for 1Password named secrets.
+    one_password: Option<PathBuf>,
     queries: Mutex<HashMap<QueryId, QueryControl>>,
     terminals: Arc<Terminals>,
     ssh: Arc<SshManager>,
@@ -333,6 +339,7 @@ impl Service {
             agent_approvals: Mutex::default(),
             data_dir: config.data_dir.clone(),
             swy: config.swy.clone(),
+            one_password: config.one_password.clone(),
             queries: Mutex::default(),
             terminals: Arc::default(),
             ssh,

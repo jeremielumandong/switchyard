@@ -695,7 +695,8 @@ server or bundled Unix tools on Windows (Tier 3).
 ## Extra — Secret vault (user request, 2026-10-10)
 
 - [x] SV-1 Named secrets (`{{vault.name}}`) usable from connection settings and the API
-  workbench. A named secret lives in the keychain, or is linked to a secret in Azure Key
+  workbench. A named secret lives in the keychain, is read from 1Password with the `op`
+  CLI (`op read op://vault/item/field`, desktop-app unlock), or is linked to a secret in Azure Key
   Vault, AWS Secrets Manager or Parameter Store through a saved cloud connection (optional
   JSON field for key/value secrets) and read when used (cached in memory for 60 s, never
   written to disk). Typing `{{vault.name}}` in any connection's password / token / key

@@ -1,5 +1,6 @@
 //! The secret vault window: named secrets (`{{vault.name}}`) used by connection settings
-//! and the API workbench. A secret is stored in the keychain, or linked to a secret in
+//! and the API workbench. A secret is stored in the keychain, read from 1Password with
+//! the `op` CLI, or linked to a secret in
 //! Azure Key Vault, AWS Secrets Manager or Parameter Store through a saved cloud
 //! connection and read from there each time it is used.
 //!
@@ -127,6 +128,14 @@ pub fn open_manager(core: RuntimeHandle, cx: &mut App) {
     }
 }
 
+/// Where the edited secret's value comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SourceKind {
+    Keychain,
+    Cloud,
+    OnePassword,
+}
+
 /// The secret vault: named secrets on the left, the editor on the right.
 pub struct SecretVaultView {
     core: RuntimeHandle,
@@ -137,10 +146,14 @@ pub struct SecretVaultView {
     value: Entity<InputState>,
     key: Entity<InputState>,
     field: Entity<InputState>,
-    /// `None`: keychain; else the cloud connection.
+    /// 1Password secret reference (`op://…`).
+    op_reference: Entity<InputState>,
+    /// 1Password account, when several are signed in.
+    op_account: Entity<InputState>,
+    /// The cloud connection, when the source is a cloud store.
     store: Option<ProfileId>,
-    /// Cloud chosen before a connection was picked.
-    cloud: bool,
+    /// Where the value comes from.
+    kind: SourceKind,
     /// Request whose answer is shown, and whether it was a save.
     pending: Option<(RequestId, bool)>,
     /// Last answer: a test result or an error.
@@ -161,6 +174,8 @@ impl SecretVaultView {
         let value = input("", true, window, cx);
         let key = input("orders-api-key", false, window, cx);
         let field = input("password (optional)", false, window, cx);
+        let op_reference = input("op://Private/Orders DB/password", false, window, cx);
+        let op_account = input("my.1password.com (optional)", false, window, cx);
         let sub = cx.observe_global_in::<SecretVault>(window, |this, window, cx| {
             if let Some(name) = this.reselect.clone() {
                 let found = cx
@@ -196,8 +211,10 @@ impl SecretVaultView {
             value,
             key,
             field,
+            op_reference,
+            op_account,
             store: None,
-            cloud: false,
+            kind: SourceKind::Keychain,
             pending: None,
             status: None,
             reselect: None,
@@ -216,22 +233,34 @@ impl SecretVaultView {
         Self::set(&self.name, s.name.clone(), window, cx);
         Self::set(&self.description, s.description.clone(), window, cx);
         Self::set(&self.value, String::new(), window, cx);
-        let (store, key, field) = match &s.source {
-            NamedSecretSource::Local => (None, String::new(), String::new()),
+        let (mut store, mut key, mut field) = (None, String::new(), String::new());
+        let (mut reference, mut account) = (String::new(), String::new());
+        self.kind = match &s.source {
+            NamedSecretSource::Local => SourceKind::Keychain,
             NamedSecretSource::Cloud {
                 connection,
-                key,
-                field,
-            } => (
-                Some(connection.clone()),
-                key.clone(),
-                field.clone().unwrap_or_default(),
-            ),
+                key: k,
+                field: f,
+            } => {
+                store = Some(connection.clone());
+                key = k.clone();
+                field = f.clone().unwrap_or_default();
+                SourceKind::Cloud
+            }
+            NamedSecretSource::OnePassword {
+                reference: r,
+                account: a,
+            } => {
+                reference = r.clone();
+                account = a.clone().unwrap_or_default();
+                SourceKind::OnePassword
+            }
         };
-        self.cloud = store.is_some();
         self.store = store;
         Self::set(&self.key, key, window, cx);
         Self::set(&self.field, field, window, cx);
+        Self::set(&self.op_reference, reference, window, cx);
+        Self::set(&self.op_account, account, window, cx);
         let ph = if self.selected.is_some() {
             "stored · leave blank to keep"
         } else {
@@ -249,20 +278,28 @@ impl SecretVaultView {
     fn save(&mut self, cx: &mut Context<Self>) {
         let read = |i: &Entity<InputState>, cx: &Context<Self>| i.read(cx).value().to_string();
         let name = read(&self.name, cx).trim().to_owned();
-        let source = if self.cloud {
-            let Some(connection) = self.store.clone() else {
-                self.status = Some(Err("Choose the cloud connection to read it from".into()));
-                cx.notify();
-                return;
-            };
-            let field = read(&self.field, cx).trim().to_owned();
-            NamedSecretSource::Cloud {
-                connection,
-                key: read(&self.key, cx).trim().to_owned(),
-                field: (!field.is_empty()).then_some(field),
+        let source = match self.kind {
+            SourceKind::Cloud => {
+                let Some(connection) = self.store.clone() else {
+                    self.status = Some(Err("Choose the cloud connection to read it from".into()));
+                    cx.notify();
+                    return;
+                };
+                let field = read(&self.field, cx).trim().to_owned();
+                NamedSecretSource::Cloud {
+                    connection,
+                    key: read(&self.key, cx).trim().to_owned(),
+                    field: (!field.is_empty()).then_some(field),
+                }
             }
-        } else {
-            NamedSecretSource::Local
+            SourceKind::OnePassword => {
+                let account = read(&self.op_account, cx).trim().to_owned();
+                NamedSecretSource::OnePassword {
+                    reference: read(&self.op_reference, cx).trim().to_owned(),
+                    account: (!account.is_empty()).then_some(account),
+                }
+            }
+            SourceKind::Keychain => NamedSecretSource::Local,
         };
         let value = read(&self.value, cx);
         if source == NamedSecretSource::Local && value.is_empty() && self.selected.is_none() {
@@ -313,6 +350,7 @@ impl SecretVaultView {
     fn source_label(s: &NamedSecret, stores: &[SecretStoreConn]) -> String {
         match &s.source {
             NamedSecretSource::Local => "Keychain".into(),
+            NamedSecretSource::OnePassword { .. } => "1Password".into(),
             NamedSecretSource::Cloud { connection, .. } => stores
                 .iter()
                 .find(|c| &c.id == connection)
@@ -422,27 +460,26 @@ impl Render for SecretVaultView {
         }
 
         let view = cx.entity().downgrade();
-        let source_options = vec![
-            (SharedString::from("Keychain"), !self.cloud, {
-                let view = view.clone();
-                Box::new(move |_: &_, _: &mut Window, cx: &mut App| {
-                    let _ = view.update(cx, |this, cx| {
-                        this.cloud = false;
+        let source_options = [
+            (SourceKind::Keychain, "Keychain"),
+            (SourceKind::OnePassword, "1Password"),
+            (SourceKind::Cloud, "Cloud secret store"),
+        ]
+        .into_iter()
+        .map(|(kind, label)| {
+            let view = view.clone();
+            let on_click: ui::OnClick = Box::new(move |_, _, cx| {
+                let _ = view.update(cx, |this, cx| {
+                    this.kind = kind;
+                    if kind != SourceKind::Cloud {
                         this.store = None;
-                        cx.notify();
-                    });
-                }) as ui::OnClick
-            }),
-            (SharedString::from("Cloud secret store"), self.cloud, {
-                let view = view.clone();
-                Box::new(move |_: &_, _: &mut Window, cx: &mut App| {
-                    let _ = view.update(cx, |this, cx| {
-                        this.cloud = true;
-                        cx.notify();
-                    });
-                }) as ui::OnClick
-            }),
-        ];
+                    }
+                    cx.notify();
+                });
+            });
+            (SharedString::from(label), self.kind == kind, on_click)
+        })
+        .collect();
         let store_options: Vec<(SharedString, bool, ui::OnClick)> = stores
             .iter()
             .map(|c| {
@@ -540,7 +577,7 @@ impl Render for SecretVaultView {
                     )
                     .child(ui::segmented("vault-source", source_options, 22., &p)),
             );
-        form = if self.cloud {
+        form = if self.kind == SourceKind::Cloud {
             let picker = if store_options.is_empty() {
                 div()
                     .text_size(ts::BODY)
@@ -581,6 +618,27 @@ impl Render for SecretVaultView {
                         &p,
                     ))),
             )
+        } else if self.kind == SourceKind::OnePassword {
+            form.child(
+                div()
+                    .flex()
+                    .gap(rpx(10.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(field("Secret reference", &self.op_reference, &p)),
+                    )
+                    .child(div().w(rpx(220.)).child(field(
+                        "Account (optional)",
+                        &self.op_account,
+                        &p,
+                    ))),
+            )
+            .child(div().text_size(ts::SMALL).text_color(p.fg3).child(
+                "Read with the 1Password CLI (op). In 1Password, right-click a field \
+                         and choose Copy Secret Reference. Turn on Settings › Developer › \
+                         Integrate with 1Password CLI so the app can unlock it.",
+            ))
         } else {
             form.child(field("Value", &self.value, &p))
         };

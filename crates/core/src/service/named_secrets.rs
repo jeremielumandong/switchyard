@@ -152,6 +152,10 @@ impl Service {
                         .cloud_name(&connection)
                         .await
                         .unwrap_or_else(|| "the cloud store".into()),
+                    Ok(Some(NamedSecret {
+                        source: NamedSecretSource::OnePassword { .. },
+                        ..
+                    })) => "1Password".into(),
                     _ => "the keychain".into(),
                 };
                 Ok(format!(
@@ -212,6 +216,16 @@ impl Service {
                 info!(name, "named secret read from its cloud store");
                 Ok(value)
             }
+            Some(NamedSecret {
+                source: NamedSecretSource::OnePassword { reference, account },
+                ..
+            }) => {
+                let program = self.one_password.clone().unwrap_or_else(find_op);
+                let value = read_one_password(&program, &reference, account.as_deref()).await?;
+                lock(&self.named_cache).insert(name.to_owned(), (Instant::now(), value.clone()));
+                info!(name, "named secret read from 1Password");
+                Ok(value)
+            }
             // Local, or a value the API workbench stored before the catalog existed.
             _ => self.resolve_local_named(name).await,
         }
@@ -224,8 +238,8 @@ impl Service {
             .ok_or_else(|| not_found(name))
     }
 
-    /// Read `key` through the cloud connection `id`. Its own saved secret may be a local
-    /// named secret, never a cloud one (no chains, no loops).
+    /// Read `key` through the cloud connection `id`. Its own saved secret may be a named
+    /// secret in the keychain or 1Password, never a cloud one (no chains, no loops).
     async fn read_cloud_secret(&self, id: &ProfileId, key: &str) -> Result<SecretString> {
         let pid = id.clone();
         let c = match self.with_store(move |s| s.profile(&pid)).await? {
@@ -257,7 +271,8 @@ impl Service {
                                 c.name
                             )));
                         }
-                        _ => Some(self.resolve_local_named(&n).await?),
+                        // Boxed: this is a call back into `resolve_named`.
+                        _ => Some(Box::pin(self.resolve_named(&n)).await?),
                     }
                 }
                 None => self.with_secrets(move |s| s.get(&r)).await?,
@@ -296,6 +311,82 @@ impl Service {
             None => Ok(None),
         }
     }
+}
+
+/// Longest wait for `op`: the 1Password app may be asking the user to approve or unlock.
+const OP_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// The `op` executable: on `PATH`, else where the installers put it (apps started from
+/// the desktop often get a short `PATH`).
+fn find_op() -> std::path::PathBuf {
+    let exe = if cfg!(windows) { "op.exe" } else { "op" };
+    let on_path = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let known: &[&str] = if cfg!(windows) {
+        &[]
+    } else {
+        &["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]
+    };
+    on_path
+        .into_iter()
+        .chain(known.iter().map(std::path::PathBuf::from))
+        .map(|d| d.join(exe))
+        .find(|p| p.is_file())
+        .unwrap_or_else(|| exe.into())
+}
+
+/// Read a 1Password secret reference with `op read`. The value comes from stdout; only
+/// `op`'s error text (never a value) is passed on.
+async fn read_one_password(
+    program: &std::path::Path,
+    reference: &str,
+    account: Option<&str>,
+) -> Result<SecretString> {
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.arg("read").arg("--no-newline");
+    if let Some(a) = account.map(str::trim).filter(|a| !a.is_empty()) {
+        cmd.arg("--account").arg(a);
+    }
+    cmd.arg("--")
+        .arg(reference)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let out = match tokio::time::timeout(OP_TIMEOUT, cmd.output()).await {
+        Err(_) => {
+            return Err(CoreError::Unsupported(
+                "1Password did not answer within 2 minutes; approve the request in the \
+                 1Password app and try again"
+                    .into(),
+            ));
+        }
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(CoreError::Unsupported(
+                "the 1Password CLI (op) is not installed; install it and turn on \
+                 Settings > Developer > Integrate with 1Password CLI in the app"
+                    .into(),
+            ));
+        }
+        Ok(Err(e)) => return Err(CoreError::Unsupported(format!("running op: {e}"))),
+        Ok(Ok(out)) => out,
+    };
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let line = err
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .unwrap_or("op failed");
+        let line: String = line.chars().take(300).collect();
+        return Err(CoreError::Unsupported(format!("1Password: {line}")));
+    }
+    let value = String::from_utf8(out.stdout)
+        .map_err(|_| CoreError::Unsupported("1Password: the value is not text".into()))?;
+    Ok(SecretString::from(value))
 }
 
 /// Resolves named secrets for callers outside the runtime (the API workbench, which runs on
