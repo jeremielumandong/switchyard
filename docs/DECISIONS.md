@@ -1135,9 +1135,10 @@ commands.
 
 - **macOS release workflow** (`release-macos.yml`) reuses `packaging/macos/build-macos.sh`
   (universal binary via lipo, `.app`, DMG). Signing and notarization run only when all of
-  `APPLE_CERTIFICATE` (base64 .p12), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`,
-  `APPLE_ID`, `APPLE_TEAM_ID` and `APPLE_APP_PASSWORD` are set in the `macos-release`
-  environment; the certificate goes into a temporary keychain that is deleted afterwards.
+  `MACOS_CERT_P12_BASE64` (base64 Developer ID Application .p12), `MACOS_CERT_PASSWORD`,
+  `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID` and `APPLE_API_KEY_P8_BASE64` (base64 App Store
+  Connect API key for `notarytool`) are set in the `macos-release` environment, and the
+  signing identity is read from the certificate; the certificate goes into a temporary keychain that is deleted afterwards.
   Without them the DMG is ad-hoc signed, kept as a workflow artifact, and uploaded to the
   draft release only when the run is started with `upload_unsigned`. Never exercised with a
   real Developer ID (no macOS runner or certificate here).
