@@ -623,6 +623,10 @@ server or bundled Unix tools on Windows (Tier 3).
   plan view, workbench, Redis, Files, assistant, terminal chrome) goes through
   `appearance::rpx` (rem-relative, no context needed) and text through the named `ts::*`
   steps, so the whole chrome zooms. `SWITCHYARD_ZOOM` overrides the zoom for screenshots.
+- [x] UX-14 Follow Omarchy theme (user request, 2026-10-10): Settings → Appearance shows a
+  "Follow Omarchy" card on Linux when `~/.config/omarchy/current/theme` exists; it maps the
+  theme's `colors.toml` (or `alacritty.toml`, `light.mode`) onto the palette and re-reads it
+  every 2 s so switching Omarchy themes restyles the app live (`app/src/omarchy.rs`).
 
 ## Extra — Redis (user request, 2026-10-08)
 

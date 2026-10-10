@@ -31,6 +31,7 @@ mod log_file;
 mod named_secrets;
 mod object_search;
 mod object_tab;
+mod omarchy;
 mod overlays;
 mod palette;
 mod plan_view;
