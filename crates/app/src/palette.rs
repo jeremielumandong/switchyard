@@ -1,4 +1,6 @@
-//! Command palette (⇧⌘P) and quick switcher (⌘P) with fuzzy matching.
+//! Open anything (⌘P) and the command palette (⇧⌘P), with fuzzy matching. One list
+//! of connections, tools and commands, narrowed by chips (Tab cycles them) or by a
+//! leading `>` for commands (design v3).
 
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -10,7 +12,7 @@ use gpui_kit::{
 use switchyard_core::store::{Profile, ProfileId};
 
 use crate::actions::{CommandId, fuzzy_score, palette_commands};
-use crate::app_state::{Profiles, describe};
+use crate::app_state::{Profiles, badge_of, describe};
 use crate::appearance::{rpx, ts};
 use crate::theme::{MONO, palette};
 use crate::ui;
@@ -22,8 +24,47 @@ pub enum PaletteMode {
     Commands,
     /// Saved connections.
     Connections,
-    /// Schema objects (opens connections list filtered; objects come from the sidebar).
-    Objects,
+    /// Connections, tools and commands together.
+    Anything,
+}
+
+/// The palette's filter chips.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Chip {
+    /// Everything.
+    All,
+    /// Saved connections.
+    Connections,
+    /// Tools (see [`crate::rail::tool_groups`]).
+    Tools,
+    /// Commands.
+    Commands,
+}
+
+impl Chip {
+    const ALL: [Chip; 4] = [Chip::All, Chip::Connections, Chip::Tools, Chip::Commands];
+
+    fn label(self) -> &'static str {
+        match self {
+            Chip::All => "All",
+            Chip::Connections => "Connections",
+            Chip::Tools => "Tools",
+            Chip::Commands => "Commands",
+        }
+    }
+
+    fn next(self) -> Chip {
+        let i = Chip::ALL.iter().position(|c| *c == self).unwrap_or(0);
+        Chip::ALL[(i + 1) % Chip::ALL.len()]
+    }
+}
+
+/// The chip in effect: a leading `>` means commands. Returns it and the query to match.
+pub fn effective(chip: Chip, query: &str) -> (Chip, &str) {
+    match query.strip_prefix('>') {
+        Some(rest) => (Chip::Commands, rest.trim()),
+        None => (chip, query.trim()),
+    }
 }
 
 /// What the user picked.
@@ -38,6 +79,7 @@ pub enum PaletteEvent {
 }
 
 struct Item {
+    badge: SharedString,
     label: SharedString,
     group: SharedString,
     key: SharedString,
@@ -52,7 +94,7 @@ enum Target {
 
 /// The palette view.
 pub struct PaletteView {
-    mode: PaletteMode,
+    chip: Chip,
     input: Entity<InputState>,
     selected: usize,
     profiles: Profiles,
@@ -80,10 +122,10 @@ impl PaletteView {
             _ => {}
         });
         Self {
-            mode: if mode == PaletteMode::Objects {
-                PaletteMode::Connections
-            } else {
-                mode
+            chip: match mode {
+                PaletteMode::Commands => Chip::Commands,
+                PaletteMode::Connections => Chip::Connections,
+                PaletteMode::Anything => Chip::All,
             },
             input,
             selected: 0,
@@ -100,53 +142,76 @@ impl PaletteView {
 
     fn items(&self, query: &str, cx: &Context<Self>) -> Vec<Item> {
         let p = palette(cx);
-        let mut scored: Vec<(usize, Item)> = match self.mode {
-            PaletteMode::Commands => palette_commands()
-                .into_iter()
-                .filter_map(|c| {
-                    fuzzy_score(query, &c.label).map(|s| {
-                        (
+        let (chip, query) = effective(self.chip, query);
+        let want = |c: Chip| chip == Chip::All || chip == c;
+        let mut scored: Vec<(usize, Item)> = Vec::new();
+        if want(Chip::Connections) {
+            scored.extend(
+                self.profiles
+                    .all
+                    .iter()
+                    .filter(|p| !matches!(p, Profile::Terminal(_)))
+                    .filter_map(|prof| {
+                        fuzzy_score(query, prof.name()).map(|s| {
+                            let kind = match prof {
+                                Profile::Db(d) => d.engine.display_name().to_owned(),
+                                Profile::Host(_) => "SSH".into(),
+                                Profile::File(_) => "Files".into(),
+                                Profile::Terminal(_) => "Terminal".into(),
+                                Profile::Cloud(c) => c.service.display_name().to_owned(),
+                            };
+                            (
+                                s,
+                                Item {
+                                    badge: badge_of(prof).into(),
+                                    label: prof.name().to_owned().into(),
+                                    group: format!("{kind} · {}", describe(prof, &self.profiles))
+                                        .into(),
+                                    key: "".into(),
+                                    dot: Some(p.env(prof.environment())),
+                                    target: Target::Profile(prof.id().clone()),
+                                },
+                            )
+                        })
+                    }),
+            );
+        }
+        if want(Chip::Tools) {
+            for g in crate::rail::tool_groups(&self.profiles) {
+                for t in g.tools {
+                    if let Some(s) = fuzzy_score(query, t.name) {
+                        scored.push((
                             s,
                             Item {
-                                label: c.label,
-                                group: c.group.into(),
-                                key: c.key,
+                                badge: t.badge.into(),
+                                label: t.name.into(),
+                                group: g.name.into(),
+                                key: t.tag.into(),
                                 dot: None,
-                                target: Target::Command(c.id),
+                                target: Target::Command(t.cmd),
                             },
-                        )
-                    })
+                        ));
+                    }
+                }
+            }
+        }
+        if want(Chip::Commands) {
+            scored.extend(palette_commands().into_iter().filter_map(|c| {
+                fuzzy_score(query, &c.label).map(|s| {
+                    (
+                        s,
+                        Item {
+                            badge: ">".into(),
+                            label: c.label,
+                            group: c.group.into(),
+                            key: c.key,
+                            dot: None,
+                            target: Target::Command(c.id),
+                        },
+                    )
                 })
-                .collect(),
-            _ => self
-                .profiles
-                .all
-                .iter()
-                .filter(|p| !matches!(p, Profile::Terminal(_)))
-                .filter_map(|prof| {
-                    fuzzy_score(query, prof.name()).map(|s| {
-                        let kind = match prof {
-                            Profile::Db(d) => d.engine.display_name().to_owned(),
-                            Profile::Host(_) => "SSH".into(),
-                            Profile::File(_) => "Files".into(),
-                            Profile::Terminal(_) => "Terminal".into(),
-                            Profile::Cloud(c) => c.service.display_name().to_owned(),
-                        };
-                        (
-                            s,
-                            Item {
-                                label: prof.name().to_owned().into(),
-                                group: format!("{kind} · {}", describe(prof, &self.profiles))
-                                    .into(),
-                                key: "".into(),
-                                dot: Some(p.env(prof.environment())),
-                                target: Target::Profile(prof.id().clone()),
-                            },
-                        )
-                    })
-                })
-                .collect(),
-        };
+            }));
+        }
         if !query.is_empty() {
             scored.sort_by_key(|(s, _)| *s);
         }
@@ -164,17 +229,13 @@ impl PaletteView {
         }
     }
 
-    fn swap(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.mode = match self.mode {
-            PaletteMode::Commands => PaletteMode::Connections,
-            _ => PaletteMode::Commands,
-        };
+    fn set_chip(&mut self, chip: Chip, window: &mut Window, cx: &mut Context<Self>) {
+        self.chip = chip;
         self.selected = 0;
-        let ph = placeholder(self.mode);
-        self.input.update(cx, |i, cx| {
-            i.set_value("", window, cx);
-            i.set_placeholder(ph, window, cx);
-        });
+        // A `>` prefix would override the chip.
+        if self.input.read(cx).value().starts_with('>') {
+            self.input.update(cx, |i, cx| i.set_value("", window, cx));
+        }
         cx.notify();
     }
 }
@@ -182,6 +243,7 @@ impl PaletteView {
 fn placeholder(mode: PaletteMode) -> &'static str {
     match mode {
         PaletteMode::Commands => "Type a command…",
+        PaletteMode::Anything => "Open anything…  type > for commands",
         _ => "Switch to a connection…",
     }
 }
@@ -193,20 +255,7 @@ impl Render for PaletteView {
         let items = self.items(&q, cx);
         let n = items.len();
         self.selected = self.selected.min(n.saturating_sub(1));
-        let cmd = self.mode == PaletteMode::Commands;
-        let (mode_label, swap_label, noun) = if cmd {
-            (
-                "COMMANDS",
-                format!("{} connections", ui::keys("⌘P", "Ctrl+P")),
-                "commands",
-            )
-        } else {
-            (
-                "CONNECTIONS",
-                format!("{} commands", ui::keys("⇧⌘P", "Ctrl+Shift+P")),
-                "connections",
-            )
-        };
+        let (chip, _) = effective(self.chip, &q);
         let rows: Vec<AnyElement> = items
             .into_iter()
             .enumerate()
@@ -232,36 +281,61 @@ impl Render for PaletteView {
                         this.selected = i;
                         this.confirm(cx);
                     }))
-                    .child(ui::dot(it.dot.unwrap_or(gpui_kit::transparent_black()), 7.))
+                    .child(ui::monogram(it.badge, 28., &p))
                     .child(div().flex_1().min_w_0().truncate().child(it.label))
                     .child(
                         div()
+                            .flex()
+                            .items_center()
+                            .gap(rpx(6.))
                             .text_size(ts::LABEL)
                             .text_color(p.fg3)
                             .whitespace_nowrap()
+                            .when_some(it.dot, |d, c| d.child(ui::dot(c, 6.)))
                             .child(it.group),
                     )
-                    .child(
-                        div()
-                            .min_w(rpx(44.))
-                            .flex()
-                            .justify_end()
-                            .font_family(MONO)
-                            .text_size(ts::CAPTION_PLUS)
-                            .text_color(p.fg2)
-                            .child(it.key),
-                    )
+                    .when(!it.key.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .min_w(rpx(44.))
+                                .flex()
+                                .justify_end()
+                                .font_family(MONO)
+                                .text_size(ts::CAPTION_PLUS)
+                                .text_color(p.fg2)
+                                .child(it.key),
+                        )
+                    })
                     .into_any_element()
             })
             .collect();
+        let chips = Chip::ALL.into_iter().map(|c| {
+            let on = c == chip;
+            div()
+                .id(c.label())
+                .h(rpx(22.))
+                .px(rpx(9.))
+                .flex()
+                .items_center()
+                .border_1()
+                .border_color(if on { p.acc } else { p.bd2 })
+                .rounded(px(11.))
+                .when(on, |d| d.bg(p.sel))
+                .text_size(ts::LABEL)
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(if on { p.fg } else { p.fg2 })
+                .cursor_pointer()
+                .on_click(cx.listener(move |this, _, w, cx| this.set_chip(c, w, cx)))
+                .child(c.label())
+        });
         div()
             .id("palette")
-            .w(rpx(620.))
+            .w(rpx(640.))
             .bg(p.elev)
             .rounded(px(10.))
             .shadow(ui::shadow(&p))
             .overflow_hidden()
-            .capture_key_down(cx.listener(move |this, ev: &KeyDownEvent, _, cx| {
+            .capture_key_down(cx.listener(move |this, ev: &KeyDownEvent, w, cx| {
                 match ev.keystroke.key.as_str() {
                     "down" => {
                         this.selected = (this.selected + 1).min(n.saturating_sub(1));
@@ -273,6 +347,12 @@ impl Render for PaletteView {
                         cx.stop_propagation();
                         cx.notify();
                     }
+                    "tab" => {
+                        let q = this.input.read(cx).value().to_string();
+                        let next = effective(this.chip, &q).0.next();
+                        this.set_chip(next, w, cx);
+                        cx.stop_propagation();
+                    }
                     _ => {}
                 }
             }))
@@ -281,40 +361,31 @@ impl Render for PaletteView {
                     .h(rpx(46.))
                     .flex()
                     .items_center()
-                    .gap(rpx(10.))
                     .px(rpx(14.))
                     .border_b_1()
                     .border_color(p.bd)
                     .child(
-                        div()
-                            .flex_none()
-                            .px(rpx(6.))
-                            .py(rpx(2.))
-                            .rounded(px(4.))
-                            .bg(p.hover)
-                            .text_color(p.fg2)
-                            .font_family(MONO)
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_size(ts::CAPTION)
-                            .child(mode_label),
-                    )
-                    .child(div().flex_1().child(Input::new(&self.input).appearance(false).text_size(ts::TITLE)))
-                    .child(
-                        div()
-                            .id("pal-swap")
-                            .flex_none()
-                            .font_family(MONO)
-                            .text_size(ts::CAPTION_PLUS)
-                            .text_color(p.fg3)
-                            .whitespace_nowrap()
-                            .on_click(cx.listener(|this, _, w, cx| this.swap(w, cx)))
-                            .child(swap_label),
+                        div().flex_1().child(
+                            Input::new(&self.input)
+                                .appearance(false)
+                                .text_size(ts::TITLE),
+                        ),
                     ),
             )
             .child(
                 div()
+                    .flex()
+                    .gap(rpx(6.))
+                    .px(rpx(12.))
+                    .py(rpx(8.))
+                    .border_b_1()
+                    .border_color(p.bd)
+                    .children(chips),
+            )
+            .child(
+                div()
                     .id("pal-list")
-                    .max_h(rpx(380.))
+                    .max_h(rpx(360.))
                     .overflow_y_scroll()
                     .p(rpx(4.))
                     .children(rows)
@@ -329,11 +400,13 @@ impl Render for PaletteView {
                                 .text_color(p.fg2)
                                 .text_size(ts::BASE)
                                 .child(format!("No matches for “{q}”"))
-                                .child(div().mt(rpx(4.)).text_color(p.fg3).text_size(ts::BODY).child(if cmd {
-                                    format!("Try “run” or “settings”, or {} to search connections", ui::keys("⌘P", "Ctrl+P"))
-                                } else {
-                                    format!("Press {} to search commands instead", ui::keys("⇧⌘P", "Ctrl+Shift+P"))
-                                })),
+                                .child(
+                                    div()
+                                        .mt(rpx(4.))
+                                        .text_color(p.fg3)
+                                        .text_size(ts::BODY)
+                                        .child("Tab switches the filter; > searches commands"),
+                                ),
                         )
                     }),
             )
@@ -348,10 +421,34 @@ impl Render for PaletteView {
                     .text_size(ts::SMALL)
                     .text_color(p.fg3)
                     .child("↑↓ navigate")
-                    .child("↵ run")
+                    .child("↵ open")
+                    .child("tab next filter")
                     .child("esc close")
                     .child(div().flex_1())
-                    .child(format!("{n} {noun}")),
+                    .child(format!("{n} results")),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_leading_angle_bracket_searches_commands() {
+        assert_eq!(effective(Chip::All, "> run"), (Chip::Commands, "run"));
+        assert_eq!(effective(Chip::Tools, " s3 "), (Chip::Tools, "s3"));
+    }
+
+    #[test]
+    fn tab_cycles_the_chips() {
+        let mut c = Chip::All;
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            seen.push(c);
+            c = c.next();
+        }
+        assert_eq!(seen, Chip::ALL);
+        assert_eq!(c, Chip::All);
     }
 }

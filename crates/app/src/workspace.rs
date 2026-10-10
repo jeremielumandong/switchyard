@@ -95,6 +95,12 @@ pub struct Workspace {
     pub(crate) active: usize,
     pub(crate) sidebar_open: bool,
     pub(crate) side_tab: SideTab,
+    /// How the Explorer groups its sources.
+    pub(crate) explorer_group: crate::explorer_tree::ExplorerGroup,
+    /// The Explorer's "Filter everything" field.
+    pub(crate) explorer_filter: Entity<InputState>,
+    /// The title bar menu that is open (File, Edit, …).
+    pub(crate) top_menu: Option<crate::rail::TopMenu>,
     pub(crate) collapsed: HashSet<String>,
     /// The multi-connection schema explorer (DBX-5e).
     pub(crate) explorer: Explorer,
@@ -198,6 +204,9 @@ impl Workspace {
             key: "sidebar.width".into(),
         });
         core.send(Command::LoadSetting {
+            key: crate::sidebar::EXPLORER_GROUP_KEY.into(),
+        });
+        core.send(Command::LoadSetting {
             key: switchyard_core::agent_run::ASSISTANT_SETTINGS_KEY.into(),
         });
         core.send(Command::LoadSetting {
@@ -255,6 +264,16 @@ impl Workspace {
                 }
             },
         );
+        let explorer_filter =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Filter everything"));
+        let filter_sub = cx.subscribe(
+            &explorer_filter,
+            |_, _, ev: &gpui_kit::component::input::InputEvent, cx| {
+                if let gpui_kit::component::input::InputEvent::Change = ev {
+                    cx.notify();
+                }
+            },
+        );
         // Toasts from the API workspace (queued in a global by its notify shim).
         let toast_sub = cx.observe_global::<crate::api::compat::notify::Toasts>(|this, cx| {
             for text in crate::api::compat::notify::drain(cx) {
@@ -271,7 +290,10 @@ impl Workspace {
             tabs: vec![Tab::Welcome],
             active: 0,
             sidebar_open: true,
-            side_tab: SideTab::Connections,
+            side_tab: SideTab::Explorer,
+            explorer_group: Default::default(),
+            explorer_filter,
+            top_menu: None,
             collapsed: HashSet::new(),
             explorer: Explorer::default(),
             inspector_open: window.bounds().size.width > px(1280.),
@@ -320,7 +342,7 @@ impl Workspace {
             split: None,
             viewer_image: None,
             _events: task,
-            _subs: vec![search_sub, toast_sub, assistant_sub],
+            _subs: vec![search_sub, filter_sub, toast_sub, assistant_sub],
         }
     }
 
@@ -554,6 +576,11 @@ impl Workspace {
                 self.on_update_setting(value);
             }
             Event::UpdateStatus { manual, status } => self.on_update_status(manual, status, cx),
+            Event::Setting { key, value } if key == crate::sidebar::EXPLORER_GROUP_KEY => {
+                if let Some(g) = value.as_ref().and_then(|v| v.as_str()) {
+                    self.explorer_group = crate::explorer_tree::ExplorerGroup::from_key(g);
+                }
+            }
             Event::Setting { key, value } if key == "sidebar.width" => {
                 if let Some(w) = value.as_ref().and_then(|v| v.as_f64()) {
                     self.sidebar_width = (w as f32).max(crate::sidebar::SIDEBAR_MIN);
@@ -2238,6 +2265,54 @@ impl Workspace {
             CommandId::ResetZoom => self.zoom_by(|_| 1.0, window, cx),
             CommandId::CheckForUpdates => self.check_for_updates(cx),
             CommandId::OpenLogFolder => self.open_log_folder(cx),
+            CommandId::NewChooser => self.open_new_chooser(window, cx),
+            CommandId::OpenAnything => self.open_palette(PaletteMode::Anything, window, cx),
+            CommandId::OpenCommands => self.open_palette(PaletteMode::Commands, window, cx),
+            CommandId::ShowExplorer => self.show_side(SideTab::Explorer, false, cx),
+            CommandId::ShowSchema => self.show_side(SideTab::Schema, false, cx),
+            CommandId::ShowTools => self.show_side(SideTab::Tools, false, cx),
+            CommandId::ShowActivityPane => self.show_side(SideTab::Activity, false, cx),
+            CommandId::GroupByPlace => {
+                self.set_explorer_group(crate::explorer_tree::ExplorerGroup::Place, cx)
+            }
+            CommandId::GroupByType => {
+                self.set_explorer_group(crate::explorer_tree::ExplorerGroup::Type, cx)
+            }
+            CommandId::CloseTab => self.close_tab(self.active, window, cx),
+            CommandId::NextTab | CommandId::PrevTab if !self.tabs.is_empty() => {
+                let n = self.tabs.len();
+                let next = if id == CommandId::NextTab {
+                    (self.active + 1) % n
+                } else {
+                    (self.active + n - 1) % n
+                };
+                self.activate(next, cx);
+            }
+            CommandId::NextTab | CommandId::PrevTab => {}
+            CommandId::SettingsKeybindings => {
+                self.open_settings(SettingsPage::Keybindings, window, cx)
+            }
+            CommandId::OpenCloud(service) => {
+                let saved = self.profiles.all.iter().find_map(|p| match p {
+                    Profile::Cloud(c) if c.service == service => Some(c.id.clone()),
+                    _ => None,
+                });
+                match saved {
+                    Some(id) => self.open_profile(&id, window, cx),
+                    None => self.open_conn_editor(ConnKind::Cloud(service), None, window, cx),
+                }
+            }
+            CommandId::OpenEngine(engine) => {
+                let saved = self
+                    .profiles
+                    .dbs()
+                    .find(|d| d.engine == engine)
+                    .map(|d| d.id.clone());
+                match saved {
+                    Some(id) => self.open_connection(&id, window, cx),
+                    None => self.open_conn_editor(ConnKind::Db(engine), None, window, cx),
+                }
+            }
         }
         cx.notify();
     }
@@ -2365,7 +2440,6 @@ impl Workspace {
     fn render_title_bar(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         use gpui_kit::component::IconName;
         use gpui_kit::component::tooltip::Tooltip;
-        let dark = p.dark;
         // The title bar's row is the window's drag area (`HTCAPTION` on Windows). GPUI
         // reports it under every hitbox inside it, so each control must occlude it or
         // Windows takes the click as a window drag and the control never sees it.
@@ -2419,21 +2493,7 @@ impl Workspace {
                     )
                     .child(div().text_color(p.fg3).text_size(ts::CAPTION).child("▾")),
             )
-            // The API workspace has no sidebar; the button is Default-only.
-            .when(self.mode == AppMode::Default, |d| {
-                d.child(
-                    ui::icon_button("tb-sidebar", IconName::PanelLeft, self.sidebar_open, p)
-                        .occlude()
-                        .tooltip(|w, cx| {
-                            Tooltip::new("Toggle Sidebar")
-                                .action(&actions::ToggleSidebar, None)
-                                .build(w, cx)
-                        })
-                        .on_click(cx.listener(|this, _, w, cx| {
-                            this.run_command(CommandId::ToggleSidebar, w, cx)
-                        })),
-                )
-            });
+            .child(self.render_menu_bar(p, cx));
         let search = div()
             .id("tb-search")
             .flex_shrink(1.)
@@ -2454,19 +2514,14 @@ impl Workspace {
             .cursor_text()
             .occlude()
             .hover(|s| s.border_color(p.bd2))
-            .on_click(cx.listener(|this, _, w, cx| this.open_palette(PaletteMode::Commands, w, cx)))
+            .on_click(cx.listener(|this, _, w, cx| this.open_palette(PaletteMode::Anything, w, cx)))
             .child(
                 div()
                     .flex_1()
                     .truncate()
-                    .child("Search connections, tables, commands…"),
+                    .child("Open anything — databases, servers, buckets, tools"),
             )
-            .child(ui::kbd(ui::keys("⇧⌘P", "Ctrl+Shift+P"), p));
-        let theme_tip = if dark {
-            "Switch to Light Theme"
-        } else {
-            "Switch to Dark Theme"
-        };
+            .child(ui::kbd(ui::keys("⌘P", "Ctrl+P"), p));
         let right = div()
             .flex()
             .flex_1()
@@ -2474,6 +2529,39 @@ impl Workspace {
             .justify_end()
             .items_center()
             .gap(rpx(2.))
+            .when(self.mode == AppMode::Default, |d| {
+                d.child(
+                    div()
+                        .id("tb-new")
+                        .h(rpx(26.))
+                        .mr(rpx(6.))
+                        .flex()
+                        .items_center()
+                        .gap(rpx(8.))
+                        .pl(rpx(10.))
+                        .pr(rpx(8.))
+                        .border_1()
+                        .border_color(p.bd2)
+                        .rounded(px(6.))
+                        .bg(p.elev)
+                        .text_size(ts::BODY)
+                        .font_weight(FontWeight::MEDIUM)
+                        .occlude()
+                        .cursor_pointer()
+                        .hover(|s| s.border_color(p.acc))
+                        .on_click(cx.listener(|this, _, w, cx| {
+                            this.run_command(CommandId::NewChooser, w, cx)
+                        }))
+                        .child("New")
+                        .child(
+                            div()
+                                .font_family(MONO)
+                                .text_size(ts::CAPTION_PLUS)
+                                .text_color(p.fg3)
+                                .child(ui::keys("⌘N", "Ctrl+N")),
+                        ),
+                )
+            })
             .child(
                 ui::icon_button("tb-assistant", IconName::Bot, self.assistant_open, p)
                     .occlude()
@@ -2485,19 +2573,6 @@ impl Workspace {
                     .on_click(cx.listener(|this, _, w, cx| {
                         this.run_command(CommandId::ToggleAssistant, w, cx)
                     })),
-            )
-            .child(
-                ui::icon_button(
-                    "tb-theme",
-                    if dark { IconName::Sun } else { IconName::Moon },
-                    false,
-                    p,
-                )
-                .occlude()
-                .tooltip(move |w, cx| Tooltip::new(theme_tip).build(w, cx))
-                .on_click(
-                    cx.listener(|this, _, w, cx| this.run_command(CommandId::ToggleTheme, w, cx)),
-                ),
             )
             // A developer gallery; release builds reach it from the command palette.
             .when(cfg!(debug_assertions), |d| {
@@ -2511,19 +2586,7 @@ impl Workspace {
                             this.run_command(CommandId::OpenComponents, w, cx)
                         })),
                 )
-            })
-            .child(
-                ui::icon_button("tb-settings", IconName::Settings, false, p)
-                    .occlude()
-                    .tooltip(|w, cx| {
-                        Tooltip::new("Settings")
-                            .action(&actions::OpenSettings, None)
-                            .build(w, cx)
-                    })
-                    .on_click(
-                        cx.listener(|this, _, w, cx| this.run_command(CommandId::Settings, w, cx)),
-                    ),
-            );
+            });
         let close_weak = cx.entity().downgrade();
         TitleBar::new()
             // Linux draws its own close button: ask about unsaved files there too.
@@ -2553,7 +2616,7 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn tab_info(
+    pub(crate) fn tab_info(
         &self,
         tab: &Tab,
         cx: &App,
@@ -3059,7 +3122,7 @@ impl Workspace {
                             .text_color(p.fg3)
                             .text_size(ts::BODY)
                             .child(shortcut_hint("Command palette", ui::keys("⇧⌘P", "Ctrl+Shift+P"), p))
-                            .child(shortcut_hint("Quick switch", ui::keys("⌘P", "Ctrl+P"), p))
+                            .child(shortcut_hint("Open anything", ui::keys("⌘P", "Ctrl+P"), p))
                             .child(shortcut_hint("Settings", ui::keys("⌘,", "Ctrl+,"), p)),
                     ),
             )
@@ -3174,35 +3237,19 @@ impl Workspace {
                         .child(label),
                 )
             })
-            .child(
-                div()
-                    .id("sb-tunnels")
-                    .hover(|s| s.text_color(p.fg))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.tunnels_open = !this.tunnels_open;
-                        cx.notify();
-                    }))
-                    .child(match self.tunnels.len() {
-                        1 => "1 tunnel".to_owned(),
-                        n => format!("{n} tunnels"),
-                    }),
-            )
             .child(div().flex_1())
             .children(self.render_update_notice(p, cx))
             .child(
                 div()
-                    .id("sb-transfers")
-                    .hover(|s| s.text_color(p.fg))
-                    .on_click(cx.listener(|this, _, w, cx| this.open_files(w, cx)))
-                    .child(match self.transfers.read(cx).summary() {
-                        Some((n, speed)) if speed > 1.0 => format!(
-                            "↑↓ {n} transfer{} · {}/s",
-                            if n == 1 { "" } else { "s" },
-                            crate::remote_files::human(speed as u64)
-                        ),
-                        Some((n, _)) => format!("↑↓ {n} transfer{}", if n == 1 { "" } else { "s" }),
-                        None => "↑↓ no transfers".into(),
-                    }),
+                    .id("sb-activity")
+                    .px(rpx(4.))
+                    .rounded(px(3.))
+                    .cursor_pointer()
+                    .hover(|s| s.text_color(p.fg).bg(p.hover))
+                    .on_click(
+                        cx.listener(|this, _, _, cx| this.show_side(SideTab::Activity, false, cx)),
+                    )
+                    .child(self.activity_summary(cx)),
             )
             .child(div().font_family(MONO).child(rows))
             .when_some(pos, |d, pos| {
@@ -3297,6 +3344,7 @@ impl Render for Workspace {
             .sidebar_open
             .then(|| self.render_sidebar(&p, window, cx));
         let inspector = show_inspector.then(|| self.render_inspector(&p, cx));
+        let rail = self.render_rail(&p, cx);
         let title = self.render_title_bar(&p, cx);
         let strip = self.render_tab_strip(&p, cx);
         let status = self.render_status_bar(&p, cx);
@@ -3318,7 +3366,7 @@ impl Render for Workspace {
                 this.open_palette(PaletteMode::Commands, w, cx)
             }))
             .on_action(cx.listener(|this, _: &actions::QuickSwitch, w, cx| {
-                this.open_palette(PaletteMode::Connections, w, cx)
+                this.open_palette(PaletteMode::Anything, w, cx)
             }))
             .on_action(cx.listener(|this, _: &actions::RunStatement, w, cx| {
                 this.run_command(CommandId::RunStatement, w, cx)
@@ -3339,7 +3387,7 @@ impl Render for Workspace {
                 this.run_command(CommandId::NewTerminal, w, cx)
             }))
             .on_action(cx.listener(|this, _: &actions::NewConnection, w, cx| {
-                this.run_command(CommandId::NewConnection, w, cx)
+                this.run_command(CommandId::NewChooser, w, cx)
             }))
             .on_action(cx.listener(|this, _: &actions::NewQueryTab, w, cx| {
                 this.run_command(CommandId::NewQueryTab, w, cx)
@@ -3429,6 +3477,7 @@ impl Render for Workspace {
                         .flex_1()
                         .min_h_0()
                         .flex()
+                        .child(rail)
                         .children(sidebar)
                         .child(
                             div()

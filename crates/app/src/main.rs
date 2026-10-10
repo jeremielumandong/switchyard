@@ -22,6 +22,7 @@ mod drivers_page;
 mod editor_tab;
 mod er_tab;
 mod explorer;
+mod explorer_tree;
 mod files_tab;
 mod folds;
 mod forwards_editor;
@@ -32,6 +33,7 @@ mod object_tab;
 mod overlays;
 mod palette;
 mod plan_view;
+mod rail;
 mod redis_tab;
 mod remote_files;
 mod result_diff;
@@ -148,7 +150,7 @@ fn main() -> Result<()> {
     });
 
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(rail::AppAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
             load_fonts(cx);
