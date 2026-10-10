@@ -9567,7 +9567,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-cloud"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "data-encoding",
  "futures",
