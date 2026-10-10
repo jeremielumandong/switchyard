@@ -217,6 +217,36 @@ pub enum CommandId {
     CheckForUpdates,
     /// Open the folder holding the app's log files.
     OpenLogFolder,
+    /// "What do you want to connect to?" (design v3's New button, ⌘N).
+    NewChooser,
+    /// Open anything: connections, tools and commands (⌘P).
+    OpenAnything,
+    /// The command palette (⇧⌘P).
+    OpenCommands,
+    /// Sidebar: the Explorer.
+    ShowExplorer,
+    /// Sidebar: the schema of the database in front.
+    ShowSchema,
+    /// Sidebar: Tools.
+    ShowTools,
+    /// Sidebar: Activity (sessions, running, tunnels, transfers).
+    ShowActivityPane,
+    /// Group the Explorer by place.
+    GroupByPlace,
+    /// Group the Explorer by type.
+    GroupByType,
+    /// Close the tab in front.
+    CloseTab,
+    /// Next tab.
+    NextTab,
+    /// Previous tab.
+    PrevTab,
+    /// Settings: keybindings.
+    SettingsKeybindings,
+    /// Open the first saved connection of a cloud service, or add one.
+    OpenCloud(switchyard_core::store::CloudService),
+    /// Open the first saved connection of an engine, or add one.
+    OpenEngine(switchyard_core::db::Engine),
 }
 
 /// A palette entry.
@@ -379,6 +409,15 @@ pub fn palette_commands() -> Vec<PaletteCommand> {
             "Workspace",
             "".into(),
         ),
+        c(NewChooser, "New…", "Connections", "".into()),
+        c(ShowExplorer, "Show Explorer", "View", "".into()),
+        c(ShowSchema, "Show Schema", "View", "".into()),
+        c(ShowTools, "Show Tools", "View", "".into()),
+        c(ShowActivityPane, "Show Activity", "View", "".into()),
+        c(GroupByPlace, "Group Explorer by Place", "View", "".into()),
+        c(GroupByType, "Group Explorer by Type", "View", "".into()),
+        c(NextTab, "Next Tab", "View", "".into()),
+        c(PrevTab, "Previous Tab", "View", "".into()),
         c(ShowWelcome, "Show Welcome", "View", "".into()),
         c(OpenComponents, "Open Component Sheet", "View", "".into()),
         c(CheckForUpdates, "Check for Updates", "Help", "".into()),
