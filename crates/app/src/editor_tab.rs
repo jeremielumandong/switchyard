@@ -1,6 +1,9 @@
 //! A text editor tab for a file on an SSH Host (or this computer). Save writes it back over
 //! SFTP after checking nobody changed it meanwhile; a conflict asks before overwriting.
 //! A terminal on the same Host, started in the file's folder, sits under the editor.
+//! A binary file shows instead of the editor: an image in a viewer, anything else as a
+//! card; either can open in the computer's default app (a copy downloads to a temp folder
+//! through the transfer queue, so it shows progress and can be cancelled).
 
 use std::path::PathBuf;
 
@@ -9,15 +12,20 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, AppContext as _, Context, Entity, FocusHandle, Focusable, FontWeight,
     InteractiveElement as _, IntoElement, MouseButton, MouseMoveEvent, ParentElement as _, Render,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, actions, div, px, relative,
+    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Subscription, Window, actions,
+    div, px, relative,
 };
 use switchyard_core::store::EnvironmentLabel;
-use switchyard_core::{Command, Event, FsRef, RequestId, RuntimeHandle, SaveError};
+use switchyard_core::{
+    Command, Event, FsRef, OnConflict, ReadError, RequestId, RuntimeHandle, SaveError,
+    TransferError,
+};
 
 use crate::app_state::next_id;
 use crate::appearance::{rpx, ts};
 use crate::terminal_tab::TerminalTab;
 use crate::theme::{MONO, palette};
+use crate::transfers::Transfers;
 use crate::ui::{self, Kind};
 
 actions!(editor_tab, [SaveFile, ToggleTerminal]);
@@ -60,6 +68,19 @@ enum State {
     /// Changed on the server since it was opened.
     Conflict,
     SaveFailed(String),
+    /// Not text: shown by [`Viewer`], never saved.
+    Binary,
+}
+
+/// What a binary file shows.
+struct Viewer {
+    size: u64,
+    /// Decoded once, when it is an image.
+    image: Option<(gpui_kit::ImageFormat, std::sync::Arc<gpui_kit::Image>)>,
+    /// The download for "Open with default app", while it runs.
+    opening: Option<u64>,
+    /// Why the last open failed.
+    open_error: Option<String>,
 }
 
 /// An editor tab.
@@ -89,6 +110,8 @@ pub struct EditorTab {
     term_height: f32,
     /// Splitter drag: (mouse y, height) when it started.
     drag: Option<(f32, f32)>,
+    transfers: Entity<Transfers>,
+    viewer: Option<Viewer>,
 }
 
 fn language(path: &std::path::Path) -> &'static str {
@@ -101,12 +124,14 @@ fn language(path: &std::path::Path) -> &'static str {
 
 impl EditorTab {
     /// Open `path` on `fs`; the contents arrive asynchronously.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         core: RuntimeHandle,
         fs: FsRef,
         path: PathBuf,
         host_name: &str,
         env: EnvironmentLabel,
+        transfers: Entity<Transfers>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -157,6 +182,8 @@ impl EditorTab {
             show_terminal: false,
             term_height: TERM_HEIGHT,
             drag: None,
+            transfers,
+            viewer: None,
         };
         this.set_terminal(true, cx);
         this
@@ -217,6 +244,8 @@ impl EditorTab {
         match self.state {
             State::Saving | State::Loading => None,
             State::Ready => Some(!self.dirty),
+            // Nothing to save.
+            State::Binary => Some(true),
             State::Conflict | State::SaveFailed(_) | State::LoadFailed(_) => Some(false),
         }
     }
@@ -224,7 +253,7 @@ impl EditorTab {
     fn save(&mut self, force: bool, cx: &mut Context<Self>) {
         if matches!(
             self.state,
-            State::Loading | State::LoadFailed(_) | State::Saving
+            State::Loading | State::LoadFailed(_) | State::Saving | State::Binary
         ) {
             return;
         }
@@ -270,7 +299,33 @@ impl EditorTab {
                         self.state = State::Ready;
                         self.editor.update(cx, |e, cx| e.focus(window, cx));
                     }
-                    Err(e) => self.state = State::LoadFailed(e.clone()),
+                    Err(ReadError::Binary { size, image }) => {
+                        let image = image.as_ref().and_then(|b| {
+                            let f = crate::viewer::image_format(&b.0)?;
+                            let img = gpui_kit::Image::from_bytes(f, b.0.to_vec());
+                            Some((f, std::sync::Arc::new(img)))
+                        });
+                        self.viewer = Some(Viewer {
+                            size: *size,
+                            image,
+                            opening: None,
+                            open_error: None,
+                        });
+                        self.state = State::Binary;
+                    }
+                    Err(ReadError::Failed(e)) => self.state = State::LoadFailed(e.clone()),
+                }
+            }
+            Event::TransferDone { id, result }
+                if self.viewer.as_ref().and_then(|v| v.opening) == Some(*id) =>
+            {
+                if let Some(v) = self.viewer.as_mut() {
+                    v.opening = None;
+                    match result {
+                        Ok(local) => cx.open_with_system(local),
+                        Err(TransferError::Cancelled | TransferError::Paused) => {}
+                        Err(e) => v.open_error = Some(transfer_error(e)),
+                    }
                 }
             }
             Event::TextFileSaved { request, result } if Some(*request) == self.request => {
@@ -288,6 +343,151 @@ impl EditorTab {
             _ => return,
         }
         cx.notify();
+    }
+}
+
+/// A failed download, for the viewer.
+fn transfer_error(e: &TransferError) -> String {
+    match e {
+        TransferError::Failed(e) => format!("Could not download it: {e}"),
+        TransferError::Exists(_) | TransferError::Partial(_) => {
+            "Could not download it: a copy is already there".into()
+        }
+        TransferError::Cancelled | TransferError::Paused => String::new(),
+    }
+}
+
+/// `1.2 KB`, `3.4 MB`.
+fn human_size(n: u64) -> String {
+    match n {
+        0..1024 => format!("{n} bytes"),
+        1024..1_048_576 => format!("{:.1} KB", n as f64 / 1024.),
+        1_048_576..1_073_741_824 => format!("{:.1} MB", n as f64 / 1_048_576.),
+        _ => format!("{:.1} GB", n as f64 / 1_073_741_824.),
+    }
+}
+
+impl EditorTab {
+    /// Open the file in the computer's default app for its type: a local file directly,
+    /// a remote one after downloading a copy to a temp folder.
+    fn open_with_system(&mut self, cx: &mut Context<Self>) {
+        let Some(v) = self.viewer.as_mut() else {
+            return;
+        };
+        if v.opening.is_some() {
+            return;
+        }
+        v.open_error = None;
+        if self.fs == FsRef::Local {
+            cx.open_with_system(&self.path);
+            return;
+        }
+        let dir = switchyard_core::files::open_copy_dir(next_id());
+        let (fs, path) = (self.fs.clone(), self.path.clone());
+        let id = self.transfers.update(cx, |t, cx| {
+            t.start(fs, path, FsRef::Local, Some(dir), OnConflict::Replace, cx)
+        });
+        v.opening = Some(id);
+        cx.notify();
+    }
+
+    /// The binary file view: the image, or a card saying what it is.
+    fn render_viewer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let v = self.viewer.as_ref()?;
+        let p = palette(cx);
+        let name = self
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let what = match &v.image {
+            Some((f, _)) => format!(
+                "{} image · {}",
+                crate::viewer::format_name(*f),
+                human_size(v.size)
+            ),
+            None => format!("Binary file · {}", human_size(v.size)),
+        };
+        let open = ui::button(
+            "ed-open-app",
+            if v.opening.is_some() {
+                "Downloading…"
+            } else {
+                "Open with default app"
+            },
+            if v.image.is_some() {
+                Kind::Secondary
+            } else {
+                Kind::Primary
+            },
+            &p,
+        )
+        .when(v.opening.is_some(), |b| b.opacity(0.6))
+        .on_click(cx.listener(|this, _, _, cx| this.open_with_system(cx)));
+        let error = v
+            .open_error
+            .clone()
+            .map(|e| div().text_size(ts::BODY).text_color(p.prod).child(e));
+        let body = match &v.image {
+            Some((_, img)) => div()
+                .flex_1()
+                .min_h_0()
+                .p(rpx(16.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    gpui_kit::img(img.clone())
+                        .max_w_full()
+                        .max_h_full()
+                        .object_fit(gpui_kit::ObjectFit::Contain),
+                )
+                .into_any_element(),
+            None => div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(rpx(10.))
+                .child(
+                    div()
+                        .text_size(ts::BODY)
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(p.fg)
+                        .child(name),
+                )
+                .child(
+                    div()
+                        .text_size(ts::BODY)
+                        .text_color(p.fg3)
+                        .child("This file can't be edited as text. Open it in the app your computer uses for it."),
+                )
+                .into_any_element(),
+        };
+        Some(
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .child(body)
+                .child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .gap(rpx(10.))
+                        .px(rpx(12.))
+                        .pb(rpx(12.))
+                        .child(div().text_size(ts::LABEL).text_color(p.fg3).child(what))
+                        .child(open)
+                        .children(error),
+                )
+                .into_any_element(),
+        )
     }
 }
 
@@ -341,8 +541,11 @@ impl Render for EditorTab {
             ),
             _ => None,
         };
+        let binary = self.state == State::Binary;
+        let viewer = self.render_viewer(cx);
         let status = match &self.state {
             State::Loading => "Loading…",
+            State::Binary => "Read only",
             State::Saving => "Saving…",
             _ if self.dirty => "Unsaved changes · ⌘S / Ctrl+S saves",
             _ => "Saved",
@@ -456,25 +659,30 @@ impl Render for EditorTab {
                             this.set_terminal(show, cx)
                         })),
                     )
-                    .child(
-                        ui::button("ed-save", "Save", Kind::Primary, &p)
-                            .h(rpx(22.))
-                            .text_size(ts::LABEL)
-                            .when(!self.dirty, |b| b.opacity(0.6))
-                            .on_click(cx.listener(|this, _, _, cx| this.save(false, cx))),
-                    ),
+                    .when(!binary, |d| {
+                        d.child(
+                            ui::button("ed-save", "Save", Kind::Primary, &p)
+                                .h(rpx(22.))
+                                .text_size(ts::LABEL)
+                                .when(!self.dirty, |b| b.opacity(0.6))
+                                .on_click(cx.listener(|this, _, _, cx| this.save(false, cx))),
+                        )
+                    }),
             )
             .children(banner)
-            .child(
-                div().flex_1().min_h_0().child(
-                    Editor::new(&self.editor)
-                        .bordered(false)
-                        .appearance(false)
-                        .h(relative(1.))
-                        .font_family(crate::appearance::editor_font_family(cx))
-                        .text_size(crate::appearance::editor_font_size(cx)),
-                ),
-            )
+            .children(viewer)
+            .when(!binary, |d| {
+                d.child(
+                    div().flex_1().min_h_0().child(
+                        Editor::new(&self.editor)
+                            .bordered(false)
+                            .appearance(false)
+                            .h(relative(1.))
+                            .font_family(crate::appearance::editor_font_family(cx))
+                            .text_size(crate::appearance::editor_font_size(cx)),
+                    ),
+                )
+            })
             .children(terminal)
             .when(self.state == State::Loading, |d| {
                 d.child(
@@ -506,5 +714,12 @@ mod tests {
             Some("/")
         );
         assert_eq!(cd_into("/srv/it's"), " cd '/srv/it'\\''s' && clear\r");
+    }
+
+    #[test]
+    fn sizes() {
+        assert_eq!(human_size(12), "12 bytes");
+        assert_eq!(human_size(1536), "1.5 KB");
+        assert_eq!(human_size(3 * 1_048_576), "3.0 MB");
     }
 }

@@ -627,6 +627,12 @@ server or bundled Unix tools on Windows (Tier 3).
   "Follow Omarchy" card on Linux when `~/.config/omarchy/current/theme` exists; it maps the
   theme's `colors.toml` (or `alacritty.toml`, `light.mode`) onto the palette and re-reads it
   every 2 s so switching Omarchy themes restyles the app live (`app/src/omarchy.rs`).
+- [x] UX-15 Binary files from the file browsers (user request, 2026-10-11): opening an image
+  from SFTP, FTP, object storage or this computer shows it in the editor tab (PNG, JPEG, GIF,
+  WebP, BMP, TIFF up to 32 MB) instead of "looks like a binary file"; any binary file has
+  "Open with default app", which downloads a copy to `<temp>/switchyard-open/<id>/` through
+  the transfer queue (progress, cancel) and opens it with the OS handler. Non-UTF-8 text
+  counts as binary. Deferred: built-in PDF / audio / video players, cleanup of old copies.
 
 ## Extra — Redis (user request, 2026-10-08)
 
