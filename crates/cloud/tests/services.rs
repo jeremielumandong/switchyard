@@ -216,6 +216,81 @@ async fn blob_file_system_shared_key() {
 
 #[tokio::test]
 #[ignore = "needs Azurite on 127.0.0.1:10000"]
+async fn blob_listing_pages_and_filters_by_prefix() {
+    let cs = SecretString::from(format!(
+        "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;\
+         AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;\
+         BlobEndpoint={};",
+        azurite()
+    ));
+    let (endpoint, _, auth) = storage_connection_string(&cs).unwrap();
+    let fs = BlobFs::new(
+        BlobConfig {
+            name: "azurite".into(),
+            endpoint,
+            home: None,
+            read_only: false,
+        },
+        auth,
+    )
+    .unwrap();
+    let container = unique("page");
+    let root = format!("/{container}");
+    fs.mkdir(Path::new(&root)).await.unwrap();
+    fs.mkdir(Path::new(&format!("{root}/dir/sub")))
+        .await
+        .unwrap();
+    for name in ["a1.txt", "a2.txt", "a3.txt", "b1.txt", "b2.txt"] {
+        let path = format!("{root}/dir/{name}");
+        let mut w = fs.create(Path::new(&path)).await.unwrap();
+        w.write_all(b"x").await.unwrap();
+        w.shutdown().await.unwrap();
+    }
+    let dir = format!("{root}/dir");
+    let dir = Path::new(&dir);
+
+    // Two at a time until the cursor runs out: every entry once.
+    let mut names = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut pages = 0;
+    loop {
+        let page = fs.list_page(dir, "", cursor.as_deref(), 2).await.unwrap();
+        assert!(page.entries.len() <= 2);
+        names.extend(page.entries.into_iter().map(|e| e.name));
+        pages += 1;
+        cursor = page.next;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    names.sort();
+    assert_eq!(
+        names,
+        ["a1.txt", "a2.txt", "a3.txt", "b1.txt", "b2.txt", "sub"]
+    );
+    assert!(pages >= 3, "{pages} pages");
+
+    let page = fs.list_page(dir, "b", None, 100).await.unwrap();
+    let found: Vec<_> = page.entries.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(found, ["b1.txt", "b2.txt"]);
+    assert_eq!(page.next, None);
+
+    // Containers page and filter the same way.
+    let page = fs
+        .list_page(Path::new("/"), &container, None, 5)
+        .await
+        .unwrap();
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.entries[0].name, container);
+
+    for name in ["a1.txt", "a2.txt", "a3.txt", "b1.txt", "b2.txt", "sub"] {
+        fs.delete(&dir.join(name)).await.unwrap();
+    }
+    fs.delete(Path::new(&root)).await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "needs Azurite on 127.0.0.1:10000"]
 async fn blob_wrong_key_is_refused() {
     let fs = BlobFs::new(
         BlobConfig {

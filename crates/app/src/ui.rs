@@ -346,6 +346,32 @@ pub fn shimmer(width: f32, p: &Palette) -> AnyElement {
         .into_any_element()
 }
 
+/// A thin bar with a segment sweeping across it (a list is loading).
+pub fn loading_bar(id: impl Into<ElementId>, p: &Palette) -> AnyElement {
+    use gpui_kit::{Animation, AnimationExt as _, relative};
+    div()
+        .flex_none()
+        .relative()
+        .w_full()
+        .h(rpx(2.))
+        .overflow_hidden()
+        .bg(p.hover)
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .h_full()
+                .w(relative(0.3))
+                .bg(p.acc)
+                .with_animation(
+                    id.into(),
+                    Animation::new(std::time::Duration::from_millis(1100)).repeat(),
+                    |d, t| d.left(relative(t * 1.3 - 0.3)),
+                ),
+        )
+        .into_any_element()
+}
+
 /// A pulsing status dot (running / connecting).
 pub fn pulse_dot(id: impl Into<ElementId>, color: Hsla, size: f32) -> AnyElement {
     use gpui_kit::{Animation, AnimationExt as _};

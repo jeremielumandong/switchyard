@@ -699,6 +699,14 @@ server or bundled Unix tools on Windows (Tier 3).
   reveal / copy, activation and expiry dates, deleted secrets with recover / purge.
   Note: checked on screen against the App Configuration emulator; Key Vault only by unit
   tests (no emulator); keys and certificates still in Follow-ups.
+- [x] CL-6 Paged storage browsing (user request, 2026-10-11): `RemoteFs::list_page` (prefix,
+  cursor, limit; other file systems answer with the whole folder) and
+  `Command::ListDirPage`. Azure Blob pages containers and blobs 100 at a time with
+  `maxresults` / `NextMarker`. Files tab: "Load 100 more" footer with item count, Search
+  (filters loaded names as you type; Enter searches the whole folder by server-side
+  prefix when it has more pages), a sweeping loading bar and a skeleton while a folder
+  opens. Test: `cloud --test services blob_listing_pages_and_filters_by_prefix` (Azurite).
+  Deferred: S3 / R2 paging (same shape, `continuation-token`).
 
 ## Extra — Durable Object SQLite (user request, 2026-10-10)
 
