@@ -24,6 +24,8 @@ use crate::time::http_date;
 
 /// Data-plane API version.
 pub const API_VERSION: &str = "1.0";
+/// Most revisions listed for one setting.
+const MAX_REVISIONS: usize = 200;
 /// Key prefix of feature flags.
 pub const FEATURE_FLAG_PREFIX: &str = ".appconfig.featureflag/";
 /// Content type of feature flags.
@@ -146,8 +148,7 @@ fn item_from(j: &Json) -> KvItem {
                     .collect()
             })
             .unwrap_or_default(),
-        kind: None,
-        description: None,
+        ..KvItem::default()
     }
 }
 
@@ -194,22 +195,57 @@ impl AppConfig {
         format!("/kv/{}", uri_encode(key, false))
     }
 
-    /// Labels in use (`None` is the null label).
-    pub async fn labels(&self) -> Result<Vec<Option<String>>> {
-        let resp = self
-            .send(Req::new(Method::GET, &self.endpoint, "/labels").query("name", "*"))
-            .await?;
-        Ok(resp
-            .json()?
-            .get("items")
-            .and_then(Json::as_array)
-            .map(|a| {
-                a.iter()
-                    .map(|i| i.get("name").and_then(Json::as_str).map(str::to_owned))
-                    .collect()
-            })
-            .unwrap_or_default())
+    /// Every page of a list request, up to `max` items.
+    async fn all_pages(&self, mut req: Req, max: usize) -> Result<Vec<Json>> {
+        let mut out = Vec::new();
+        loop {
+            let path = req.path.clone();
+            let json = self
+                .send(req.header(
+                    "accept",
+                    "application/vnd.microsoft.appconfig.kvset+json, application/problem+json",
+                ))
+                .await?
+                .json()?;
+            if let Some(a) = json.get("items").and_then(Json::as_array) {
+                out.extend(a.iter().cloned());
+            }
+            let next = json.get("@nextLink").and_then(Json::as_str);
+            match next {
+                Some(link) if out.len() < max => req = self.next_page(link, &path)?,
+                _ => break,
+            }
+        }
+        out.truncate(max);
+        Ok(out)
     }
+
+    /// A request for `@nextLink` (a path and query relative to the endpoint).
+    fn next_page(&self, link: &str, path: &str) -> Result<Req> {
+        let u = self
+            .endpoint
+            .join(link)
+            .map_err(|e| CloudError::Invalid(e.to_string()))?;
+        let mut r = Req::new(Method::GET, &self.endpoint, path);
+        r.query = u
+            .query_pairs()
+            .filter(|(k, _)| k != "api-version")
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        Ok(r)
+    }
+}
+
+/// A key or label matched exactly in a filter: `\`, `*` and `,` are escaped.
+fn exact_filter(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '\\' | '*' | ',') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// App Configuration's key filter: `prefix*` unless it already has wildcards.
@@ -233,6 +269,7 @@ impl KvService for AppConfig {
             feature_flags: true,
             tags: true,
             values_in_list: true,
+            history: true,
             filter_hint: "Key filter: prefix, or * wildcards (app:*,db:*)",
             ..KvCaps::default()
         }
@@ -242,19 +279,7 @@ impl KvService for AppConfig {
         Box::pin(async move {
             let req = match &q.cursor {
                 // `@nextLink` is a path and query relative to the endpoint.
-                Some(link) => {
-                    let u = self
-                        .endpoint
-                        .join(link)
-                        .map_err(|e| CloudError::Invalid(e.to_string()))?;
-                    let mut r = Req::new(Method::GET, &self.endpoint, "/kv");
-                    r.query = u
-                        .query_pairs()
-                        .filter(|(k, _)| k != "api-version")
-                        .map(|(k, v)| (k.into_owned(), v.into_owned()))
-                        .collect();
-                    r
-                }
+                Some(link) => self.next_page(link, "/kv")?,
                 None => {
                     let label = match q.label.trim() {
                         "" => "*".to_owned(),
@@ -377,6 +402,45 @@ impl KvService for AppConfig {
             Ok(())
         })
     }
+
+    fn revisions<'a>(
+        &'a self,
+        key: &'a str,
+        label: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<Vec<KvItem>>> {
+        Box::pin(async move {
+            let label = match label {
+                Some(l) if !l.is_empty() => exact_filter(l),
+                _ => "\0".to_owned(),
+            };
+            let req = Req::new(Method::GET, &self.endpoint, "/revisions")
+                .query("key", exact_filter(key))
+                .query("label", label);
+            let mut items: Vec<KvItem> = self
+                .all_pages(req, MAX_REVISIONS)
+                .await?
+                .iter()
+                .map(item_from)
+                .collect();
+            items.sort_by_key(|a| std::cmp::Reverse(a.modified_ms));
+            Ok(items)
+        })
+    }
+
+    fn labels(&self) -> BoxFuture<'_, Result<Vec<Option<String>>>> {
+        Box::pin(async move {
+            let req = Req::new(Method::GET, &self.endpoint, "/labels").query("name", "*");
+            let mut labels: Vec<Option<String>> = self
+                .all_pages(req, 1000)
+                .await?
+                .iter()
+                .map(|i| i.get("name").and_then(Json::as_str).map(str::to_owned))
+                .collect();
+            labels.sort();
+            labels.dedup();
+            Ok(labels)
+        })
+    }
 }
 
 /// A feature flag's editable parts; everything else in its JSON is kept as is.
@@ -443,6 +507,29 @@ pub fn new_flag(id: &str, enabled: bool, description: &str) -> (String, String) 
         "conditions": { "client_filters": [] },
     });
     (format!("{FEATURE_FLAG_PREFIX}{id}"), value.to_string())
+}
+
+/// Whether a setting is a Key Vault reference (by its content type).
+pub fn is_key_vault_ref(content_type: Option<&str>) -> bool {
+    content_type.is_some_and(|c| {
+        c.trim()
+            .to_ascii_lowercase()
+            .starts_with("application/vnd.microsoft.appconfig.keyvaultref+json")
+    })
+}
+
+/// The secret URI of a Key Vault reference's value (`{"uri": "https://…"}`).
+pub fn key_vault_ref_uri(value: &str) -> Option<String> {
+    let j: Json = serde_json::from_str(value).ok()?;
+    j.get("uri")
+        .and_then(Json::as_str)
+        .map(|u| u.trim().to_owned())
+        .filter(|u| !u.is_empty())
+}
+
+/// The value of a Key Vault reference to `uri`.
+pub fn key_vault_ref(uri: &str) -> String {
+    json!({ "uri": uri.trim() }).to_string()
 }
 
 /// Tags written as `a=1; b=2`.
