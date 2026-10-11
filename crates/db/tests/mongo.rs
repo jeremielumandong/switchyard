@@ -265,6 +265,50 @@ async fn wrong_password_is_a_connect_error() {
 
 #[tokio::test]
 #[ignore = "needs the docker mongo service"]
+async fn refused_sign_in_names_the_auth_database_that_works() {
+    let mut s = session().await;
+    // A user created in the connection's database, not in admin.
+    if let Ok(mut st) = s
+        .execute("db.runCommand({ dropUser: 'local_app' })", &[])
+        .await
+    {
+        while st.next().await.is_some() {}
+    }
+    run(
+        s.as_mut(),
+        "db.runCommand({ createUser: 'local_app', pwd: 'Secr3t!', roles: [] })",
+    )
+    .await;
+    let mut cfg = config();
+    cfg.user = "local_app".into();
+    cfg.password = Some(SecretString::from("Secr3t!".to_owned()));
+    let e = MongoDriver
+        .connect(&cfg, None)
+        .await
+        .err()
+        .expect("refused against admin");
+    let text = e.to_string();
+    assert!(text.contains("(auth database admin)"), "{text}");
+    assert!(
+        text.contains(&format!("set Auth database to {DB}")),
+        "{text}"
+    );
+    cfg.options.insert("auth_source".into(), DB.into());
+    MongoDriver.connect(&cfg, None).await.expect("signs in");
+
+    let mut cfg = config();
+    cfg.password = Some(SecretString::from("nope".to_owned()));
+    let text = MongoDriver
+        .connect(&cfg, None)
+        .await
+        .err()
+        .expect("refused")
+        .to_string();
+    assert!(text.contains("Check the password"), "{text}");
+}
+
+#[tokio::test]
+#[ignore = "needs the docker mongo service"]
 async fn grid_edits_by_id() {
     use switchyard_db::mongo::edit::{edit_target, row_delete, row_insert, row_update};
     let mut s = session().await;
