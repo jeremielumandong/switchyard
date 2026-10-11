@@ -2,7 +2,7 @@
 //! breadcrumbs, sortable columns, hidden-file toggle, new folder / rename / delete, drag
 //! between panes and from the OS, and the transfer drawer at the bottom.
 //!
-//! Folders load a page at a time: object storage (Azure Blob) answers [`PAGE`] entries
+//! Folders load a page at a time: object storage (Azure Blob, S3, R2) answers [`PAGE`] entries
 //! and a "Load more" footer fetches the next page; other file systems answer in one page.
 //! Search filters the loaded rows as you type; Enter also searches the server by name
 //! prefix when the folder has more pages than are loaded.

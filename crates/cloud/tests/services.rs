@@ -48,6 +48,62 @@ fn unique(prefix: &str) -> String {
 }
 
 /// The same suite for every object store: `root` is a new bucket / container path.
+/// Paging and server-side prefix search on a new top-level folder `container`.
+async fn paging_suite(fs: &dyn RemoteFs, container: &str) {
+    let root = format!("/{container}");
+    fs.mkdir(Path::new(&root)).await.unwrap();
+    fs.mkdir(Path::new(&format!("{root}/dir/sub")))
+        .await
+        .unwrap();
+    for name in ["a1.txt", "a2.txt", "a3.txt", "b1.txt", "b2.txt"] {
+        let path = format!("{root}/dir/{name}");
+        let mut w = fs.create(Path::new(&path)).await.unwrap();
+        w.write_all(b"x").await.unwrap();
+        w.shutdown().await.unwrap();
+    }
+    let dir = format!("{root}/dir");
+    let dir = Path::new(&dir);
+
+    // Two at a time until the cursor runs out: every entry once.
+    let mut names = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut pages = 0;
+    loop {
+        let page = fs.list_page(dir, "", cursor.as_deref(), 2).await.unwrap();
+        assert!(page.entries.len() <= 2);
+        names.extend(page.entries.into_iter().map(|e| e.name));
+        pages += 1;
+        cursor = page.next;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    names.sort();
+    assert_eq!(
+        names,
+        ["a1.txt", "a2.txt", "a3.txt", "b1.txt", "b2.txt", "sub"]
+    );
+    assert!(pages >= 3, "{pages} pages");
+
+    let page = fs.list_page(dir, "b", None, 100).await.unwrap();
+    let found: Vec<_> = page.entries.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(found, ["b1.txt", "b2.txt"]);
+    assert_eq!(page.next, None);
+
+    // Top-level folders (containers / buckets) page and filter the same way.
+    let page = fs
+        .list_page(Path::new("/"), container, None, 5)
+        .await
+        .unwrap();
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.entries[0].name, container);
+
+    for name in ["a1.txt", "a2.txt", "a3.txt", "b1.txt", "b2.txt", "sub"] {
+        fs.delete(&dir.join(name)).await.unwrap();
+    }
+    fs.delete(Path::new(&root)).await.unwrap();
+}
+
 async fn fs_suite(fs: &dyn RemoteFs, root: &Path) {
     let p = |s: &str| PathBuf::from(format!("{}/{s}", root.display()));
     assert!(
@@ -165,6 +221,24 @@ async fn s3_file_system() {
 
 #[tokio::test]
 #[ignore = "needs moto_server on 127.0.0.1:5000"]
+async fn s3_listing_pages_and_filters_by_prefix() {
+    let fs = S3Fs::new(
+        S3Config {
+            name: "moto".into(),
+            endpoint: Some(s3_endpoint()),
+            region: "us-east-1".into(),
+            home: None,
+            read_only: false,
+            service: "S3",
+        },
+        aws_auth(),
+    )
+    .unwrap();
+    paging_suite(&fs, &unique("page")).await;
+}
+
+#[tokio::test]
+#[ignore = "needs moto_server on 127.0.0.1:5000"]
 async fn s3_read_only_refuses_writes() {
     let fs = S3Fs::new(
         S3Config {
@@ -234,59 +308,7 @@ async fn blob_listing_pages_and_filters_by_prefix() {
         auth,
     )
     .unwrap();
-    let container = unique("page");
-    let root = format!("/{container}");
-    fs.mkdir(Path::new(&root)).await.unwrap();
-    fs.mkdir(Path::new(&format!("{root}/dir/sub")))
-        .await
-        .unwrap();
-    for name in ["a1.txt", "a2.txt", "a3.txt", "b1.txt", "b2.txt"] {
-        let path = format!("{root}/dir/{name}");
-        let mut w = fs.create(Path::new(&path)).await.unwrap();
-        w.write_all(b"x").await.unwrap();
-        w.shutdown().await.unwrap();
-    }
-    let dir = format!("{root}/dir");
-    let dir = Path::new(&dir);
-
-    // Two at a time until the cursor runs out: every entry once.
-    let mut names = Vec::new();
-    let mut cursor: Option<String> = None;
-    let mut pages = 0;
-    loop {
-        let page = fs.list_page(dir, "", cursor.as_deref(), 2).await.unwrap();
-        assert!(page.entries.len() <= 2);
-        names.extend(page.entries.into_iter().map(|e| e.name));
-        pages += 1;
-        cursor = page.next;
-        if cursor.is_none() {
-            break;
-        }
-    }
-    names.sort();
-    assert_eq!(
-        names,
-        ["a1.txt", "a2.txt", "a3.txt", "b1.txt", "b2.txt", "sub"]
-    );
-    assert!(pages >= 3, "{pages} pages");
-
-    let page = fs.list_page(dir, "b", None, 100).await.unwrap();
-    let found: Vec<_> = page.entries.iter().map(|e| e.name.as_str()).collect();
-    assert_eq!(found, ["b1.txt", "b2.txt"]);
-    assert_eq!(page.next, None);
-
-    // Containers page and filter the same way.
-    let page = fs
-        .list_page(Path::new("/"), &container, None, 5)
-        .await
-        .unwrap();
-    assert_eq!(page.entries.len(), 1);
-    assert_eq!(page.entries[0].name, container);
-
-    for name in ["a1.txt", "a2.txt", "a3.txt", "b1.txt", "b2.txt", "sub"] {
-        fs.delete(&dir.join(name)).await.unwrap();
-    }
-    fs.delete(Path::new(&root)).await.unwrap();
+    paging_suite(&fs, &unique("page")).await;
 }
 
 #[tokio::test]

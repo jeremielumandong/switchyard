@@ -706,7 +706,9 @@ server or bundled Unix tools on Windows (Tier 3).
   (filters loaded names as you type; Enter searches the whole folder by server-side
   prefix when it has more pages), a sweeping loading bar and a skeleton while a folder
   opens. Test: `cloud --test services blob_listing_pages_and_filters_by_prefix` (Azurite).
-  Deferred: S3 / R2 paging (same shape, `continuation-token`).
+  S3 / R2 page objects the same way (`max-keys` / `continuation-token`, 2026-10-11); bucket
+  lists stay one page, filtered by prefix (R2 and older endpoints don't page them). Test:
+  `cloud --test services s3_listing_pages_and_filters_by_prefix` (moto).
 
 ## Extra — Durable Object SQLite (user request, 2026-10-10)
 
