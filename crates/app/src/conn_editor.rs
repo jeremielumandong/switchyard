@@ -1437,8 +1437,13 @@ impl Render for ConnEditor {
             TestState::Idle => (String::new(), gpui_kit::transparent_black(), false),
             TestState::Testing(_) => ("Connecting…".into(), p.acc, true),
             TestState::Passed(s) => (s.clone(), p.dev, false),
-            TestState::Failed(s) => (s.clone(), p.prod, false),
+            // The whole message shows in a band above the footer.
+            TestState::Failed(_) => ("Connection failed".into(), p.prod, false),
             TestState::Missing => ("A required component is missing".into(), p.stg, false),
+        };
+        let test_failure = match &self.test {
+            TestState::Failed(s) => Some(s.clone()),
+            _ => None,
         };
         let general_error = self
             .error
@@ -1784,6 +1789,23 @@ impl Render for ConnEditor {
                             }),
                     ),
             )
+            .when_some(test_failure, |d, e| {
+                d.child(
+                    div()
+                        .id("ce-test-error")
+                        .flex_none()
+                        .max_h(rpx(96.))
+                        .overflow_y_scroll()
+                        .px(rpx(16.))
+                        .py(rpx(8.))
+                        .border_t_1()
+                        .border_color(p.bd)
+                        .bg(p.prod_bg)
+                        .text_size(ts::BODY)
+                        .text_color(p.fg)
+                        .child(e),
+                )
+            })
             .child(
                 div()
                     .h(rpx(52.))

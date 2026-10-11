@@ -420,14 +420,18 @@ impl Service {
         scope: Option<String>,
         key: String,
         label: Option<String>,
+        version: Option<String>,
     ) {
         let result = async {
             let slot = self.cloud_slot(session)?;
-            Ok::<_, CoreError>(
-                slot.svc
-                    .get(scope.as_deref(), &key, label.as_deref())
-                    .await?,
-            )
+            Ok::<_, CoreError>(match version {
+                Some(v) => slot.svc.get_version(&key, &v).await?,
+                None => {
+                    slot.svc
+                        .get(scope.as_deref(), &key, label.as_deref())
+                        .await?
+                }
+            })
         }
         .await;
         self.emit(Event::CloudItem {
@@ -437,34 +441,183 @@ impl Service {
         });
     }
 
+    pub(super) async fn cloud_revisions(
+        &self,
+        session: SessionId,
+        request: RequestId,
+        key: String,
+        label: Option<String>,
+    ) {
+        let result = async {
+            let slot = self.cloud_slot(session)?;
+            Ok::<_, CoreError>(slot.svc.revisions(&key, label.as_deref()).await?)
+        }
+        .await;
+        self.emit(Event::CloudRevisions {
+            session,
+            request,
+            result: result.map_err(|e| e.to_string()),
+        });
+    }
+
+    pub(super) async fn cloud_labels(&self, session: SessionId) {
+        let result = async {
+            let slot = self.cloud_slot(session)?;
+            Ok::<_, CoreError>(slot.svc.labels().await?)
+        }
+        .await;
+        self.emit(Event::CloudLabels {
+            session,
+            result: result.map_err(|e| e.to_string()),
+        });
+    }
+
+    /// The value behind a Key Vault reference. Bearer tokens go only to a vault the user
+    /// saved a connection for, or to an Azure Key Vault host over HTTPS.
+    pub(super) async fn cloud_resolve_ref(
+        &self,
+        session: SessionId,
+        request: RequestId,
+        uri: String,
+    ) {
+        let result = async {
+            let slot = self.cloud_slot(session)?;
+            let target = keyvault::parse_secret_uri(&uri)?;
+            let host = target
+                .vault
+                .host_str()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let saved = self
+                .with_store(|s| s.profiles())
+                .await?
+                .into_iter()
+                .find_map(|p| match p {
+                    Profile::Cloud(c)
+                        if c.service == CloudService::KeyVault
+                            && keyvault::vault_url(&c.endpoint).is_ok_and(|u| {
+                                u.host_str().is_some_and(|h| h.eq_ignore_ascii_case(&host))
+                            }) =>
+                    {
+                        Some(c)
+                    }
+                    _ => None,
+                });
+            let (tokens, vault) = match saved {
+                Some(c) => {
+                    let secret = self.cloud_secret(&c, None).await?;
+                    (
+                        self.azure_tokens(&c, KEY_VAULT_SCOPE, secret)?,
+                        keyvault::vault_url(&c.endpoint)?,
+                    )
+                }
+                None => {
+                    if !is_key_vault_host(&target.vault) {
+                        return Err(CoreError::Unsupported(format!(
+                            "{host} is not an Azure Key Vault address; add a Key Vault \
+                             connection for it to read this reference"
+                        )));
+                    }
+                    let c = &slot.connection;
+                    if c.auth != CloudAuth::AzureCli && !c.auth.is_entra() {
+                        return Err(CoreError::Unsupported(format!(
+                            "this store signs in with an access key, which Key Vault does not \
+                             accept; add an Azure Key Vault connection for {host} to read the \
+                             reference"
+                        )));
+                    }
+                    let secret = self.cloud_secret(c, None).await?;
+                    (
+                        self.azure_tokens(c, KEY_VAULT_SCOPE, secret)?,
+                        target.vault.clone(),
+                    )
+                }
+            };
+            let kv = keyvault::KeyVault::new(vault, tokens)?;
+            info!(connection = %slot.connection.name, vault = %host, "key vault reference read");
+            Ok::<_, CoreError>(
+                kv.secret_value(&target.name, target.version.as_deref())
+                    .await?,
+            )
+        }
+        .await;
+        self.emit(Event::CloudResolved {
+            session,
+            request,
+            result: result.map_err(|e| e.to_string()),
+        });
+    }
+
+    /// One change; the message says what was done.
+    async fn apply_cloud_edit(&self, slot: &CloudSlot, edit: CloudEdit) -> Result<String> {
+        let svc = &slot.svc;
+        let name = slot.connection.name.as_str();
+        Ok(match edit {
+            CloudEdit::Put(w) => {
+                svc.put(&w).await?;
+                info!(connection = name, create = w.create, "cloud item saved");
+                if w.create {
+                    format!("Created {}", w.key)
+                } else {
+                    format!("Saved {}", w.key)
+                }
+            }
+            CloudEdit::Delete { scope, key, label } => {
+                svc.delete(scope.as_deref(), &key, label.as_deref()).await?;
+                info!(connection = name, "cloud item deleted");
+                format!("Deleted {key}")
+            }
+            CloudEdit::Lock { key, label, locked } => {
+                svc.set_locked(&key, label.as_deref(), locked).await?;
+                format!("{} {key}", if locked { "Locked" } else { "Unlocked" })
+            }
+            CloudEdit::Recover { key } => {
+                svc.recover(&key).await?;
+                info!(connection = name, "cloud item recovered");
+                format!("Recovered {key}")
+            }
+            CloudEdit::Purge { key } => {
+                svc.purge(&key).await?;
+                info!(connection = name, "cloud item purged");
+                format!("Purged {key}")
+            }
+            CloudEdit::Batch(edits) => {
+                let total = edits.len();
+                let mut failed = Vec::new();
+                for e in edits {
+                    let what = edit_target(&e);
+                    // Boxed: a batch is applied through this same function.
+                    if let Err(err) = Box::pin(self.apply_cloud_edit(slot, e)).await {
+                        failed.push(format!("{what}: {err}"));
+                    }
+                }
+                let done = total - failed.len();
+                if failed.is_empty() {
+                    format!("{total} change{} made", if total == 1 { "" } else { "s" })
+                } else {
+                    return Err(CoreError::Unsupported(format!(
+                        "{done} of {total} done; {} failed: {}{}",
+                        failed.len(),
+                        failed
+                            .iter()
+                            .take(5)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                        if failed.len() > 5 { "; …" } else { "" }
+                    )));
+                }
+            }
+        })
+    }
+
     pub(super) async fn cloud_edit(&self, session: SessionId, request: RequestId, edit: CloudEdit) {
         let result = async {
             let slot = self.cloud_slot(session)?;
             if slot.connection.read_only {
                 return Err(CoreError::Cloud(CloudError::ReadOnly));
             }
-            let svc = &slot.svc;
-            let name = slot.connection.name.as_str();
-            Ok::<_, CoreError>(match edit {
-                CloudEdit::Put(w) => {
-                    svc.put(&w).await?;
-                    info!(connection = name, create = w.create, "cloud item saved");
-                    if w.create {
-                        format!("Created {}", w.key)
-                    } else {
-                        format!("Saved {}", w.key)
-                    }
-                }
-                CloudEdit::Delete { scope, key, label } => {
-                    svc.delete(scope.as_deref(), &key, label.as_deref()).await?;
-                    info!(connection = name, "cloud item deleted");
-                    format!("Deleted {key}")
-                }
-                CloudEdit::Lock { key, label, locked } => {
-                    svc.set_locked(&key, label.as_deref(), locked).await?;
-                    format!("{} {key}", if locked { "Locked" } else { "Unlocked" })
-                }
-            })
+            self.apply_cloud_edit(&slot, edit).await
         }
         .await;
         self.emit(Event::CloudEdited {
@@ -472,5 +625,48 @@ impl Service {
             request,
             result: result.map_err(|e| e.to_string()),
         });
+    }
+}
+
+/// The key a change is about, for batch failure messages.
+fn edit_target(e: &CloudEdit) -> String {
+    match e {
+        CloudEdit::Put(w) => w.key.clone(),
+        CloudEdit::Delete { key, .. }
+        | CloudEdit::Lock { key, .. }
+        | CloudEdit::Recover { key }
+        | CloudEdit::Purge { key } => key.clone(),
+        CloudEdit::Batch(_) => "batch".into(),
+    }
+}
+
+/// An Azure Key Vault host (public and sovereign clouds) over HTTPS.
+fn is_key_vault_host(u: &url::Url) -> bool {
+    u.scheme() == "https"
+        && u.host_str().is_some_and(|h| {
+            let h = h.to_ascii_lowercase();
+            [
+                ".vault.azure.net",
+                ".vault.azure.cn",
+                ".vault.usgovcloudapi.net",
+                ".vault.microsoftazure.de",
+            ]
+            .iter()
+            .any(|s| h.ends_with(s))
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_vault_hosts() {
+        let ok = |s: &str| is_key_vault_host(&url::Url::parse(s).unwrap());
+        assert!(ok("https://kv-a.vault.azure.net/"));
+        assert!(ok("https://KV.Vault.Azure.CN"));
+        assert!(!ok("http://kv-a.vault.azure.net/"));
+        assert!(!ok("https://vault.azure.net.evil.example/"));
+        assert!(!ok("https://example.com/"));
     }
 }

@@ -90,6 +90,39 @@ pub struct TextFile {
     pub modified_ms: Option<i64>,
 }
 
+/// A file's raw bytes, shared between event receivers. `Debug` prints only the length.
+#[derive(Clone, PartialEq, Eq)]
+pub struct FileBytes(pub std::sync::Arc<[u8]>);
+
+impl std::fmt::Debug for FileBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "FileBytes({} bytes)", self.0.len())
+    }
+}
+
+/// Why a file did not open as text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReadError {
+    /// Not text (a NUL byte or invalid UTF-8): open it with a viewer or another app.
+    Binary {
+        /// File size in bytes.
+        size: u64,
+        /// The whole file when it looks like an image small enough to show.
+        image: Option<FileBytes>,
+    },
+    /// Anything else.
+    Failed(String),
+}
+
+impl std::fmt::Display for ReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReadError::Binary { .. } => f.write_str("binary file"),
+            ReadError::Failed(e) => f.write_str(e),
+        }
+    }
+}
+
 /// Why a save did not happen.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SaveError {
@@ -321,6 +354,36 @@ pub enum Command {
         key: String,
         /// Label (App Configuration).
         label: Option<String>,
+        /// An earlier version from [`Command::CloudRevisions`] (Key Vault), else the
+        /// current one.
+        version: Option<String>,
+    },
+    /// Earlier versions of one item ([`Event::CloudRevisions`]).
+    CloudRevisions {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// Key.
+        key: String,
+        /// Label (App Configuration).
+        label: Option<String>,
+    },
+    /// Labels in use ([`Event::CloudLabels`]).
+    CloudLabels {
+        /// Session.
+        session: SessionId,
+    },
+    /// Read the secret an App Configuration Key Vault reference points at
+    /// ([`Event::CloudResolved`]), through a saved Key Vault connection for that vault or the
+    /// store's own Microsoft sign-in.
+    CloudResolveRef {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// Secret URI (`https://<vault>.vault.azure.net/secrets/<name>[/<version>]`).
+        uri: String,
     },
     /// Change an item ([`Event::CloudEdited`]).
     CloudEdit {
@@ -691,7 +754,8 @@ pub enum Command {
         path: PathBuf,
         /// Target file system.
         to: FsRef,
-        /// Target folder; `None` = the local Downloads folder.
+        /// Target folder; `None` = the local Downloads folder. A folder under
+        /// [`crate::files::open_copy_dir`] is created when missing.
         dir: Option<PathBuf>,
         /// Existing target policy.
         on_conflict: OnConflict,
@@ -718,7 +782,8 @@ pub enum Command {
         /// Operation.
         op: FsOp,
     },
-    /// Open a text file for editing ([`Event::TextFileRead`]).
+    /// Open a text file for editing ([`Event::TextFileRead`]); a binary file answers
+    /// [`ReadError::Binary`], with its bytes when it is an image.
     ReadTextFile {
         /// Request id.
         request: RequestId,
@@ -1101,6 +1166,31 @@ pub enum Event {
         /// What was done, or why it failed.
         result: Result<String, String>,
     },
+    /// Result of [`Command::CloudRevisions`]: newest first.
+    CloudRevisions {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// The versions, or why not.
+        result: Result<Vec<KvItem>, String>,
+    },
+    /// Result of [`Command::CloudLabels`] (`None` is the null label).
+    CloudLabels {
+        /// Session.
+        session: SessionId,
+        /// The labels, or why not.
+        result: Result<Vec<Option<String>>, String>,
+    },
+    /// Result of [`Command::CloudResolveRef`]: the secret's value.
+    CloudResolved {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// The value, or why not.
+        result: Result<String, String>,
+    },
     /// Result of [`Command::RedisOpen`].
     RedisOpened {
         /// Session.
@@ -1332,8 +1422,8 @@ pub enum Event {
     TextFileRead {
         /// Request id.
         request: RequestId,
-        /// Contents or error.
-        result: Result<TextFile, String>,
+        /// Contents, or why not (a binary file is [`ReadError::Binary`]).
+        result: Result<TextFile, ReadError>,
     },
     /// Result of [`Command::WriteTextFile`]: the new modification time.
     TextFileSaved {
@@ -1611,6 +1701,19 @@ pub enum CloudEdit {
         /// Lock (true) or unlock.
         locked: bool,
     },
+    /// Bring a deleted item back (Key Vault).
+    Recover {
+        /// Key.
+        key: String,
+    },
+    /// Delete a deleted item for good (Key Vault).
+    Purge {
+        /// Key.
+        key: String,
+    },
+    /// Several changes in order (bulk delete, import, copy to a label). Each is tried even
+    /// when an earlier one fails; the result names the failures.
+    Batch(Vec<CloudEdit>),
 }
 
 /// A connected Redis server ([`Event::RedisOpened`]).

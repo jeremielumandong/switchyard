@@ -513,9 +513,45 @@ async fn app_configuration() {
     assert!(parsed.enabled);
     assert_eq!(parsed.description, "New checkout");
 
+    // Revisions: newest first, one per change.
+    let revs = ac.revisions(&key, Some("prod")).await.unwrap();
+    assert!(revs.len() >= 3, "{revs:?}");
+    assert_eq!(revs[0].value.as_deref(), Some("db3.internal"));
+    assert!(
+        revs.iter()
+            .any(|r| r.value.as_deref() == Some("db.internal"))
+    );
+    let unlabeled_revs = ac.revisions(&key, None).await.unwrap();
+    assert!(unlabeled_revs.iter().all(|r| r.label.is_none()));
+    assert!(ac.labels().await.unwrap().contains(&Some("prod".into())));
+
+    // Import from a file's text, then export it back.
+    use switchyard_cloud::kv_file::{self, KvFormat};
+    let text = format!("{{\"{app}\": {{\"import\": {{\"a\": \"1\", \"b\": 2}}}}}}");
+    let writes = kv_file::import(&text, KvFormat::Json, Some("imported")).unwrap();
+    for w in &writes {
+        ac.put(w).await.unwrap();
+    }
+    let imported = ac
+        .list(&KvQuery {
+            key: format!("{app}:import:"),
+            label: "imported".into(),
+            ..KvQuery::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(imported.items.len(), 2);
+    let exported = kv_file::export(&imported.items, KvFormat::Env);
+    assert!(
+        exported.contains(&format!("{app}__import__b=2")),
+        "{exported}"
+    );
+    for i in &imported.items {
+        ac.delete(None, &i.key, i.label.as_deref()).await.unwrap();
+    }
+
     ac.delete(None, &key, Some("prod")).await.unwrap();
     ac.delete(None, &key, None).await.unwrap();
     ac.delete(None, &fkey, None).await.unwrap();
     assert!(ac.get(None, &key, None).await.unwrap_err().is_not_found());
-    assert!(ac.labels().await.is_ok());
 }

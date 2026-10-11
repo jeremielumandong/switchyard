@@ -181,13 +181,13 @@ impl Driver for MongoDriver {
     ) -> BoxFuture<'a, Result<Box<dyn DbSession>>> {
         Box::pin(async move {
             let (options, ca_file) = client_options(cfg, via.as_ref()).await?;
-            let client =
-                Client::with_options(options).map_err(|e| DbError::Connect(message(&e)))?;
-            let info = client
-                .database("admin")
-                .run_command(doc! { "buildInfo": 1 })
-                .await
-                .map_err(|e| DbError::Connect(message(&e)))?;
+            let (client, info) = match open(options.clone()).await {
+                Ok(c) => c,
+                Err(e) if is_auth_failure(&e) => {
+                    return Err(DbError::Connect(auth_failure(&e, &options, cfg).await));
+                }
+                Err(e) => return Err(DbError::Connect(message(&e))),
+            };
             let version = format!(
                 "MongoDB {}",
                 info.get_str("version").unwrap_or("(unknown version)")
@@ -254,6 +254,59 @@ pub struct MongoSession {
     closed: bool,
     /// The staged CA the client reads on every (re)connect; removed when the session drops.
     _ca_file: Option<tempfile::NamedTempFile>,
+}
+
+/// A client for `options` and the server's `buildInfo` (the first round trip, which
+/// signs in).
+async fn open(options: ClientOptions) -> mongodb::error::Result<(Client, Document)> {
+    let client = Client::with_options(options)?;
+    let info = client
+        .database("admin")
+        .run_command(doc! { "buildInfo": 1 })
+        .await?;
+    Ok((client, info))
+}
+
+fn is_auth_failure(e: &mongodb::error::Error) -> bool {
+    matches!(
+        e.kind.as_ref(),
+        mongodb::error::ErrorKind::Authentication { .. }
+    )
+}
+
+/// The text of a refused sign-in. The server only says "Authentication failed", for a
+/// wrong password and for a user that lives in another database alike, so this names
+/// the auth database used and, when the user signs in against the connection's own
+/// database instead (a `mongodb://…/<db>` URI's default), says to use that one.
+async fn auth_failure(
+    e: &mongodb::error::Error,
+    options: &ClientOptions,
+    cfg: &DbConfig,
+) -> String {
+    let source = options
+        .credential
+        .as_ref()
+        .and_then(|c| c.source.clone())
+        .unwrap_or_else(|| "admin".into());
+    let database = cfg.database.trim();
+    let mut text = format!("{} (auth database {source})", message(e));
+    if !database.is_empty() && database != source {
+        let mut probe = options.clone();
+        if let Some(c) = probe.credential.as_mut() {
+            c.source = Some(database.to_owned());
+        }
+        if open(probe).await.is_ok() {
+            text.push_str(&format!(
+                ". The user signs in with auth database {database}: set Auth database to {database}"
+            ));
+            return text;
+        }
+    }
+    text.push_str(
+        ". Check the password, and that Auth database is the database the user was \
+         created in (where db.createUser ran)",
+    );
+    text
 }
 
 /// The driver's error text without its `Kind: ` wrapping.
