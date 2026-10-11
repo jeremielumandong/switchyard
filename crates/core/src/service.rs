@@ -663,7 +663,23 @@ impl Service {
                 scope,
                 key,
                 label,
-            } => self.cloud_get(session, request, scope, key, label).await,
+                version,
+            } => {
+                self.cloud_get(session, request, scope, key, label, version)
+                    .await
+            }
+            Command::CloudRevisions {
+                session,
+                request,
+                key,
+                label,
+            } => self.cloud_revisions(session, request, key, label).await,
+            Command::CloudLabels { session } => self.cloud_labels(session).await,
+            Command::CloudResolveRef {
+                session,
+                request,
+                uri,
+            } => self.cloud_resolve_ref(session, request, uri).await,
             Command::CloudEdit {
                 session,
                 request,

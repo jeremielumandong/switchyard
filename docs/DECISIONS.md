@@ -1387,3 +1387,15 @@ Decisions:
   contrast floors of the built-in themes. The terminal uses the theme's own 16 colors.
 - Live updates poll the directory every 2 s on the core runtime (no file-watcher crate is
   approved; Omarchy swaps a symlink, which watchers handle poorly anyway).
+
+## 2026-10-11 — App Configuration and Key Vault UI pass (user request)
+
+- `.env` export writes `:` as `__` (the .NET configuration convention) and import maps it
+  back; JSON import flattens nested objects with `:` and arrays to index keys.
+- Key Vault references are resolved on request only (never while listing). The token comes
+  from a saved Key Vault connection for that vault when there is one; otherwise from the
+  App Configuration store's own Entra / Azure CLI sign-in, and only for an `https` host
+  under an Azure Key Vault domain. A bearer token is never sent to any other host; stores
+  signed in with an access key cannot resolve references.
+- Bulk edits run one by one (neither service has transactions) and report "X of N done"
+  with each failure; restoring a revision and every bulk delete or copy always confirm.

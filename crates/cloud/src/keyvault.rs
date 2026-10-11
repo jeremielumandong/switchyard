@@ -34,6 +34,42 @@ pub fn vault_url(name_or_url: &str) -> Result<url::Url> {
     url::Url::parse(&s).map_err(|e| CloudError::Invalid(format!("vault: {e}")))
 }
 
+/// A secret's address: `https://<vault>.vault.azure.net/secrets/<name>[/<version>]`, as
+/// App Configuration's Key Vault references hold it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SecretUri {
+    /// The vault (scheme and host).
+    pub vault: url::Url,
+    /// Secret name.
+    pub name: String,
+    /// A pinned version (`None`: the current one).
+    pub version: Option<String>,
+}
+
+/// Parse a secret URI.
+pub fn parse_secret_uri(uri: &str) -> Result<SecretUri> {
+    let bad = || CloudError::Invalid(format!("not a Key Vault secret URI: {uri}"));
+    let u = url::Url::parse(uri.trim()).map_err(|_| bad())?;
+    if u.scheme() != "https" && u.scheme() != "http" {
+        return Err(bad());
+    }
+    let mut parts = u.path_segments().ok_or_else(bad)?.filter(|s| !s.is_empty());
+    if parts.next() != Some("secrets") {
+        return Err(bad());
+    }
+    let name = parts.next().ok_or_else(bad)?.to_owned();
+    let version = parts.next().map(str::to_owned);
+    let mut vault = u.clone();
+    vault.set_path("");
+    vault.set_query(None);
+    vault.set_fragment(None);
+    Ok(SecretUri {
+        vault,
+        name,
+        version,
+    })
+}
+
 /// Secret name from its id (`https://v.vault.azure.net/secrets/<name>[/<version>]`).
 fn name_of(id: &str) -> String {
     id.split("/secrets/")
@@ -61,10 +97,34 @@ fn item_from(j: &Json) -> KvItem {
                     .collect()
             })
             .unwrap_or_default(),
-        kind: secs("/attributes/exp").map(|e| format!("expires {}", crate::time::display_ms(e))),
+        kind: match (secs("/deletedDate"), secs("/scheduledPurgeDate")) {
+            (Some(d), Some(p)) => Some(format!(
+                "deleted {} · purged {}",
+                crate::time::display_ms(d),
+                crate::time::display_ms(p)
+            )),
+            (Some(d), None) => Some(format!("deleted {}", crate::time::display_ms(d))),
+            _ => secs("/attributes/exp").map(|e| format!("expires {}", crate::time::display_ms(e))),
+        },
+        version: s("/id").and_then(|i| version_of(&i)),
+        not_before_ms: secs("/attributes/nbf"),
+        expires_ms: secs("/attributes/exp"),
         ..KvItem::default()
     }
 }
+
+/// Version from a secret id (`…/secrets/<name>/<version>`).
+fn version_of(id: &str) -> Option<String> {
+    id.split("/secrets/")
+        .nth(1)?
+        .split('/')
+        .nth(1)
+        .filter(|v| !v.is_empty())
+        .map(str::to_owned)
+}
+
+/// Most versions listed for one secret.
+const MAX_VERSIONS: usize = 200;
 
 impl KeyVault {
     /// A client for the vault at `vault`.
@@ -104,6 +164,30 @@ impl KeyVault {
     }
 }
 
+impl KeyVault {
+    /// The value of secret `name`, at `version` or the current one.
+    pub async fn secret_value(&self, name: &str, version: Option<&str>) -> Result<String> {
+        let path = format!(
+            "/secrets/{}/{}",
+            uri_encode(name, false),
+            uri_encode(version.unwrap_or(""), false)
+        );
+        let item = item_from(
+            &self
+                .send(Req::new(Method::GET, &self.vault, path))
+                .await?
+                .json()?,
+        );
+        if item.enabled == Some(false) {
+            return Err(CloudError::Invalid(format!(
+                "the secret {name} is disabled"
+            )));
+        }
+        item.value
+            .ok_or_else(|| CloudError::Invalid(format!("the secret {name} has no value")))
+    }
+}
+
 impl KvService for KeyVault {
     fn caps(&self) -> KvCaps {
         KvCaps {
@@ -111,6 +195,9 @@ impl KvService for KeyVault {
             tags: true,
             enabled: true,
             secret_values: true,
+            history: true,
+            dates: true,
+            recoverable: true,
             filter_hint: "Name prefix",
             ..KvCaps::default()
         }
@@ -125,14 +212,23 @@ impl KvService for KeyVault {
                     if u.host_str() != self.vault.host_str() {
                         return Err(CloudError::Invalid("unexpected next page link".into()));
                     }
-                    let mut r = Req::new(Method::GET, &self.vault, "/secrets");
+                    let mut r = Req::new(Method::GET, &self.vault, u.path().to_owned());
                     r.query = u
                         .query_pairs()
                         .map(|(k, v)| (k.into_owned(), v.into_owned()))
                         .collect();
                     r
                 }
-                None => Req::new(Method::GET, &self.vault, "/secrets").query("maxresults", "25"),
+                None => Req::new(
+                    Method::GET,
+                    &self.vault,
+                    if q.deleted {
+                        "/deletedsecrets"
+                    } else {
+                        "/secrets"
+                    },
+                )
+                .query("maxresults", "25"),
             };
             let json = self.send(req).await?.json()?;
             let prefix = q.key.trim().to_lowercase();
@@ -191,8 +287,18 @@ impl KvService for KeyVault {
             if let Some(ct) = w.content_type.as_ref().filter(|c| !c.is_empty()) {
                 body["contentType"] = json!(ct);
             }
+            let mut attributes = serde_json::Map::new();
             if let Some(e) = w.enabled {
-                body["attributes"] = json!({ "enabled": e });
+                attributes.insert("enabled".into(), json!(e));
+            }
+            if let Some(nbf) = w.not_before_ms {
+                attributes.insert("nbf".into(), json!(nbf / 1000));
+            }
+            if let Some(exp) = w.expires_ms {
+                attributes.insert("exp".into(), json!(exp / 1000));
+            }
+            if !attributes.is_empty() {
+                body["attributes"] = Json::Object(attributes);
             }
             self.send(
                 Req::new(
@@ -224,11 +330,124 @@ impl KvService for KeyVault {
             Ok(())
         })
     }
+
+    fn revisions<'a>(
+        &'a self,
+        key: &'a str,
+        _label: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<Vec<KvItem>>> {
+        Box::pin(async move {
+            let mut req = Req::new(
+                Method::GET,
+                &self.vault,
+                format!("/secrets/{}/versions", uri_encode(key, false)),
+            )
+            .query("maxresults", "25");
+            let mut items = Vec::new();
+            loop {
+                let json = self.send(req).await?.json()?;
+                if let Some(a) = json.get("value").and_then(Json::as_array) {
+                    items.extend(a.iter().map(item_from));
+                }
+                match json.get("nextLink").and_then(Json::as_str) {
+                    Some(link) if !link.is_empty() && items.len() < MAX_VERSIONS => {
+                        let u = url::Url::parse(link)
+                            .map_err(|e| CloudError::Invalid(e.to_string()))?;
+                        if u.host_str() != self.vault.host_str() {
+                            return Err(CloudError::Invalid("unexpected next page link".into()));
+                        }
+                        req = Req::new(Method::GET, &self.vault, u.path().to_owned());
+                        req.query = u
+                            .query_pairs()
+                            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                            .collect();
+                    }
+                    _ => break,
+                }
+            }
+            items.sort_by_key(|a| std::cmp::Reverse(a.modified_ms));
+            Ok(items)
+        })
+    }
+
+    fn get_version<'a>(&'a self, key: &'a str, version: &'a str) -> BoxFuture<'a, Result<KvItem>> {
+        Box::pin(async move {
+            let resp = self
+                .send(Req::new(
+                    Method::GET,
+                    &self.vault,
+                    format!(
+                        "/secrets/{}/{}",
+                        uri_encode(key, false),
+                        uri_encode(version, false)
+                    ),
+                ))
+                .await?;
+            Ok(item_from(&resp.json()?))
+        })
+    }
+
+    fn recover<'a>(&'a self, key: &'a str) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            self.send(Req::new(
+                Method::POST,
+                &self.vault,
+                format!("/deletedsecrets/{}/recover", uri_encode(key, false)),
+            ))
+            .await?;
+            Ok(())
+        })
+    }
+
+    fn purge<'a>(&'a self, key: &'a str) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            self.send(Req::new(
+                Method::DELETE,
+                &self.vault,
+                format!("/deletedsecrets/{}", uri_encode(key, false)),
+            ))
+            .await?;
+            Ok(())
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secret_uris() {
+        let u = parse_secret_uri("https://kv-a.vault.azure.net/secrets/Db--Conn").unwrap();
+        assert_eq!(u.vault.as_str(), "https://kv-a.vault.azure.net/");
+        assert_eq!(u.name, "Db--Conn");
+        assert_eq!(u.version, None);
+        let v = parse_secret_uri("https://kv-a.vault.azure.net/secrets/x/abc123/").unwrap();
+        assert_eq!(v.version.as_deref(), Some("abc123"));
+        assert!(parse_secret_uri("https://kv-a.vault.azure.net/keys/x").is_err());
+        assert!(parse_secret_uri("not a uri").is_err());
+    }
+
+    #[test]
+    fn items_carry_versions_dates_and_deletion() {
+        let j: Json = serde_json::from_str(
+            r#"{"id":"https://v.vault.azure.net/secrets/Db/0a1b","attributes":{"enabled":true,"nbf":1700000000,"exp":1800000000,"updated":1700000100}}"#,
+        )
+        .unwrap();
+        let i = item_from(&j);
+        assert_eq!(i.key, "Db");
+        assert_eq!(i.version.as_deref(), Some("0a1b"));
+        assert_eq!(i.not_before_ms, Some(1_700_000_000_000));
+        assert_eq!(i.expires_ms, Some(1_800_000_000_000));
+        let d: Json = serde_json::from_str(
+            r#"{"recoveryId":"https://v.vault.azure.net/deletedsecrets/Db","id":"https://v.vault.azure.net/secrets/Db","deletedDate":1700000000,"scheduledPurgeDate":1707776000,"attributes":{}}"#,
+        )
+        .unwrap();
+        let i = item_from(&d);
+        assert_eq!(i.key, "Db");
+        assert_eq!(i.version, None);
+        assert!(i.kind.unwrap().starts_with("deleted "));
+    }
 
     #[test]
     fn items() {

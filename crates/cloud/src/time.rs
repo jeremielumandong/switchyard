@@ -125,9 +125,59 @@ pub fn display_ms(ms: i64) -> String {
     )
 }
 
+/// Milliseconds since the epoch of a UTC time typed as `2026-03-01`, `2026-03-01 14:30`
+/// (what [`display_ms`] shows, with or without ` UTC`) or ISO 8601.
+pub fn parse_utc_ms(s: &str) -> Option<i64> {
+    let s = s
+        .trim()
+        .trim_end_matches("UTC")
+        .trim_end_matches('Z')
+        .trim();
+    let num = |a: usize, b: usize| s.get(a..b)?.parse::<i64>().ok();
+    let sep = |i: usize| s.as_bytes().get(i).copied();
+    if s.len() < 10 || sep(4) != Some(b'-') || sep(7) != Some(b'-') {
+        return None;
+    }
+    let (y, mo, d) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let (h, mi, sec) = match s.len() {
+        10 => (0, 0, 0),
+        16 if matches!(sep(10), Some(b' ' | b'T')) && sep(13) == Some(b':') => {
+            (num(11, 13)?, num(14, 16)?, 0)
+        }
+        _ if matches!(sep(10), Some(b' ' | b'T'))
+            && sep(13) == Some(b':')
+            && sep(16) == Some(b':') =>
+        {
+            (num(11, 13)?, num(14, 16)?, num(17, 19)?)
+        }
+        _ => return None,
+    };
+    if h > 23 || mi > 59 || sec > 60 {
+        return None;
+    }
+    let days = days_from_civil(y, mo as u32, d as u32);
+    Some((days * 86_400 + h * 3600 + mi * 60 + sec) * 1000)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_times() {
+        let ms = parse_utc_ms("2025-06-18 19:18 UTC").unwrap();
+        assert_eq!(display_ms(ms), "2025-06-18 19:18 UTC");
+        assert_eq!(
+            parse_utc_ms("2025-06-18"),
+            parse_utc_ms("2025-06-18T00:00:00Z")
+        );
+        assert_eq!(parse_utc_ms("2025-06-18 19:18:30").unwrap() - ms, 30_000);
+        assert!(parse_utc_ms("18/06/2025").is_none());
+        assert!(parse_utc_ms("2025-13-01").is_none());
+    }
 
     #[test]
     fn formats() {
