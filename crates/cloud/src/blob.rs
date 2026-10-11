@@ -13,7 +13,7 @@ use data_encoding::BASE64;
 use futures::future::BoxFuture;
 use reqwest::Method;
 use secrecy::ExposeSecret as _;
-use switchyard_remote::{EntryKind, FileEntry, FsError, FsReader, FsWriter, RemoteFs};
+use switchyard_remote::{EntryKind, FileEntry, FsError, FsReader, FsWriter, ListPage, RemoteFs};
 
 use crate::azure::{AzureAuth, authorize};
 use crate::error::{CloudError, Result};
@@ -71,6 +71,13 @@ fn last_segment(name: &str) -> String {
         .next()
         .unwrap_or_default()
         .to_owned()
+}
+
+/// The `NextMarker` of a list response, when there are more results.
+fn next_marker(root: &xml::Node) -> Option<String> {
+    root.text_of("NextMarker")
+        .filter(|m| !m.is_empty())
+        .map(str::to_owned)
 }
 
 fn blob_error(status: u16, headers: &reqwest::header::HeaderMap, body: &[u8]) -> CloudError {
@@ -156,34 +163,53 @@ impl Inner {
         Ok(resp)
     }
 
+    /// One page of containers whose names start with `prefix`.
+    async fn containers_page(
+        &self,
+        prefix: &str,
+        max: Option<u32>,
+        marker: Option<&str>,
+    ) -> Result<ListPage> {
+        let mut req = self.req(Method::GET, None, "").query("comp", "list");
+        if !prefix.is_empty() {
+            req = req.query("prefix", prefix);
+        }
+        if let Some(m) = max {
+            req = req.query("maxresults", m.to_string());
+        }
+        if let Some(m) = marker {
+            req = req.query("marker", m);
+        }
+        let root = xml::parse(&self.send(req).await?.body)?;
+        let mut entries = Vec::new();
+        if let Some(cs) = root.child("Containers") {
+            for c in cs.all("Container") {
+                if let Some(name) = c.text_of("Name") {
+                    entries.push(FileEntry {
+                        name: name.to_owned(),
+                        kind: EntryKind::Dir,
+                        size: 0,
+                        modified_ms: c
+                            .path(&["Properties", "Last-Modified"])
+                            .and_then(crate::time::parse_http_date_ms),
+                        mode: None,
+                    });
+                }
+            }
+        }
+        Ok(ListPage {
+            entries,
+            next: next_marker(&root),
+        })
+    }
+
     async fn list_containers(&self) -> Result<Vec<FileEntry>> {
         let mut out = Vec::new();
         let mut marker: Option<String> = None;
         loop {
-            let mut req = self.req(Method::GET, None, "").query("comp", "list");
-            if let Some(m) = &marker {
-                req = req.query("marker", m.clone());
-            }
-            let root = xml::parse(&self.send(req).await?.body)?;
-            if let Some(cs) = root.child("Containers") {
-                for c in cs.all("Container") {
-                    if let Some(name) = c.text_of("Name") {
-                        out.push(FileEntry {
-                            name: name.to_owned(),
-                            kind: EntryKind::Dir,
-                            size: 0,
-                            modified_ms: c
-                                .path(&["Properties", "Last-Modified"])
-                                .and_then(crate::time::parse_http_date_ms),
-                            mode: None,
-                        });
-                    }
-                }
-            }
-            marker = root
-                .text_of("NextMarker")
-                .filter(|m| !m.is_empty())
-                .map(str::to_owned);
+            let page = self.containers_page("", None, marker.as_deref()).await?;
+            out.extend(page.entries);
+            marker = page.next;
             if marker.is_none() {
                 break;
             }
@@ -217,56 +243,73 @@ impl Inner {
         xml::parse(&self.send(req).await?.body)
     }
 
-    async fn list(&self, container: &str, dir: &str) -> Result<Vec<FileEntry>> {
+    /// One page of folders and blobs in `dir` whose names start with `name_prefix`.
+    async fn blobs_page(
+        &self,
+        container: &str,
+        dir: &str,
+        name_prefix: &str,
+        max: Option<u32>,
+        marker: Option<&str>,
+    ) -> Result<ListPage> {
         let prefix = if dir.is_empty() {
-            String::new()
+            name_prefix.to_owned()
         } else {
-            format!("{dir}/")
+            format!("{dir}/{name_prefix}")
         };
-        let mut out = Vec::new();
-        let mut marker: Option<String> = None;
-        loop {
-            let page = self
-                .list_page(container, &prefix, true, None, marker.as_deref())
-                .await?;
-            if let Some(blobs) = page.child("Blobs") {
-                for p in blobs.all("BlobPrefix") {
-                    let name = p.text_of("Name").map(last_segment).unwrap_or_default();
-                    if !name.is_empty() {
-                        out.push(FileEntry {
-                            name,
-                            kind: EntryKind::Dir,
-                            size: 0,
-                            modified_ms: None,
-                            mode: None,
-                        });
-                    }
-                }
-                for b in blobs.all("Blob") {
-                    let Some(name) = b.text_of("Name") else {
-                        continue;
-                    };
-                    if name.ends_with('/') {
-                        continue;
-                    }
-                    out.push(FileEntry {
-                        name: last_segment(name),
-                        kind: EntryKind::File,
-                        size: b
-                            .path(&["Properties", "Content-Length"])
-                            .and_then(|s| s.parse().ok())
-                            .unwrap_or(0),
-                        modified_ms: b
-                            .path(&["Properties", "Last-Modified"])
-                            .and_then(crate::time::parse_http_date_ms),
+        let page = self
+            .list_page(container, &prefix, true, max, marker)
+            .await?;
+        let mut entries = Vec::new();
+        if let Some(blobs) = page.child("Blobs") {
+            for p in blobs.all("BlobPrefix") {
+                let name = p.text_of("Name").map(last_segment).unwrap_or_default();
+                if !name.is_empty() {
+                    entries.push(FileEntry {
+                        name,
+                        kind: EntryKind::Dir,
+                        size: 0,
+                        modified_ms: None,
                         mode: None,
                     });
                 }
             }
-            marker = page
-                .text_of("NextMarker")
-                .filter(|m| !m.is_empty())
-                .map(str::to_owned);
+            for b in blobs.all("Blob") {
+                let Some(name) = b.text_of("Name") else {
+                    continue;
+                };
+                if name.ends_with('/') {
+                    continue;
+                }
+                entries.push(FileEntry {
+                    name: last_segment(name),
+                    kind: EntryKind::File,
+                    size: b
+                        .path(&["Properties", "Content-Length"])
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0),
+                    modified_ms: b
+                        .path(&["Properties", "Last-Modified"])
+                        .and_then(crate::time::parse_http_date_ms),
+                    mode: None,
+                });
+            }
+        }
+        Ok(ListPage {
+            entries,
+            next: next_marker(&page),
+        })
+    }
+
+    async fn list(&self, container: &str, dir: &str) -> Result<Vec<FileEntry>> {
+        let mut out = Vec::new();
+        let mut marker: Option<String> = None;
+        loop {
+            let page = self
+                .blobs_page(container, dir, "", None, marker.as_deref())
+                .await?;
+            out.extend(page.entries);
+            marker = page.next;
             if marker.is_none() || out.len() >= MAX_LIST {
                 break;
             }
@@ -485,6 +528,24 @@ impl RemoteFs for BlobFs {
                 (None, _) => self.inner.list_containers().await?,
                 (Some(c), d) => self.inner.list(&c, &d).await?,
             })
+        })
+    }
+
+    fn list_page<'a>(
+        &'a self,
+        path: &'a Path,
+        prefix: &'a str,
+        cursor: Option<&'a str>,
+        limit: u32,
+    ) -> BoxFuture<'a, FsResult<ListPage>> {
+        Box::pin(async move {
+            let limit = Some(limit.clamp(1, 5000));
+            let mut page = match split(path) {
+                (None, _) => self.inner.containers_page(prefix, limit, cursor).await?,
+                (Some(c), d) => self.inner.blobs_page(&c, &d, prefix, limit, cursor).await?,
+            };
+            switchyard_remote::fs::sort_entries(&mut page.entries);
+            Ok(page)
         })
     }
 

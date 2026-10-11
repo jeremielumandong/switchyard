@@ -86,6 +86,15 @@ impl FileEntry {
     }
 }
 
+/// One page of a directory listing ([`RemoteFs::list_page`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ListPage {
+    /// Entries in this page, directories first then by name.
+    pub entries: Vec<FileEntry>,
+    /// Pass back as `cursor` for the next page; `None` when this was the last one.
+    pub next: Option<String>,
+}
+
 /// Operations every file backend supports.
 pub trait RemoteFs: Send + Sync {
     /// Display name of the backend (`Local`, `SFTP`, ...).
@@ -119,6 +128,27 @@ pub trait RemoteFs: Send + Sync {
         path: &'a Path,
         offset: u64,
     ) -> BoxFuture<'a, Result<FsWriter, FsError>>;
+
+    /// About `limit` entries of `path` whose names start with `prefix`, from `cursor` (a
+    /// previous page's `next`). Object storage pages and filters on the server; other
+    /// backends list the whole folder as one page.
+    fn list_page<'a>(
+        &'a self,
+        path: &'a Path,
+        prefix: &'a str,
+        cursor: Option<&'a str>,
+        limit: u32,
+    ) -> BoxFuture<'a, Result<ListPage, FsError>> {
+        let _ = (cursor, limit);
+        Box::pin(async move {
+            let mut entries = self.list(path).await?;
+            entries.retain(|e| e.name.starts_with(prefix));
+            Ok(ListPage {
+                entries,
+                next: None,
+            })
+        })
+    }
 
     /// Whether a new file only appears once fully written (object storage). Copies then
     /// write the target directly instead of through a `.swypart` file and a rename, and
@@ -364,6 +394,9 @@ mod tests {
         assert_eq!(names, ["b_dir", ".hidden", "a.txt"]);
         assert_eq!(list[2].size, 5);
         assert!(list[1].is_hidden());
+        let page = fs.list_page(dir.path(), "b_", None, 10).await.unwrap();
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(page.next, None);
         fs.rename(&dir.path().join("a.txt"), &dir.path().join("c.txt"))
             .await
             .unwrap();

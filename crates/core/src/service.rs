@@ -1081,6 +1081,41 @@ impl Service {
                     fs,
                     path,
                     result,
+                    next: None,
+                });
+            }
+            Command::ListDirPage {
+                request,
+                fs,
+                path,
+                prefix,
+                cursor,
+                limit,
+            } => {
+                let (path, result) = match self.file_system(&fs).await {
+                    Ok((f, posix)) => {
+                        let path = match path {
+                            Some(p) => crate::files::expand_path(&p, &f.home(), posix),
+                            None => f.home(),
+                        };
+                        let r = f
+                            .list_page(&path, &prefix, cursor.as_deref(), limit)
+                            .await
+                            .map_err(|e| e.to_string());
+                        (path, r)
+                    }
+                    Err(e) => (PathBuf::new(), Err(e.to_string())),
+                };
+                let (result, next) = match result {
+                    Ok(page) => (Ok(page.entries), page.next),
+                    Err(e) => (Err(e), None),
+                };
+                self.emit(Event::FsListing {
+                    request,
+                    fs,
+                    path,
+                    result,
+                    next,
                 });
             }
             Command::Transfer {

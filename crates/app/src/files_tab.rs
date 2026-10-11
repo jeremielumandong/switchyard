@@ -1,6 +1,11 @@
 //! Files tab: dual pane (this computer on the left, a Host or this computer on the right),
 //! breadcrumbs, sortable columns, hidden-file toggle, new folder / rename / delete, drag
 //! between panes and from the OS, and the transfer drawer at the bottom.
+//!
+//! Folders load a page at a time: object storage (Azure Blob) answers [`PAGE`] entries
+//! and a "Load more" footer fetches the next page; other file systems answer in one page.
+//! Search filters the loaded rows as you type; Enter also searches the server by name
+//! prefix when the folder has more pages than are loaded.
 
 use std::path::{Path, PathBuf};
 
@@ -22,6 +27,9 @@ use crate::remote_files::human;
 use crate::theme::{MONO, Palette, palette};
 use crate::transfers::Transfers;
 use crate::ui::{self, Kind};
+
+/// Entries per page on file systems that page (object storage).
+const PAGE: u32 = 100;
 
 /// What the tab asks the workspace to do.
 pub enum FilesTabEvent {
@@ -74,6 +82,14 @@ struct Pane {
     path: Option<PathBuf>,
     entries: Vec<FileEntry>,
     request: Option<RequestId>,
+    /// The pending request fetches the next page (append, don't replace).
+    appending: bool,
+    /// Cursor for the next page while the folder has more than is loaded.
+    next: Option<String>,
+    /// Server-side name prefix the listing was fetched with.
+    prefix: String,
+    /// Search text: shows loaded rows whose names contain it (any case).
+    filter: String,
     error: Option<String>,
     sort: (SortBy, bool),
     show_hidden: bool,
@@ -89,6 +105,10 @@ impl Pane {
             path: None,
             entries: Vec::new(),
             request: None,
+            appending: false,
+            next: None,
+            prefix: String::new(),
+            filter: String::new(),
             error: None,
             sort: (SortBy::Name, true),
             show_hidden: false,
@@ -116,11 +136,13 @@ impl Pane {
 
     fn visible(&self) -> Vec<FileEntry> {
         let (by, asc) = self.sort;
+        let needle = self.filter.trim().to_lowercase();
         // Lowercase each name once, not once per comparison.
         let mut v: Vec<(String, &FileEntry)> = self
             .entries
             .iter()
             .filter(|e| self.show_hidden || !e.is_hidden())
+            .filter(|e| needle.is_empty() || e.name.to_lowercase().contains(&needle))
             .map(|e| match by {
                 SortBy::Name => (e.name.to_lowercase(), e),
                 _ => (String::new(), e),
@@ -137,6 +159,11 @@ impl Pane {
             dirs.then(if asc { ord } else { ord.reverse() })
         });
         v.into_iter().map(|(_, e)| e.clone()).collect()
+    }
+
+    /// Whether the folder pages on the server: more to load, or a server search applied.
+    fn paged(&self) -> bool {
+        self.next.is_some() || !self.prefix.is_empty()
     }
 
     /// `/`, `home`, `swy`, `app` with the path up to each.
@@ -179,6 +206,8 @@ pub struct FilesTab {
     edit: Option<(usize, Edit, Entity<InputState>)>,
     /// A pane's "go to folder" box while it is open.
     goto: Option<(usize, Entity<InputState>, Subscription)>,
+    /// Each pane's search box while it is open.
+    search: [Option<(Entity<InputState>, Subscription)>; 2],
     confirm_delete: Option<usize>,
     op: Option<RequestId>,
     error: Option<String>,
@@ -228,6 +257,7 @@ impl FilesTab {
             picker_open: false,
             edit: None,
             goto: None,
+            search: [None, None],
             confirm_delete: None,
             op: None,
             error: None,
@@ -256,6 +286,7 @@ impl FilesTab {
         self.picker_open = false;
         let name = source_name(&self.sources, &fs);
         self.panes[1] = Pane::new(fs, name);
+        self.search[1] = None;
         self.list(1, None, cx);
     }
 
@@ -270,21 +301,105 @@ impl FilesTab {
         cx.notify();
     }
 
+    /// Open a folder: its first page, without a search.
     fn list(&mut self, ix: usize, path: Option<PathBuf>, cx: &mut Context<Self>) {
+        let pane = &mut self.panes[ix];
+        pane.prefix.clear();
+        pane.filter.clear();
+        self.search[ix] = None;
+        self.fetch(ix, path, None, cx);
+    }
+
+    /// The first page again, keeping the search.
+    fn refresh(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let path = self.panes[ix].path.clone();
+        self.fetch(ix, path, None, cx);
+    }
+
+    /// The next page, added below what is loaded.
+    fn load_more(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let pane = &self.panes[ix];
+        if pane.request.is_some() {
+            return;
+        }
+        if let Some(cursor) = pane.next.clone() {
+            let path = pane.path.clone();
+            self.fetch(ix, path, Some(cursor), cx);
+        }
+    }
+
+    fn fetch(
+        &mut self,
+        ix: usize,
+        path: Option<PathBuf>,
+        cursor: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let request = next_id();
         let pane = &mut self.panes[ix];
         pane.request = Some(request);
-        self.core.send(Command::ListDir {
+        pane.appending = cursor.is_some();
+        self.core.send(Command::ListDirPage {
             request,
             fs: pane.fs.clone(),
             path,
+            prefix: pane.prefix.clone(),
+            cursor,
+            limit: PAGE,
         });
         cx.notify();
     }
 
-    fn refresh(&mut self, ix: usize, cx: &mut Context<Self>) {
-        let path = self.panes[ix].path.clone();
-        self.list(ix, path, cx);
+    /// Show the search box under pane `ix`'s path bar and focus it.
+    fn open_search(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((input, _)) = &self.search[ix] {
+            input.update(cx, |i, cx| i.focus(window, cx));
+            return;
+        }
+        let current = self.panes[ix].filter.clone();
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Search by name")
+                .default_value(current)
+        });
+        let sub = cx.subscribe_in(
+            &input,
+            window,
+            move |this, input, ev: &InputEvent, _, cx| match ev {
+                InputEvent::Change => {
+                    this.panes[ix].filter = input.read(cx).value().to_string();
+                    cx.notify();
+                }
+                InputEvent::PressEnter { .. } => this.search_server(ix, cx),
+                _ => {}
+            },
+        );
+        input.update(cx, |i, cx| i.focus(window, cx));
+        self.search[ix] = Some((input, sub));
+        cx.notify();
+    }
+
+    /// Search the whole folder on the server by name prefix, when it pages.
+    fn search_server(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let pane = &mut self.panes[ix];
+        let text = pane.filter.trim().to_owned();
+        if !pane.paged() || text == pane.prefix {
+            return;
+        }
+        pane.prefix = text;
+        self.refresh(ix, cx);
+    }
+
+    /// Close the search box and drop the search (re-listing if the server applied it).
+    fn close_search(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.search[ix] = None;
+        let pane = &mut self.panes[ix];
+        pane.filter.clear();
+        if !pane.prefix.is_empty() {
+            pane.prefix.clear();
+            self.refresh(ix, cx);
+        }
+        cx.notify();
     }
 
     /// Runtime events.
@@ -294,6 +409,7 @@ impl FilesTab {
                 request,
                 path,
                 result,
+                next,
                 ..
             } => {
                 let Some(ix) = self.panes.iter().position(|p| p.request == Some(*request)) else {
@@ -301,14 +417,23 @@ impl FilesTab {
                 };
                 let pane = &mut self.panes[ix];
                 pane.request = None;
+                let appending = std::mem::take(&mut pane.appending);
                 match result {
+                    Ok(entries) if appending => {
+                        pane.entries.extend(entries.iter().cloned());
+                        pane.next = next.clone();
+                    }
                     Ok(entries) => {
                         if pane.path.as_ref() != Some(path) {
                             pane.selected.clear();
                         }
                         pane.path = Some(path.clone());
                         pane.entries = entries.clone();
+                        pane.next = next.clone();
                         pane.error = None;
+                    }
+                    Err(e) if appending => {
+                        self.error = Some(format!("Can't load more: {e}"));
                     }
                     // A folder that can't be opened leaves the current one on screen.
                     Err(e) if pane.path.is_some() && pane.error.is_none() => {
@@ -560,6 +685,7 @@ impl FilesTab {
         let pane = &self.panes[ix];
         let rows = pane.visible();
         let count = rows.len();
+        let loading = pane.request.is_some();
         let active = self.active == ix;
         let n_sel = pane.selected.len();
         let tool = |id: String, label: &'static str| {
@@ -623,6 +749,17 @@ impl FilesTab {
             .child(
                 tool(format!("f{ix}-refresh"), "⟳")
                     .on_click(cx.listener(move |this, _, _, cx| this.refresh(ix, cx))),
+            )
+            .child(
+                tool(
+                    format!("f{ix}-search"),
+                    if pane.filter.is_empty() {
+                        "Search"
+                    } else {
+                        "Search ●"
+                    },
+                )
+                .on_click(cx.listener(move |this, _, w, cx| this.open_search(ix, w, cx))),
             )
             .child(
                 tool(
@@ -795,6 +932,105 @@ impl FilesTab {
             )
             .child(div().w(rpx(76.)).child("Mode"));
 
+        let search_row: Option<AnyElement> = self.search[ix].as_ref().map(|(input, _)| {
+            let filter = pane.filter.trim();
+            let hint: Option<String> = if !pane.prefix.is_empty() && filter == pane.prefix {
+                Some(format!("Names starting with “{}”", pane.prefix))
+            } else if pane.paged() && !filter.is_empty() {
+                Some("Enter searches the whole folder".into())
+            } else {
+                None
+            };
+            div()
+                .flex_none()
+                .px(rpx(10.))
+                .py(rpx(4.))
+                .flex()
+                .items_center()
+                .gap(rpx(6.))
+                .border_b_1()
+                .border_color(p.bd)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .h(rpx(22.))
+                        .flex()
+                        .items_center()
+                        .px(rpx(7.))
+                        .border_1()
+                        .border_color(p.bd2)
+                        .rounded(px(4.))
+                        .child(Input::new(input).appearance(false).text_size(ts::BODY)),
+                )
+                .children(hint.map(|h| {
+                    div()
+                        .flex_none()
+                        .text_size(ts::SMALL)
+                        .text_color(p.fg3)
+                        .child(h)
+                }))
+                .child(
+                    tool(format!("f{ix}-search-close"), "✕")
+                        .on_click(cx.listener(move |this, _, _, cx| this.close_search(ix, cx))),
+                )
+                .into_any_element()
+        });
+        let loading_bar = (loading && !pane.appending && pane.path.is_some())
+            .then(|| ui::loading_bar(SharedString::from(format!("f{ix}-loading")), p));
+        let footer: Option<AnyElement> = pane.path.is_some().then(|| {
+            let loaded = pane.entries.len();
+            let more = if pane.next.is_some() { "+" } else { "" };
+            let status: AnyElement = if loading {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(rpx(6.))
+                    .child(ui::pulse_dot(
+                        SharedString::from(format!("f{ix}-busy")),
+                        p.acc,
+                        6.,
+                    ))
+                    .child(if pane.appending {
+                        "Loading more…"
+                    } else {
+                        "Loading…"
+                    })
+                    .into_any_element()
+            } else if pane.filter.trim().is_empty() {
+                format!("{loaded}{more} items").into_any_element()
+            } else {
+                format!("{count} of {loaded}{more} items").into_any_element()
+            };
+            div()
+                .h(rpx(28.))
+                .flex_none()
+                .px(rpx(10.))
+                .flex()
+                .items_center()
+                .gap(rpx(8.))
+                .border_t_1()
+                .border_color(p.bd)
+                .text_size(ts::SMALL)
+                .text_color(p.fg3)
+                .child(status)
+                .child(div().flex_1())
+                .when(pane.next.is_some() && !loading, |d| {
+                    d.child(
+                        ui::button(
+                            SharedString::from(format!("f{ix}-more")),
+                            format!("Load {PAGE} more"),
+                            Kind::Secondary,
+                            p,
+                        )
+                        .h(rpx(22.))
+                        .text_size(ts::LABEL)
+                        .on_click(cx.listener(move |this, _, _, cx| this.load_more(ix, cx))),
+                    )
+                })
+                .into_any_element()
+        });
+
         let edit_row: Option<AnyElement> =
             self.edit
                 .as_ref()
@@ -850,25 +1086,55 @@ impl FilesTab {
                 .text_color(p.prod)
                 .child(e.clone())
                 .into_any_element()
-        } else if pane.path.is_none() {
+        } else if pane.path.is_none() || (count == 0 && loading) {
+            let label = match pane.fs {
+                _ if pane.path.is_some() => "Loading…",
+                FsRef::Host(_) => "Opening SFTP on the Host's session…",
+                FsRef::Conn(_) => "Connecting…",
+                FsRef::Local => "Loading…",
+            };
             div()
                 .flex_1()
                 .p(rpx(14.))
+                .flex()
+                .flex_col()
+                .gap(rpx(10.))
                 .text_size(ts::BODY)
                 .text_color(p.fg3)
-                .child(match pane.fs {
-                    FsRef::Host(_) => "Opening SFTP on the Host's session…",
-                    FsRef::Conn(_) => "Connecting…",
-                    FsRef::Local => "Loading…",
-                })
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(rpx(6.))
+                        .child(ui::pulse_dot(
+                            SharedString::from(format!("f{ix}-opening")),
+                            p.acc,
+                            6.,
+                        ))
+                        .child(label),
+                )
+                .children(
+                    [220., 160., 190., 130., 170.]
+                        .into_iter()
+                        .map(|w| ui::shimmer(w, p)),
+                )
                 .into_any_element()
         } else if count == 0 {
+            let filter = pane.filter.trim();
             div()
                 .flex_1()
                 .p(rpx(14.))
                 .text_size(ts::BODY)
                 .text_color(p.fg3)
-                .child("Empty folder")
+                .child(if filter.is_empty() {
+                    "Empty folder".to_owned()
+                } else if pane.paged() && filter != pane.prefix {
+                    format!(
+                        "No loaded names contain “{filter}”. Press Enter to search the whole folder."
+                    )
+                } else {
+                    format!("No names contain “{filter}”")
+                })
                 .into_any_element()
         } else {
             let selected = pane.selected.clone();
@@ -1050,9 +1316,12 @@ impl FilesTab {
             }))
             .child(toolbar)
             .child(crumb_bar)
+            .children(loading_bar)
+            .children(search_row)
             .children(edit_row)
             .child(header)
             .child(body)
+            .children(footer)
             .children(picker)
             .into_any_element()
     }
@@ -1074,6 +1343,11 @@ impl Render for FilesTab {
             .key_context("FilesTab")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
+                let ix = this.active;
+                if this.edit.is_none() && this.search[ix].is_some() && ev.keystroke.key == "escape"
+                {
+                    this.close_search(ix, cx);
+                }
                 if this.edit.is_some() {
                     match ev.keystroke.key.as_str() {
                         "enter" => this.finish_edit(cx),
@@ -1145,6 +1419,21 @@ mod tests {
         p.sort = (SortBy::Size, true);
         p.show_hidden = true;
         assert_eq!(names(&p), ["zdir", ".env", "b.txt", "a.txt"]);
+    }
+
+    #[test]
+    fn search_filters_loaded_names_in_any_case() {
+        let mut p = pane(vec![
+            ("Report-2024.csv", false, 1),
+            ("reports", true, 0),
+            ("notes.txt", false, 2),
+        ]);
+        p.filter = " REPORT ".into();
+        let names: Vec<_> = p.visible().into_iter().map(|e| e.name).collect();
+        assert_eq!(names, ["reports", "Report-2024.csv"]);
+        assert!(!p.paged());
+        p.next = Some("marker".into());
+        assert!(p.paged());
     }
 
     #[test]
