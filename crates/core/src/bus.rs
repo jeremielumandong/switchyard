@@ -321,6 +321,36 @@ pub enum Command {
         key: String,
         /// Label (App Configuration).
         label: Option<String>,
+        /// An earlier version from [`Command::CloudRevisions`] (Key Vault), else the
+        /// current one.
+        version: Option<String>,
+    },
+    /// Earlier versions of one item ([`Event::CloudRevisions`]).
+    CloudRevisions {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// Key.
+        key: String,
+        /// Label (App Configuration).
+        label: Option<String>,
+    },
+    /// Labels in use ([`Event::CloudLabels`]).
+    CloudLabels {
+        /// Session.
+        session: SessionId,
+    },
+    /// Read the secret an App Configuration Key Vault reference points at
+    /// ([`Event::CloudResolved`]), through a saved Key Vault connection for that vault or the
+    /// store's own Microsoft sign-in.
+    CloudResolveRef {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// Secret URI (`https://<vault>.vault.azure.net/secrets/<name>[/<version>]`).
+        uri: String,
     },
     /// Change an item ([`Event::CloudEdited`]).
     CloudEdit {
@@ -1084,6 +1114,31 @@ pub enum Event {
         /// What was done, or why it failed.
         result: Result<String, String>,
     },
+    /// Result of [`Command::CloudRevisions`]: newest first.
+    CloudRevisions {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// The versions, or why not.
+        result: Result<Vec<KvItem>, String>,
+    },
+    /// Result of [`Command::CloudLabels`] (`None` is the null label).
+    CloudLabels {
+        /// Session.
+        session: SessionId,
+        /// The labels, or why not.
+        result: Result<Vec<Option<String>>, String>,
+    },
+    /// Result of [`Command::CloudResolveRef`]: the secret's value.
+    CloudResolved {
+        /// Session.
+        session: SessionId,
+        /// Request id.
+        request: RequestId,
+        /// The value, or why not.
+        result: Result<String, String>,
+    },
     /// Result of [`Command::RedisOpen`].
     RedisOpened {
         /// Session.
@@ -1592,6 +1647,19 @@ pub enum CloudEdit {
         /// Lock (true) or unlock.
         locked: bool,
     },
+    /// Bring a deleted item back (Key Vault).
+    Recover {
+        /// Key.
+        key: String,
+    },
+    /// Delete a deleted item for good (Key Vault).
+    Purge {
+        /// Key.
+        key: String,
+    },
+    /// Several changes in order (bulk delete, import, copy to a label). Each is tried even
+    /// when an earlier one fails; the result names the failures.
+    Batch(Vec<CloudEdit>),
 }
 
 /// A connected Redis server ([`Event::RedisOpened`]).

@@ -308,4 +308,6 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
 - Linking the workspace's debug test binaries needs a lot of disk; a full disk shows up as
   `ld terminated with signal 7 [Bus error]`, not "no space". `CARGO_PROFILE_DEV_DEBUG=0`
   halves `target/`.
+- Linking `switchyard-app` on Linux needs `libxkbcommon-dev` and `libxkbcommon-x11-dev`;
+  clippy and `cargo check` pass without them, so a missing one only shows at link time.
 

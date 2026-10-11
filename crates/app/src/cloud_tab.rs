@@ -1,12 +1,27 @@
 //! Key / value tool for cloud connections: Azure App Configuration (labels, locks, feature
-//! flags), Azure Key Vault secrets, AWS Secrets Manager, AWS Parameter Store and
-//! Cloudflare Workers KV. A filtered list on the left (virtualized, paged), the selected
-//! item on the right with its value in an editor, and Save / Delete / Lock underneath.
+//! flags, Key Vault references), Azure Key Vault secrets, AWS Secrets Manager, AWS
+//! Parameter Store and Cloudflare Workers KV. A filtered list on the left (virtualized,
+//! paged, flat or grouped by key prefix), the selected item on the right with its value
+//! in an editor, and Save / Delete / Lock pinned underneath.
+//!
+//! Beyond one item at a time: earlier versions with restore, two labels compared side by
+//! side with copying across, import and export (JSON, `.env`, kvset), bulk delete and copy
+//! to a label, a form for feature flag filters, and Key Vault's deleted secrets.
 //!
 //! The tab owns one cloud session ([`Command::CloudOpen`]); every read and write goes
-//! through the core on the runtime. Secret values are fetched only when asked for, and
-//! deletes (and every save on Production) ask first. Read-only connections hide the edit
-//! controls; the core refuses writes too.
+//! through the core on the runtime. Secret values are fetched only when asked for and
+//! stay masked until revealed; deletes (and every change on Production) ask first.
+//! Read-only connections hide the edit controls; the core refuses writes too.
+
+mod compare;
+mod detail;
+mod files;
+mod flags;
+mod history;
+mod list;
+mod tree;
+
+use std::collections::HashSet;
 
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::Button;
@@ -14,17 +29,24 @@ use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputSt
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, AppContext as _, Context, Entity, FontWeight, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window, div, px, relative, uniform_list,
+    AnyElement, AppContext as _, ClipboardItem, Context, Entity, FontWeight,
+    InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
+    relative, uniform_list,
 };
+use serde_json::json;
 use switchyard_core::cloud::appconfig::{
-    FEATURE_FLAG_CONTENT_TYPE, FEATURE_FLAG_PREFIX, format_tags, is_feature_flag, new_flag,
-    parse_flag, parse_tags, update_flag,
+    FEATURE_FLAG_CONTENT_TYPE, FEATURE_FLAG_PREFIX, KEY_VAULT_REF_CONTENT_TYPE, format_tags,
+    is_feature_flag, is_key_vault_ref, key_vault_ref, key_vault_ref_uri, new_flag, parse_flag,
+    parse_tags, update_flag,
 };
-use switchyard_core::cloud::{KvItem, KvPage, KvQuery, KvWrite, display_ms};
+use switchyard_core::cloud::keyvault::parse_secret_uri;
+use switchyard_core::cloud::kv_file::{self, KvFormat};
+use switchyard_core::cloud::{KvItem, KvPage, KvQuery, KvWrite, display_ms, parse_utc_ms};
 use switchyard_core::store::{CloudConnection, CloudService};
-use switchyard_core::{CloudEdit, CloudInfo, Command, RequestId, RuntimeHandle, SessionId};
+use switchyard_core::{
+    CloudEdit, CloudInfo, Command, FsRef, RequestId, RuntimeHandle, SessionId, TextFile,
+};
 
 use crate::app_state::next_id;
 use crate::appearance::{rpx, ts};
@@ -32,16 +54,33 @@ use crate::theme::{MONO, Palette, palette};
 use crate::ui::{self, Kind};
 use crate::workspace::{Tab, Workspace};
 
-/// Row height of the item list.
-const ROW_H: f32 = 30.;
-/// Item list width.
-const LIST_W: f32 = 380.;
+use compare::Compare;
+use flags::FlagForm;
+use tree::Row;
 
-/// Settings or feature flags (App Configuration).
+/// Row height of the item list (two lines: name, then value and date).
+const ROW_H: f32 = 40.;
+/// Item list width.
+const LIST_W: f32 = 400.;
+/// Indent per folder level in the grouped list.
+const INDENT: f32 = 14.;
+
+/// What the list shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum View {
+    /// Settings, secrets, parameters or keys.
     Items,
+    /// Feature flags (App Configuration).
     Flags,
+    /// Deleted secrets that can be recovered (Key Vault).
+    Deleted,
+}
+
+/// Flat list or grouped by key prefix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Layout {
+    Flat,
+    Tree,
 }
 
 /// What the detail pane edits.
@@ -54,11 +93,58 @@ enum Detail {
     New,
 }
 
+/// The selected item's value, or its earlier versions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DetailTab {
+    Value,
+    History,
+}
+
 /// A change waiting for the user to confirm it.
 #[derive(Clone, Debug, PartialEq)]
 enum Confirm {
     Delete,
     Save,
+    /// Any other change: what it does, the button's text, and the change.
+    Edit {
+        prompt: String,
+        button: &'static str,
+        edit: Box<CloudEdit>,
+    },
+}
+
+/// Earlier versions of the selected item.
+#[derive(Default)]
+struct History {
+    request: Option<RequestId>,
+    items: Vec<KvItem>,
+    error: Option<String>,
+    /// The version shown (index into `items`).
+    chosen: Option<usize>,
+    /// Fetching a version's value (Key Vault lists versions without values).
+    value_request: Option<RequestId>,
+    /// A secret version's value is shown.
+    revealed: bool,
+}
+
+/// The secret a Key Vault reference points at.
+#[derive(Default)]
+struct Resolved {
+    request: Option<RequestId>,
+    value: Option<String>,
+    error: Option<String>,
+    /// Shown in clear (else masked).
+    shown: bool,
+    /// Copy it when it arrives.
+    copy: bool,
+}
+
+/// Settings read from a file, waiting for the user to import them.
+struct ImportPlan {
+    /// File name.
+    source: String,
+    format: KvFormat,
+    writes: Vec<KvWrite>,
 }
 
 /// The tab.
@@ -71,26 +157,56 @@ pub struct CloudTab {
     open_error: Option<String>,
     scope: Option<String>,
     view: View,
+    layout: Layout,
+    /// Open folders of the grouped list (their full prefix).
+    expanded: HashSet<String>,
+    rows: Vec<Row>,
     filter: Entity<InputState>,
     label_filter: Entity<InputState>,
+    labels: Vec<Option<String>>,
     items: Vec<KvItem>,
     next: Option<String>,
     list_request: Option<RequestId>,
     list_error: Option<String>,
+    /// Ticked items (indexes into `items`).
+    picked: HashSet<usize>,
+    /// The "copy to label" field of the bulk bar is open.
+    bulk_copy: bool,
+    bulk_label: Entity<InputState>,
     detail: Detail,
+    tab: DetailTab,
     /// The selected item's value is loaded into the editor.
     loaded: bool,
+    /// A loaded secret value is shown in clear.
+    revealed: bool,
+    /// Copy the value once it is fetched.
+    copy_when_loaded: bool,
     get_request: Option<RequestId>,
     edit_request: Option<RequestId>,
     confirm: Option<Confirm>,
+    history: History,
+    resolved: Resolved,
     key: Entity<InputState>,
     label: Entity<InputState>,
     content_type: Entity<InputState>,
     tags: Entity<InputState>,
     description: Entity<InputState>,
+    not_before: Entity<InputState>,
+    expires: Entity<InputState>,
     value: Entity<EditorState>,
+    flag_form: FlagForm,
+    /// The flag is edited as JSON instead of the form.
+    flag_json: bool,
     enabled: bool,
     kind: Option<&'static str>,
+    compare: Option<Compare>,
+    import: Option<ImportPlan>,
+    import_request: Option<RequestId>,
+    import_label: Entity<InputState>,
+    /// Export once every page is loaded.
+    export_pending: Option<KvFormat>,
+    /// Select this item (key, label) again once the list reloads after a change.
+    reselect: Option<(String, Option<String>)>,
     status: Option<(bool, String)>,
     _subs: Vec<Subscription>,
 }
@@ -109,11 +225,15 @@ impl CloudTab {
         };
         let filter = input("Filter by key", window, cx);
         let label_filter = input("Any label", window, cx);
+        let bulk_label = input("Label (empty: no label)", window, cx);
+        let import_label = input("No label", window, cx);
         let key = input("Key", window, cx);
         let label = input("No label", window, cx);
         let content_type = input("text/plain, application/json…", window, cx);
-        let tags = input("env=prod; team=web", window, cx);
+        let tags = input("name=value; name=value", window, cx);
         let description = input("Optional", window, cx);
+        let not_before = input("2026-01-31 or 2026-01-31 09:00 (UTC)", window, cx);
+        let expires = input("Never", window, cx);
         let value = cx.new(|cx| {
             EditorState::new(window, cx)
                 .language("text")
@@ -130,6 +250,11 @@ impl CloudTab {
             cx.subscribe_in(&label_filter, window, |this, _, ev: &InputEvent, _, cx| {
                 if let InputEvent::PressEnter { .. } = ev {
                     this.reload(cx);
+                }
+            }),
+            cx.subscribe_in(&bulk_label, window, |this, _, ev: &InputEvent, _, cx| {
+                if let InputEvent::PressEnter { .. } = ev {
+                    this.copy_picked(cx);
                 }
             }),
         ];
@@ -150,25 +275,47 @@ impl CloudTab {
             open_error: None,
             scope,
             view: View::Items,
+            layout: Layout::Tree,
+            expanded: HashSet::new(),
+            rows: Vec::new(),
             filter,
             label_filter,
+            labels: Vec::new(),
             items: Vec::new(),
             next: None,
             list_request: None,
             list_error: None,
+            picked: HashSet::new(),
+            bulk_copy: false,
+            bulk_label,
             detail: Detail::None,
+            tab: DetailTab::Value,
             loaded: false,
+            revealed: false,
+            copy_when_loaded: false,
             get_request: None,
             edit_request: None,
             confirm: None,
+            history: History::default(),
+            resolved: Resolved::default(),
             key,
             label,
             content_type,
             tags,
             description,
+            not_before,
+            expires,
             value,
+            flag_form: FlagForm::default(),
+            flag_json: false,
             enabled: true,
             kind: None,
+            compare: None,
+            import: None,
+            import_request: None,
+            import_label,
+            export_pending: None,
+            reselect: None,
             status: None,
             _subs: subs,
         }
@@ -195,8 +342,31 @@ impl CloudTab {
         self.connection.read_only || self.info.as_ref().is_some_and(|i| i.read_only)
     }
 
+    fn caps(&self) -> switchyard_core::cloud::KvCaps {
+        self.info
+            .as_ref()
+            .map(|i| i.caps.clone())
+            .unwrap_or_default()
+    }
+
     fn secret_values(&self) -> bool {
         self.info.as_ref().is_some_and(|i| i.caps.secret_values)
+    }
+
+    /// Settings can be exported and imported as text (values come with the list and
+    /// are not secrets).
+    fn files(&self) -> bool {
+        let caps = self.caps();
+        caps.values_in_list && !caps.secret_values
+    }
+
+    /// Where keys split into folders.
+    fn delimiter(&self) -> &'static str {
+        match self.connection.service {
+            CloudService::KeyVault => "--",
+            CloudService::ParameterStore | CloudService::SecretsManager => "/",
+            _ => ":",
+        }
     }
 
     fn text(input: &Entity<InputState>, cx: &Context<Self>) -> String {
@@ -213,6 +383,10 @@ impl CloudTab {
         input.update(cx, |i, cx| i.set_value(v, window, cx));
     }
 
+    fn production(&self) -> bool {
+        self.connection.environment.is_production()
+    }
+
     /// The tab opened, or failed to.
     pub fn on_opened(&mut self, result: Result<CloudInfo, String>, cx: &mut Context<Self>) {
         match result {
@@ -225,8 +399,14 @@ impl CloudTab {
                 {
                     self.scope = info.scopes.first().map(|(id, _)| id.clone());
                 }
+                let labels = info.caps.labels;
                 self.info = Some(info);
                 self.open_error = None;
+                if labels {
+                    self.core.send(Command::CloudLabels {
+                        session: self.session,
+                    });
+                }
                 self.reload(cx);
             }
             Err(e) => self.open_error = Some(e),
@@ -234,13 +414,48 @@ impl CloudTab {
         cx.notify();
     }
 
+    /// Labels in use arrived.
+    pub fn on_labels(
+        &mut self,
+        result: Result<Vec<Option<String>>, String>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Ok(l) = result {
+            self.labels = l;
+            cx.notify();
+        }
+    }
+
     /// Lists from the start with the current filters.
     fn reload(&mut self, cx: &mut Context<Self>) {
         self.items.clear();
+        self.rows.clear();
+        self.picked.clear();
         self.next = None;
         self.detail = Detail::None;
         self.confirm = None;
         self.list(None, cx);
+    }
+
+    /// The list request for the current filters.
+    fn query(&self, label: Option<String>, cursor: Option<String>, cx: &Context<Self>) -> KvQuery {
+        let mut key = Self::text(&self.filter, cx);
+        if self.view == View::Flags {
+            key = format!("{FEATURE_FLAG_PREFIX}{key}");
+        }
+        let labels = self.caps().labels;
+        let label = match label {
+            Some(l) => l,
+            None if labels => label_query(&Self::text(&self.label_filter, cx)),
+            None => String::new(),
+        };
+        KvQuery {
+            scope: self.scope.clone(),
+            key,
+            label,
+            cursor,
+            deleted: self.view == View::Deleted,
+        }
     }
 
     fn list(&mut self, cursor: Option<String>, cx: &mut Context<Self>) {
@@ -250,60 +465,108 @@ impl CloudTab {
             cx.notify();
             return;
         }
-        let mut key = Self::text(&self.filter, cx);
-        if self.view == View::Flags {
-            key = format!("{FEATURE_FLAG_PREFIX}{key}");
-        }
-        let label = if info.caps.labels {
-            match Self::text(&self.label_filter, cx).as_str() {
-                "" => String::new(),
-                // `(No label)` in the filter lists settings without one.
-                "-" | "(none)" | "(No label)" => "\0".into(),
-                l => l.to_owned(),
-            }
-        } else {
-            String::new()
-        };
         let request = next_id();
         self.list_request = Some(request);
         self.list_error = None;
+        let query = self.query(None, cursor, cx);
         self.core.send(Command::CloudList {
             session: self.session,
             request,
-            query: KvQuery {
-                scope: self.scope.clone(),
-                key,
-                label,
-                cursor,
-            },
+            query,
         });
         cx.notify();
     }
 
-    /// A page of items arrived.
+    /// A page of items arrived (the list's, or a side of the label comparison).
     pub fn on_items(
         &mut self,
         request: RequestId,
         result: Result<KvPage, String>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.list_request != Some(request) {
+            self.on_compare_page(request, result, cx);
             return;
         }
         self.list_request = None;
         match result {
             Ok(page) => {
                 let flags = self.view == View::Flags;
-                let feature_flags = self.info.as_ref().is_some_and(|i| i.caps.feature_flags);
+                let feature_flags = self.caps().feature_flags;
                 self.items.extend(
                     page.items
                         .into_iter()
                         .filter(|i| !feature_flags || is_feature_flag(&i.key) == flags),
                 );
                 self.next = page.next;
+                self.refresh_rows(cx);
+                if let Some((key, label)) = self.reselect.take()
+                    && let Some(ix) = self
+                        .items
+                        .iter()
+                        .position(|i| i.key == key && i.label == label)
+                {
+                    // Open the folders it sits in.
+                    let delim = self.delimiter();
+                    for (pos, _) in key.match_indices(delim) {
+                        if pos > 0 {
+                            self.expanded.insert(key[..pos + delim.len()].to_owned());
+                        }
+                    }
+                    self.refresh_rows(cx);
+                    let status = self.status.take();
+                    self.select(ix, window, cx);
+                    self.status = status;
+                }
+                if let Some(format) = self.export_pending {
+                    match self.next.clone() {
+                        Some(next) => self.list(Some(next), cx),
+                        None => {
+                            self.export_pending = None;
+                            self.export(format, cx);
+                        }
+                    }
+                }
             }
-            Err(e) => self.list_error = Some(e),
+            Err(e) => {
+                self.export_pending = None;
+                self.list_error = Some(e);
+            }
         }
+        cx.notify();
+    }
+
+    /// Rebuild the list rows (flat, or grouped by key prefix).
+    fn refresh_rows(&mut self, cx: &Context<Self>) {
+        let grouped = self.layout == Layout::Tree && self.view == View::Items;
+        self.rows = if grouped {
+            let keys: Vec<&str> = self.items.iter().map(|i| i.key.as_str()).collect();
+            // While filtering, every folder is open.
+            let all_open = !Self::text(&self.filter, cx).is_empty();
+            tree::rows(&keys, self.delimiter(), &self.expanded, all_open)
+        } else {
+            (0..self.items.len())
+                .map(|ix| Row::Item {
+                    ix,
+                    depth: 0,
+                    name: String::new(),
+                })
+                .collect()
+        };
+    }
+
+    fn toggle_folder(&mut self, path: String, cx: &mut Context<Self>) {
+        if !self.expanded.remove(&path) {
+            self.expanded.insert(path);
+        }
+        self.refresh_rows(cx);
+        cx.notify();
+    }
+
+    fn set_layout(&mut self, layout: Layout, cx: &mut Context<Self>) {
+        self.layout = layout;
+        self.refresh_rows(cx);
         cx.notify();
     }
 
@@ -312,12 +575,17 @@ impl CloudTab {
             return;
         };
         self.detail = Detail::Item(ix);
+        self.tab = DetailTab::Value;
+        self.history = History::default();
+        self.resolved = Resolved::default();
         self.confirm = None;
         self.status = None;
+        self.revealed = false;
+        self.copy_when_loaded = false;
         self.fill(&item, window, cx);
-        let values_in_list = self.info.as_ref().is_some_and(|i| i.caps.values_in_list);
+        let values_in_list = self.caps().values_in_list;
         self.loaded = item.value.is_some() && values_in_list;
-        if !self.loaded && !self.hides_value(&item) {
+        if !self.loaded && !self.hides_value(&item) && self.view != View::Deleted {
             self.fetch(&item, cx);
         }
         cx.notify();
@@ -337,11 +605,12 @@ impl CloudTab {
             scope: self.scope.clone(),
             key: item.key.clone(),
             label: item.label.clone(),
+            version: None,
         });
         cx.notify();
     }
 
-    /// The selected item's full value arrived.
+    /// An item's full value arrived (the selected one, or a version in History).
     pub fn on_item(
         &mut self,
         request: RequestId,
@@ -349,6 +618,23 @@ impl CloudTab {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.history.value_request == Some(request) {
+            self.history.value_request = None;
+            match result {
+                Ok(v) => {
+                    if let Some(h) = self
+                        .history
+                        .chosen
+                        .and_then(|i| self.history.items.get_mut(i))
+                    {
+                        h.value = v.value;
+                    }
+                }
+                Err(e) => self.status = Some((false, e)),
+            }
+            cx.notify();
+            return;
+        }
         if self.get_request != Some(request) {
             return;
         }
@@ -366,11 +652,33 @@ impl CloudTab {
                     *listed = item.clone();
                     self.fill(&item, window, cx);
                     self.loaded = true;
+                    if std::mem::take(&mut self.copy_when_loaded) {
+                        self.copy_text(item.value.clone().unwrap_or_default(), cx);
+                    } else {
+                        self.revealed = true;
+                    }
                 }
             }
             Err(e) => self.status = Some((false, e)),
         }
         cx.notify();
+    }
+
+    fn copy_text(&mut self, text: String, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        self.status = Some((true, "Copied to the clipboard".into()));
+        cx.notify();
+    }
+
+    /// Copy the selected value, fetching it first when it is a secret not loaded yet.
+    fn copy_value(&mut self, cx: &mut Context<Self>) {
+        if self.loaded {
+            let v = self.value.read(cx).value().to_string();
+            self.copy_text(v, cx);
+        } else if let Some(i) = self.selected().cloned() {
+            self.copy_when_loaded = true;
+            self.fetch(&i, cx);
+        }
     }
 
     fn fill(&mut self, item: &KvItem, window: &mut Window, cx: &mut Context<Self>) {
@@ -406,12 +714,22 @@ impl CloudTab {
             window,
             cx,
         );
+        let date = |ms: Option<i64>| ms.map(display_ms).unwrap_or_default();
+        Self::set_input(&self.not_before, date(item.not_before_ms), window, cx);
+        Self::set_input(&self.expires, date(item.expires_ms), window, cx);
         self.enabled = parsed
             .as_ref()
             .map(|f| f.enabled)
             .or(item.enabled)
             .unwrap_or(true);
         self.kind = None;
+        let raw = item.value.as_deref().unwrap_or_default();
+        self.flag_json = false;
+        self.flag_form = if flag {
+            FlagForm::load(raw, window, cx)
+        } else {
+            FlagForm::default()
+        };
         let (text, lang) = match item.value.as_deref() {
             Some(v) if looks_like_json(v) => (pretty_json(v), "json"),
             Some(v) => (v.to_owned(), "text"),
@@ -424,14 +742,27 @@ impl CloudTab {
     }
 
     fn new_item(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.compare = None;
+        self.import = None;
         self.detail = Detail::New;
+        self.tab = DetailTab::Value;
         self.confirm = None;
         self.status = None;
         self.loaded = true;
-        self.fill(&KvItem::default(), window, cx);
+        self.revealed = true;
+        self.resolved = Resolved::default();
+        let template = if self.view == View::Flags {
+            KvItem {
+                value: Some(new_flag("", true, "").1),
+                ..KvItem::default()
+            }
+        } else {
+            KvItem::default()
+        };
+        self.fill(&template, window, cx);
         // A new setting gets the label being filtered on.
         let label = Self::text(&self.label_filter, cx);
-        if !label.is_empty() && label != "-" {
+        if !label.is_empty() && label != "-" && !label.contains('*') {
             Self::set_input(&self.label, label, window, cx);
         }
         self.kind = self
@@ -441,11 +772,38 @@ impl CloudTab {
         cx.notify();
     }
 
+    /// Turn the new setting into a Key Vault reference.
+    fn make_reference(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        Self::set_input(&self.content_type, KEY_VAULT_REF_CONTENT_TYPE, window, cx);
+        let value = pretty_json(&key_vault_ref(
+            "https://<vault>.vault.azure.net/secrets/<name>",
+        ));
+        self.value.update(cx, |e, cx| {
+            e.set_highlighter("json", cx);
+            e.set_value(value, window, cx);
+        });
+        cx.notify();
+    }
+
     fn selected(&self) -> Option<&KvItem> {
         match self.detail {
             Detail::Item(ix) => self.items.get(ix),
             _ => None,
         }
+    }
+
+    fn date_field(
+        input: &Entity<InputState>,
+        what: &str,
+        cx: &Context<Self>,
+    ) -> Result<Option<i64>, String> {
+        let t = Self::text(input, cx);
+        if t.is_empty() {
+            return Ok(None);
+        }
+        parse_utc_ms(&t)
+            .map(Some)
+            .ok_or_else(|| format!("{what}: write it as 2026-01-31 or 2026-01-31 09:00 (UTC)"))
     }
 
     /// The write for the detail pane, or why it can't be made.
@@ -475,26 +833,49 @@ impl CloudTab {
         } else {
             None
         };
+        if self.view == View::Items
+            && is_key_vault_ref(content_type.as_deref())
+            && key_vault_ref_uri(&value).is_none_or(|u| parse_secret_uri(&u).is_err())
+        {
+            return Err(
+                "A Key Vault reference's value is {\"uri\": \"https://<vault>.vault.azure.net/secrets/<name>\"}"
+                    .into(),
+            );
+        }
         let mut key_out = key.clone();
         let description = opt(Self::text(&self.description, cx));
         if self.view == View::Flags {
             if create {
                 let (k, v) = new_flag(&key, self.enabled, description.as_deref().unwrap_or(""));
                 key_out = k;
-                value = v;
+                value = self.flag_value(&v, cx)?;
             } else {
-                value = update_flag(
-                    &value,
-                    self.enabled,
-                    Some(description.as_deref().unwrap_or("")),
-                )
-                .map_err(|e| e.to_string())?;
+                value = self.flag_value(&value, cx)?;
                 key_out = existing.map_or(key_out, |i| i.key.clone());
             }
+            value = update_flag(
+                &value,
+                self.enabled,
+                Some(description.as_deref().unwrap_or("")),
+            )
+            .map_err(|e| e.to_string())?;
             content_type = Some(FEATURE_FLAG_CONTENT_TYPE.to_owned());
         } else if !create && let Some(i) = existing {
             // Keys are renamed by creating a new item; the field is read-only here.
             key_out = i.key.clone();
+        }
+        let (not_before_ms, expires_ms) = if caps.dates {
+            (
+                Self::date_field(&self.not_before, "Activation", cx)?,
+                Self::date_field(&self.expires, "Expiry", cx)?,
+            )
+        } else {
+            (None, None)
+        };
+        if let (Some(a), Some(b)) = (not_before_ms, expires_ms)
+            && b <= a
+        {
+            return Err("Expiry must come after activation".into());
         }
         Ok(KvWrite {
             scope: self.scope.clone(),
@@ -520,6 +901,8 @@ impl CloudTab {
             } else {
                 existing.and_then(|i| i.etag.clone())
             },
+            not_before_ms,
+            expires_ms,
         })
     }
 
@@ -540,7 +923,7 @@ impl CloudTab {
                 return;
             }
         };
-        if self.connection.environment.is_production() && !confirmed {
+        if self.production() && !confirmed {
             self.confirm = Some(Confirm::Save);
             cx.notify();
             return;
@@ -567,6 +950,30 @@ impl CloudTab {
             },
             cx,
         );
+    }
+
+    /// Ask before `edit`; with `always` false, only on Production.
+    fn ask(
+        &mut self,
+        prompt: String,
+        button: &'static str,
+        edit: CloudEdit,
+        always: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.read_only() || self.edit_request.is_some() {
+            return;
+        }
+        if always || self.production() {
+            self.confirm = Some(Confirm::Edit {
+                prompt,
+                button,
+                edit: Box::new(edit),
+            });
+            cx.notify();
+        } else {
+            self.send_edit(edit, cx);
+        }
     }
 
     fn toggle_lock(&mut self, cx: &mut Context<Self>) {
@@ -597,17 +1004,14 @@ impl CloudTab {
             cx.notify();
             return;
         };
-        if self.connection.environment.is_production() {
-            // Production changes go through Save, which asks first.
-            self.status = Some((
-                false,
-                "Production: open the flag and use Save to change it".into(),
-            ));
-            cx.notify();
-            return;
-        }
         match update_flag(&value, !flag.enabled, None) {
-            Ok(v) => self.send_edit(
+            Ok(v) => self.ask(
+                format!(
+                    "Turn {} {} on Production?",
+                    flag.id,
+                    if flag.enabled { "off" } else { "on" }
+                ),
+                if flag.enabled { "Turn off" } else { "Turn on" },
                 CloudEdit::Put(KvWrite {
                     key: item.key,
                     label: item.label,
@@ -617,6 +1021,7 @@ impl CloudTab {
                     etag: item.etag,
                     ..KvWrite::default()
                 }),
+                false,
                 cx,
             ),
             Err(e) => self.status = Some((false, e.to_string())),
@@ -628,6 +1033,7 @@ impl CloudTab {
         let request = next_id();
         self.edit_request = Some(request);
         self.status = None;
+        self.confirm = None;
         self.core.send(Command::CloudEdit {
             session: self.session,
             request,
@@ -636,7 +1042,7 @@ impl CloudTab {
         cx.notify();
     }
 
-    /// A change finished: the list is reloaded and the item selected again.
+    /// A change finished: the list is reloaded.
     pub fn on_edited(
         &mut self,
         request: RequestId,
@@ -647,21 +1053,34 @@ impl CloudTab {
             return;
         }
         self.edit_request = None;
-        match result {
-            Ok(m) => {
-                self.status = Some((true, m));
-                let keep = self.status.clone();
-                self.reload(cx);
-                self.status = keep;
-            }
-            Err(e) => self.status = Some((false, e)),
+        // Even a partly failed batch changed something.
+        self.reselect = self.selected().map(|i| (i.key.clone(), i.label.clone()));
+        let keep = Some(match result {
+            Ok(m) => (true, m),
+            Err(e) => (false, e),
+        });
+        self.import = None;
+        self.bulk_copy = false;
+        if self.caps().labels {
+            self.core.send(Command::CloudLabels {
+                session: self.session,
+            });
         }
+        if let Some(c) = self.compare.as_mut() {
+            c.picked.clear();
+            let (l, r) = (c.left.label.clone(), c.right.label.clone());
+            self.start_compare(l, r, cx);
+        }
+        self.reload(cx);
+        self.status = keep;
         cx.notify();
     }
 
     fn set_view(&mut self, view: View, cx: &mut Context<Self>) {
         if self.view != view {
             self.view = view;
+            self.compare = None;
+            self.import = None;
             self.reload(cx);
         }
     }
@@ -671,9 +1090,25 @@ impl CloudTab {
         self.reload(cx);
     }
 
+    fn set_label_filter(
+        &mut self,
+        label: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let text = match label {
+            Some(l) => l,
+            None => "-".into(),
+        };
+        Self::set_input(&self.label_filter, text, window, cx);
+        self.reload(cx);
+    }
+
+    // Rendering
+
     fn render_header(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let info = self.info.as_ref();
-        let caps = info.map(|i| i.caps.clone()).unwrap_or_default();
+        let caps = self.caps();
         let scope_picker = caps.scope_label.map(|label| {
             let scopes = info.map(|i| i.scopes.clone()).unwrap_or_default();
             let chosen = self.scope.clone();
@@ -713,6 +1148,14 @@ impl CloudTab {
             });
             (SharedString::from(label), self.view == v, on)
         };
+        let mut views = Vec::new();
+        if caps.feature_flags {
+            views.push(view_option("Settings", View::Items));
+            views.push(view_option("Feature flags", View::Flags));
+        } else if caps.recoverable {
+            views.push(view_option("Secrets", View::Items));
+            views.push(view_option("Deleted", View::Deleted));
+        }
         let new_label = if self.view == View::Flags {
             "New flag"
         } else {
@@ -723,6 +1166,39 @@ impl CloudTab {
                 _ => "New key",
             }
         };
+        let files = self.files() && info.is_some() && self.view != View::Deleted;
+        let read_only = self.read_only();
+        let files_menu = files.then(|| {
+            let this = cx.entity().downgrade();
+            Button::new("cl-files")
+                .outline()
+                .small()
+                .label("Import / export")
+                .dropdown_menu(move |mut menu, _, _| {
+                    if !read_only {
+                        let t = this.clone();
+                        menu = menu
+                            .item(PopupMenuItem::new("Import from a file…").on_click(
+                                move |_, _, cx| {
+                                    let _ = t.update(cx, |t, cx| t.pick_import(cx));
+                                },
+                            ))
+                            .separator();
+                    }
+                    for f in KvFormat::ALL {
+                        let t = this.clone();
+                        menu = menu.item(
+                            PopupMenuItem::new(format!("Export as {}", f.title())).on_click(
+                                move |_, _, cx| {
+                                    let _ = t.update(cx, |t, cx| t.export(f, cx));
+                                },
+                            ),
+                        );
+                    }
+                    menu
+                })
+        });
+        let compare_open = self.compare.is_some();
         div()
             .flex_none()
             .flex()
@@ -753,7 +1229,7 @@ impl CloudTab {
                     ),
             )
             .child(ui::env_badge(self.connection.environment, p))
-            .when(self.read_only(), |d| {
+            .when(read_only, |d| {
                 d.child(
                     div()
                         .text_size(ts::SMALL)
@@ -763,293 +1239,106 @@ impl CloudTab {
             })
             .child(div().flex_1())
             .children(scope_picker)
-            .when(caps.feature_flags, |d| {
-                d.child(ui::segmented(
-                    "cl-view",
-                    vec![
-                        view_option("Settings", View::Items),
-                        view_option("Feature flags", View::Flags),
-                    ],
-                    22.,
-                    p,
-                ))
+            .when(!views.is_empty(), |d| {
+                d.child(ui::segmented("cl-view", views, 22., p))
             })
-            .child(
-                ui::button("cl-refresh", "Refresh", Kind::Secondary, p)
-                    .on_click(cx.listener(|t, _, _, cx| t.reload(cx))),
-            )
-            .when(!self.read_only() && info.is_some(), |d| {
+            .when(caps.labels && self.view == View::Items, |d| {
                 d.child(
-                    ui::button("cl-new", new_label, Kind::Primary, p)
-                        .on_click(cx.listener(|t, _, w, cx| t.new_item(w, cx))),
+                    ui::button(
+                        "cl-compare",
+                        if compare_open {
+                            "Close comparison"
+                        } else {
+                            "Compare labels"
+                        },
+                        Kind::Secondary,
+                        p,
+                    )
+                    .on_click(cx.listener(|t, _, _, cx| {
+                        if t.compare.is_some() {
+                            t.compare = None;
+                            cx.notify();
+                        } else {
+                            t.open_compare(cx);
+                        }
+                    })),
                 )
             })
+            .children(files_menu)
+            .child(
+                ui::button("cl-refresh", "Refresh", Kind::Secondary, p).on_click(cx.listener(
+                    |t, _, _, cx| {
+                        if let Some(c) = &t.compare {
+                            let (l, r) = (c.left.label.clone(), c.right.label.clone());
+                            t.start_compare(l, r, cx);
+                        }
+                        t.reload(cx)
+                    },
+                )),
+            )
+            .when(
+                !read_only && info.is_some() && self.view != View::Deleted,
+                |d| {
+                    d.child(
+                        ui::button("cl-new", new_label, Kind::Primary, p)
+                            .on_click(cx.listener(|t, _, w, cx| t.new_item(w, cx))),
+                    )
+                },
+            )
             .into_any_element()
     }
 
-    fn render_list(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let caps = self
-            .info
-            .as_ref()
-            .map(|i| i.caps.clone())
-            .unwrap_or_default();
-        let loading = self.list_request.is_some();
-        let flags = self.view == View::Flags;
-        let selected = match self.detail {
-            Detail::Item(ix) => Some(ix),
-            _ => None,
+    /// The strip asking to confirm a bulk or Production change.
+    fn render_confirm(&self, p: &Palette, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let Some(Confirm::Edit { prompt, button, .. }) = &self.confirm else {
+            return None;
         };
-        let filter_bar = div()
-            .flex_none()
-            .flex()
-            .items_center()
-            .gap(rpx(6.))
-            .p(rpx(8.))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .child(Input::new(&self.filter).text_size(ts::BODY)),
-            )
-            .when(caps.labels, |d| {
-                d.child(
-                    div()
-                        .w(rpx(110.))
-                        .flex_none()
-                        .child(Input::new(&self.label_filter).text_size(ts::BODY)),
-                )
-            });
-        let hint = div()
-            .flex_none()
-            .px(rpx(10.))
-            .pb(rpx(6.))
-            .text_size(ts::SMALL)
-            .text_color(p.fg3)
-            .child(if caps.labels {
-                format!(
-                    "{} · label \"-\" lists settings without one · ↵ to search",
-                    caps.filter_hint
-                )
-            } else {
-                format!("{} · ↵ to search", caps.filter_hint)
-            });
-        let body: AnyElement = if let Some(e) = &self.list_error {
-            div()
-                .p(rpx(12.))
-                .text_size(ts::BODY)
-                .text_color(p.prod)
-                .child(e.clone())
-                .into_any_element()
-        } else if caps.scope_label.is_some() && self.scope.is_none() && self.info.is_some() {
-            div()
-                .p(rpx(12.))
-                .text_size(ts::BODY)
-                .text_color(p.fg3)
-                .child("No namespaces in this account yet.")
-                .into_any_element()
-        } else if self.items.is_empty() && !loading && self.info.is_some() {
-            div()
-                .p(rpx(12.))
-                .text_size(ts::BODY)
-                .text_color(p.fg3)
-                .child(if flags {
-                    "No feature flags match."
-                } else {
-                    "Nothing matches."
-                })
-                .into_any_element()
+        let kind = if matches!(*button, "Delete" | "Purge") || self.production() {
+            Kind::Destructive
         } else {
-            let items: Vec<KvItem> = self.items.clone();
-            let p2 = *p;
-            let read_only = self.read_only();
-            uniform_list(
-                "cloud-items",
-                items.len(),
-                cx.processor(move |_this, range: std::ops::Range<usize>, _w, cx| {
-                    let p = &p2;
-                    range
-                        .map(|r| {
-                            let item = &items[r];
-                            let is_sel = selected == Some(r);
-                            let flag = flags
-                                .then(|| parse_flag(&item.key, item.value.as_deref().unwrap_or("")))
-                                .flatten();
-                            let title = flag
-                                .as_ref()
-                                .map_or_else(|| item.key.clone(), |f| f.id.clone());
-                            let sub = if let Some(f) = &flag {
-                                let mut s = f.description.clone();
-                                if f.filters > 0 {
-                                    if !s.is_empty() {
-                                        s.push_str(" · ");
-                                    }
-                                    s.push_str(&format!(
-                                        "{} filter{}",
-                                        f.filters,
-                                        if f.filters == 1 { "" } else { "s" }
-                                    ));
-                                }
-                                s
-                            } else {
-                                let mut parts = Vec::new();
-                                if let Some(k) = &item.kind {
-                                    parts.push(k.clone());
-                                }
-                                if let Some(v) =
-                                    item.value.as_deref().filter(|_| caps.values_in_list)
-                                {
-                                    parts.push(
-                                        v.chars().take(80).collect::<String>().replace('\n', " "),
-                                    );
-                                }
-                                if let Some(ms) = item.modified_ms {
-                                    parts.push(display_ms(ms));
-                                }
-                                parts.join(" · ")
-                            };
-                            div()
-                                .id(("cl-item", r))
-                                .w_full()
-                                .h(rpx(ROW_H))
-                                .flex()
-                                .items_center()
-                                .gap(rpx(8.))
-                                .px(rpx(10.))
-                                .border_b_1()
-                                .border_color(p.line)
-                                .cursor_pointer()
-                                .when(is_sel, |d| d.bg(p.sel))
-                                .when(!is_sel, |d| d.hover(|s| s.bg(p.hover)))
-                                .on_click(cx.listener(move |this, _, w, cx| this.select(r, w, cx)))
-                                .when_some(flag.as_ref().map(|f| f.enabled), |d, on| {
-                                    d.child(
-                                        div()
-                                            .id(("cl-flag", r))
-                                            .flex_none()
-                                            .w(rpx(28.))
-                                            .h(rpx(16.))
-                                            .rounded(px(8.))
-                                            .bg(if on { p.dev } else { p.bd2 })
-                                            .flex()
-                                            .items_center()
-                                            .when(on, |d| d.justify_end())
-                                            .px(rpx(2.))
-                                            .when(!read_only, |d| {
-                                                d.on_click(cx.listener(move |this, _, _, cx| {
-                                                    cx.stop_propagation();
-                                                    this.toggle_flag(r, cx)
-                                                }))
-                                            })
-                                            .child(div().size(rpx(12.)).rounded(px(6.)).bg(p.elev)),
-                                    )
-                                })
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .flex()
-                                        .flex_col()
-                                        .child(
-                                            div()
-                                                .text_size(ts::BODY)
-                                                .font_family(MONO)
-                                                .truncate()
-                                                .child(title),
-                                        )
-                                        .when(!sub.is_empty(), |d| {
-                                            d.child(
-                                                div()
-                                                    .text_size(ts::SMALL)
-                                                    .text_color(p.fg3)
-                                                    .truncate()
-                                                    .child(sub),
-                                            )
-                                        }),
-                                )
-                                .when_some(item.label.clone(), |d, l| {
-                                    d.child(
-                                        div()
-                                            .flex_none()
-                                            .max_w(rpx(110.))
-                                            .truncate()
-                                            .px(rpx(6.))
-                                            .rounded(px(4.))
-                                            .bg(p.surface)
-                                            .border_1()
-                                            .border_color(p.bd)
-                                            .text_size(ts::SMALL)
-                                            .text_color(p.fg2)
-                                            .child(l),
-                                    )
-                                })
-                                .when(item.locked == Some(true), |d| {
-                                    d.child(
-                                        div()
-                                            .flex_none()
-                                            .text_size(ts::SMALL)
-                                            .text_color(p.fg3)
-                                            .child("locked"),
-                                    )
-                                })
-                                .when(item.enabled == Some(false), |d| {
-                                    d.child(
-                                        div()
-                                            .flex_none()
-                                            .text_size(ts::SMALL)
-                                            .text_color(p.fg3)
-                                            .child("disabled"),
-                                    )
-                                })
-                        })
-                        .collect::<Vec<_>>()
-                }),
-            )
-            .flex_1()
-            .into_any_element()
+            Kind::Primary
         };
-        let footer =
+        Some(
             div()
                 .flex_none()
                 .flex()
                 .items_center()
                 .gap(rpx(8.))
-                .px(rpx(10.))
+                .px(rpx(12.))
                 .py(rpx(6.))
-                .border_t_1()
+                .bg(p.elev)
+                .border_b_1()
                 .border_color(p.bd)
-                .text_size(ts::SMALL)
-                .text_color(p.fg3)
-                .child(if loading {
-                    "Loading…".to_owned()
-                } else {
-                    format!(
-                        "{}{} {}",
-                        self.items.len(),
-                        if self.next.is_some() { "+" } else { "" },
-                        if flags { "flags" } else { "items" }
-                    )
-                })
-                .child(div().flex_1())
-                .when(self.next.is_some() && !loading, |d| {
-                    d.child(ui::button("cl-more", "Load more", Kind::Ghost, p).on_click(
-                        cx.listener(|t, _, _, cx| {
-                            let next = t.next.clone();
-                            t.list(next, cx);
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(ts::BODY)
+                        .child(if self.production() {
+                            format!("Production: {prompt}")
+                        } else {
+                            prompt.clone()
                         }),
-                    ))
-                });
-        div()
-            .w(rpx(LIST_W))
-            .flex_none()
-            .flex()
-            .flex_col()
-            .border_r_1()
-            .border_color(p.bd)
-            .child(filter_bar)
-            .child(hint)
-            .child(div().flex_1().min_h_0().flex().flex_col().child(body))
-            .child(footer)
-            .into_any_element()
+                )
+                .child(
+                    ui::button("cl-confirm-yes", *button, kind, p).on_click(cx.listener(
+                        |t, _, _, cx| {
+                            if let Some(Confirm::Edit { edit, .. }) = t.confirm.take() {
+                                t.send_edit(*edit, cx);
+                            }
+                        },
+                    )),
+                )
+                .child(
+                    ui::button("cl-confirm-no", "Cancel", Kind::Ghost, p).on_click(cx.listener(
+                        |t, _, _, cx| {
+                            t.confirm = None;
+                            cx.notify();
+                        },
+                    )),
+                )
+                .into_any_element(),
+        )
     }
 
     fn field(label: &'static str, body: AnyElement, p: &Palette) -> AnyElement {
@@ -1090,299 +1379,61 @@ impl CloudTab {
             .into_any_element()
     }
 
-    fn render_detail(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let Some(info) = &self.info else {
-            return div().flex_1().into_any_element();
-        };
-        if self.detail == Detail::None {
-            return div()
-                .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_size(ts::BODY)
-                .text_color(p.fg3)
-                .child(if self.read_only() {
-                    "Select an item to see it."
-                } else {
-                    "Select an item to see or edit it."
-                })
-                .into_any_element();
-        }
-        let caps = &info.caps;
-        let create = self.detail == Detail::New;
-        let flags = self.view == View::Flags;
-        let read_only = self.read_only();
-        let item = self.selected();
-        let locked = item.and_then(|i| i.locked).unwrap_or(false);
-        let frozen = read_only || locked;
-        let busy = self.edit_request.is_some();
-        let key_label = if flags {
-            "Flag ID"
-        } else if caps.hierarchical {
-            "Name"
-        } else {
-            "Key"
-        };
-        let mut fields: Vec<AnyElement> = vec![Self::field(
-            key_label,
-            Self::boxed(&self.key, true, !create, p),
-            p,
-        )];
-        if caps.labels {
-            fields.push(Self::field(
-                "Label",
-                Self::boxed(&self.label, true, !create, p),
-                p,
-            ));
-        }
-        if create && !caps.kinds.is_empty() {
-            let this = cx.entity().downgrade();
-            let options = caps
-                .kinds
-                .iter()
-                .map(|k| {
-                    let k = *k;
-                    let this = this.clone();
-                    let on: ui::OnClick = Box::new(move |_, _, cx| {
-                        let _ = this.update(cx, |t, cx| {
-                            t.kind = Some(k);
-                            cx.notify();
-                        });
-                    });
-                    (SharedString::from(k), self.kind == Some(k), on)
-                })
-                .collect();
-            fields.push(Self::field(
-                "Type",
-                ui::segmented("cl-kind", options, 22., p).into_any_element(),
-                p,
-            ));
-        }
-        if caps.content_type && !flags {
-            fields.push(Self::field(
-                "Content type",
-                Self::boxed(&self.content_type, true, frozen, p),
-                p,
-            ));
-        }
-        if flags
-            || matches!(
-                self.connection.service,
-                CloudService::SecretsManager | CloudService::ParameterStore
-            )
-        {
-            fields.push(Self::field(
-                "Description",
-                Self::boxed(&self.description, false, frozen, p),
-                p,
-            ));
-        }
-        if caps.tags && !flags {
-            fields.push(Self::field(
-                "Tags",
-                Self::boxed(&self.tags, true, frozen, p),
-                p,
-            ));
-        }
-        let enabled_box = (caps.enabled || flags).then(|| {
-            ui::checkbox(
-                "cl-enabled",
-                self.enabled,
-                if flags {
-                    "Enabled"
-                } else {
-                    "Enabled (apps can read it)"
-                },
-                p,
-            )
-            .when(!frozen, |d| {
-                d.on_click(cx.listener(|t, _, _, cx| {
-                    t.enabled = !t.enabled;
-                    cx.notify();
-                }))
-            })
-        });
-        let hidden = !self.loaded && item.is_some_and(|i| self.hides_value(i));
-        let loading_value = self.get_request.is_some();
-        let value: AnyElement = if hidden {
-            div()
-                .flex_1()
-                .flex()
-                .flex_col()
-                .items_start()
-                .gap(rpx(8.))
-                .p(rpx(10.))
-                .border_1()
-                .border_color(p.bd)
-                .rounded(px(6.))
-                .text_size(ts::BODY)
-                .text_color(p.fg3)
-                .child("The value is a secret and is fetched only when you ask.")
-                .child(
-                    ui::button(
-                        "cl-reveal",
-                        if loading_value {
-                            "Loading…"
-                        } else {
-                            "Show value"
-                        },
-                        Kind::Secondary,
-                        p,
-                    )
-                    .on_click(cx.listener(|t, _, _, cx| {
-                        if let Some(i) = t.selected().cloned() {
-                            t.fetch(&i, cx);
-                        }
-                    })),
-                )
-                .into_any_element()
-        } else {
-            div()
-                .flex_1()
-                .min_h(rpx(120.))
-                .border_1()
-                .border_color(p.bd2)
-                .rounded(px(6.))
-                .bg(p.bg)
-                .p(rpx(6.))
-                .child(
-                    Editor::new(&self.value)
-                        .readonly(frozen || !self.loaded)
-                        .bordered(false)
-                        .appearance(false)
-                        .h(relative(1.))
-                        .font_family(MONO)
-                        .text_size(ts::BODY),
-                )
-                .into_any_element()
-        };
-        let meta = item.map(|i| {
-            let mut parts = Vec::new();
-            if let Some(ms) = i.modified_ms {
-                parts.push(format!("Changed {}", display_ms(ms)));
-            }
-            if locked {
-                parts.push("Locked: unlock to change or delete it".into());
-            }
-            parts.join(" · ")
-        });
-        let actions = div()
+    fn panel(p: &Palette) -> gpui_kit::Div {
+        div()
             .flex_none()
             .flex()
-            .items_center()
-            .gap(rpx(8.))
-            .pt(rpx(4.))
-            .when(!read_only, |d| match &self.confirm {
-                Some(Confirm::Delete) => d
-                    .child(div().text_size(ts::BODY).child(format!(
-                        "Delete {}{}?",
-                        item.map(|i| i.key.as_str()).unwrap_or(""),
-                        match self.connection.service {
-                            CloudService::SecretsManager => " (recoverable for 7 days)",
-                            CloudService::KeyVault => " (soft-deleted when the vault keeps them)",
-                            _ => "",
-                        }
-                    )))
-                    .child(
-                        ui::button("cl-del-yes", "Delete", Kind::Destructive, p)
-                            .on_click(cx.listener(|t, _, _, cx| t.delete(true, cx))),
-                    )
-                    .child(ui::button("cl-del-no", "Cancel", Kind::Ghost, p).on_click(
-                        cx.listener(|t, _, _, cx| {
-                            t.confirm = None;
-                            cx.notify();
-                        }),
-                    )),
-                Some(Confirm::Save) => d
-                    .child(
-                        div()
-                            .text_size(ts::BODY)
-                            .child("This is a Production connection. Save the change?"),
-                    )
-                    .child(
-                        ui::button("cl-save-yes", "Save to Production", Kind::Destructive, p)
-                            .on_click(cx.listener(|t, _, _, cx| t.save(true, cx))),
-                    )
-                    .child(ui::button("cl-save-no", "Cancel", Kind::Ghost, p).on_click(
-                        cx.listener(|t, _, _, cx| {
-                            t.confirm = None;
-                            cx.notify();
-                        }),
-                    )),
-                None => d
-                    .when(!locked, |d| {
-                        d.child(
-                            ui::button(
-                                "cl-save",
-                                if busy {
-                                    "Saving…"
-                                } else if create {
-                                    "Create"
-                                } else {
-                                    "Save"
-                                },
-                                Kind::Primary,
-                                p,
-                            )
-                            .on_click(cx.listener(|t, _, _, cx| t.save(false, cx))),
-                        )
-                    })
-                    .when(!create && !locked, |d| {
-                        d.child(
-                            ui::button("cl-delete", "Delete", Kind::Secondary, p)
-                                .on_click(cx.listener(|t, _, _, cx| t.delete(false, cx))),
-                        )
-                    })
-                    .when(!create && caps.locks, |d| {
-                        d.child(
-                            ui::button(
-                                "cl-lock",
-                                if locked { "Unlock" } else { "Lock" },
-                                Kind::Ghost,
-                                p,
-                            )
-                            .on_click(cx.listener(|t, _, _, cx| t.toggle_lock(cx))),
-                        )
-                    })
-                    .when(create, |d| {
-                        d.child(ui::button("cl-cancel", "Cancel", Kind::Ghost, p).on_click(
-                            cx.listener(|t, _, _, cx| {
-                                t.detail = Detail::None;
-                                cx.notify();
-                            }),
-                        ))
-                    }),
-            })
-            .child(div().flex_1())
-            .when_some(meta, |d, m| {
-                d.child(div().text_size(ts::SMALL).text_color(p.fg3).child(m))
-            });
-        div()
-            .id("cl-detail")
-            .flex_1()
-            .min_w_0()
-            .flex()
             .flex_col()
-            .gap(rpx(10.))
-            .p(rpx(14.))
-            .child(div().grid().grid_cols(2).gap(rpx(10.)).children(fields))
-            .children(enabled_box)
-            .child(
-                div()
-                    .text_size(ts::LABEL)
-                    .text_color(p.fg2)
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(if flags {
-                        "Definition (JSON; Enabled and Description above win)"
-                    } else {
-                        "Value"
-                    }),
-            )
-            .child(value)
-            .child(actions)
-            .into_any_element()
+            .gap(rpx(8.))
+            .p(rpx(10.))
+            .border_1()
+            .border_color(p.bd)
+            .rounded(px(6.))
+            .bg(p.bg)
     }
+}
+
+fn chip(text: String, p: &Palette) -> gpui_kit::Div {
+    div()
+        .flex_none()
+        .max_w(rpx(120.))
+        .truncate()
+        .px(rpx(6.))
+        .rounded(px(4.))
+        .bg(p.surface)
+        .border_1()
+        .border_color(p.bd)
+        .text_size(ts::SMALL)
+        .text_color(p.fg2)
+        .child(text)
+}
+
+/// The label filter as App Configuration's list expects it: empty for any label, `\0`
+/// for none (`-` in the filter field).
+fn label_query(text: &str) -> String {
+    match text.trim() {
+        "" => String::new(),
+        "-" | "(none)" | "(No label)" => "\0".into(),
+        l => l.to_owned(),
+    }
+}
+
+/// A label for people: `(No label)` for the null label.
+fn label_text(label: Option<&str>) -> String {
+    match label {
+        Some(l) if !l.is_empty() => l.to_owned(),
+        _ => "(No label)".into(),
+    }
+}
+
+fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
 }
 
 /// A JSON object or array (shown pretty and highlighted).
@@ -1400,17 +1451,31 @@ fn pretty_json(s: &str) -> String {
 }
 
 impl Render for CloudTab {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
         let header = self.render_header(&p, cx);
+        let confirm = self.render_confirm(&p, cx);
         let status = self.status.as_ref().map(|(ok, m)| {
             div()
                 .flex_none()
+                .flex()
+                .items_center()
+                .gap(rpx(8.))
                 .px(rpx(12.))
                 .py(rpx(4.))
+                .border_b_1()
+                .border_color(p.line)
                 .text_size(ts::BODY)
                 .text_color(if *ok { p.dev } else { p.prod })
-                .child(m.clone())
+                .child(div().flex_1().min_w_0().child(m.clone()))
+                .child(
+                    ui::button("cl-status-x", "Dismiss", Kind::Ghost, &p).on_click(cx.listener(
+                        |t, _, _, cx| {
+                            t.status = None;
+                            cx.notify();
+                        },
+                    )),
+                )
         });
         let main = match &self.open_error {
             Some(e) => div()
@@ -1442,20 +1507,34 @@ impl Render for CloudTab {
                 .text_color(p.fg3)
                 .child("Connecting… (a Microsoft sign-in may open in your browser)")
                 .into_any_element(),
-            None => div()
-                .flex_1()
-                .min_h_0()
-                .flex()
-                .child(self.render_list(&p, cx))
-                .child(self.render_detail(&p, cx))
-                .into_any_element(),
+            None => {
+                let right = if let Some(c) = &self.compare {
+                    self.render_compare(c, &p, cx)
+                } else if let Some(plan) = &self.import {
+                    self.render_import(plan, &p, cx)
+                } else {
+                    self.render_detail(&p, window, cx)
+                };
+                let full_width = self.compare.is_some();
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .flex()
+                    .when(!full_width, |d| d.child(self.render_list(&p, window, cx)))
+                    .child(right)
+                    .into_any_element()
+            }
         };
         div()
             .size_full()
+            .min_h_0()
+            .overflow_hidden()
             .flex()
             .flex_col()
             .bg(p.surface)
             .child(header)
+            .children(confirm)
             .children(status)
             .child(main)
     }
@@ -1495,7 +1574,10 @@ impl Workspace {
             Event::CloudOpened { session, .. }
             | Event::CloudItems { session, .. }
             | Event::CloudItem { session, .. }
-            | Event::CloudEdited { session, .. } => *session,
+            | Event::CloudEdited { session, .. }
+            | Event::CloudRevisions { session, .. }
+            | Event::CloudLabels { session, .. }
+            | Event::CloudResolved { session, .. } => *session,
             _ => return,
         };
         let Some(tab) = self.tabs.iter().find_map(|t| match t {
@@ -1512,15 +1594,37 @@ impl Workspace {
             Event::CloudOpened { result, .. } => t.on_opened(result, cx),
             Event::CloudItems {
                 request, result, ..
-            } => t.on_items(request, result, cx),
+            } => t.on_items(request, result, window, cx),
             Event::CloudItem {
                 request, result, ..
             } => t.on_item(request, result, window, cx),
             Event::CloudEdited {
                 request, result, ..
             } => t.on_edited(request, result, cx),
+            Event::CloudRevisions {
+                request, result, ..
+            } => t.on_revisions(request, result, cx),
+            Event::CloudLabels { result, .. } => t.on_labels(result, cx),
+            Event::CloudResolved {
+                request, result, ..
+            } => t.on_resolved(request, result, cx),
             _ => {}
         });
+    }
+
+    /// A file read for a cloud tab's import.
+    pub(crate) fn on_cloud_text_file(
+        &mut self,
+        request: RequestId,
+        result: &Result<TextFile, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for t in &self.tabs {
+            if let Tab::Cloud(c) = t {
+                c.update(cx, |c, cx| c.on_text_file(request, result, window, cx));
+            }
+        }
     }
 }
 
