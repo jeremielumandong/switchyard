@@ -10,10 +10,14 @@ use switchyard_remote::fs::file_name;
 use switchyard_remote::{FileEntry, FsError, RemoteFs, SftpFs};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-use crate::bus::{OnConflict, SaveError, TextFile, TransferError};
+use crate::bus::{FileBytes, OnConflict, ReadError, SaveError, TextFile, TransferError};
 
 /// Largest file the editor opens.
 pub const MAX_EDIT_BYTES: u64 = 5 * 1024 * 1024;
+/// Largest image the viewer shows.
+pub const MAX_VIEW_BYTES: u64 = 32 * 1024 * 1024;
+/// Bytes read to tell text from binary in a file too large to edit.
+const SNIFF_BYTES: u64 = 8 * 1024;
 const CHUNK: usize = 256 * 1024;
 
 /// Transfers running at once; the rest wait their turn.
@@ -404,25 +408,80 @@ pub(crate) async fn delete_tree(
     fs.delete(path).await
 }
 
-/// Read a text file for the editor.
-pub(crate) async fn read_text(fs: &dyn RemoteFs, path: &Path) -> Result<TextFile, String> {
-    let meta = fs.stat(path).await.map_err(|e| e.to_string())?;
+/// Where copies of files opened in another app go: `<temp>/switchyard-open`.
+pub fn open_root() -> PathBuf {
+    std::env::temp_dir().join("switchyard-open")
+}
+
+/// A fresh folder under [`open_root`] for one opened copy (keeps its file name).
+pub fn open_copy_dir(id: u64) -> PathBuf {
+    open_root().join(id.to_string())
+}
+
+/// Whether `head` (a file's first bytes) is not text: a NUL byte, or invalid UTF-8 other
+/// than a character cut off at the end.
+fn is_binary(head: &[u8]) -> bool {
+    head.contains(&0) || std::str::from_utf8(head).is_err_and(|e| e.error_len().is_some())
+}
+
+/// Whether `head` starts like a raster image the viewer can show.
+fn looks_like_image(head: &[u8]) -> bool {
+    let starts = |sig: &[u8]| head.starts_with(sig);
+    starts(b"\x89PNG\r\n\x1a\n")
+        || starts(b"\xff\xd8\xff")
+        || starts(b"GIF87a")
+        || starts(b"GIF89a")
+        || (head.len() >= 12 && starts(b"RIFF") && &head[8..12] == b"WEBP")
+        || (starts(b"BM") && head.len() > 14)
+        || starts(b"II*\0")
+        || starts(b"MM\0*")
+}
+
+/// Read a text file for the editor. A binary file is [`ReadError::Binary`], carrying the
+/// whole file when it is an image of at most [`MAX_VIEW_BYTES`].
+pub(crate) async fn read_text(fs: &dyn RemoteFs, path: &Path) -> Result<TextFile, ReadError> {
+    let fail = |e: FsError| ReadError::Failed(e.to_string());
+    let meta = fs.stat(path).await.map_err(fail)?;
     if meta.is_dir() {
-        return Err(format!("{} is a folder", meta.name));
+        return Err(ReadError::Failed(format!("{} is a folder", meta.name)));
     }
-    let bytes = fs
-        .read_file(path, MAX_EDIT_BYTES)
-        .await
-        .map_err(|e| e.to_string())?;
+    let binary = |whole: Option<Vec<u8>>| ReadError::Binary {
+        size: meta.size,
+        image: whole
+            .filter(|b| looks_like_image(b))
+            .map(|b| FileBytes(b.into())),
+    };
+    if meta.size > MAX_EDIT_BYTES {
+        // Too large to edit: only sniff the start, and read it all for an image.
+        let mut head = Vec::new();
+        let mut r = fs.open_read(path).await.map_err(fail)?;
+        (&mut r)
+            .take(SNIFF_BYTES)
+            .read_to_end(&mut head)
+            .await
+            .map_err(|e| ReadError::Failed(e.to_string()))?;
+        drop(r);
+        if !is_binary(&head) {
+            return Err(fail(FsError::TooLarge(meta.name, meta.size)));
+        }
+        let whole = if looks_like_image(&head) && meta.size <= MAX_VIEW_BYTES {
+            Some(fs.read_file(path, MAX_VIEW_BYTES).await.map_err(fail)?)
+        } else {
+            None
+        };
+        return Err(binary(whole));
+    }
+    let bytes = fs.read_file(path, MAX_EDIT_BYTES).await.map_err(fail)?;
     if bytes.contains(&0) {
-        return Err(format!("{} looks like a binary file", meta.name));
+        return Err(binary(Some(bytes)));
     }
-    let content =
-        String::from_utf8(bytes).map_err(|_| format!("{} is not UTF-8 text", meta.name))?;
-    Ok(TextFile {
-        content,
-        modified_ms: meta.modified_ms,
-    })
+    match String::from_utf8(bytes) {
+        Ok(content) => Ok(TextFile {
+            content,
+            modified_ms: meta.modified_ms,
+        }),
+        Err(e) => Err(binary(Some(e.into_bytes()))),
+    }
 }
 
 /// Save a text file unless it changed since `expect` (SFTP times are whole seconds).
@@ -733,11 +792,62 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "port=4\n");
 
         std::fs::write(t.path().join("bin"), [0u8, 1, 2]).unwrap();
-        assert!(
-            read_text(&fs, &t.path().join("bin"))
-                .await
-                .unwrap_err()
-                .contains("binary")
+        assert_eq!(
+            read_text(&fs, &t.path().join("bin")).await,
+            Err(ReadError::Binary {
+                size: 3,
+                image: None
+            })
         );
+    }
+
+    #[tokio::test]
+    async fn binary_files_and_images() {
+        let t = tempfile::tempdir().unwrap();
+        let fs = LocalFs;
+        // A JPEG: its bytes come back for the viewer.
+        let jpg = [&b"\xff\xd8\xff\xe0\0\x10JFIF\0"[..], &[9u8; 100]].concat();
+        std::fs::write(t.path().join("a.jpg"), &jpg).unwrap();
+        match read_text(&fs, &t.path().join("a.jpg")).await {
+            Err(ReadError::Binary {
+                size,
+                image: Some(b),
+            }) => {
+                assert_eq!(size, jpg.len() as u64);
+                assert_eq!(&b.0[..], &jpg[..]);
+            }
+            r => panic!("{r:?}"),
+        }
+        // Latin-1 text is not UTF-8: binary, no image.
+        std::fs::write(t.path().join("l1.txt"), b"caf\xe9").unwrap();
+        assert!(matches!(
+            read_text(&fs, &t.path().join("l1.txt")).await,
+            Err(ReadError::Binary { image: None, .. })
+        ));
+        // Too large to edit: text says so; a binary file is sniffed, not read whole.
+        let big = MAX_EDIT_BYTES as usize + 10;
+        std::fs::write(t.path().join("big.log"), vec![b'x'; big]).unwrap();
+        assert!(matches!(
+            read_text(&fs, &t.path().join("big.log")).await,
+            Err(ReadError::Failed(_))
+        ));
+        std::fs::write(t.path().join("big.bin"), vec![0u8; big]).unwrap();
+        assert_eq!(
+            read_text(&fs, &t.path().join("big.bin")).await,
+            Err(ReadError::Binary {
+                size: big as u64,
+                image: None
+            })
+        );
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.resize(big, 1);
+        std::fs::write(t.path().join("big.png"), &png).unwrap();
+        assert!(matches!(
+            read_text(&fs, &t.path().join("big.png")).await,
+            Err(ReadError::Binary { image: Some(b), .. }) if b.0.len() == big
+        ));
+        // A UTF-8 character cut at the sniff boundary is still text.
+        assert!(!is_binary("é".as_bytes().get(..1).unwrap()));
+        assert!(is_binary(b"\xe9 x"));
     }
 }

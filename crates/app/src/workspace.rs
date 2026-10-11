@@ -863,8 +863,13 @@ impl Workspace {
                     panel.update(cx, |p, cx| p.on_event(&ev, cx));
                 }
                 for t in &self.tabs {
-                    if let Tab::Files(f) = t {
-                        f.update(cx, |f, cx| f.on_event(&ev, cx));
+                    match t {
+                        Tab::Files(f) => f.update(cx, |f, cx| f.on_event(&ev, cx)),
+                        // "Open with default app" waits on its download.
+                        Tab::Editor(e) if matches!(ev, Event::TransferDone { .. }) => {
+                            e.update(cx, |e, cx| e.on_event(&ev, window, cx))
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -1734,7 +1739,8 @@ impl Workspace {
             FsRef::Local => ("this computer".into(), Default::default()),
         };
         let core = self.core.clone();
-        let tab = cx.new(|cx| EditorTab::new(core, fs, path, &name, env, window, cx));
+        let transfers = self.transfers.clone();
+        let tab = cx.new(|cx| EditorTab::new(core, fs, path, &name, env, transfers, window, cx));
         self.tabs.push(Tab::Editor(tab));
         self.active = self.tabs.len() - 1;
         cx.notify();

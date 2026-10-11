@@ -152,7 +152,7 @@ impl Transfers {
         });
     }
 
-    /// Copy `path` from `from` into `dir` on `to`.
+    /// Copy `path` from `from` into `dir` on `to`; returns the transfer id.
     pub fn start(
         &mut self,
         from: FsRef,
@@ -161,9 +161,10 @@ impl Transfers {
         dir: Option<PathBuf>,
         on_conflict: OnConflict,
         cx: &mut Context<Self>,
-    ) {
+    ) -> u64 {
+        let id = next_id();
         let it = Item {
-            id: next_id(),
+            id,
             name: path
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
@@ -190,6 +191,7 @@ impl Transfers {
             }
         }
         cx.notify();
+        id
     }
 
     fn item(&mut self, id: u64) -> Option<&mut Item> {
