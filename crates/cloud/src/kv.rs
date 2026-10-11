@@ -34,6 +34,13 @@ pub struct KvCaps {
     pub filter_hint: &'static str,
     /// Names may contain `/` and are shown as a path (Parameter Store).
     pub hierarchical: bool,
+    /// Earlier values of an item can be listed and restored (App Configuration revisions,
+    /// Key Vault versions).
+    pub history: bool,
+    /// Items have activation and expiry dates (Key Vault).
+    pub dates: bool,
+    /// Deleted items can be listed, recovered and purged (Key Vault soft-delete).
+    pub recoverable: bool,
 }
 
 /// One item. `value` is set when it was loaded.
@@ -61,6 +68,12 @@ pub struct KvItem {
     pub kind: Option<String>,
     /// Description.
     pub description: Option<String>,
+    /// Version id (Key Vault).
+    pub version: Option<String>,
+    /// Not usable before, ms since the epoch (Key Vault).
+    pub not_before_ms: Option<i64>,
+    /// Expiry, ms since the epoch (Key Vault).
+    pub expires_ms: Option<i64>,
 }
 
 impl std::fmt::Debug for KvItem {
@@ -86,6 +99,8 @@ pub struct KvQuery {
     pub label: String,
     /// Continuation from the previous page.
     pub cursor: Option<String>,
+    /// List deleted items instead (services with [`KvCaps::recoverable`]).
+    pub deleted: bool,
 }
 
 /// One page of items.
@@ -122,6 +137,10 @@ pub struct KvWrite {
     pub create: bool,
     /// Must still be this version (`None`: overwrite).
     pub etag: Option<String>,
+    /// Not usable before, ms since the epoch (Key Vault; `None`: no date).
+    pub not_before_ms: Option<i64>,
+    /// Expiry, ms since the epoch (Key Vault; `None`: no date).
+    pub expires_ms: Option<i64>,
 }
 
 impl std::fmt::Debug for KvWrite {
@@ -169,6 +188,35 @@ pub trait KvService: Send + Sync {
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async { Err(CloudError::Unsupported("locks")) })
     }
+    /// Earlier values of one item, newest first (App Configuration revisions).
+    fn revisions<'a>(
+        &'a self,
+        _key: &'a str,
+        _label: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<Vec<KvItem>>> {
+        Box::pin(async { Err(CloudError::Unsupported("history")) })
+    }
+    /// Labels in use (`None` is the null label), for services that have labels.
+    fn labels(&self) -> BoxFuture<'_, Result<Vec<Option<String>>>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+    /// One earlier version of an item with its value (an id from [`Self::revisions`]),
+    /// for services whose revisions list no values.
+    fn get_version<'a>(
+        &'a self,
+        _key: &'a str,
+        _version: &'a str,
+    ) -> BoxFuture<'a, Result<KvItem>> {
+        Box::pin(async { Err(CloudError::Unsupported("versions")) })
+    }
+    /// Bring a deleted item back.
+    fn recover<'a>(&'a self, _key: &'a str) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Err(CloudError::Unsupported("recovery")) })
+    }
+    /// Delete a deleted item for good.
+    fn purge<'a>(&'a self, _key: &'a str) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Err(CloudError::Unsupported("purge")) })
+    }
 }
 
 /// Refuses every change; reads pass through. For read-only connections.
@@ -209,6 +257,25 @@ impl KvService for ReadOnlyKv {
         _: Option<&'a str>,
         _: bool,
     ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Err(CloudError::ReadOnly) })
+    }
+    fn revisions<'a>(
+        &'a self,
+        key: &'a str,
+        label: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<Vec<KvItem>>> {
+        self.0.revisions(key, label)
+    }
+    fn labels(&self) -> BoxFuture<'_, Result<Vec<Option<String>>>> {
+        self.0.labels()
+    }
+    fn get_version<'a>(&'a self, key: &'a str, version: &'a str) -> BoxFuture<'a, Result<KvItem>> {
+        self.0.get_version(key, version)
+    }
+    fn recover<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Err(CloudError::ReadOnly) })
+    }
+    fn purge<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<()>> {
         Box::pin(async { Err(CloudError::ReadOnly) })
     }
 }

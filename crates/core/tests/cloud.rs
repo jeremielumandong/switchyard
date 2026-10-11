@@ -220,6 +220,86 @@ async fn app_configuration_tool() {
     assert_eq!(page.items.len(), 1);
     assert_eq!(page.items[0].label.as_deref(), Some("dev"));
 
+    // A batch carries on past a failure and names it.
+    let put = |label: &str, create: bool| {
+        CloudEdit::Put(KvWrite {
+            key: key.clone(),
+            label: Some(label.into()),
+            value: format!("hello {label}"),
+            create,
+            ..KvWrite::default()
+        })
+    };
+    h.send(Command::CloudEdit {
+        session: 7,
+        request: 5,
+        edit: CloudEdit::Batch(vec![put("dev", true), put("prod", false)]),
+    });
+    let r = next(&mut rx, 15, |e| match e {
+        Event::CloudEdited {
+            request: 5, result, ..
+        } => Some(result),
+        _ => None,
+    })
+    .await;
+    let err = r.unwrap_err();
+    assert!(err.starts_with("1 of 2 done; 1 failed"), "{err}");
+
+    h.send(Command::CloudRevisions {
+        session: 7,
+        request: 6,
+        key: key.clone(),
+        label: Some("prod".into()),
+    });
+    let revs = next(&mut rx, 15, |e| match e {
+        Event::CloudRevisions {
+            request: 6, result, ..
+        } => Some(result.clone()),
+        _ => None,
+    })
+    .await
+    .unwrap();
+    assert_eq!(revs[0].value.as_deref(), Some("hello prod"));
+
+    h.send(Command::CloudLabels { session: 7 });
+    let labels = next(&mut rx, 15, |e| match e {
+        Event::CloudLabels { result, .. } => Some(result.clone()),
+        _ => None,
+    })
+    .await
+    .unwrap();
+    assert!(labels.contains(&Some("prod".into())));
+
+    // Bearer tokens never go to a host that is not a Key Vault.
+    h.send(Command::CloudResolveRef {
+        session: 7,
+        request: 8,
+        uri: "https://example.com/secrets/x".into(),
+    });
+    let r = next(&mut rx, 15, |e| match e {
+        Event::CloudResolved {
+            request: 8, result, ..
+        } => Some(result.clone()),
+        _ => None,
+    })
+    .await;
+    assert!(r.unwrap_err().contains("not an Azure Key Vault"));
+
+    h.send(Command::CloudEdit {
+        session: 7,
+        request: 9,
+        edit: CloudEdit::Delete {
+            scope: None,
+            key: key.clone(),
+            label: Some("prod".into()),
+        },
+    });
+    next(&mut rx, 15, |e| match e {
+        Event::CloudEdited { request: 9, .. } => Some(()),
+        _ => None,
+    })
+    .await;
+
     h.send(Command::CloudEdit {
         session: 7,
         request: 4,

@@ -21,6 +21,7 @@ mod error;
 mod http;
 pub mod keyvault;
 pub mod kv;
+pub mod kv_file;
 pub mod parameters;
 pub mod s3;
 pub mod secrets_manager;
@@ -32,4 +33,4 @@ mod xml;
 
 pub use error::{CloudError, Result};
 pub use kv::{KvCaps, KvItem, KvPage, KvQuery, KvService, KvWrite};
-pub use time::display_ms;
+pub use time::{display_ms, parse_utc_ms};

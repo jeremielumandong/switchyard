@@ -663,7 +663,23 @@ impl Service {
                 scope,
                 key,
                 label,
-            } => self.cloud_get(session, request, scope, key, label).await,
+                version,
+            } => {
+                self.cloud_get(session, request, scope, key, label, version)
+                    .await
+            }
+            Command::CloudRevisions {
+                session,
+                request,
+                key,
+                label,
+            } => self.cloud_revisions(session, request, key, label).await,
+            Command::CloudLabels { session } => self.cloud_labels(session).await,
+            Command::CloudResolveRef {
+                session,
+                request,
+                uri,
+            } => self.cloud_resolve_ref(session, request, uri).await,
             Command::CloudEdit {
                 session,
                 request,
@@ -1140,7 +1156,7 @@ impl Service {
             Command::ReadTextFile { request, fs, path } => {
                 let result = match self.file_system(&fs).await {
                     Ok((f, _)) => crate::files::read_text(f.as_ref(), &path).await,
-                    Err(e) => Err(e.to_string()),
+                    Err(e) => Err(crate::bus::ReadError::Failed(e.to_string())),
                 };
                 self.emit(Event::TextFileRead { request, result });
             }
@@ -1443,6 +1459,15 @@ impl Service {
         let (src, src_posix) = self.file_system(from).await.map_err(fail)?;
         let (dst, dst_posix) = self.file_system(to).await.map_err(fail)?;
         let dir = match dir {
+            // A copy for another app to open: its folder is ours to make.
+            Some(d)
+                if *to == crate::bus::FsRef::Local && d.starts_with(crate::files::open_root()) =>
+            {
+                tokio::fs::create_dir_all(&d)
+                    .await
+                    .map_err(|e| TransferError::Failed(e.to_string()))?;
+                d
+            }
             Some(d) => d,
             None => {
                 let d = LocalFs.home().join("Downloads");

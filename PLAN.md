@@ -627,6 +627,12 @@ server or bundled Unix tools on Windows (Tier 3).
   "Follow Omarchy" card on Linux when `~/.config/omarchy/current/theme` exists; it maps the
   theme's `colors.toml` (or `alacritty.toml`, `light.mode`) onto the palette and re-reads it
   every 2 s so switching Omarchy themes restyles the app live (`app/src/omarchy.rs`).
+- [x] UX-15 Binary files from the file browsers (user request, 2026-10-11): opening an image
+  from SFTP, FTP, object storage or this computer shows it in the editor tab (PNG, JPEG, GIF,
+  WebP, BMP, TIFF up to 32 MB) instead of "looks like a binary file"; any binary file has
+  "Open with default app", which downloads a copy to `<temp>/switchyard-open/<id>/` through
+  the transfer queue (progress, cancel) and opens it with the OS handler. Non-UTF-8 text
+  counts as binary. Deferred: built-in PDF / audio / video players, cleanup of old copies.
 
 ## Extra — Redis (user request, 2026-10-08)
 
@@ -684,7 +690,16 @@ server or bundled Unix tools on Windows (Tier 3).
   moto, Azurite and the App Configuration emulator (CI job `integration (S3, Azure Blob,
   App Configuration)`).
   Note: the app UI was checked with clippy and unit tests only, not on screen.
-- [x] CL-5 Paged storage browsing (user request, 2026-10-11): `RemoteFs::list_page` (prefix,
+- [x] CL-5 App Configuration and Key Vault UI pass (user request, 2026-10-11): fixed
+  overlapping rows (40 px two-line rows) and the clipped Save bar (pinned); keys grouped by
+  prefix as a tree; bulk select (export, copy to a label, delete, recover); revision /
+  version history with restore; compare two labels and copy differences; import / export
+  (JSON, `.env`, App Configuration `kvset`); Key Vault references shown and resolved;
+  feature flag form (percentage, time window, targeting); Key Vault secrets masked with
+  reveal / copy, activation and expiry dates, deleted secrets with recover / purge.
+  Note: checked on screen against the App Configuration emulator; Key Vault only by unit
+  tests (no emulator); keys and certificates still in Follow-ups.
+- [x] CL-6 Paged storage browsing (user request, 2026-10-11): `RemoteFs::list_page` (prefix,
   cursor, limit; other file systems answer with the whole folder) and
   `Command::ListDirPage`. Azure Blob pages containers and blobs 100 at a time with
   `maxresults` / `NextMarker`. Files tab: "Load 100 more" footer with item count, Search
@@ -979,8 +994,7 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 
 - Cloud (CL-1..4): folder rename and resumed uploads on object storage (a paused copy
   restarts); S3 / Blob object properties (metadata, storage tier, presigned / SAS links);
-  App Configuration snapshots, Key Vault references resolved in place, import / export
-  (JSON, `.env`); Key Vault keys and certificates; Workers KV metadata and expiry edits;
+  App Configuration snapshots; Key Vault keys and certificates; Workers KV metadata and expiry edits;
   AWS SSO device sign-in inside the app (today: `aws sso login`); a picker of `~/.aws`
   profiles (read off the UI thread); MCP agent access to cloud tools (read-only list / get).
   Proposed next tools: queues (SQS, Service Bus, Storage Queues, Cloudflare Queues), NoSQL
