@@ -875,7 +875,8 @@ impl Workspace {
             }
             Event::TextFileRead { .. } | Event::TextFileSaved { .. } => {
                 if let Event::TextFileRead { request, result } = &ev {
-                    self.on_cloud_text_file(*request, result, window, cx);
+                    let result = result.as_ref().cloned().map_err(|e| e.to_string());
+                    self.on_cloud_text_file(*request, &result, window, cx);
                 }
                 for t in &self.tabs {
                     if let Tab::Editor(e) = t {
