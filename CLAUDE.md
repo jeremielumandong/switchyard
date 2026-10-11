@@ -305,6 +305,10 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
 - Apps started from the desktop often get a short `PATH` without Homebrew's `/opt/homebrew/bin`,
   so `op` (1Password CLI) is also looked for in the installers' folders (`named_secrets.rs`).
   `op read` waits for the 1Password app's approval prompt; it runs with a 2 min timeout.
+- MongoDB answers a wrong password and a user created in another database with the same
+  "SCRAM failure: Authentication failed." `mongo::auth_failure` retries against the
+  connection's database to tell them apart. A `mongodb://…/<db>` URI authenticates
+  against `<db>` by default; Switchyard's blank Auth database means `admin`.
 - Linking the workspace's debug test binaries needs a lot of disk; a full disk shows up as
   `ld terminated with signal 7 [Bus error]`, not "no space". `CARGO_PROFILE_DEV_DEBUG=0`
   halves `target/`.
