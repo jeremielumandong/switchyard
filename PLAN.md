@@ -684,6 +684,14 @@ server or bundled Unix tools on Windows (Tier 3).
   moto, Azurite and the App Configuration emulator (CI job `integration (S3, Azure Blob,
   App Configuration)`).
   Note: the app UI was checked with clippy and unit tests only, not on screen.
+- [x] CL-5 Paged storage browsing (user request, 2026-10-11): `RemoteFs::list_page` (prefix,
+  cursor, limit; other file systems answer with the whole folder) and
+  `Command::ListDirPage`. Azure Blob pages containers and blobs 100 at a time with
+  `maxresults` / `NextMarker`. Files tab: "Load 100 more" footer with item count, Search
+  (filters loaded names as you type; Enter searches the whole folder by server-side
+  prefix when it has more pages), a sweeping loading bar and a skeleton while a folder
+  opens. Test: `cloud --test services blob_listing_pages_and_filters_by_prefix` (Azurite).
+  Deferred: S3 / R2 paging (same shape, `continuation-token`).
 
 ## Extra — Durable Object SQLite (user request, 2026-10-10)
 
