@@ -12,7 +12,7 @@ use std::time::SystemTime;
 
 use futures::future::BoxFuture;
 use reqwest::Method;
-use switchyard_remote::{EntryKind, FileEntry, FsError, FsReader, FsWriter, RemoteFs};
+use switchyard_remote::{EntryKind, FileEntry, FsError, FsReader, FsWriter, ListPage, RemoteFs};
 use tracing::debug;
 
 use crate::aws::AwsAuth;
@@ -330,52 +330,69 @@ impl Inner {
         xml::parse(&resp.body)
     }
 
-    async fn list(&self, bucket: &str, key: &str) -> Result<Vec<FileEntry>> {
-        let prefix = if key.is_empty() {
+    /// One page of folders and objects in `key` whose names start with `name_prefix`.
+    async fn objects_page(
+        &self,
+        bucket: &str,
+        key: &str,
+        name_prefix: &str,
+        max: Option<u32>,
+        token: Option<&str>,
+    ) -> Result<ListPage> {
+        let dir = if key.is_empty() {
             String::new()
         } else {
             format!("{key}/")
         };
+        let prefix = format!("{dir}{name_prefix}");
+        let page = self.list_page(bucket, &prefix, true, max, token).await?;
+        let mut entries = Vec::new();
+        for p in page.all("CommonPrefixes") {
+            if let Some(p) = p.text_of("Prefix") {
+                let name = last_segment(p);
+                if !name.is_empty() {
+                    entries.push(FileEntry {
+                        name,
+                        kind: EntryKind::Dir,
+                        size: 0,
+                        modified_ms: None,
+                        mode: None,
+                    });
+                }
+            }
+        }
+        for c in page.all("Contents") {
+            let Some(k) = c.text_of("Key") else { continue };
+            // The folder's own marker object.
+            if k == dir || k.ends_with('/') {
+                continue;
+            }
+            entries.push(FileEntry {
+                name: last_segment(k),
+                kind: EntryKind::File,
+                size: c.text_of("Size").and_then(|s| s.parse().ok()).unwrap_or(0),
+                modified_ms: c
+                    .text_of("LastModified")
+                    .and_then(crate::time::parse_iso_ms),
+                mode: None,
+            });
+        }
+        let next = page
+            .text_of("NextContinuationToken")
+            .filter(|t| !t.is_empty() && page.text_of("IsTruncated") == Some("true"))
+            .map(str::to_owned);
+        Ok(ListPage { entries, next })
+    }
+
+    async fn list(&self, bucket: &str, key: &str) -> Result<Vec<FileEntry>> {
         let mut out = Vec::new();
         let mut token: Option<String> = None;
         loop {
             let page = self
-                .list_page(bucket, &prefix, true, None, token.as_deref())
+                .objects_page(bucket, key, "", None, token.as_deref())
                 .await?;
-            for p in page.all("CommonPrefixes") {
-                if let Some(p) = p.text_of("Prefix") {
-                    let name = last_segment(p);
-                    if !name.is_empty() {
-                        out.push(FileEntry {
-                            name,
-                            kind: EntryKind::Dir,
-                            size: 0,
-                            modified_ms: None,
-                            mode: None,
-                        });
-                    }
-                }
-            }
-            for c in page.all("Contents") {
-                let Some(k) = c.text_of("Key") else { continue };
-                // The folder's own marker object.
-                if k == prefix || k.ends_with('/') {
-                    continue;
-                }
-                out.push(FileEntry {
-                    name: last_segment(k),
-                    kind: EntryKind::File,
-                    size: c.text_of("Size").and_then(|s| s.parse().ok()).unwrap_or(0),
-                    modified_ms: c
-                        .text_of("LastModified")
-                        .and_then(crate::time::parse_iso_ms),
-                    mode: None,
-                });
-            }
-            token = page
-                .text_of("NextContinuationToken")
-                .filter(|_| page.text_of("IsTruncated") == Some("true"))
-                .map(str::to_owned);
+            out.extend(page.entries);
+            token = page.next;
             if token.is_none() || out.len() >= MAX_LIST {
                 break;
             }
@@ -650,6 +667,36 @@ impl RemoteFs for S3Fs {
                 None => self.inner.list_buckets().await?,
                 Some(b) => self.inner.list(&b, &key).await?,
             })
+        })
+    }
+
+    /// Objects page on the server (`max-keys`, `continuation-token`); buckets come in
+    /// one page, filtered here (R2 and older endpoints don't page `ListBuckets`).
+    fn list_page<'a>(
+        &'a self,
+        path: &'a Path,
+        prefix: &'a str,
+        cursor: Option<&'a str>,
+        limit: u32,
+    ) -> BoxFuture<'a, std::result::Result<ListPage, FsError>> {
+        Box::pin(async move {
+            let mut page = match split(path) {
+                (None, _) => {
+                    let mut entries = self.inner.list_buckets().await?;
+                    entries.retain(|e| e.name.starts_with(prefix));
+                    ListPage {
+                        entries,
+                        next: None,
+                    }
+                }
+                (Some(b), k) => {
+                    self.inner
+                        .objects_page(&b, &k, prefix, Some(limit.clamp(1, 1000)), cursor)
+                        .await?
+                }
+            };
+            switchyard_remote::fs::sort_entries(&mut page.entries);
+            Ok(page)
         })
     }
 
