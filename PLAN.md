@@ -684,6 +684,15 @@ server or bundled Unix tools on Windows (Tier 3).
   moto, Azurite and the App Configuration emulator (CI job `integration (S3, Azure Blob,
   App Configuration)`).
   Note: the app UI was checked with clippy and unit tests only, not on screen.
+- [x] CL-5 App Configuration and Key Vault UI pass (user request, 2026-10-11): fixed
+  overlapping rows (40 px two-line rows) and the clipped Save bar (pinned); keys grouped by
+  prefix as a tree; bulk select (export, copy to a label, delete, recover); revision /
+  version history with restore; compare two labels and copy differences; import / export
+  (JSON, `.env`, App Configuration `kvset`); Key Vault references shown and resolved;
+  feature flag form (percentage, time window, targeting); Key Vault secrets masked with
+  reveal / copy, activation and expiry dates, deleted secrets with recover / purge.
+  Note: checked on screen against the App Configuration emulator; Key Vault only by unit
+  tests (no emulator); keys and certificates still in Follow-ups.
 
 ## Extra — Durable Object SQLite (user request, 2026-10-10)
 
@@ -971,8 +980,7 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 
 - Cloud (CL-1..4): folder rename and resumed uploads on object storage (a paused copy
   restarts); S3 / Blob object properties (metadata, storage tier, presigned / SAS links);
-  App Configuration snapshots, Key Vault references resolved in place, import / export
-  (JSON, `.env`); Key Vault keys and certificates; Workers KV metadata and expiry edits;
+  App Configuration snapshots; Key Vault keys and certificates; Workers KV metadata and expiry edits;
   AWS SSO device sign-in inside the app (today: `aws sso login`); a picker of `~/.aws`
   profiles (read off the UI thread); MCP agent access to cloud tools (read-only list / get).
   Proposed next tools: queues (SQS, Service Bus, Storage Queues, Cloudflare Queues), NoSQL

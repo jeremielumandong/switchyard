@@ -398,7 +398,10 @@ impl Workspace {
             ev @ (Event::CloudOpened { .. }
             | Event::CloudItems { .. }
             | Event::CloudItem { .. }
-            | Event::CloudEdited { .. }) => self.on_cloud_event(ev, window, cx),
+            | Event::CloudEdited { .. }
+            | Event::CloudRevisions { .. }
+            | Event::CloudLabels { .. }
+            | Event::CloudResolved { .. }) => self.on_cloud_event(ev, window, cx),
             Event::TerminalOpened {
                 term,
                 terminal,
@@ -866,6 +869,9 @@ impl Workspace {
                 }
             }
             Event::TextFileRead { .. } | Event::TextFileSaved { .. } => {
+                if let Event::TextFileRead { request, result } = &ev {
+                    self.on_cloud_text_file(*request, result, window, cx);
+                }
                 for t in &self.tabs {
                     if let Tab::Editor(e) = t {
                         e.update(cx, |e, cx| e.on_event(&ev, window, cx));
