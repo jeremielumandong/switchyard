@@ -664,6 +664,23 @@ pub enum Command {
         /// Directory.
         path: Option<PathBuf>,
     },
+    /// One page of a directory ([`Event::FsListing`] with `next` set while more remain).
+    /// Object storage pages and filters on the server; other file systems answer with
+    /// the whole folder.
+    ListDirPage {
+        /// Request id.
+        request: RequestId,
+        /// File system.
+        fs: FsRef,
+        /// Directory; `None` = home.
+        path: Option<PathBuf>,
+        /// Only names starting with this (case-sensitive, as the server compares).
+        prefix: String,
+        /// The previous page's `next`; `None` for the first page.
+        cursor: Option<String>,
+        /// Entries per page.
+        limit: u32,
+    },
     /// Copy a file or folder (recursively) into a folder, possibly across file systems.
     Transfer {
         /// Transfer id, for progress and cancel.
@@ -1276,6 +1293,8 @@ pub enum Event {
         path: PathBuf,
         /// Entries or error.
         result: Result<Vec<FileEntry>, String>,
+        /// Cursor for the next page ([`Command::ListDirPage`]); `None` when complete.
+        next: Option<String>,
     },
     /// A transfer is waiting for a free slot (four run at once).
     TransferQueued {
