@@ -42,13 +42,13 @@ impl PrivateDir {
             switchyard_store::random::random_hex(8)
         );
         let path = std::env::temp_dir().join(name);
-        let mut b = std::fs::DirBuilder::new();
         #[cfg(unix)]
         {
             use std::os::unix::fs::DirBuilderExt as _;
-            b.mode(0o700);
+            std::fs::DirBuilder::new().mode(0o700).create(&path)?;
         }
-        b.create(&path)?;
+        #[cfg(not(unix))]
+        std::fs::DirBuilder::new().create(&path)?;
         Ok(Self(path))
     }
 
