@@ -45,6 +45,7 @@ pub fn connector_config(s: &RdpSettings) -> ironrdp_connector::Config {
     } else {
         MajorPlatformType::UNIX
     };
+    let (username, domain) = sign_in_name(&s.user, s.domain.as_deref());
     ironrdp_connector::Config {
         desktop_size: ironrdp_connector::DesktopSize {
             width: s.width,
@@ -56,15 +57,10 @@ pub fn connector_config(s: &RdpSettings) -> ironrdp_connector::Config {
         enable_tls: true,
         enable_credssp: true,
         credentials: Credentials::UsernamePassword {
-            username: s.user.trim().to_owned(),
+            username,
             password: s.password.expose_secret().to_owned(),
         },
-        domain: s
-            .domain
-            .as_deref()
-            .map(str::trim)
-            .filter(|d| !d.is_empty())
-            .map(str::to_owned),
+        domain,
         client_build: 0,
         client_name: "Switchyard".to_owned(),
         keyboard_type: KeyboardType::IbmEnhanced,
@@ -93,6 +89,30 @@ pub fn connector_config(s: &RdpSettings) -> ironrdp_connector::Config {
         enable_server_pointer: true,
         pointer_software_rendering: true,
         multitransport_flags: None,
+    }
+}
+
+/// The account name and NetBIOS domain CredSSP gets for a user name and Domain field.
+///
+/// sspi refuses a `\\` in the account name once a domain is given, so the common forms
+/// are split here: `DOMAIN\\user` takes its own domain (over the field), `user@domain`
+/// is a UPN that needs none, and a domain typed with a stray `\\` or `@` is trimmed.
+fn sign_in_name(user: &str, domain: Option<&str>) -> (String, Option<String>) {
+    let field = domain
+        .map(|d| d.trim().trim_matches(['\\', '@']).trim())
+        .filter(|d| !d.is_empty() && !d.contains(['\\', '@']));
+    let user = user.trim();
+    if let Some((d, account)) = user.split_once('\\') {
+        let d = d.trim();
+        let domain = if d.is_empty() { field } else { Some(d) };
+        return (account.trim().to_owned(), domain.map(str::to_owned));
+    }
+    match user.rsplit_once('@') {
+        Some((account, suffix)) if !account.is_empty() && !suffix.trim().is_empty() => {
+            (user.to_owned(), None)
+        }
+        Some((account, _)) => (account.trim().to_owned(), field.map(str::to_owned)),
+        None => (user.to_owned(), field.map(str::to_owned)),
     }
 }
 
@@ -440,6 +460,39 @@ mod tests {
         let mut s = settings();
         s.domain = Some("  ".into());
         assert_eq!(connector_config(&s).domain, None);
+    }
+
+    #[test]
+    fn sign_in_names_are_split_for_credssp() {
+        let n = |u: &str, d: Option<&str>| {
+            let (u, d) = sign_in_name(u, d);
+            (u, d.unwrap_or_default())
+        };
+        let pair = |u: &str, d: &str| (u.to_owned(), d.to_owned());
+        assert_eq!(n("alice", Some("CORP")), pair("alice", "CORP"));
+        assert_eq!(n("alice", None), pair("alice", ""));
+        // The user's own qualification wins over the Domain field.
+        assert_eq!(n("CLI\\alice", Some("CLI")), pair("alice", "CLI"));
+        assert_eq!(n("CLI\\alice", Some("cli.ad")), pair("alice", "CLI"));
+        assert_eq!(n("cli.ad\\alice", None), pair("alice", "cli.ad"));
+        assert_eq!(n("\\alice", Some("CORP")), pair("alice", "CORP"));
+        // A UPN needs no domain.
+        assert_eq!(n("alice@cli.ad", Some("CLI")), pair("alice@cli.ad", ""));
+        assert_eq!(n("alice@", Some("CORP")), pair("alice", "CORP"));
+        // A stray separator in the Domain field.
+        assert_eq!(n("alice", Some("CLI\\")), pair("alice", "CLI"));
+        assert_eq!(n("alice", Some("a@b")), pair("alice", ""));
+        // Every form is one sspi accepts.
+        for (u, d) in [
+            ("alice", Some("CORP")),
+            ("CLI\\alice", Some("CLI")),
+            ("alice@cli.ad", Some("CLI")),
+            ("CLI\\alice@x", None),
+            ("alice", Some("x@y")),
+        ] {
+            let (u, d) = sign_in_name(u, d);
+            ironrdp_connector::sspi::Username::new(&u, d.as_deref()).unwrap();
+        }
     }
 
     #[test]
