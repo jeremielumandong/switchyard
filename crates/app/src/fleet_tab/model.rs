@@ -359,7 +359,7 @@ impl Rows {
     /// Indexes of the rows to show.
     pub fn visible(&self, failed_only: bool, differs_only: bool) -> Vec<usize> {
         let differ: Vec<ProfileId> = if differs_only {
-            let keys: Vec<(ProfileId, Option<(Option<HostStatus>, Option<u64>)>)> = self
+            let keys: Vec<(ProfileId, Option<_>)> = self
                 .rows
                 .iter()
                 .map(|r| {
