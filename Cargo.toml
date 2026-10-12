@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 # Vendored dependencies are patched in below, not workspace members.
-exclude = ["vendor/tiberius", "vendor/ssh-key"]
+exclude = ["vendor/tiberius", "vendor/ssh-key", "vendor/ironrdp-connector"]
 members = [
     "crates/app",
     "crates/core",
@@ -162,6 +162,21 @@ prost-types = "=0.14.4"
 prost-reflect = { version = "=0.16.5", features = ["serde"] }
 protox = { version = "=0.10.0", default-features = false }
 
+# In-app RDP (`rdp-embedded` feature; MIT OR Apache-2.0, approved by the user on
+# 2026-10-12). ironrdp-connector is vendored for sspi 0.23 / picky rc.26, see
+# vendor/ironrdp-connector/VENDORED.md. No TLS or HTTP features: Switchyard does TLS itself.
+ironrdp-connector = "=0.10.0"
+ironrdp-session = "=0.11.0"
+ironrdp-pdu = "=0.9.0"
+ironrdp-graphics = "=0.9.0"
+ironrdp-input = "=0.7.0"
+ironrdp-core = "0.2"
+ironrdp-tokio = { version = "=0.10.0", default-features = false }
+
+# The in-app RDP tab hands GPUI its desktop image as an `image::Frame` (GPUI's
+# `RenderImage` API): the version GPUI already builds, no default features.
+image = { version = "0.25", default-features = false }
+
 # editor completion items (must match gpui-component)
 lsp-types = "0.97"
 
@@ -201,6 +216,7 @@ codegen-units = 1
 [patch.crates-io]
 tiberius = { path = "vendor/tiberius" }
 ssh-key = { path = "vendor/ssh-key" }
+ironrdp-connector = { path = "vendor/ironrdp-connector" }
 gpui-pre = { git = "https://github.com/longbridge/gpui-fast", rev = "598306fcbf77bff0f764b5a178a447344e72e132" }
 gpui-pre-platform = { git = "https://github.com/longbridge/gpui-fast", rev = "598306fcbf77bff0f764b5a178a447344e72e132" }
 gpui-pre-macros = { git = "https://github.com/longbridge/gpui-fast", rev = "598306fcbf77bff0f764b5a178a447344e72e132" }

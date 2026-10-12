@@ -428,6 +428,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "asn1-rs"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7f43a50ac4fdca5df8e885c21b835997f0a1cdee65494a6847694a98652d9d8"
+dependencies = [
+ "asn1-rs-derive",
+ "asn1-rs-impl",
+ "displaydoc",
+ "nom 7.1.3",
+ "num-traits",
+ "rusticata-macros",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "asn1-rs-derive"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3109e49b1e4909e9db6515a30c633684d68cdeaa252f215214cb4fa1a5bfee2c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+ "synstructure 0.13.2",
+]
+
+[[package]]
+name = "asn1-rs-impl"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b18050c2cd6fe86c3a76584ef5e0baf286d038cda203eb6223df2cc413565f7"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "async-broadcast"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2198,6 +2236,19 @@ dependencies = [
  "const-oid 0.10.2",
  "pem-rfc7468 1.0.0",
  "zeroize",
+]
+
+[[package]]
+name = "der-parser"
+version = "10.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07da5016415d5a3c4dd39b11ed26f915f52fc4e0dc197d87908bc916e51bc1a6"
+dependencies = [
+ "asn1-rs",
+ "displaydoc",
+ "nom 7.1.3",
+ "num-traits",
+ "rusticata-macros",
 ]
 
 [[package]]
@@ -4645,6 +4696,168 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "791930b43c0d5973160d90a8f3894509f2b273430f5c5c73b668636d0287c5c0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "ironrdp-async"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bea12d80384007fe321eb6b36c9225be9559c655fd581458a6a1386c1774d729"
+dependencies = [
+ "bytes",
+ "ironrdp-connector",
+ "ironrdp-core",
+ "ironrdp-pdu",
+ "tracing",
+]
+
+[[package]]
+name = "ironrdp-bulk"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e548d9fd162558a5a8aaed72e528556ce88e77773634e3722b8d01d6f170388"
+
+[[package]]
+name = "ironrdp-connector"
+version = "0.10.0"
+dependencies = [
+ "ironrdp-core",
+ "ironrdp-error",
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "rand 0.9.5",
+ "sspi",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "ironrdp-core"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef0875b98275068b88652e49ba2e0a1150a1390aad69d26c942c8c59e8ec918e"
+dependencies = [
+ "ironrdp-error",
+]
+
+[[package]]
+name = "ironrdp-displaycontrol"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74a111a6fd25abbe51b6a15276fe980c6b9eee50a1421224b0c3f45848d45bcf"
+dependencies = [
+ "ironrdp-core",
+ "ironrdp-dvc",
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
+]
+
+[[package]]
+name = "ironrdp-dvc"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a5de64988ddabf96928e2f042e1772a5f7201f0001ea99012129c73a105fc52"
+dependencies = [
+ "ironrdp-core",
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
+]
+
+[[package]]
+name = "ironrdp-error"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd344ce9518ab83f6f7568ca4f1bc6dc8c55bd2da04cb5ee7b3e8740d5041734"
+
+[[package]]
+name = "ironrdp-graphics"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7493e426b6a8104cd497e518ba7781a9c7fc9a5f58a9cc0c1111e6d66f63bcc"
+dependencies = [
+ "bit_field",
+ "bitflags 2.13.2",
+ "bitvec",
+ "byteorder",
+ "ironrdp-core",
+ "ironrdp-pdu",
+ "num-derive 0.4.2",
+ "num-traits",
+ "yuv",
+]
+
+[[package]]
+name = "ironrdp-input"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b1658a0c1d2911b767b71c2f9e07550d7a267bffaaaaeeec868d1752c8ec0f4"
+dependencies = [
+ "bitvec",
+ "ironrdp-pdu",
+ "smallvec",
+]
+
+[[package]]
+name = "ironrdp-pdu"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ccd1179a4d106df1930347701388b5c79bc3725fa7dab4438d57db0d9d19347"
+dependencies = [
+ "bit_field",
+ "bitflags 2.13.2",
+ "byteorder",
+ "der-parser",
+ "ironrdp-core",
+ "ironrdp-error",
+ "md-5 0.10.6",
+ "num-bigint 0.4.8",
+ "num-derive 0.4.2",
+ "num-integer",
+ "num-traits",
+ "pkcs1 0.7.5",
+ "sha1 0.10.7",
+ "tap",
+ "x509-cert",
+]
+
+[[package]]
+name = "ironrdp-session"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f1a5a20c24d8ebf47477f9f513201aeb894e7c7f779ea633ece65e42a9f0652"
+dependencies = [
+ "ironrdp-bulk",
+ "ironrdp-core",
+ "ironrdp-displaycontrol",
+ "ironrdp-dvc",
+ "ironrdp-error",
+ "ironrdp-graphics",
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
+]
+
+[[package]]
+name = "ironrdp-svc"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "24c36b82ab0f7fef2668fb7004008a0f3c100a3d9a7b18bd4495a71aba55b796"
+dependencies = [
+ "bitflags 2.13.2",
+ "ironrdp-core",
+ "ironrdp-pdu",
+]
+
+[[package]]
+name = "ironrdp-tokio"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7692ac83a98e4b3ac01405e311bbbd5a33683447032986ed92a4a44d46ad6344"
+dependencies = [
+ "ironrdp-async",
+ "tokio",
 ]
 
 [[package]]
@@ -8414,6 +8627,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rusticata-macros"
+version = "4.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "faf0c4a6ece9950b9abdb62b1cfcf2a68b3b67a10ba445b3bb85be2a293d0632"
+dependencies = [
+ "nom 7.1.3",
+]
+
+[[package]]
 name = "rustix"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9746,6 +9968,7 @@ dependencies = [
  "futures",
  "gpui-kit",
  "html5ever",
+ "image",
  "insta",
  "lsp-types",
  "markdown",
@@ -9929,6 +10152,13 @@ dependencies = [
  "futures",
  "hmac 0.13.0",
  "insta",
+ "ironrdp-connector",
+ "ironrdp-core",
+ "ironrdp-graphics",
+ "ironrdp-input",
+ "ironrdp-pdu",
+ "ironrdp-session",
+ "ironrdp-tokio",
  "ring",
  "russh",
  "russh-sftp",
@@ -12590,6 +12820,15 @@ dependencies = [
  "quote",
  "syn 3.0.6",
  "synstructure 0.14.0",
+]
+
+[[package]]
+name = "yuv"
+version = "0.8.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a295923535c00a4e72a50a0a1130097f93160b39892dd4d2d006b1e2b90d6bf9"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]
