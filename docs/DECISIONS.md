@@ -1415,3 +1415,21 @@ Decisions:
 - The download goes through the core runtime (`reqwest`, the app's TLS settings) instead
   of Emulsion's blocking `ureq`, so no new dependency.
 
+## 2026-10-12 — Infra tools (user request)
+
+- No new crates. DNS: A/AAAA go through the system resolver; CNAME, MX, TXT and NS use
+  DNS-over-HTTPS JSON (`cloudflare-dns.com`, rustls, verification on) because no approved
+  crate speaks DNS. From a Host the check runs `getent`, then `dig`, then `host`.
+- TLS check: a rustls `ServerCertVerifier` wraps the WebPKI verifier, records the chain and
+  the verification error, and lets the handshake finish so the certificate can be shown.
+  The connection is closed right after; nothing is sent over it. The certificate fields
+  come from a small DER reader (`core::infra::x509`) instead of an X.509 crate.
+- Inventory accounts are inferred from saved cloud connections, AWS CLI profiles, the
+  Azure CLI and the gcloud CLI; no new profile type. GCP uses `gcloud auth
+  print-access-token` (no JWT signing crate for service-account keys).
+- The HCP Terraform token lives in the keychain (`infra:tfc-token:<host>`). It is sent to
+  the API host only, never to the archive host a state download redirects to.
+- Infra tools are read-only by construction: the AWS JSON client allows read prefixes only
+  (Describe / List / Get / Filter), state is never written, and none of it is exposed to
+  agents or the MCP server.
+

@@ -391,6 +391,7 @@ pub fn tool_groups(profiles: &Profiles) -> Vec<ToolGroup> {
             },
         ],
     }];
+    out.push(crate::infra::tool_group());
     for (provider, badge) in [
         (CloudProvider::Aws, "AWS"),
         (CloudProvider::Azure, "AZ"),
@@ -1240,6 +1241,7 @@ impl Workspace {
                             )),
                     )
                     .child(grid)
+                    .child(self.render_infra_links(p, cx))
                     .child(
                         div()
                             .px(rpx(20.))
@@ -1355,9 +1357,15 @@ mod tests {
         let groups = tool_groups(&empty);
         assert_eq!(
             groups.iter().map(|g| g.name).collect::<Vec<_>>(),
-            ["Servers & databases", "AWS", "Azure", "Cloudflare"]
+            [
+                "Servers & databases",
+                "Infra tools",
+                "AWS",
+                "Azure",
+                "Cloudflare"
+            ]
         );
-        assert!(groups[1..].iter().all(|g| !g.ready));
+        assert!(groups[2..].iter().all(|g| !g.ready));
         let s3: switchyard_core::store::CloudConnection =
             serde_json::from_value(serde_json::json!({
                 "id": "c1", "name": "assets", "service": "s3", "environment": "production",

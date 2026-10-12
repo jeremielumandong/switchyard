@@ -117,7 +117,7 @@ impl TfCloud {
             .query("filter[organization][name]", organization.trim())
             .query("page[size]", "100");
         let mut out = parse_state_versions(&self.get(req).await?);
-        out.sort_by(|a, b| b.serial.cmp(&a.serial));
+        out.sort_by_key(|v| std::cmp::Reverse(v.serial));
         Ok(out)
     }
 

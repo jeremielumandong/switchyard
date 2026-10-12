@@ -278,6 +278,9 @@ pub struct GcpInventory {
     project: String,
 }
 
+/// Turns one API page into resources (page, project).
+type Parser = fn(&Json, &str) -> Vec<CloudResource>;
+
 impl GcpInventory {
     /// A client for `project`.
     pub fn new(token: Box<dyn TokenSource>, project: String) -> Result<Self> {
@@ -338,7 +341,7 @@ impl GcpInventory {
     /// Every inventoried resource of the project, with the services that failed.
     pub async fn resources(&self) -> (Vec<CloudResource>, Vec<String>) {
         let p = crate::http::uri_encode(&self.project, false);
-        let calls: [(&str, String, fn(&Json, &str) -> Vec<CloudResource>); 4] = [
+        let calls: [(&str, String, Parser); 4] = [
             (
                 "Compute Engine",
                 format!(

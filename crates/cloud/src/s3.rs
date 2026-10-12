@@ -859,7 +859,7 @@ pub(crate) fn parse_versions(root: &xml::Node, key: &str) -> Vec<ObjectVersion> 
             })
         })
         .collect();
-    out.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
+    out.sort_by_key(|v| std::cmp::Reverse(v.modified_ms));
     out
 }
 
