@@ -144,16 +144,18 @@ async fn streams_large_cursors_in_batches() {
     )
     .await;
     let mut stream = s.execute("db.many.find({})", &[]).await.expect("find");
-    let mut batches = 0;
-    let mut rows = 0;
+    let mut sizes = Vec::new();
     while let Some(ev) = stream.next().await {
         if let ResultEvent::Rows(b) = ev.expect("event") {
-            batches += 1;
-            rows += b.len();
+            sizes.push(b.len());
         }
     }
-    assert_eq!(rows, 2500);
-    assert!(batches >= 3, "{batches} batches");
+    assert_eq!(sizes.iter().sum::<usize>(), 2500);
+    // The server's first batch shows as it arrives, without waiting for a `getMore`;
+    // later batches are capped at a grid batch instead of 16 MB.
+    assert_eq!(sizes[0], 101, "{sizes:?}");
+    assert!(sizes.len() >= 3, "{sizes:?}");
+    assert!(sizes.iter().all(|n| *n <= 1000), "{sizes:?}");
 }
 
 #[tokio::test]
