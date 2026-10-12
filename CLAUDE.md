@@ -315,6 +315,9 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
   "SCRAM failure: Authentication failed." `mongo::auth_failure` retries against the
   connection's database to tell them apart. A `mongodb://…/<db>` URI authenticates
   against `<db>` by default; Switchyard's blank Auth database means `admin`.
+- MongoDB cursors: without a `batchSize` every `getMore` fills up to 16 MB, so waiting for
+  a fixed row count stalled first rows for a minute over a VPN. `mongo::chunk` returns what
+  the current server batch holds, and cursor commands cap `getMore`s at a grid batch.
 - Linking the workspace's debug test binaries needs a lot of disk; a full disk shows up as
   `ld terminated with signal 7 [Bus error]`, not "no space". `CARGO_PROFILE_DEV_DEBUG=0`
   halves `target/`.
