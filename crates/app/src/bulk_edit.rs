@@ -8,6 +8,7 @@ use gpui_kit::{
     IntoElement, MouseButton, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window, div, px,
 };
+use switchyard_core::store::tags::parse_tags;
 use switchyard_core::store::{EnvironmentLabel, Host, HostPatch, ProfileId};
 use switchyard_core::{Command, RuntimeHandle};
 
@@ -74,6 +75,8 @@ pub fn build_patch(before: &Shared, after: &Shared) -> HostPatch {
         startup_command: text(&before.startup, &after.startup),
         start_directory: text(&before.start_dir, &after.start_dir),
         keepalive_secs: None,
+        add_tags: Vec::new(),
+        remove_tags: Vec::new(),
     }
 }
 
@@ -87,6 +90,10 @@ pub struct BulkEditView {
     user: Entity<InputState>,
     startup: Entity<InputState>,
     start_dir: Entity<InputState>,
+    /// Tags to add to every Host (Fleet).
+    add_tags: Entity<InputState>,
+    /// Tags to remove from every Host.
+    remove_tags: Entity<InputState>,
     environment: Option<EnvironmentLabel>,
     favorite: Option<bool>,
 }
@@ -103,6 +110,8 @@ impl BulkEditView {
         cx: &mut Context<Self>,
     ) -> Self {
         let before = Shared::of(hosts);
+        let add_tags = cx.new(|cx| InputState::new(window, cx).placeholder("web, role:db"));
+        let remove_tags = cx.new(|cx| InputState::new(window, cx).placeholder("old-tag"));
         let mut input = |v: &Option<String>| {
             let (value, ph) = match v {
                 Some(v) => (v.clone(), "None"),
@@ -116,6 +125,8 @@ impl BulkEditView {
         };
         Self {
             core,
+            add_tags,
+            remove_tags,
             ids: hosts.iter().map(|h| h.id.clone()).collect(),
             title,
             folder: input(&before.folder),
@@ -146,7 +157,9 @@ impl BulkEditView {
             environment: self.environment,
             favorite: self.favorite,
         };
-        let patch = build_patch(&self.before, &after);
+        let mut patch = build_patch(&self.before, &after);
+        patch.add_tags = parse_tags(&self.add_tags.read(cx).value());
+        patch.remove_tags = parse_tags(&self.remove_tags.read(cx).value());
         if !patch.is_empty() {
             self.core.send(Command::UpdateHosts {
                 ids: self.ids.clone(),
@@ -190,7 +203,9 @@ impl Render for BulkEditView {
                     .child(field("Folder", &self.folder, 250., &p))
                     .child(field("User", &self.user, 250., &p))
                     .child(field("Start folder", &self.start_dir, 250., &p))
-                    .child(field("Startup command", &self.startup, 250., &p)),
+                    .child(field("Startup command", &self.startup, 250., &p))
+                    .child(field("Add tags", &self.add_tags, 250., &p))
+                    .child(field("Remove tags", &self.remove_tags, 250., &p)),
             )
             .child(
                 div()
