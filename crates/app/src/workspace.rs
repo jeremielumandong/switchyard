@@ -69,6 +69,8 @@ pub enum Tab {
     Redis(Entity<crate::redis_tab::RedisTab>),
     /// Key / value tool of a cloud connection (App Configuration, secrets, Workers KV).
     Cloud(Entity<crate::cloud_tab::CloudTab>),
+    /// An infra tool: Terraform state, cloud inventory, network checks or logs.
+    Infra(crate::infra::InfraTab),
 }
 
 /// The root view.
@@ -160,7 +162,7 @@ pub struct Workspace {
     _events: Task<()>,
     /// Re-reads the Omarchy theme so "Follow Omarchy" tracks theme switches.
     _omarchy: Option<Task<()>>,
-    _subs: Vec<Subscription>,
+    pub(crate) _subs: Vec<Subscription>,
 }
 
 impl Focusable for Workspace {
@@ -390,6 +392,12 @@ impl Workspace {
     fn on_event(&mut self, ev: Event, window: &mut Window, cx: &mut Context<Self>) {
         match ev {
             Event::Pong { .. } => {}
+            Event::Infra { request, update } => self.on_infra_event(request, update, window, cx),
+            Event::Setting { key, value }
+                if key == switchyard_core::infra::netcheck::CHECK_LISTS_SETTING =>
+            {
+                self.on_check_lists(value, cx)
+            }
             ev @ (Event::RedisOpened { .. }
             | Event::RedisKeys { .. }
             | Event::RedisKey { .. }
@@ -516,6 +524,7 @@ impl Workspace {
                 crate::named_secrets::on_profiles(&list, cx);
                 self.profiles = Profiles { all: list };
                 self.profiles_loaded = true;
+                self.infra_profiles(cx);
                 // The schema explorer lists SQL databases; Redis opens its own browser.
                 let dbs: Vec<_> = self
                     .profiles
@@ -1249,6 +1258,7 @@ impl Workspace {
             Some(Tab::Er(e)) => e.clone().into_any_element(),
             Some(Tab::Redis(r)) => r.clone().into_any_element(),
             Some(Tab::Cloud(c)) => c.clone().into_any_element(),
+            Some(Tab::Infra(i)) => i.view(),
             _ => self.render_welcome(p, cx),
         }
     }
@@ -1614,6 +1624,9 @@ impl Workspace {
         }
         if let Tab::Cloud(c) = &self.tabs[ix] {
             c.update(cx, |c, _| c.shutdown());
+        }
+        if let Tab::Infra(i) = &self.tabs[ix] {
+            i.stop(cx);
         }
         if let Tab::Editor(e) = &self.tabs[ix] {
             e.update(cx, |e, cx| e.shutdown(cx));
@@ -2379,6 +2392,7 @@ impl Workspace {
                     None => self.open_conn_editor(ConnKind::Db(engine), None, window, cx),
                 }
             }
+            CommandId::OpenInfra(tool) => self.open_infra(tool, window, cx),
         }
         cx.notify();
     }
@@ -2779,6 +2793,10 @@ impl Workspace {
                     Some(c.environment),
                     false,
                 )
+            }
+            Tab::Infra(i) => {
+                let (badge, title) = i.chip(cx);
+                (badge, title, None, false)
             }
         }
     }

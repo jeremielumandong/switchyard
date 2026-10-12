@@ -699,7 +699,7 @@ pub(crate) fn parse_blob_versions(root: &xml::Node, blob: &str) -> Vec<crate::s3
                 .collect()
         })
         .unwrap_or_default();
-    out.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
+    out.sort_by_key(|v| std::cmp::Reverse(v.modified_ms));
     out
 }
 

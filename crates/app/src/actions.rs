@@ -249,6 +249,8 @@ pub enum CommandId {
     OpenCloud(switchyard_core::store::CloudService),
     /// Open the first saved connection of an engine, or add one.
     OpenEngine(switchyard_core::db::Engine),
+    /// Open an infra tool (Terraform state, inventory, network checks, logs).
+    OpenInfra(crate::infra::InfraTool),
 }
 
 /// A palette entry.
@@ -426,6 +428,13 @@ pub fn palette_commands() -> Vec<PaletteCommand> {
         c(CheckForUpdates, "Check for Updates", "Help", "".into()),
         c(OpenLogFolder, "Open Log Folder", "Help", "".into()),
     ]
+    .into_iter()
+    .chain(
+        crate::infra::InfraTool::ALL
+            .into_iter()
+            .map(|t| c(OpenInfra(t), t.palette_label(), "Infra", "".into())),
+    )
+    .collect()
 }
 
 /// Subsequence fuzzy match (case-insensitive), like the design's palette.

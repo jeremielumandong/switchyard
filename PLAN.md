@@ -871,6 +871,47 @@ are shared hotspots: one owner at a time.
   connection, Ctrl/⌘+D, dimmed "missing"; nodes saved as `explorer.connections` and restored
   "not connected". Deferred: pin reordering UI, cross-connection search, restoring expansion.
 
+## Extra — Infra tools (user request, 2026-10-12)
+
+- [x] INF-1 Terraform / OpenTofu state viewer (read-only, `cloud::tfstate`, `cloud::tfcloud`):
+  state format 4 from a local file, an S3 or Azure Blob backend (saved connection; S3
+  object versions / blob versions listed and opened), or HCP Terraform / Terraform
+  Enterprise (state versions API; token in the keychain under `infra:tfc-token:<host>`).
+  Resource tree by module and type, instance attributes with sensitive values (from
+  `sensitive_attributes` and secret-looking names) masked until revealed, outputs,
+  dependencies and dependents, serial / lineage / version, search. Compare two states
+  (two stored versions or another file): added, removed and changed instances and
+  attributes, outputs. Nothing writes state. Tests: `tfstate` unit tests on recorded
+  states (`cloud/testdata/tfstate`), `cloud --test infra state_versions_in_a_versioned_bucket`
+  (moto).
+- [x] INF-2 Cloud resource inventory (`cloud::inventory`): AWS EC2, RDS, ELBv2, EKS and S3 over
+  SigV4 with saved connections or AWS CLI profiles (default, listed or `all` regions);
+  Azure Resource Graph (VMs with NIC / public IPs, SQL / PostgreSQL / MySQL / Cosmos /
+  Redis, load balancers, application gateways, AKS, storage) with Microsoft sign-in or
+  the Azure CLI; Cloudflare R2 and D1; Google Cloud (Compute, Cloud SQL, GKE, GCS) with
+  `gcloud auth print-access-token`. One filterable, virtualized table (provider, account,
+  region, type, name, state, IPs, tags); Add as SSH Host / Add as connection (prefilled,
+  no credentials), copy ID / address, import marked VMs as Hosts. Tests: parser unit
+  tests on recorded responses, `cloud --test infra ec2_and_rds_show_in_the_inventory` (moto).
+- [x] INF-3 Network checks (`core::infra::netcheck`): DNS (A/AAAA via the resolver; CNAME, MX,
+  TXT, NS via DNS-over-HTTPS), TLS (chain, issuer, SANs, expiry days, protocol; a failed
+  verification is reported, not fatal), TCP with latency, HTTP(S) with status, timing,
+  redirects and headers. Locally or from an SSH Host (getent / dig / host, `/dev/tcp`,
+  `openssl s_client`, `curl -w`). Saved named lists (`infra.check_lists` setting) with Run
+  all; certificates under 30 days are flagged. Tests: formatting and parser unit tests,
+  a fixture certificate.
+- [x] INF-4 Logs (`core::infra::logline`, `cloud::logs`): `tail -F` and `journalctl -f -o json`
+  on an SSH Host (streamed, `SshConn::stream_command`), CloudWatch Logs (groups,
+  FilterLogEvents polled every 5 s), Azure Log Analytics KQL (re-run every 15 s).
+  Streaming in batches, cancellable (Stop, closing the tab), virtualized and capped at
+  100,000 lines; filter, minimum level, highlighted terms, level colors, pause, follow,
+  copy and export. Tests: line / journal parsing unit tests, `cloud --test infra
+  cloudwatch_groups_and_events` (moto).
+- [x] INF-5 Entry points: `Command::Infra` / `InfraCancel`, `Event::Infra`, one `Tab::Infra`;
+  "Infra tools" group in the Tools pane, INFRA TOOLS links in the New chooser, an "Infra"
+  palette group. Note: the UI was checked with clippy and unit tests only, not on screen.
+  Agents and MCP do not see these tools.
+
 ## M6 — Packaging and beta
 
 Exit: every performance budget passes on all three platforms; signed builds published.
@@ -1018,3 +1059,10 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 - Durable Objects (DO-1): pick the namespace and object from lists in the connection form
   (`GET …/durable_objects/namespaces`, `…/namespaces/{id}/objects`, which only lists objects
   that have stored data); open several objects of one namespace from the sidebar.
+- Infra tools: GCP with a service-account key (JWT signing; today only the gcloud CLI);
+  ELBv2 and RDS tags (extra Describe*Tags calls); S3 bucket regions in the inventory;
+  Cloudflare load balancers / Workers; Azure Monitor metrics; remember chosen inventory
+  accounts and log sources; Terraform state from GCS, Consul or pg backends and
+  OpenTofu client-side state encryption; DNS record types beyond A/AAAA/CNAME/MX/TXT/NS
+  and DNSSEC; an "Open in terminal" action on inventory VMs; on-screen check of the
+  four tabs.

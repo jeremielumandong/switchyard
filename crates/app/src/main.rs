@@ -27,6 +27,7 @@ mod files_tab;
 mod folds;
 mod forwards_editor;
 mod grid;
+mod infra;
 mod log_file;
 mod named_secrets;
 mod object_search;
