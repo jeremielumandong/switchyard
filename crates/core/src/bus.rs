@@ -855,6 +855,9 @@ pub enum Command {
         /// Contents.
         contents: String,
     },
+    /// Fleet: commands, probes, pushes and key changes on many Hosts, Ansible import
+    /// ([`Event::Fleet`]).
+    Fleet(crate::fleet::FleetCommand),
     /// Read `~/.ssh/config` and answer with [`Event::SshConfigPreview`]; nothing is saved.
     PreviewSshConfig,
     /// Import Hosts from `~/.ssh/config`: the entries named in `only`, or every new one.
@@ -1102,6 +1105,8 @@ pub enum Event {
         /// The user cancelled it (`result` is an error).
         cancelled: bool,
     },
+    /// Fleet progress and results ([`Command::Fleet`]).
+    Fleet(crate::fleet::FleetEvent),
     /// What importing `~/.ssh/config` would add (answer to `PreviewSshConfig`).
     SshConfigPreview {
         /// The file read.
