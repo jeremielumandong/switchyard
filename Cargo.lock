@@ -9596,6 +9596,7 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sha2 0.10.9",
  "switchyard-agents",
  "switchyard-api",
@@ -9609,6 +9610,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-util",
  "tracing",
  "url",
 ]
