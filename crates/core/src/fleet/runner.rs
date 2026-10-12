@@ -28,7 +28,7 @@ pub struct FleetHost {
 }
 
 /// Where a Host is in a run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum HostStatus {
     /// Waiting for a free slot.
     Queued,

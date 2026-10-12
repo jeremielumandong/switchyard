@@ -69,6 +69,8 @@ pub enum Tab {
     Redis(Entity<crate::redis_tab::RedisTab>),
     /// Key / value tool of a cloud connection (App Configuration, secrets, Workers KV).
     Cloud(Entity<crate::cloud_tab::CloudTab>),
+    /// Fleet: a command, dashboard, push or key tool on many Hosts.
+    Fleet(Entity<crate::fleet_tab::FleetTab>),
 }
 
 /// The root view.
@@ -152,6 +154,8 @@ pub struct Workspace {
     pub(crate) unsaved: crate::unsaved::UnsavedState,
     /// The sidebar asked for the Files tab with this Host.
     pending_files: Option<Option<ProfileId>>,
+    /// Hosts picked in the Explorer with Ctrl/⌘-click (Fleet actions on a selection).
+    pub(crate) host_selection: Vec<ProfileId>,
     rebind: Vec<(Entity<SqlTab>, Option<ProfileId>)>,
     /// Two tabs on screen at once.
     pub(crate) split: Option<crate::split::Split>,
@@ -213,6 +217,9 @@ impl Workspace {
         });
         core.send(Command::LoadSetting {
             key: switchyard_core::term_settings::TERMINAL_SETTINGS_KEY.into(),
+        });
+        core.send(Command::LoadSetting {
+            key: switchyard_core::fleet::CONCURRENCY_KEY.into(),
         });
         core.send(Command::LoadMacros);
         core.send(Command::DetectComponents);
@@ -340,6 +347,7 @@ impl Workspace {
             transfers,
             unsaved: Default::default(),
             pending_files: None,
+            host_selection: Vec::new(),
             rebind: Vec::new(),
             split: None,
             viewer_image: None,
@@ -552,6 +560,18 @@ impl Workspace {
                     let profiles = self.profiles.clone();
                     p.update(cx, |p, cx| p.set_profiles(profiles, cx));
                 }
+                // Fleet tabs follow renamed, re-tagged and deleted Hosts.
+                for t in &self.tabs {
+                    if let Tab::Fleet(f) = t {
+                        let all = &self.profiles.all;
+                        f.update(cx, |f, cx| {
+                            f.set_profiles(all);
+                            cx.notify();
+                        });
+                    }
+                }
+                let hosts: Vec<ProfileId> = self.profiles.hosts().map(|h| h.id.clone()).collect();
+                self.host_selection.retain(|id| hosts.contains(id));
             }
             Event::ProfileSaved { request, id } => {
                 self.reconnect_failed(&id, cx);
@@ -619,6 +639,11 @@ impl Workspace {
             Event::Setting { key, value } if key == crate::sidebar::EXPLORER_GROUP_KEY => {
                 if let Some(g) = value.as_ref().and_then(|v| v.as_str()) {
                     self.explorer_group = crate::explorer_tree::ExplorerGroup::from_key(g);
+                }
+            }
+            Event::Setting { key, value } if key == switchyard_core::fleet::CONCURRENCY_KEY => {
+                if let Some(n) = value.as_ref().and_then(|v| v.as_u64()).filter(|n| *n > 0) {
+                    cx.set_global(crate::fleet_tab::FleetConcurrency(n as usize));
                 }
             }
             Event::Setting { key, value } if key == "sidebar.width" => {
@@ -937,6 +962,7 @@ impl Workspace {
                 }
             }
             Event::Toast(t) => self.toast(t, cx),
+            Event::Fleet(ev) => self.on_fleet_event(ev, window, cx),
             Event::SshConfigPreview { path, hosts } => {
                 let chosen = hosts
                     .iter()
@@ -947,6 +973,7 @@ impl Workspace {
                     path,
                     hosts,
                     chosen,
+                    inventory: None,
                 }));
                 window.focus(&self.overlay_focus, cx);
                 cx.notify();
@@ -1249,6 +1276,7 @@ impl Workspace {
             Some(Tab::Er(e)) => e.clone().into_any_element(),
             Some(Tab::Redis(r)) => r.clone().into_any_element(),
             Some(Tab::Cloud(c)) => c.clone().into_any_element(),
+            Some(Tab::Fleet(f)) => f.clone().into_any_element(),
             _ => self.render_welcome(p, cx),
         }
     }
@@ -1605,6 +1633,9 @@ impl Workspace {
         }
         if let Tab::Activity(a) = &self.tabs[ix] {
             a.update(cx, |a, _| a.shutdown());
+        }
+        if let Tab::Fleet(f) = &self.tabs[ix] {
+            f.update(cx, |f, _| f.shutdown());
         }
         if let Tab::Er(e) = &self.tabs[ix] {
             e.update(cx, |e, _| e.shutdown());
@@ -2344,6 +2375,26 @@ impl Workspace {
             CommandId::GroupByType => {
                 self.set_explorer_group(crate::explorer_tree::ExplorerGroup::Type, cx)
             }
+            CommandId::GroupByTag => {
+                self.set_explorer_group(crate::explorer_tree::ExplorerGroup::Tag, cx)
+            }
+            CommandId::FleetRun => {
+                let pick = self.fleet_palette_pick();
+                self.open_fleet(crate::fleet_tab::Mode::Run, pick, window, cx)
+            }
+            CommandId::FleetDashboard => {
+                let pick = self.fleet_palette_pick();
+                self.open_fleet(crate::fleet_tab::Mode::Dashboard, pick, window, cx)
+            }
+            CommandId::FleetPush => {
+                let pick = self.fleet_palette_pick();
+                self.open_fleet(crate::fleet_tab::Mode::Push, pick, window, cx)
+            }
+            CommandId::FleetKeys => {
+                let pick = self.fleet_palette_pick();
+                self.open_fleet(crate::fleet_tab::Mode::Keys, pick, window, cx)
+            }
+            CommandId::ImportAnsible => self.import_ansible(cx),
             CommandId::CloseTab => self.close_tab(self.active, window, cx),
             CommandId::NextTab | CommandId::PrevTab if !self.tabs.is_empty() => {
                 let n = self.tabs.len();
@@ -2779,6 +2830,10 @@ impl Workspace {
                     Some(c.environment),
                     false,
                 )
+            }
+            Tab::Fleet(f) => {
+                let f = f.read(cx);
+                ("FL".into(), f.title().into(), f.environment(), false)
             }
         }
     }
