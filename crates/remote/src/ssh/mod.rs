@@ -480,6 +480,61 @@ impl SshConn {
         Ok(ch)
     }
 
+    /// Run `command` on a PTY of `cols × rows` instead of the login shell (an interactive
+    /// program, e.g. `docker exec -it …`). The channel closes when it exits.
+    pub async fn open_exec_pty(
+        &self,
+        cols: u16,
+        rows: u16,
+        env: &[(String, String)],
+        command: &str,
+    ) -> Result<Channel<Msg>, SshError> {
+        let ch = self
+            .handle()?
+            .channel_open_session()
+            .await
+            .map_err(|e| SshError::Channel(e.to_string()))?;
+        ch.request_pty(
+            true,
+            "xterm-256color",
+            u32::from(cols),
+            u32::from(rows),
+            0,
+            0,
+            &[],
+        )
+        .await
+        .map_err(|e| SshError::Channel(e.to_string()))?;
+        for (name, value) in env {
+            let _ = ch.set_env(false, name.as_str(), value.as_str()).await;
+        }
+        ch.exec(true, command)
+            .await
+            .map_err(|e| SshError::Channel(e.to_string()))?;
+        Ok(ch)
+    }
+
+    /// Start `command` in its own channel and read its output as it comes
+    /// ([`ExecStream`]). With `pty`, the server gives it a terminal, so closing the
+    /// stream hangs it up (a followed `docker logs -f` stops); its error output then
+    /// arrives mixed into standard output.
+    pub async fn exec_stream(&self, command: &str, pty: bool) -> Result<ExecStream, SshError> {
+        let ch = self
+            .handle()?
+            .channel_open_session()
+            .await
+            .map_err(|e| SshError::Channel(e.to_string()))?;
+        if pty {
+            ch.request_pty(true, "dumb", 512, 50, 0, 0, &[])
+                .await
+                .map_err(|e| SshError::Channel(e.to_string()))?;
+        }
+        ch.exec(true, command)
+            .await
+            .map_err(|e| SshError::Channel(e.to_string()))?;
+        Ok(ExecStream { ch: Some(ch) })
+    }
+
     /// A channel running the server's `sftp` subsystem.
     pub async fn open_sftp(&self) -> Result<Channel<Msg>, SshError> {
         let ch = self
@@ -522,6 +577,64 @@ impl SshConn {
             }
         }
         Ok((code, out))
+    }
+}
+
+/// Output of a command started with [`SshConn::exec_stream`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExecChunk {
+    /// Standard output (or the PTY's output).
+    Stdout(Vec<u8>),
+    /// Standard error.
+    Stderr(Vec<u8>),
+    /// The command exited with this status.
+    Exit(u32),
+}
+
+/// A command running in its own channel. Dropping it closes the channel.
+pub struct ExecStream {
+    ch: Option<Channel<Msg>>,
+}
+
+impl ExecStream {
+    /// The next piece of output; `None` once the channel closed.
+    pub async fn next(&mut self) -> Option<ExecChunk> {
+        let ch = self.ch.as_mut()?;
+        loop {
+            match ch.wait().await {
+                Some(ChannelMsg::Data { data }) => return Some(ExecChunk::Stdout(data.to_vec())),
+                Some(ChannelMsg::ExtendedData { data, .. }) => {
+                    return Some(ExecChunk::Stderr(data.to_vec()));
+                }
+                Some(ChannelMsg::ExitStatus { exit_status }) => {
+                    return Some(ExecChunk::Exit(exit_status));
+                }
+                Some(_) => {}
+                None => {
+                    self.ch = None;
+                    return None;
+                }
+            }
+        }
+    }
+
+    /// Close the channel now.
+    pub async fn close(mut self) {
+        if let Some(ch) = self.ch.take() {
+            let _ = ch.close().await;
+        }
+    }
+}
+
+impl Drop for ExecStream {
+    fn drop(&mut self) {
+        if let Some(ch) = self.ch.take()
+            && let Ok(rt) = tokio::runtime::Handle::try_current()
+        {
+            rt.spawn(async move {
+                let _ = ch.close().await;
+            });
+        }
     }
 }
 

@@ -1,0 +1,18 @@
+{
+    "kind": "Config",
+    "apiVersion": "v1",
+    "preferences": {},
+    "clusters": [
+        {"name": "kind-dev", "cluster": {"server": "https://127.0.0.1:41235", "certificate-authority-data": "DATA+OMITTED"}},
+        {"name": "prod-eu", "cluster": {"server": "https://prod-eu.example.com"}}
+    ],
+    "users": [
+        {"name": "kind-dev", "user": {"client-certificate-data": "DATA+OMITTED", "client-key-data": "DATA+OMITTED"}},
+        {"name": "prod-admin", "user": {"token": "REDACTED"}}
+    ],
+    "contexts": [
+        {"name": "kind-dev", "context": {"cluster": "kind-dev", "user": "kind-dev"}},
+        {"name": "prod-eu", "context": {"cluster": "prod-eu", "user": "prod-admin", "namespace": "shop"}}
+    ],
+    "current-context": "kind-dev"
+}

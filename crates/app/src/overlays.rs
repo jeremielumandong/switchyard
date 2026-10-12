@@ -67,6 +67,8 @@ pub enum Overlay {
     Palette(Entity<PaletteView>),
     /// Connection editor.
     ConnEditor(Entity<ConnEditor>),
+    /// New Docker connection / Add Kubernetes cluster / edit a container connection.
+    ContainerEditor(Entity<crate::container_editor::ContainerEditor>),
     /// Production confirmation.
     Safety {
         tab: Entity<SqlTab>,
@@ -281,6 +283,13 @@ impl Workspace {
                     .into_any_element(),
             ),
             Some(Overlay::ConnEditor(ed)) => Some(
+                scrim(p, false)
+                    .key_context("Overlay")
+                    .p(rpx(20.))
+                    .child(ed.clone())
+                    .into_any_element(),
+            ),
+            Some(Overlay::ContainerEditor(ed)) => Some(
                 scrim(p, false)
                     .key_context("Overlay")
                     .p(rpx(20.))
@@ -960,7 +969,12 @@ impl Workspace {
             CtxTarget::Profile(id) => match action {
                 "open" => self.open_profile(id, window, cx),
                 "edit" => {
-                    if let Some(p) = self.profiles.all.iter().find(|p| p.id() == id).cloned() {
+                    if let Some(switchyard_core::store::Profile::Containers(c)) =
+                        self.profiles.all.iter().find(|p| p.id() == id).cloned()
+                    {
+                        self.open_container_editor(c.platform, Some(c), window, cx);
+                    } else if let Some(p) = self.profiles.all.iter().find(|p| p.id() == id).cloned()
+                    {
                         self.open_conn_editor(
                             ConnKind::Db(switchyard_core::db::Engine::Postgres),
                             Some(p),

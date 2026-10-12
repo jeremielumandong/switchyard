@@ -82,6 +82,7 @@ impl Profiles {
                     matches!(&f.protocol, FileProtocol::Sftp { host_id } if host_id == host)
                 }
                 Profile::Terminal(t) => t.host_id.as_ref() == Some(host),
+                Profile::Containers(c) => c.host_id.as_ref() == Some(host),
                 Profile::Host(_) | Profile::Cloud(_) => false,
             })
             .collect()
@@ -95,6 +96,7 @@ impl Profiles {
                 Profile::Db(d) => d.via_host.is_none(),
                 Profile::File(f) => matches!(f.protocol, FileProtocol::Ftp { .. }),
                 Profile::Terminal(t) => t.host_id.is_none(),
+                Profile::Containers(c) => c.host_id.is_none(),
                 Profile::Host(_) | Profile::Cloud(_) => false,
             })
             .collect()
@@ -112,7 +114,20 @@ pub fn badge_of(p: &Profile) -> &'static str {
         },
         Profile::Terminal(_) => "SH",
         Profile::Cloud(c) => c.service.badge(),
+        Profile::Containers(c) => c.platform.badge(),
     }
+}
+
+/// The provider label of a Kubernetes connection (`AKS`, `Rancher`, `Local`), if known.
+pub fn cluster_label(c: &switchyard_core::store::ContainerConnection) -> Option<&'static str> {
+    use switchyard_core::containers::clusters::ClusterProvider;
+    if c.rancher.is_some() {
+        return Some(ClusterProvider::Rancher.label());
+    }
+    c.provider
+        .as_deref()
+        .and_then(ClusterProvider::from_key)
+        .map(ClusterProvider::label)
 }
 
 /// A short, host-free description for lists ("PostgreSQL · direct").
@@ -149,6 +164,21 @@ pub fn describe(p: &Profile, profiles: &Profiles) -> String {
             if !c.region.trim().is_empty() {
                 s.push_str(" · ");
                 s.push_str(c.region.trim());
+            }
+            s
+        }
+        Profile::Containers(c) => {
+            let mut s = c.platform.display_name().to_owned();
+            if let Some(l) = cluster_label(c) {
+                s = format!("{s} · {l}");
+            }
+            if let Some(ctx) = c.context.as_deref().filter(|x| !x.trim().is_empty()) {
+                s.push_str(" · ");
+                s.push_str(ctx.trim());
+            }
+            if let Some(h) = &c.host_id {
+                s.push_str(" · on ");
+                s.push_str(profiles.host(h).map_or("host", |h| h.name.as_str()));
             }
             s
         }

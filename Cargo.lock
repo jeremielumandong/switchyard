@@ -9806,6 +9806,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchyard-containers"
+version = "0.1.11"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "switchyard-core"
 version = "0.1.11"
 dependencies = [
@@ -9819,6 +9830,7 @@ dependencies = [
  "switchyard-agents",
  "switchyard-api",
  "switchyard-cloud",
+ "switchyard-containers",
  "switchyard-db",
  "switchyard-drivers",
  "switchyard-plan",

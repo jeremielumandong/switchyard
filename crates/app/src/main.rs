@@ -18,6 +18,8 @@ mod cloud_tab;
 mod compare_tab;
 mod completion;
 mod conn_editor;
+mod container_editor;
+mod containers_tab;
 mod ddl_tab;
 mod drivers_page;
 mod editor_tab;
