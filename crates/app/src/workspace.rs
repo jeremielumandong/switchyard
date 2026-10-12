@@ -69,6 +69,8 @@ pub enum Tab {
     Redis(Entity<crate::redis_tab::RedisTab>),
     /// Key / value tool of a cloud connection (App Configuration, secrets, Workers KV).
     Cloud(Entity<crate::cloud_tab::CloudTab>),
+    /// Schema compare and migration script.
+    Compare(Entity<crate::compare_tab::CompareTab>),
 }
 
 /// The root view.
@@ -825,6 +827,25 @@ impl Workspace {
             }
             Event::Activity { request, result } => self.on_activity(request, result, window, cx),
             Event::SessionAction { request, result } => self.on_session_action(request, result, cx),
+            Event::CompareCatalog { request, result } => {
+                if let Some(tab) = self.compare_tab(request, cx) {
+                    tab.update(cx, |t, cx| t.on_catalog(request, result, cx));
+                }
+            }
+            Event::CompareProgress {
+                request,
+                done,
+                total,
+            } => {
+                if let Some(tab) = self.compare_tab(request, cx) {
+                    tab.update(cx, |t, cx| t.on_progress(request, done, total, cx));
+                }
+            }
+            Event::CompareSnapshot { request, result } => {
+                if let Some(tab) = self.compare_tab(request, cx) {
+                    tab.update(cx, |t, cx| t.on_snapshot(request, result, cx));
+                }
+            }
             Event::WhatIf { request, result } => {
                 if let Some(tab) = self.plan_tab(cx, |v| v.owns(request)) {
                     tab.update(cx, |t, cx| {
@@ -1239,6 +1260,7 @@ impl Workspace {
             Some(Tab::Er(e)) => e.clone().into_any_element(),
             Some(Tab::Redis(r)) => r.clone().into_any_element(),
             Some(Tab::Cloud(c)) => c.clone().into_any_element(),
+            Some(Tab::Compare(c)) => c.clone().into_any_element(),
             _ => self.render_welcome(p, cx),
         }
     }
@@ -1603,6 +1625,9 @@ impl Workspace {
             r.update(cx, |r, _| r.shutdown());
         }
         if let Tab::Cloud(c) = &self.tabs[ix] {
+            c.update(cx, |c, _| c.shutdown());
+        }
+        if let Tab::Compare(c) = &self.tabs[ix] {
             c.update(cx, |c, _| c.shutdown());
         }
         if let Tab::Editor(e) = &self.tabs[ix] {
@@ -2311,6 +2336,7 @@ impl Workspace {
             CommandId::ShowWorkload => self.open_workload(cx),
             CommandId::ShowActivity => self.open_activity_palette(window, cx),
             CommandId::ErDiagram => self.open_er_for_current_schema(window, cx),
+            CommandId::CompareSchemas => self.open_compare_palette(window, cx),
             CommandId::SplitRight => self.split_view(crate::split::SplitDir::Right, window, cx),
             CommandId::SplitDown => self.split_view(crate::split::SplitDir::Down, window, cx),
             CommandId::Unsplit => self.split = None,
@@ -2767,6 +2793,15 @@ impl Workspace {
                     c.service.badge().into(),
                     c.name.clone().into(),
                     Some(c.environment),
+                    false,
+                )
+            }
+            Tab::Compare(t) => {
+                let t = t.read(cx);
+                (
+                    "SC".into(),
+                    t.title.clone(),
+                    t.connection().map(|c| c.environment),
                     false,
                 )
             }

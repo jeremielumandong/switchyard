@@ -99,6 +99,7 @@ fn columns(conn: &Connection, schema: &str, table: &str) -> Result<Vec<ColumnInf
                 ordinal: r.get::<_, i32>(0)? + 1,
                 is_primary_key: r.get::<_, i64>(5)? > 0,
                 comment: None,
+                identity: None,
             })
         },
     )

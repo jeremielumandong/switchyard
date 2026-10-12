@@ -140,6 +140,7 @@ fn columns(db: &str, table: &str, docs: &[Document]) -> Vec<ColumnInfo> {
             // Not a key the grid may edit by: edits are SQL statements.
             is_primary_key: false,
             comment: None,
+            identity: None,
         })
         .collect()
 }
