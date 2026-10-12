@@ -589,10 +589,14 @@ mod tests {
         let m = Manifest::bundled();
         let rdp = m.component("rdp-client").unwrap().clone();
         let vnc = m.component("vnc-client").unwrap().clone();
-        // Without the fixed paths, which exist on real Windows and macOS hosts.
-        let mut bare = rdp.clone();
-        bare.detect.paths.clear();
-        assert_eq!(detect(&bare, &cli_env(&[])), ComponentStatus::Missing);
+        // `paths` are checked on the real disk (a Windows runner has mstsc.exe): drop them
+        // to see what the program lookup alone reports.
+        let mut rdp_no_paths = rdp.clone();
+        rdp_no_paths.detect.paths.clear();
+        assert_eq!(
+            detect(&rdp_no_paths, &cli_env(&[])),
+            ComponentStatus::Missing
+        );
         let e = cli_env(&[
             (
                 "xfreerdp",
