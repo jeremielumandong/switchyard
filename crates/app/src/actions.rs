@@ -202,6 +202,8 @@ pub enum CommandId {
     ManageSecrets,
     /// ER diagram of the schema under the tree cursor (DBX-5d).
     ErDiagram,
+    /// Schema compare and migration script.
+    CompareSchemas,
     SplitRight,
     SplitDown,
     Unsplit,
@@ -353,6 +355,7 @@ pub fn palette_commands() -> Vec<PaletteCommand> {
             "Schema",
             "".into(),
         ),
+        c(CompareSchemas, "Compare Schemas…", "Schema", "".into()),
         c(SplitRight, "Split Right", "View", k("⌘\\", "Ctrl+\\")),
         c(SplitDown, "Split Down", "View", k("⇧⌘\\", "Ctrl+Shift+\\")),
         c(Unsplit, "Close Split", "View", "".into()),

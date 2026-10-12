@@ -208,6 +208,17 @@ pub struct SessionContext {
     pub schema: Option<String>,
 }
 
+/// What one side of a schema compare can pick from.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CompareCatalog {
+    /// Databases on the server (one or none where the engine has no switching).
+    pub databases: Vec<String>,
+    /// The session's current database, when known.
+    pub database: Option<String>,
+    /// User schemas (system schemas left out).
+    pub schemas: Vec<String>,
+}
+
 /// One statement to execute.
 #[derive(Clone, Debug)]
 pub struct StatementRequest {
@@ -589,6 +600,34 @@ pub enum Command {
         connection: ProfileId,
         /// Request id.
         request: RequestId,
+    },
+    /// Schema compare: the databases and schemas a side can pick from
+    /// ([`Event::CompareCatalog`]), on the side's own session (opened on `connection`
+    /// first when needed, and switched to `database` when one is given). App only.
+    CompareCatalog {
+        /// The side's session.
+        session: SessionId,
+        /// Connection to open it on.
+        connection: ProfileId,
+        /// Request id.
+        request: RequestId,
+        /// Database to switch to first.
+        database: Option<String>,
+    },
+    /// Schema compare: read one side's schema ([`Event::CompareProgress`], then
+    /// [`Event::CompareSnapshot`]). Only catalog reads; nothing is changed. Closing the
+    /// session ([`Command::CloseSession`]) cancels it. App only.
+    CompareSnapshot {
+        /// The side's session.
+        session: SessionId,
+        /// Connection to open it on.
+        connection: ProfileId,
+        /// Request id.
+        request: RequestId,
+        /// Database to switch to first.
+        database: Option<String>,
+        /// Schema to read.
+        schema: String,
     },
     /// Cancel a query or end a session from the activity monitor; recorded in history.
     /// App only: never sent by the MCP server or `swy`.
@@ -1333,6 +1372,29 @@ pub enum Event {
         request: RequestId,
         /// Sessions, or what went wrong.
         result: Result<Arc<switchyard_db::activity::Activity>, String>,
+    },
+    /// Result of [`Command::CompareCatalog`].
+    CompareCatalog {
+        /// Request id.
+        request: RequestId,
+        /// The choices, or what went wrong.
+        result: Result<CompareCatalog, String>,
+    },
+    /// Progress of [`Command::CompareSnapshot`]: `done` of `total` objects read.
+    CompareProgress {
+        /// Request id.
+        request: RequestId,
+        /// Objects read.
+        done: usize,
+        /// Objects listed (0 while listing).
+        total: usize,
+    },
+    /// Result of [`Command::CompareSnapshot`].
+    CompareSnapshot {
+        /// Request id.
+        request: RequestId,
+        /// The schema, or what went wrong.
+        result: Result<Arc<switchyard_db::compare::SchemaSnapshot>, String>,
     },
     /// Result of [`Command::SessionAction`].
     SessionAction {

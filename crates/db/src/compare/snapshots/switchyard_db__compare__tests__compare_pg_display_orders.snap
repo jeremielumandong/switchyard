@@ -1,0 +1,24 @@
+---
+source: crates/db/src/compare/tests.rs
+expression: "format!(\"{src}\\n----\\n{tgt}\")"
+---
+CREATE TABLE app_old.orders (
+    id bigserial NOT NULL,
+    customer_id integer NOT NULL,
+    qty bigint DEFAULT 1 NOT NULL,
+    note text,
+    CONSTRAINT orders_pkey PRIMARY KEY (id),
+    CONSTRAINT orders_qty_check CHECK ((qty > 0))
+);
+CREATE INDEX orders_customer_idx ON app_old.orders USING btree (customer_id);
+ALTER TABLE app_old.orders ADD CONSTRAINT orders_customer_id_fkey FOREIGN KEY (customer_id) REFERENCES app_old.customers (id) ON DELETE CASCADE;
+----
+CREATE TABLE app_old.orders (
+    id bigserial NOT NULL,
+    customer_id integer NOT NULL,
+    qty integer,
+    legacy_code text,
+    CONSTRAINT orders_pkey PRIMARY KEY (id)
+);
+CREATE INDEX orders_legacy_idx ON app_old.orders USING btree (legacy_code);
+ALTER TABLE app_old.orders ADD CONSTRAINT orders_customer_id_fkey FOREIGN KEY (customer_id) REFERENCES app_old.customers (id);

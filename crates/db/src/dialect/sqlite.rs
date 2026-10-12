@@ -158,6 +158,11 @@ fn merge_trigger_bodies(sql: &str, spans: Vec<StatementSpan>) -> Vec<StatementSp
 }
 
 impl Dialect for SqliteDialect {
+    fn schema_scripter(&self) -> Option<&'static dyn crate::compare::SchemaScripter> {
+        // D1 and Durable Objects refuse the rebuild's BEGIN / PRAGMA foreign_keys.
+        (self.engine == Engine::Sqlite).then_some(&crate::compare::SqliteScripter as _)
+    }
+
     /// `EXPLAIN QUERY PLAN` on local files (estimated only: SQLite measures nothing).
     /// D1's HTTP API is not wired for plans.
     fn plans(&self) -> super::PlanSupport {

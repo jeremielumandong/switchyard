@@ -755,6 +755,39 @@ server or bundled Unix tools on Windows (Tier 3).
   Configuration compare and flags, Key Vault, CloudWatch tail), `~/.aws/config` and
   `~/.pgpass` imports, credential expiry in the status bar (see Follow-ups).
 
+## Extra — Schema compare (user request, 2026-10-12)
+
+- [x] SC-1 Diff model and catalog reads (`db::compare`): `load_snapshot` reads one schema
+  (tables, views, materialized views, functions, procedures the engine's explorer shows)
+  through the existing `Objects` / `Detail` / `RoutineDefinition` scopes; `TableModel`
+  normalizes the overlapping catalog lists into primary key, unique constraints, checks,
+  foreign keys and plain indexes; `compare` groups objects as Only in source / Only in
+  target / Different with per-part changes (columns: type, nullability, default,
+  identity). Constraints and indexes pair by name, then by shape (server-generated
+  names); the source's DDL is retargeted to the target schema before comparing.
+  `ColumnInfo::identity` added (PostgreSQL identity / generated, SQL Server
+  `IDENTITY(seed,incr)`, MySQL `AUTO_INCREMENT`). Fixed PostgreSQL index columns (the
+  first was the whole `CREATE INDEX`, the last was missing).
+- [x] SC-2 Migration scripts behind `Dialect::schema_scripter` (`SchemaScripter`) for
+  PostgreSQL, SQL Server, MySQL/MariaDB and local SQLite: foreign keys dropped first and
+  added last, views and routines after tables, `GO` after every SQL Server statement,
+  `DELIMITER` around MySQL routines, the SQLite table-rebuild pattern for anything
+  `ALTER TABLE` cannot do. DROP TABLE / DROP COLUMN (and a rebuild that leaves columns
+  behind) are commented out under a warning header. PostgreSQL views that read an
+  altered table are dropped and created again around the change. Other engines: "Schema
+  compare isn't supported for <engine> yet". Tests: insta snapshots per engine, diff-model
+  unit tests, `db --test compare_pg` (two schemas in the docker PostgreSQL: compare, run
+  the script, compare again; only the commented-out drops remain).
+- [x] SC-3 Compare tab (`app/src/compare_tab.rs`): source and target pickers (connection,
+  database, schema; two connections or two databases / schemas of one), progress and
+  Cancel, a virtualized grouped list with checkboxes (drops of target-only objects start
+  unticked), the selected object's changes and side-by-side DDL diff, and "Open migration
+  script" into a new SQL tab on the target (never run). Each side reads on its own
+  session (`Command::CompareCatalog` / `CompareSnapshot`). Entry points: palette "Compare
+  Schemas…", Explorer context menu "Compare with…" on a connection or schema. Note: the
+  tab was not exercised in a running app here (no display); data compare, triggers,
+  sequences and table options are deferred (Follow-ups).
+
 ## DBX — Database explorer and editors at DBeaver / SSMS level (user request)
 
 Gap analysis (2026-10-08): the explorer is a lazy, virtualized, single-connection tree
@@ -952,6 +985,13 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   running app's unlocked secrets over the loopback handoff, scoped by the session token.
 
 (Add items here instead of doing them mid-task.)
+- Schema compare (SC-1..3) leftovers: data compare (row diff and sync script); triggers,
+  sequences, user-defined types, PostgreSQL EXCLUDE constraints, comments and grants;
+  table options (MySQL engine / charset, SQL Server filegroups, PostgreSQL partitions and
+  storage); MySQL `ON UPDATE CURRENT_TIMESTAMP`; renames (today a drop and an add);
+  ordering views that read other views when PostgreSQL rebuilds them; SQL Server
+  identity changes (scripted as a note); Oracle, Snowflake and D1 scripters; saving a
+  compare (sides and ticks) to run again; a compare from the CLI / MCP (read-only diff).
 - UI v3 (UI3-1) leftovers from the design: an Edit menu (undo/redo/copy/paste routed to the
   focused view); a full-page Tools tab with one card per cloud and its sign-in state;
   cloud account entities (today an account is inferred from provider plus folder) with

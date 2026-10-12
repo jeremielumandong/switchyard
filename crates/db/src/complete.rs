@@ -582,6 +582,7 @@ mod tests {
             ordinal: 0,
             is_primary_key: false,
             comment: None,
+            identity: None,
         };
         CatalogIndex::from_columns(&[
             col("public", "orders", "id", "bigint"),
