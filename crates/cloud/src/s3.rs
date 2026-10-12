@@ -830,6 +830,78 @@ impl RemoteFs for S3Fs {
     }
 }
 
+/// One stored version of an object (S3 versioning, Azure Blob versions).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObjectVersion {
+    /// Version id to read it with.
+    pub version_id: String,
+    /// Last modified, ms since the epoch.
+    pub modified_ms: Option<i64>,
+    /// Size in bytes.
+    pub size: u64,
+    /// The current version.
+    pub latest: bool,
+}
+
+/// Versions of exactly `key` in a `ListObjectVersions` reply, newest first.
+pub(crate) fn parse_versions(root: &xml::Node, key: &str) -> Vec<ObjectVersion> {
+    let mut out: Vec<ObjectVersion> = root
+        .all("Version")
+        .filter(|v| v.text_of("Key") == Some(key))
+        .filter_map(|v| {
+            Some(ObjectVersion {
+                version_id: v.text_of("VersionId")?.to_owned(),
+                modified_ms: v
+                    .text_of("LastModified")
+                    .and_then(crate::time::parse_iso_ms),
+                size: v.text_of("Size").and_then(|s| s.parse().ok()).unwrap_or(0),
+                latest: v.text_of("IsLatest") == Some("true"),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
+    out
+}
+
+impl S3Fs {
+    /// The whole object `key` in `bucket` (a given version, else the current one).
+    pub async fn get_object(
+        &self,
+        bucket: &str,
+        key: &str,
+        version: Option<&str>,
+    ) -> Result<Vec<u8>> {
+        let resp = self
+            .inner
+            .call(Some(bucket), |r| {
+                let mut req = self.inner.req(Method::GET, Some(bucket), key, r)?;
+                if let Some(v) = version {
+                    req = req.query("versionId", v);
+                }
+                Ok(req)
+            })
+            .await?;
+        Ok(resp.body)
+    }
+
+    /// Stored versions of `key` (newest first; one unversioned entry when the bucket does
+    /// not keep versions).
+    pub async fn object_versions(&self, bucket: &str, key: &str) -> Result<Vec<ObjectVersion>> {
+        let resp = self
+            .inner
+            .call(Some(bucket), |r| {
+                Ok(self
+                    .inner
+                    .req(Method::GET, Some(bucket), "", r)?
+                    .query("versions", "")
+                    .query("prefix", key)
+                    .query("max-keys", "200"))
+            })
+            .await?;
+        Ok(parse_versions(&xml::parse(&resp.body)?, key))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,0 +1,27 @@
+<DescribeDBInstancesResponse xmlns="http://rds.amazonaws.com/doc/2014-10-31/">
+  <DescribeDBInstancesResult>
+    <DBInstances>
+      <DBInstance>
+        <DBInstanceIdentifier>orders</DBInstanceIdentifier>
+        <DBInstanceArn>arn:aws:rds:eu-west-1:123456789012:db:orders</DBInstanceArn>
+        <DBInstanceClass>db.t4g.medium</DBInstanceClass>
+        <Engine>postgres</Engine>
+        <EngineVersion>16.3</EngineVersion>
+        <DBInstanceStatus>available</DBInstanceStatus>
+        <MasterUsername>app</MasterUsername>
+        <DBName>orders</DBName>
+        <Endpoint>
+          <Address>orders.abc.eu-west-1.rds.amazonaws.com</Address>
+          <Port>5432</Port>
+          <HostedZoneId>Z29XKXDKYMONMX</HostedZoneId>
+        </Endpoint>
+        <AvailabilityZone>eu-west-1a</AvailabilityZone>
+        <PubliclyAccessible>false</PubliclyAccessible>
+        <TagList>
+          <Tag><Key>team</Key><Value>orders</Value></Tag>
+        </TagList>
+      </DBInstance>
+    </DBInstances>
+  </DescribeDBInstancesResult>
+  <ResponseMetadata><RequestId>abc</RequestId></ResponseMetadata>
+</DescribeDBInstancesResponse>

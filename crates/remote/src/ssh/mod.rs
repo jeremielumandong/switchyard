@@ -590,6 +590,67 @@ impl SshConn {
     }
 }
 
+/// A piece of a streamed command's output ([`SshConn::stream_command`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CommandChunk {
+    /// Bytes on standard output.
+    Stdout(Vec<u8>),
+    /// Bytes on standard error.
+    Stderr(Vec<u8>),
+    /// The command ended (exit status, when the server sent one).
+    Exit(Option<u32>),
+}
+
+impl SshConn {
+    /// Run `command` in its own channel (no PTY) and stream its output as it arrives
+    /// (`tail -F`, `journalctl -f`). Dropping the receiver closes the channel, which ends
+    /// the command on the server; [`CommandChunk::Exit`] is the last item when it ends on
+    /// its own.
+    pub async fn stream_command(
+        &self,
+        command: &str,
+    ) -> Result<tokio::sync::mpsc::Receiver<CommandChunk>, SshError> {
+        let mut ch = self
+            .handle()?
+            .channel_open_session()
+            .await
+            .map_err(|e| SshError::Channel(e.to_string()))?;
+        ch.exec(true, command)
+            .await
+            .map_err(|e| SshError::Channel(e.to_string()))?;
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        tokio::spawn(async move {
+            let mut code = None;
+            loop {
+                tokio::select! {
+                    msg = ch.wait() => match msg {
+                        Some(ChannelMsg::Data { data }) => {
+                            if tx.send(CommandChunk::Stdout(data.to_vec())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Some(ChannelMsg::ExtendedData { data, .. }) => {
+                            if tx.send(CommandChunk::Stderr(data.to_vec())).await.is_err() {
+                                break;
+                            }
+                        }
+                        Some(ChannelMsg::ExitStatus { exit_status }) => code = Some(exit_status),
+                        Some(_) => {}
+                        None => {
+                            let _ = tx.send(CommandChunk::Exit(code)).await;
+                            return;
+                        }
+                    },
+                    () = tx.closed() => break,
+                }
+            }
+            // The reader went away: stop the command.
+            let _ = ch.close().await;
+        });
+        Ok(rx)
+    }
+}
+
 /// Connect and authenticate one hop. `via` is the previous hop, when jumping.
 async fn connect_one(
     target: &SshTarget,

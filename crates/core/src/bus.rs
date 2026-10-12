@@ -238,6 +238,18 @@ pub enum Command {
         /// Delay before answering.
         delay: Duration,
     },
+    /// Infra tools: Terraform state, inventory, network checks, logs ([`Event::Infra`]).
+    Infra {
+        /// Request id, echoed on every update.
+        request: RequestId,
+        /// What to do.
+        op: crate::infra::InfraOp,
+    },
+    /// Stop a running [`Command::Infra`] request (a log tail, an inventory).
+    InfraCancel {
+        /// Request id.
+        request: RequestId,
+    },
     /// Load every saved profile.
     LoadProfiles,
     /// Validate and save a profile; store `secret` in the secret store when given.
@@ -1113,6 +1125,13 @@ pub enum Event {
     Pong {
         /// Request id.
         id: RequestId,
+    },
+    /// Progress or result of a [`Command::Infra`] request.
+    Infra {
+        /// Request id.
+        request: RequestId,
+        /// The update.
+        update: crate::infra::InfraUpdate,
     },
     /// All profiles, in sidebar order.
     Profiles(Vec<Profile>),
