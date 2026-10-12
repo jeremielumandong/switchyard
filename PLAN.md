@@ -871,6 +871,21 @@ are shared hotspots: one owner at a time.
   connection, Ctrl/⌘+D, dimmed "missing"; nodes saved as `explorer.connections` and restored
   "not connected". Deferred: pin reordering UI, cross-connection search, restoring expansion.
 
+## Extra — API protocols (user request, 2026-10-12)
+
+- [x] PROTO-1 Workbench requests can be WebSocket or Server-Sent Events as well as HTTP:
+  `switchyard_api::protocol` (settings saved in the request's `extensions`, sessions on
+  core's runtime, events redacted), `protocol::sse` (spec parser, reconnect with optional
+  `Last-Event-ID`, `retry:`), `protocol::websocket` (tokio-tungstenite behind the
+  `websocket` feature: headers, subprotocols, text/JSON/hex/base64, ping, close code,
+  cancel). The rail's `+` menu adds them; the composer's first tab holds messages and
+  saved snippets or stream options; the response pane becomes a virtualized live log
+  with timestamps, sizes, filter, headers and the selected message in full.
+  Note: tests use in-process echo / SSE servers; no history entry for streams yet.
+- [x] PROTO-2 Rename and delete projects (workspaces) in the Workbench header menu; delete
+  confirms and removes the project's collections, environments, history, runs, cookies,
+  globals and tabs (`WorkbenchStore::delete_workspace`).
+
 ## M6 — Packaging and beta
 
 Exit: every performance budget passes on all three platforms; signed builds published.
@@ -909,7 +924,9 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 
 - SQLite: a "New database file" save dialog in the connection editor (today a typed path is created on connect).
 
-- API Workbench: rename and delete workspaces (API-5 only adds and switches them).
+- API Workbench streams: record WebSocket / SSE / gRPC sessions in History, AWS SigV4
+  and per-connection pinned TLS exceptions for them, and deleting a project's vault
+  values with the project (delete leaves vault entries in place today).
 
 - Agent runs on systems with only the fallback vault: `swy mcp` cannot unlock it unless
   `SWITCHYARD_VAULT_PASSWORD` is in the app's environment. Option: let `swy mcp` borrow the

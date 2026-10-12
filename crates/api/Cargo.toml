@@ -6,6 +6,13 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = ["websocket"]
+# WebSocket requests (tokio-tungstenite).
+websocket = ["dep:tokio-tungstenite", "dep:tokio-rustls"]
+# gRPC requests (tonic + prost-reflect).
+grpc = []
+
 [dependencies]
 aho-corasick.workspace = true
 base64.workspace = true
@@ -28,6 +35,9 @@ rustls-native-certs.workspace = true
 futures.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["process", "fs"] }
+tokio-rustls = { workspace = true, optional = true }
+tokio-tungstenite = { workspace = true, optional = true }
+tokio-util.workspace = true
 tracing.workspace = true
 url.workspace = true
 uuid.workspace = true
@@ -35,6 +45,7 @@ zeroize.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
