@@ -74,6 +74,11 @@ pub(crate) fn host_for(r: &CloudResource) -> Option<Host> {
     Some(h)
 }
 
+/// Whether `r` can be marked for "Import as Hosts": VMs only.
+fn importable(r: &CloudResource) -> bool {
+    r.kind == Some(ResourceKind::Vm)
+}
+
 /// A new database connection for a database resource (no credentials).
 pub(crate) fn db_for(r: &CloudResource) -> Option<DbConnection> {
     let engine = engine_of(r.db?);
@@ -367,7 +372,7 @@ impl InventoryTab {
         let hosts: Vec<Host> = self
             .shown
             .iter()
-            .filter(|r| self.marked.contains(&row_key(r)))
+            .filter(|r| importable(r) && self.marked.contains(&row_key(r)))
             .filter_map(host_for)
             .collect();
         if hosts.is_empty() {
@@ -480,7 +485,12 @@ impl InventoryTab {
                 .iter()
                 .map(|v| (v.label().to_owned(), self.provider == Some(*v), Some(*v))),
         );
-        let marked = self.marked.len();
+        // Only shown VMs count: a storage account or database is never imported as a Host.
+        let marked = self
+            .shown
+            .iter()
+            .filter(|r| importable(r) && self.marked.contains(&row_key(r)))
+            .count();
         div()
             .flex_none()
             .flex()
@@ -617,16 +627,21 @@ impl InventoryTab {
                                     .id(("inv-m", i))
                                     .w(rpx(22.))
                                     .flex_none()
-                                    .child(ui::checkbox(
-                                        ("inv-mc", i),
-                                        marked.contains(&key),
-                                        "",
-                                        p,
-                                    ))
-                                    .on_click(cx.listener(move |t, _, _, cx| {
-                                        cx.stop_propagation();
-                                        t.toggle_mark(k3.clone(), cx)
-                                    })),
+                                    // Only VMs import as Hosts; other rows keep the column empty.
+                                    .when(importable(r), |d| {
+                                        d.child(ui::checkbox(
+                                            ("inv-mc", i),
+                                            marked.contains(&key),
+                                            "",
+                                            p,
+                                        ))
+                                        .on_click(
+                                            cx.listener(move |t, _, _, cx| {
+                                                cx.stop_propagation();
+                                                t.toggle_mark(k3.clone(), cx)
+                                            }),
+                                        )
+                                    }),
                             );
                         for (c, ((_, w), v)) in COLUMNS.iter().zip(values).enumerate() {
                             let mut d = cell(*w).child(v);
@@ -851,6 +866,10 @@ mod tests {
         let mut db = vm();
         db.kind = Some(ResourceKind::Database);
         assert!(host_for(&db).is_none());
+        assert!(importable(&vm()) && !importable(&db));
+        let mut storage = vm();
+        storage.kind = Some(ResourceKind::Storage);
+        assert!(!importable(&storage) && host_for(&storage).is_none());
     }
 
     #[test]
