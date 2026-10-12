@@ -335,7 +335,7 @@ code{font-family:"Geist Mono",monospace}
       </span>
       switchyard
     </a>
-    <span style="font-family:'Geist Mono',monospace;font-size:11px;color:#9a988f;border:1px solid #2c2b27;border-radius:999px;padding:3px 9px">v0.1.12 · pre-beta</span>
+    <span style="font-family:'Geist Mono',monospace;font-size:11px;color:#9a988f;border:1px solid #2c2b27;border-radius:999px;padding:3px 9px">v0.1.13 · pre-beta</span>
     <nav style="margin-left:auto;display:flex;gap:22px;font-size:14px;color:#b6b4ac;flex-wrap:wrap">
       <a href="#demo" style="color:#b6b4ac">Demo</a>
       <a href="#tour" style="color:#b6b4ac">Tour</a>
@@ -359,14 +359,14 @@ code{font-family:"Geist Mono",monospace}
 
   <div id="install" style="margin-top:40px;max-width:720px;border:1px solid #2a2925;border-radius:12px;background:#141412;overflow:hidden">
     <div style="display:flex;border-bottom:1px solid #2a2925;padding:0 6px">
-      <sc-for list="{{ installTabs }}" as="t" hint-placeholder-count="3">
+      <sc-for list="{{ installTabs }}" as="t" hint-placeholder-count="4">
         <button sc-camel-on-click="{{ t.select }}" style="font-family:Geist,sans-serif;font-size:13px;font-weight:500;padding:12px 14px;background:transparent;border:0;border-bottom:2px solid {{ t.border }};color:{{ t.color }};cursor:pointer;margin-bottom:-1px">{{ t.label }}</button>
       </sc-for>
     </div>
     <div style="display:flex;align-items:center;gap:14px;padding:16px 18px">
       <code style="flex:1;min-width:0;font-size:13.5px;color:#ecebe6;overflow-x:auto;white-space:pre"><span style="color:oklch(0.82 0.14 75)">$ </span>{{ install.cmd }}</code>
       <sc-if value="{{ install.isLink }}" hint-placeholder-val="{{ false }}">
-        <a href="{{ install.href }}" style="flex:none;background:#ecebe6;color:#0d0d0c;font-size:13px;font-weight:600;padding:8px 14px;border-radius:7px">Download .exe</a>
+        <a href="{{ install.href }}" style="flex:none;background:#ecebe6;color:#0d0d0c;font-size:13px;font-weight:600;padding:8px 14px;border-radius:7px">{{ install.button }}</a>
       </sc-if>
       <sc-if value="{{ install.isCmd }}" hint-placeholder-val="{{ true }}">
         <button sc-camel-on-click="{{ copyInstall }}" style="flex:none;font-family:Geist,sans-serif;background:#23221f;color:#ecebe6;border:1px solid #33322d;font-size:12px;font-weight:500;padding:7px 12px;border-radius:7px;cursor:pointer" style-hover="background:#2e2d29">{{ copyLabel }}</button>
@@ -538,7 +538,7 @@ code{font-family:"Geist Mono",monospace}
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,380px),1fr));gap:48px">
     <div>
       <div style="font-family:'Geist Mono',monospace;font-size:12px;color:oklch(0.82 0.14 75);text-transform:uppercase;letter-spacing:0.08em">Status</div>
-      <h2 style="font-size:clamp(30px,3.8vw,44px);letter-spacing:-0.035em;font-weight:600;margin:14px 0 0;line-height:1.04">Pre-beta, v0.1.12.</h2>
+      <h2 style="font-size:clamp(30px,3.8vw,44px);letter-spacing:-0.035em;font-weight:600;margin:14px 0 0;line-height:1.04">Pre-beta, v0.1.13.</h2>
       <p style="color:#a9a79f;font-size:16px;line-height:1.6;margin:18px 0 0;max-width:44ch">Still on the line, tracked in <a href="https://github.com/jeremielumandong/switchyard/blob/main/PLAN.md" style="color:#ecebe6;border-bottom:1px solid #4d4b45">PLAN.md</a>.</p>
     </div>
     <div style="display:flex;flex-direction:column">
@@ -609,8 +609,9 @@ const SHOTS = [
 ];
 const INSTALL = {
   linux: { label: 'Linux x86_64', cmd: 'curl -fsSL https://raw.githubusercontent.com/jeremielumandong/switchyard/main/install.sh | sh', note: 'Downloads the latest release, verifies its SHA-256 checksum, installs a desktop launcher and the swy CLI. No Rust or sudo needed.' },
-  windows: { label: 'Windows x64', cmd: 'Switchyard-windows-x64-setup.exe', href: 'https://github.com/jeremielumandong/switchyard/releases/latest/download/Switchyard-windows-x64-setup.exe', note: 'Installs for your user only — no administrator rights needed.' },
-  source: { label: 'From source', cmd: 'cargo run -p switchyard-app', note: 'macOS builds a universal .dmg / .pkg via ./packaging/package.sh.' },
+  macos: { label: 'macOS', cmd: 'Switchyard-macos-universal.dmg', href: 'https://github.com/jeremielumandong/switchyard/releases/latest/download/Switchyard-macos-universal.dmg', button: 'Download .dmg', note: 'Universal app for Apple Silicon and Intel, macOS 11 or later. Open the disk image and drag Switchyard to Applications.' },
+  windows: { label: 'Windows x64', cmd: 'Switchyard-windows-x64-setup.exe', href: 'https://github.com/jeremielumandong/switchyard/releases/latest/download/Switchyard-windows-x64-setup.exe', button: 'Download .exe', note: 'Installs for your user only — no administrator rights needed.' },
+  source: { label: 'From source', cmd: 'cargo run -p switchyard-app', note: 'Package your own build with ./packaging/package.sh (macOS .dmg / .pkg, Linux AppImage).' },
 };
 const FEATURES = [
   ['SQL editor', ['Tree-sitter highlighting, multi-cursor, folding, format', 'Schema-aware completion with aliases resolved from FROM / JOIN', 'Parse errors underlined as you type; buffers autosave']],
