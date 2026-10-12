@@ -348,7 +348,9 @@ impl Service {
 
 #[cfg(test)]
 mod tests {
-    use switchyard_store::{DesktopProtocol, DesktopServer, RdpGateway};
+    #[cfg(feature = "rdp-embedded")]
+    use switchyard_store::RdpGateway;
+    use switchyard_store::{DesktopProtocol, DesktopServer};
 
     use super::*;
     use crate::runtime::EventSender;
@@ -365,6 +367,7 @@ mod tests {
     }
 
     /// The last session state emitted.
+    #[cfg(feature = "rdp-embedded")]
     fn last_state(rx: &mut Rx) -> Option<RdpState> {
         let mut last = None;
         while let Ok(ev) = rx.try_recv() {
