@@ -42,6 +42,7 @@ mod overlays;
 mod palette;
 mod plan_view;
 mod rail;
+mod rdp_tab;
 mod redis_tab;
 mod remote_files;
 mod result_diff;

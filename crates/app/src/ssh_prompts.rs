@@ -10,6 +10,7 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Styled as _, Window, div, px,
 };
 use secrecy::SecretString;
+use switchyard_core::remote::rdp::{CertDecision, CertRequest};
 use switchyard_core::remote::ssh::{HostKeyDecision, HostKeyRequest, InteractiveRequest};
 use switchyard_core::{Command, PromptAnswer, RequestId};
 
@@ -58,6 +59,13 @@ pub enum SshPrompt {
         /// Device code and Microsoft's instructions, for device-code sign-in.
         device: Option<(String, String)>,
     },
+    /// An RDP server's TLS certificate is not trusted (in-app RDP client).
+    RdpCert {
+        /// Answer id.
+        request: RequestId,
+        /// The certificate and server.
+        cert: CertRequest,
+    },
 }
 
 impl SshPrompt {
@@ -66,7 +74,8 @@ impl SshPrompt {
             SshPrompt::HostKey { request, .. }
             | SshPrompt::Secret { request, .. }
             | SshPrompt::Interactive { request, .. }
-            | SshPrompt::Entra { request, .. } => *request,
+            | SshPrompt::Entra { request, .. }
+            | SshPrompt::RdpCert { request, .. } => *request,
         }
     }
 }
@@ -84,6 +93,17 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.prompts.push_back(SshPrompt::HostKey { request, key });
+        cx.notify();
+    }
+
+    /// Queue an RDP certificate question.
+    pub(crate) fn push_rdp_cert_prompt(
+        &mut self,
+        request: RequestId,
+        cert: CertRequest,
+        cx: &mut Context<Self>,
+    ) {
+        self.prompts.push_back(SshPrompt::RdpCert { request, cert });
         cx.notify();
     }
 
@@ -198,14 +218,21 @@ impl Workspace {
                     i.update(cx, |i, cx| i.focus(window, cx));
                 }
             }
-            Some(SshPrompt::HostKey { .. } | SshPrompt::Entra { .. }) => {}
-            // Last question answered: typing goes back to the active terminal.
-            None => {
-                if let Some(Tab::Terminal(t)) = self.tabs.get(self.active) {
+            Some(
+                SshPrompt::HostKey { .. } | SshPrompt::Entra { .. } | SshPrompt::RdpCert { .. },
+            ) => {}
+            // Last question answered: typing goes back to the active terminal or desktop.
+            None => match self.tabs.get(self.active) {
+                Some(Tab::Terminal(t)) => {
                     let handle = t.read(cx).focus_handle(cx);
                     window.focus(&handle, cx);
                 }
-            }
+                Some(Tab::Rdp(r)) => {
+                    let handle = r.read(cx).focus_handle(cx);
+                    window.focus(&handle, cx);
+                }
+                _ => {}
+            },
         }
     }
 
@@ -217,6 +244,7 @@ impl Workspace {
             Some(SshPrompt::Secret { .. }) => PromptAnswer::Secret(None),
             Some(SshPrompt::Interactive { .. }) => PromptAnswer::Interactive(None),
             Some(SshPrompt::Entra { .. }) => PromptAnswer::Cancel,
+            Some(SshPrompt::RdpCert { .. }) => PromptAnswer::RdpCert(CertDecision::Reject),
         };
         self.finish_prompt(answer, window, cx);
         true
@@ -399,6 +427,7 @@ impl Workspace {
                 device,
                 ..
             } => entra_body(connection, url, device.as_ref(), p, cx),
+            SshPrompt::RdpCert { cert, .. } => rdp_cert_body(cert, p, cx),
         };
         Some(
             div()
@@ -480,6 +509,77 @@ fn buttons(p: &Palette, cx: &mut Context<Workspace>) -> impl IntoElement {
             ui::button("sp-ok", "Connect", Kind::Primary, p)
                 .on_click(cx.listener(|this, _, w, cx| this.submit_prompt(w, cx))),
         )
+}
+
+/// The question for an untrusted RDP server certificate: trust once, or trust and pin it
+/// to this remote desktop (a different certificate is then refused).
+fn rdp_cert_body(cert: &CertRequest, p: &Palette, cx: &mut Context<Workspace>) -> AnyElement {
+    let answer = |d: CertDecision| {
+        cx.listener(
+            move |this: &mut Workspace, _: &gpui_kit::ClickEvent, w, cx| {
+                this.finish_prompt(PromptAnswer::RdpCert(d), w, cx)
+            },
+        )
+    };
+    div()
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .text_size(ts::TITLE)
+                .font_weight(FontWeight::SEMIBOLD)
+                .mb(rpx(4.))
+                .child(format!("Untrusted certificate for {}", cert.connection)),
+        )
+        .child(
+            div()
+                .text_color(p.fg2)
+                .text_size(ts::UI)
+                .mb(rpx(12.))
+                .child(format!(
+                    "{} presented a certificate this computer does not trust{}. Remote desktops often use a self-signed one: compare the fingerprint with the server's before trusting it.",
+                    cert.server,
+                    cert.cert
+                        .problem
+                        .as_deref()
+                        .map(|why| format!(" ({why})"))
+                        .unwrap_or_default()
+                )),
+        )
+        .child(
+            div()
+                .font_family(MONO)
+                .text_size(ts::BODY)
+                .line_height(rpx(19.))
+                .bg(p.bg)
+                .border_1()
+                .border_color(p.bd)
+                .rounded(px(6.))
+                .px(rpx(10.))
+                .py(rpx(8.))
+                .mb(rpx(14.))
+                .child("SHA-256")
+                .child(cert.cert.fingerprint.clone()),
+        )
+        .child(
+            div()
+                .flex()
+                .gap(rpx(6.))
+                .justify_end()
+                .child(
+                    ui::button("rdp-cert-cancel", "Cancel", Kind::Ghost, p)
+                        .on_click(answer(CertDecision::Reject)),
+                )
+                .child(
+                    ui::button("rdp-cert-once", "Trust once", Kind::Secondary, p)
+                        .on_click(answer(CertDecision::TrustOnce)),
+                )
+                .child(
+                    ui::button("rdp-cert-pin", "Trust and pin", Kind::Primary, p)
+                        .on_click(answer(CertDecision::TrustAndPin)),
+                ),
+        )
+        .into_any_element()
 }
 
 fn entra_body(

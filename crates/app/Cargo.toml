@@ -36,6 +36,12 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+image.workspace = true
+
+[features]
+default = ["rdp-embedded"]
+# The in-app RDP tab ("Open in Switchyard"); off, RDP opens with the system client only.
+rdp-embedded = ["switchyard-core/rdp-embedded"]
 
 [dev-dependencies]
 insta.workspace = true
