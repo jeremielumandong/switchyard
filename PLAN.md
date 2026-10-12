@@ -1068,7 +1068,17 @@ are shared hotspots: one owner at a time.
   `x-mock-response-name` / `x-mock-response-code` pick an example (else the first 2xx),
   CORS preflights answered, 404 / 405 list the served routes. A call log per server.
   Note: a small HTTP/1.1 responder (one request per connection), no new dependency;
-  examples are read at start (restart to pick up new ones); no response delays or templating.
+  examples are read at start (restart to pick up new ones); no templated bodies.
+- [x] APX-3 Contract drift (response pane "Contract" tab): `switchyard_api::contract` learns a
+  shape from the request's earlier responses with the same status (History, up to 30, plus
+  saved examples) and checks the shown one: removed fields and type changes are breaking,
+  new fields additive. Learned field table with required / optional; copy as JSON Schema
+  2020-12. Bodies identical to the shown one are not learned from.
+  Note: JSON only; truncated and binary bodies skipped; no saved contract per request yet.
+- [x] APX-4 Mock chaos and record mode: per server, a latency range and a share of injected
+  500s on matched calls; an upstream URL that unmatched calls are forwarded to (rustls,
+  `set-cookie` / `date` dropped) and logged; "Save N recorded calls" adds them to the
+  collection as requests and examples (`StorageCommand::SaveRecordings`).
 
 ## Extra — Containers (user request, 2026-10-12)
 

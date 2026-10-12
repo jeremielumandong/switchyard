@@ -1684,3 +1684,10 @@ Decisions:
 - Mock servers listen on 127.0.0.1 only, with a hand-written HTTP/1.1 responder on core's
   runtime (no new dependency; one request per connection, `Connection: close`). Example
   selection follows Postman's mock headers so imported collections behave the same.
+- Contract drift is inferred, not declared: the "contract" is the union of shapes the API
+  has already returned for this request and status. A field missing from some samples is
+  optional and never reported as removed; drift is checked only against bodies that differ
+  from the shown one, so resending an unchanged API says "identical" instead of "matches".
+- Mock chaos applies to matched calls only; forwarded (recorded) calls pass through as the
+  upstream answered, so a recording never stores an injected failure. Recorded calls carry
+  no cookies or dates, and the upstream is reached with the app's TLS settings.

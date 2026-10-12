@@ -3,6 +3,10 @@
 //! that does not exist yet. Each collection gets its own server; the tab
 //! lists the routes it serves and the calls it answered.
 //!
+//! Chaos settings (latency, injected failures) apply to matched calls; with a
+//! record upstream, calls no example matches are forwarded there and can be
+//! saved back into the collection as new requests and examples.
+//!
 //! Servers run on core's runtime and stop when stopped here, or when the
 //! Workbench closes.
 
@@ -10,7 +14,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui_kit::{AnyElement, SharedString, div, prelude::*};
-use switchyard_api::mock::{MockRoute, MockServer, mock_routes};
+use switchyard_api::mock::{
+    INJECTED_FAILURE, MockOptions, MockRoute, MockServer, RECORDED, mock_routes,
+    recordings_to_requests,
+};
 
 use super::view::{
     Col, accent_button, cell, header_cells, heading, mono_field, note_card, outline_chip, pill,
@@ -34,6 +41,12 @@ struct RunningMock {
 /// The Mocks tab's state.
 pub(super) struct MockState {
     port: Entity<InputState>,
+    latency_min: Entity<InputState>,
+    latency_max: Entity<InputState>,
+    failure_percent: Entity<InputState>,
+    upstream: Entity<InputState>,
+    /// Recordings already saved, per collection, so they are not saved twice.
+    saved_recordings: std::collections::HashMap<CollectionId, usize>,
     servers: Vec<RunningMock>,
     selected: Option<CollectionId>,
     error: Option<String>,
@@ -47,6 +60,13 @@ impl MockState {
     pub(super) fn new(window: &mut Window, cx: &mut Context<WorkbenchPanel>) -> Self {
         Self {
             port: cx.new(|cx| InputState::new(window, cx).placeholder("any free port")),
+            latency_min: cx.new(|cx| InputState::new(window, cx).placeholder("0")),
+            latency_max: cx.new(|cx| InputState::new(window, cx).placeholder("0")),
+            failure_percent: cx.new(|cx| InputState::new(window, cx).placeholder("0")),
+            upstream: cx.new(|cx| {
+                InputState::new(window, cx).placeholder("https://api.example.com (optional)")
+            }),
+            saved_recordings: Default::default(),
             servers: Vec::new(),
             selected: None,
             error: None,
@@ -75,6 +95,50 @@ pub(super) fn parse_port(value: &str) -> Result<u16, String> {
     }
 }
 
+/// The server the form describes. Blank fields mean no chaos and no recording;
+/// a lone maximum latency means a fixed delay.
+pub(super) fn parse_options(
+    port: &str,
+    latency_min: &str,
+    latency_max: &str,
+    failure_percent: &str,
+    upstream: &str,
+) -> Result<MockOptions, String> {
+    fn number<T: std::str::FromStr + Default>(value: &str, what: &str) -> Result<T, String> {
+        let value = value.trim();
+        if value.is_empty() {
+            return Ok(T::default());
+        }
+        value
+            .parse()
+            .map_err(|_| format!("{what} must be a number."))
+    }
+    let (min, max) = match (latency_min.trim().is_empty(), latency_max.trim().is_empty()) {
+        (true, true) => (0, 0),
+        (false, true) => {
+            let min = number(latency_min, "Latency")?;
+            (min, min)
+        }
+        (true, false) => {
+            let max = number(latency_max, "Latency")?;
+            (max, max)
+        }
+        (false, false) => (
+            number(latency_min, "Latency")?,
+            number(latency_max, "Latency")?,
+        ),
+    };
+    let upstream = upstream.trim();
+    let options = MockOptions {
+        port: parse_port(port)?,
+        latency_ms: (min, max),
+        failure_percent: number(failure_percent, "Failure rate")?,
+        upstream: (!upstream.is_empty()).then(|| upstream.to_string()),
+    };
+    options.validate()?;
+    Ok(options)
+}
+
 impl WorkbenchPanel {
     /// Routes `collection` would serve now, from its saved requests and examples.
     fn mock_routes_for(&self, collection: &CollectionId) -> Vec<MockRoute> {
@@ -94,8 +158,16 @@ impl WorkbenchPanel {
         if self.mocks.server(&collection).is_some() {
             return;
         }
-        let port = match parse_port(&self.mocks.port.read(cx).value()) {
-            Ok(port) => port,
+        let state = &self.mocks;
+        let options = parse_options(
+            &state.port.read(cx).value(),
+            &state.latency_min.read(cx).value(),
+            &state.latency_max.read(cx).value(),
+            &state.failure_percent.read(cx).value(),
+            &state.upstream.read(cx).value(),
+        );
+        let options = match options {
+            Ok(options) => options,
             Err(error) => {
                 self.mocks.error = Some(error);
                 cx.notify();
@@ -103,10 +175,10 @@ impl WorkbenchPanel {
             }
         };
         let routes = self.mock_routes_for(&collection);
-        if routes.is_empty() {
+        if routes.is_empty() && options.upstream.is_none() {
             self.mocks.error = Some(
                 "This collection has no saved examples yet. Send a request and choose \
-                 “Save example” to give the mock something to answer with."
+                 “Save example”, or set a record upstream to capture real answers."
                     .into(),
             );
             cx.notify();
@@ -125,10 +197,11 @@ impl WorkbenchPanel {
             .unwrap_or_else(|| "Collection".into());
         self.mocks.error = None;
         self.mocks.selected = Some(collection.clone());
+        self.mocks.saved_recordings.remove(&collection);
         // Binding the socket is I/O: do it on core's runtime.
         self.mocks._starting = Some(cx.spawn(async move |this, cx| {
             let started =
-                crate::api::compat::blocking(move || MockServer::start(&runtime, routes, port))
+                crate::api::compat::blocking(move || MockServer::start(&runtime, routes, options))
                     .await;
             let _ = this.update(cx, |panel, cx| {
                 match started {
@@ -147,6 +220,55 @@ impl WorkbenchPanel {
                 cx.notify();
             });
         }));
+        cx.notify();
+    }
+
+    /// Recordings of `collection`'s server not saved yet.
+    fn unsaved_recordings(&self, collection: &CollectionId) -> usize {
+        let Some(running) = self.mocks.server(collection) else {
+            return 0;
+        };
+        let saved = self
+            .mocks
+            .saved_recordings
+            .get(collection)
+            .copied()
+            .unwrap_or(0);
+        running.server.recordings().len().saturating_sub(saved)
+    }
+
+    /// File the server's new recordings in its collection as requests with
+    /// examples (one per method and path no route serves yet).
+    fn save_recordings(&mut self, collection: &CollectionId, cx: &mut Context<Self>) {
+        let Some(running) = self.mocks.server(collection) else {
+            return;
+        };
+        let Some(upstream) = running.server.options().upstream.clone() else {
+            return;
+        };
+        let recordings = running.server.recordings();
+        let mut known = running.server.routes().to_vec();
+        known.extend(self.mock_routes_for(collection));
+        let (requests, examples) =
+            recordings_to_requests(&recordings, collection, &upstream, &known);
+        let count = recordings.len();
+        if requests.is_empty() {
+            self.mocks
+                .saved_recordings
+                .insert(collection.clone(), count);
+            self.mocks.error = Some("Every recorded call is already in the collection.".into());
+            cx.notify();
+            return;
+        }
+        if self.run_storage_command(
+            coordinator::StorageCommand::SaveRecordings { requests, examples },
+            cx,
+        ) {
+            self.mocks
+                .saved_recordings
+                .insert(collection.clone(), count);
+            self.mocks.error = None;
+        }
         cx.notify();
     }
 
@@ -257,6 +379,7 @@ impl WorkbenchPanel {
                 )
             })
             .collect();
+        let recording = !self.mocks.upstream.read(cx).value().trim().is_empty();
         let rows: Vec<_> = collections
             .into_iter()
             .chain(others)
@@ -280,7 +403,7 @@ impl WorkbenchPanel {
                     }
                     None => {
                         outline_chip(format!("workbench-mock-start-{}", id.as_str()), "Start", cx)
-                            .disabled(routes == 0)
+                            .disabled(routes == 0 && !recording)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.start_mock(action_id.clone(), cx)
                             }))
@@ -403,6 +526,27 @@ impl WorkbenchPanel {
                                     .text_size(text::S11),
                             ),
                     )
+                    .child(heading("Chaos", colors.muted_foreground))
+                    .child(self.mock_field("Latency min (ms)", &self.mocks.latency_min, window, cx))
+                    .child(self.mock_field("Latency max (ms)", &self.mocks.latency_max, window, cx))
+                    .child(self.mock_field("Failures (%)", &self.mocks.failure_percent, window, cx))
+                    .child(heading("Record", colors.muted_foreground))
+                    .child(
+                        mono_field(&self.mocks.upstream, window, cx)
+                            .h(rpx(24.))
+                            .text_size(text::S11),
+                    )
+                    .child(
+                        div()
+                            .text_size(text::S11)
+                            .line_height(gpui_kit::relative(1.5))
+                            .text_color(palette::text_tertiary(cx))
+                            .child(
+                                "Calls no example matches go to this URL; its answers are \
+                                 logged and can be saved as new requests and examples. \
+                                 Settings apply when a server starts.",
+                            ),
+                    )
                     .when_some(self.mocks.error.clone(), |el, error| {
                         el.child(
                             div()
@@ -413,6 +557,29 @@ impl WorkbenchPanel {
                     .children(rows),
             )
             .into_any_element()
+    }
+
+    fn mock_field(
+        &self,
+        label: &'static str,
+        input: &Entity<InputState>,
+        window: &Window,
+        cx: &App,
+    ) -> gpui_kit::Div {
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(space::SP_2)
+            .text_size(text::S12)
+            .text_color(palette::text_secondary(cx))
+            .child(label)
+            .child(
+                mono_field(input, window, cx)
+                    .w(rpx(140.))
+                    .h(rpx(24.))
+                    .text_size(text::S11),
+            )
     }
 
     fn render_mock_detail(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -489,13 +656,36 @@ impl WorkbenchPanel {
                             hit.status.to_string(),
                             super::view::status_tint(hit.status, cx),
                         ),
-                        cell(hit.example.clone().unwrap_or_else(|| "—".into())),
+                        match hit.example.as_deref() {
+                            Some(INJECTED_FAILURE) => tinted_cell(INJECTED_FAILURE, colors.danger),
+                            Some(RECORDED) => tinted_cell(RECORDED, colors.info),
+                            Some(name) => cell(name.to_string()),
+                            None => cell("—"),
+                        },
                     ],
                     false,
                     cx,
                 )
             }));
         let url = running.map(|running| running.server.url());
+        let options = running.map(|running| running.server.options().clone());
+        let chaos = options.as_ref().and_then(|options| {
+            let (min, max) = options.latency_ms;
+            let mut parts = Vec::new();
+            if max > 0 {
+                parts.push(if min == max {
+                    format!("+{max} ms")
+                } else {
+                    format!("+{min}–{max} ms")
+                });
+            }
+            if options.failure_percent > 0.0 {
+                parts.push(format!("{}% failures", options.failure_percent));
+            }
+            (!parts.is_empty()).then(|| format!("Chaos: {}", parts.join(", ")))
+        });
+        let recording = options.and_then(|options| options.upstream);
+        let unsaved = self.unsaved_recordings(&focus);
         div()
             .id("workbench-mock-detail")
             .flex()
@@ -520,7 +710,34 @@ impl WorkbenchPanel {
                                     .debug_selector(|| "workbench-mock-url".into()),
                                 None => pill("Stopped", palette::text_tertiary(cx), cx),
                             })
+                            .when_some(chaos, |el, chaos| {
+                                el.child(pill(chaos, palette::warm(cx), cx))
+                            })
+                            .when_some(recording, |el, upstream| {
+                                el.child(pill(
+                                    format!("Recording misses from {upstream}"),
+                                    colors.info,
+                                    cx,
+                                ))
+                            })
                             .child(div().flex_1())
+                            .when(unsaved > 0, |el| {
+                                let id = focus.clone();
+                                el.child(
+                                    accent_button(
+                                        "workbench-mock-save-recordings".into(),
+                                        format!(
+                                            "Save {unsaved} recorded call{}",
+                                            if unsaved == 1 { "" } else { "s" }
+                                        ),
+                                        28.,
+                                        cx,
+                                    )
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| this.save_recordings(&id, cx),
+                                    )),
+                                )
+                            })
                             .when(running.is_none() && !routes.is_empty(), |el| {
                                 let id = focus.clone();
                                 el.child(
@@ -536,12 +753,13 @@ impl WorkbenchPanel {
                                 )
                             }),
                     )
-                    .when(routes.is_empty(), |el| {
+                    .when(routes.is_empty() && running.is_none(), |el| {
                         el.child(note_card(
                             palette::warm(cx),
                             Some("alert"),
                             "No saved examples in this collection. Send a request and use \
-                             “Save example”; imported Postman examples count too.",
+                             “Save example” (imported Postman examples count too), or set a \
+                             record upstream and let real calls fill it.",
                             cx,
                         ))
                     })
@@ -593,7 +811,7 @@ impl WorkbenchPanel {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_port;
+    use super::{parse_options, parse_port};
 
     #[test]
     fn a_blank_port_means_any_free_one() {
@@ -602,5 +820,29 @@ mod tests {
         assert!(parse_port("0").is_err());
         assert!(parse_port("70000").is_err());
         assert!(parse_port("http").is_err());
+    }
+
+    #[test]
+    fn chaos_fields_default_to_none_and_one_bound_means_fixed() {
+        let none = parse_options("", "", "", "", "").unwrap();
+        assert_eq!(none.latency_ms, (0, 0));
+        assert_eq!(none.failure_percent, 0.0);
+        assert_eq!(none.upstream, None);
+        assert_eq!(
+            parse_options("", "", "250", "", "").unwrap().latency_ms,
+            (250, 250)
+        );
+        assert_eq!(
+            parse_options("", "100", "900", "5", "").unwrap().latency_ms,
+            (100, 900)
+        );
+        let recording = parse_options("", "", "", "", " https://api.example.com ").unwrap();
+        assert_eq!(
+            recording.upstream.as_deref(),
+            Some("https://api.example.com")
+        );
+        assert!(parse_options("", "900", "100", "", "").is_err());
+        assert!(parse_options("", "", "", "120", "").is_err());
+        assert!(parse_options("", "", "", "", "api.example.com").is_err());
     }
 }

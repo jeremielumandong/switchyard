@@ -7,7 +7,7 @@
 <meta property="og:title" content="Switchyard">
 <meta property="og:image" content="screenshots/query.png">
 <link rel="icon" type="image/svg+xml" href="icon.svg">
-<script>window.__resources = {"shot_plan": "screenshots/plan.png", "shot_table_data": "screenshots/table-data.png", "shot_api_request": "screenshots/api-request.png", "shot_terminal": "screenshots/terminal.png", "shot_schema": "screenshots/schema.png", "shot_api_runner": "screenshots/api-runner.png", "shot_palette": "screenshots/palette.png", "shot_new_connection": "screenshots/new-connection.png", "shot_servers": "screenshots/servers.png", "shot_fleet": "screenshots/fleet.png", "shot_containers": "screenshots/containers.png", "shot_schema_compare": "screenshots/schema-compare.png", "shot_runbook": "screenshots/runbook.png", "shot_terraform": "screenshots/terraform.png", "shot_redis": "screenshots/redis.png", "https://unpkg.com/react@18.3.1/umd/react.production.min.js": "assets/react.production.min.js", "https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js": "assets/react-dom.production.min.js"};</script>
+<script>window.__resources = {"shot_plan": "screenshots/plan.png", "shot_table_data": "screenshots/table-data.png", "shot_api_request": "screenshots/api-request.png", "shot_terminal": "screenshots/terminal.png", "shot_schema": "screenshots/schema.png", "shot_api_runner": "screenshots/api-runner.png", "shot_api_load": "screenshots/api-load.png", "shot_api_mocks": "screenshots/api-mocks.png", "shot_api_contract": "screenshots/api-contract.png", "shot_palette": "screenshots/palette.png", "shot_new_connection": "screenshots/new-connection.png", "shot_servers": "screenshots/servers.png", "shot_fleet": "screenshots/fleet.png", "shot_containers": "screenshots/containers.png", "shot_schema_compare": "screenshots/schema-compare.png", "shot_runbook": "screenshots/runbook.png", "shot_terraform": "screenshots/terraform.png", "shot_redis": "screenshots/redis.png", "https://unpkg.com/react@18.3.1/umd/react.production.min.js": "assets/react.production.min.js", "https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js": "assets/react-dom.production.min.js"};</script>
 <script src="assets/dc-runtime.js"></script>
 </head>
 <body>
@@ -564,6 +564,9 @@ const SHOTS = [
   ['palette', 'Open anything', 'Ctrl/⌘+P: connections, tools and commands in one list.'],
   ['api-request', 'API explorer', 'Collections, environments, scripts and tests, next to your databases.'],
   ['api-runner', 'Collection runs', 'Iteration data and AI-generated sample data.'],
+  ['api-load', 'Load tests', 'p50 / p95 / p99, throughput and errors, live, with a pass / fail budget.'],
+  ['api-mocks', 'Mock servers', 'Saved examples on localhost, with chaos and record mode.'],
+  ['api-contract', 'Contract drift', 'Breaking changes flagged against earlier responses, no schema to write.'],
   ['servers', 'Servers view', 'Every Host and remote desktop of a workspace, with OS, tags and live reachability.'],
   ['fleet', 'Fleet dashboard', 'Uptime, load, disk, memory and failed units across many Hosts.'],
   ['containers', 'Containers', 'Docker and Kubernetes: logs, shells, scale, restart and port forwards.'],
@@ -593,6 +596,7 @@ const FEATURES = [
   ['Schema compare', ['PostgreSQL, SQL Server, MySQL and SQLite', 'Per-column changes and a side-by-side DDL diff', 'Migration script opened for review, never run']],
   ['Cloud & secrets', ['S3, R2 and Azure Blob with paged listings', 'App Configuration history, label compare, flags; Key Vault', 'Secret vault: named secrets from the keychain, 1Password or cloud']],
   ['API explorer', ['HTTP, WebSocket, Server-Sent Events and gRPC', 'Import OpenAPI, Postman, Insomnia, HAR or cURL', 'pm.* scripts and tests; collection runner']],
+  ['API testing', ['Load tests with live p95 / p99 and pass / fail budgets', 'Local mock servers with chaos and record mode', 'Contract drift learned from earlier responses']],
   ['Driver Manager', ['Detects, explains and installs native components', 'User-level installs, no admin rights', 'Signed manifests and SHA-256 verification']],
   ['Workspace', ['Open anything (⌘P) and a command palette for every action', 'Verified background updates, installed on restart', 'Dark and light themes, UI zoom 70–200 %']],
   ['Security', ['Secrets in the OS keychain or an argon2 + ChaCha20 vault', 'Never in logs, history or exports', 'TLS verification on by default; strict host keys']],
