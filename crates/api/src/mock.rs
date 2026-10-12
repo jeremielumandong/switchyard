@@ -10,6 +10,13 @@
 //! the first one. Every answer carries permissive CORS headers and preflights
 //! succeed, so browser apps can call the mock directly.
 //!
+//! Two switches make it more than a canned-answer server ([`MockOptions`]):
+//! *chaos* adds latency and a share of injected 500s to matched calls, so a
+//! client's timeouts, spinners and retries can be exercised on purpose; and
+//! *record* forwards calls no example matches to a real upstream, answers with
+//! what it returned and keeps the exchange ([`MockRecording`]) so it can be
+//! saved as a new request and example: the mock grows by being used.
+//!
 //! The server is a deliberately small HTTP/1.1 responder (one request per
 //! connection, `Connection: close`) on the caller's tokio runtime.
 
@@ -23,7 +30,9 @@ use base64::Engine;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-use crate::{Example, RequestId, SavedRequest};
+use crate::{
+    CollectionId, Example, ExampleId, HttpMethod, RequestId, ResponseSnapshot, SavedRequest,
+};
 
 /// Hits kept in [`MockServer::hits`].
 const MAX_HITS: usize = 200;
@@ -257,6 +266,76 @@ fn pick_response<'a>(
         .or_else(|| route.responses.first())
 }
 
+/// Saved requests and examples for the recorded calls no existing route
+/// serves, one request per method and path (the first recording wins), filed
+/// in `collection` with URLs under `upstream`.
+pub fn recordings_to_requests(
+    recordings: &[MockRecording],
+    collection: &CollectionId,
+    upstream: &str,
+    existing: &[MockRoute],
+) -> (Vec<SavedRequest>, Vec<Example>) {
+    let mut requests: Vec<SavedRequest> = Vec::new();
+    let mut examples = Vec::new();
+    let base = upstream.trim_end_matches('/');
+    for recording in recordings {
+        let parts: Vec<&str> = recording
+            .path
+            .split('/')
+            .filter(|p| !p.is_empty())
+            .collect();
+        let served = existing
+            .iter()
+            .any(|route| route.method == recording.method && route.matches_path(&parts));
+        let duplicate = requests.iter().any(|request| {
+            request.method.as_str() == recording.method
+                && url_path_template(&request.url) == recording.path
+        });
+        if served || duplicate {
+            continue;
+        }
+        let Ok(method) = HttpMethod::new(recording.method.clone()) else {
+            continue;
+        };
+        let request = SavedRequest {
+            id: RequestId::new(),
+            collection_id: collection.clone(),
+            folder_id: None,
+            name: format!("{} {}", recording.method, recording.path),
+            method,
+            url: format!("{base}{}", recording.path),
+            params: Vec::new(),
+            headers: Vec::new(),
+            auth: Default::default(),
+            body: Default::default(),
+            variables: Vec::new(),
+            scripts: Default::default(),
+            settings: Default::default(),
+            extensions: Default::default(),
+            sort_key: 0,
+        };
+        examples.push(Example {
+            id: ExampleId::new(),
+            request_id: request.id.clone(),
+            name: format!("Recorded {}", recording.status),
+            request: None,
+            response: ResponseSnapshot {
+                status: recording.status,
+                reason: recording.reason.clone(),
+                headers: recording.headers.clone(),
+                body_base64: base64::engine::general_purpose::STANDARD.encode(&recording.body),
+                received_bytes: recording.body.len() as u64,
+                stored_bytes: recording.body.len() as u64,
+                ..ResponseSnapshot::default()
+            },
+            extensions: Default::default(),
+            sort_key: 0,
+        });
+        requests.push(request);
+    }
+    (requests, examples)
+}
+
 /// One call the mock answered.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MockHit {
@@ -269,9 +348,68 @@ pub struct MockHit {
     pub example: Option<String>,
 }
 
+/// How a mock server behaves beyond answering with examples.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MockOptions {
+    /// `127.0.0.1:port`; `0` picks a free port.
+    pub port: u16,
+    /// Extra delay before each answer, uniform between the two bounds (ms).
+    pub latency_ms: (u64, u64),
+    /// Share of matched calls answered with an injected 500 (0–100).
+    pub failure_percent: f64,
+    /// Calls no example matches go here (`https://api.example.com/v1`) and
+    /// are recorded; `None` answers them 404 / 405.
+    pub upstream: Option<String>,
+}
+
+impl MockOptions {
+    /// Why these options cannot start a server, if they cannot.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.latency_ms.0 > self.latency_ms.1 {
+            return Err("The minimum latency is above the maximum.".into());
+        }
+        if self.latency_ms.1 > MAX_LATENCY_MS {
+            return Err(format!("Latency is capped at {MAX_LATENCY_MS} ms."));
+        }
+        if !(0.0..=100.0).contains(&self.failure_percent) {
+            return Err("The failure rate must be between 0 and 100%.".into());
+        }
+        if let Some(upstream) = &self.upstream {
+            let url = url::Url::parse(upstream)
+                .map_err(|_| format!("Record upstream {upstream:?} is not a URL."))?;
+            if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+                return Err("The record upstream must be an http(s) URL.".into());
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Most latency chaos can add to one answer.
+pub const MAX_LATENCY_MS: u64 = 60_000;
+/// Recordings kept per server.
+const MAX_RECORDINGS: usize = 500;
+/// Response headers never kept in a recording.
+const UNRECORDED_HEADERS: [&str; 2] = ["set-cookie", "date"];
+
+/// A call forwarded to the upstream and what it answered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MockRecording {
+    pub method: String,
+    /// The path without query, as called: `/users/42`.
+    pub path: String,
+    pub status: u16,
+    pub reason: String,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
 struct Shared {
     routes: Vec<MockRoute>,
+    options: MockOptions,
+    upstream: Option<reqwest::Client>,
     hits: Mutex<VecDeque<MockHit>>,
+    recordings: Mutex<Vec<MockRecording>>,
     total: AtomicU64,
 }
 
@@ -283,12 +421,25 @@ pub struct MockServer {
 }
 
 impl MockServer {
-    /// Serve `routes` on `127.0.0.1:port` (`0` picks a free port) on `runtime`.
+    /// Serve `routes` on `127.0.0.1:<options.port>` on `runtime`.
     pub fn start(
         runtime: &tokio::runtime::Handle,
         routes: Vec<MockRoute>,
-        port: u16,
+        options: MockOptions,
     ) -> Result<Self, String> {
+        options.validate()?;
+        let port = options.port;
+        let upstream = match &options.upstream {
+            Some(_) => Some(
+                reqwest::Client::builder()
+                    .tls_backend_preconfigured(crate::tls::client_config()?)
+                    .redirect(reqwest::redirect::Policy::none())
+                    .timeout(Duration::from_secs(60))
+                    .build()
+                    .map_err(|error| format!("Could not prepare recording: {error}"))?,
+            ),
+            None => None,
+        };
         let listener = std::net::TcpListener::bind(("127.0.0.1", port)).map_err(|error| {
             if error.kind() == std::io::ErrorKind::AddrInUse {
                 format!("Port {port} is already in use.")
@@ -309,7 +460,10 @@ impl MockServer {
         };
         let shared = Arc::new(Shared {
             routes,
+            options,
+            upstream,
             hits: Mutex::new(VecDeque::new()),
+            recordings: Mutex::new(Vec::new()),
             total: AtomicU64::new(0),
         });
         let task = runtime.spawn(accept_loop(listener, shared.clone()));
@@ -337,6 +491,15 @@ impl MockServer {
     /// Recent calls, newest first.
     pub fn hits(&self) -> Vec<MockHit> {
         lock(&self.shared.hits).iter().rev().cloned().collect()
+    }
+
+    pub fn options(&self) -> &MockOptions {
+        &self.shared.options
+    }
+
+    /// Calls forwarded to the upstream so far, oldest first.
+    pub fn recordings(&self) -> Vec<MockRecording> {
+        lock(&self.shared.recordings).clone()
     }
 
     /// Calls answered since the server started.
@@ -386,6 +549,7 @@ struct Head {
     method: String,
     target: String,
     headers: Vec<(String, String)>,
+    body: Vec<u8>,
 }
 
 fn parse_head(head: &[u8]) -> Option<Head> {
@@ -404,6 +568,7 @@ fn parse_head(head: &[u8]) -> Option<Head> {
         method,
         target,
         headers,
+        body: Vec::new(),
     })
 }
 
@@ -427,7 +592,7 @@ async fn read_request(stream: &mut TcpStream) -> std::io::Result<Option<Head>> {
         }
         buffer.extend_from_slice(&chunk[..read]);
     };
-    let Some(head) = parse_head(&buffer[..head_end]) else {
+    let Some(mut head) = parse_head(&buffer[..head_end]) else {
         return Ok(None);
     };
     // Read the body too: closing a socket with unread data sends a reset,
@@ -454,7 +619,154 @@ async fn read_request(stream: &mut TcpStream) -> std::io::Result<Option<Head>> {
         }
         body.extend_from_slice(&chunk[..read]);
     }
+    head.body = if chunked {
+        dechunk(&body)
+    } else {
+        body.truncate(length);
+        body
+    };
     Ok(Some(head))
+}
+
+/// The payload of a chunked body (extensions and trailers dropped).
+fn dechunk(mut raw: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    while let Some(line_end) = raw.windows(2).position(|w| w == b"\r\n") {
+        let size = std::str::from_utf8(&raw[..line_end])
+            .ok()
+            .and_then(|line| usize::from_str_radix(line.split(';').next()?.trim(), 16).ok());
+        let Some(size) = size.filter(|size| *size > 0) else {
+            break;
+        };
+        let start = line_end + 2;
+        let Some(chunk) = raw.get(start..start + size) else {
+            break;
+        };
+        out.extend_from_slice(chunk);
+        raw = raw.get(start + size + 2..).unwrap_or_default();
+    }
+    out
+}
+
+/// A number in `0..bound` that is good enough for chaos.
+fn random_below(bound: u64) -> u64 {
+    if bound == 0 {
+        return 0;
+    }
+    (uuid::Uuid::new_v4().as_u128() % u128::from(bound)) as u64
+}
+
+/// Answer a call no example matched from the upstream, and keep it.
+async fn forward(shared: &Shared, head: &Head) -> Option<Answer> {
+    let (client, base) = (shared.upstream.as_ref()?, shared.options.upstream.as_ref()?);
+    let url = format!("{}{}", base.trim_end_matches('/'), head.target);
+    let method = reqwest::Method::from_bytes(head.method.as_bytes()).ok()?;
+    let mut request = client.request(method, &url);
+    for (name, value) in &head.headers {
+        let skip = matches!(
+            name.to_ascii_lowercase().as_str(),
+            "host"
+                | "content-length"
+                | "connection"
+                | "transfer-encoding"
+                | "accept-encoding"
+                | "keep-alive"
+                | "x-mock-response-name"
+                | "x-mock-response-code"
+        );
+        if !skip {
+            request = request.header(name, value);
+        }
+    }
+    if !head.body.is_empty() {
+        request = request.body(head.body.clone());
+    }
+    let answer = match request.send().await {
+        Ok(response) => response,
+        Err(error) => {
+            return Some(json_answer(
+                502,
+                "Bad Gateway",
+                serde_json::json!({ "error": format!("Recording upstream failed: {error}") }),
+            ));
+        }
+    };
+    let status = answer.status();
+    let headers: Vec<(String, String)> = answer
+        .headers()
+        .iter()
+        .filter_map(|(name, value)| Some((name.to_string(), value.to_str().ok()?.to_string())))
+        .filter(|(name, _)| !HOP_HEADERS.contains(&name.to_ascii_lowercase().as_str()))
+        .collect();
+    let body = answer.bytes().await.map(|b| b.to_vec()).unwrap_or_default();
+    let reason = status.canonical_reason().unwrap_or("Status").to_string();
+    {
+        let mut recordings = lock(&shared.recordings);
+        if recordings.len() < MAX_RECORDINGS {
+            recordings.push(MockRecording {
+                method: head.method.to_ascii_uppercase(),
+                path: url_path_template(&head.target),
+                status: status.as_u16(),
+                reason: reason.clone(),
+                headers: headers
+                    .iter()
+                    .filter(|(name, _)| {
+                        !UNRECORDED_HEADERS.contains(&name.to_ascii_lowercase().as_str())
+                    })
+                    .cloned()
+                    .collect(),
+                body: body.clone(),
+            });
+        }
+    }
+    let mut headers = headers;
+    headers.push(("X-Switchyard-Mock".into(), "recorded".into()));
+    Some((
+        status.as_u16(),
+        reason,
+        headers,
+        body,
+        Some(RECORDED.into()),
+    ))
+}
+
+/// [`MockHit::example`] for a call answered by the upstream.
+pub const RECORDED: &str = "recorded from upstream";
+/// [`MockHit::example`] for an injected failure.
+pub const INJECTED_FAILURE: &str = "chaos: injected 500";
+
+async fn answer(shared: &Shared, head: &Head) -> Answer {
+    let preflight = head.method.eq_ignore_ascii_case("OPTIONS")
+        && header(&head.headers, "access-control-request-method").is_some();
+    let matched = !preflight
+        && matches!(
+            match_request(&shared.routes, &head.method, &head.target, &head.headers),
+            MockMatch::Found { .. }
+        );
+    if !preflight
+        && !matched
+        && let Some(answer) = forward(shared, head).await
+    {
+        return answer;
+    }
+    if matched {
+        let (min, max) = shared.options.latency_ms;
+        if max > 0 {
+            let delay = min + random_below(max - min + 1);
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+        }
+        let failure = shared.options.failure_percent;
+        if failure > 0.0 && (random_below(10_000) as f64) < failure * 100.0 {
+            let mut answer = json_answer(
+                500,
+                "Internal Server Error",
+                serde_json::json!({ "error": "Injected failure (Switchyard mock chaos)" }),
+            );
+            answer.4 = Some(INJECTED_FAILURE.into());
+            return answer;
+        }
+    }
+    respond(&shared.routes, head)
 }
 
 async fn serve(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
@@ -464,7 +776,7 @@ async fn serve(mut stream: TcpStream, shared: &Shared) -> std::io::Result<()> {
     let Some(head) = head? else {
         return Ok(());
     };
-    let (status, reason, headers, body, example) = respond(&shared.routes, &head);
+    let (status, reason, headers, body, example) = answer(shared, &head).await;
     let mut out = format!("HTTP/1.1 {status} {reason}\r\n");
     for (name, value) in &headers {
         out.push_str(&format!("{name}: {value}\r\n"));
@@ -603,7 +915,6 @@ fn record_hit(shared: &Shared, head: &Head, status: u16, example: Option<String>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CollectionId, ExampleId, HttpMethod, ResponseSnapshot};
 
     fn request(method: &str, url: &str) -> SavedRequest {
         SavedRequest {
@@ -751,7 +1062,12 @@ mod tests {
             example(&post, "Created", 201, r#"{"id":8}"#),
         ];
         let routes = mock_routes(&[get, post], &examples);
-        let server = MockServer::start(&tokio::runtime::Handle::current(), routes, 0).unwrap();
+        let server = MockServer::start(
+            &tokio::runtime::Handle::current(),
+            routes,
+            MockOptions::default(),
+        )
+        .unwrap();
         let address = server.address();
 
         let found = call(address, "GET /users/7 HTTP/1.1\r\nHost: x\r\n\r\n").await;
@@ -803,11 +1119,125 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let first = MockServer::start(runtime.handle(), Vec::new(), 0).unwrap();
-        let error = match MockServer::start(runtime.handle(), Vec::new(), first.address().port()) {
+        let first =
+            MockServer::start(runtime.handle(), Vec::new(), MockOptions::default()).unwrap();
+        let error = match MockServer::start(
+            runtime.handle(),
+            Vec::new(),
+            MockOptions {
+                port: first.address().port(),
+                ..MockOptions::default()
+            },
+        ) {
             Ok(_) => panic!("the port is taken"),
             Err(error) => error,
         };
         assert!(error.contains("already in use"), "{error}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn chaos_delays_and_fails_matched_calls() {
+        let get = request("GET", "/items");
+        let routes = mock_routes(
+            std::slice::from_ref(&get),
+            &[example(&get, "List", 200, "[]")],
+        );
+        let server = MockServer::start(
+            &tokio::runtime::Handle::current(),
+            routes,
+            MockOptions {
+                latency_ms: (120, 120),
+                failure_percent: 100.0,
+                ..MockOptions::default()
+            },
+        )
+        .unwrap();
+        let started = std::time::Instant::now();
+        let answer = call(server.address(), "GET /items HTTP/1.1\r\n\r\n").await;
+        assert!(started.elapsed() >= Duration::from_millis(120));
+        assert!(answer.starts_with("HTTP/1.1 500"), "{answer}");
+        assert_eq!(server.hits()[0].example.as_deref(), Some(INJECTED_FAILURE));
+        let missing = call(server.address(), "GET /other HTTP/1.1\r\n\r\n").await;
+        assert!(
+            missing.starts_with("HTTP/1.1 404"),
+            "chaos only touches matched calls"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn record_mode_forwards_misses_and_keeps_them() {
+        let handle = tokio::runtime::Handle::current();
+        let get = request("GET", "/users/:id");
+        let upstream = MockServer::start(
+            &handle,
+            mock_routes(
+                std::slice::from_ref(&get),
+                &[example(&get, "User", 200, r#"{"id":5}"#)],
+            ),
+            MockOptions::default(),
+        )
+        .unwrap();
+        let health = request("GET", "/health");
+        let local_routes = mock_routes(
+            std::slice::from_ref(&health),
+            &[example(&health, "Up", 200, "ok")],
+        );
+        let recorder = MockServer::start(
+            &handle,
+            local_routes.clone(),
+            MockOptions {
+                upstream: Some(format!("{}/", upstream.url())),
+                ..MockOptions::default()
+            },
+        )
+        .unwrap();
+        let local = call(recorder.address(), "GET /health HTTP/1.1\r\n\r\n").await;
+        assert!(local.ends_with("ok"), "matched calls stay local: {local}");
+        let forwarded = call(recorder.address(), "GET /users/5?full=1 HTTP/1.1\r\n\r\n").await;
+        assert!(forwarded.starts_with("HTTP/1.1 200"), "{forwarded}");
+        assert!(forwarded.contains("X-Switchyard-Mock: recorded"));
+        assert!(forwarded.ends_with(r#"{"id":5}"#));
+        let recordings = recorder.recordings();
+        assert_eq!(recordings.len(), 1);
+        assert_eq!(recordings[0].path, "/users/5");
+        assert_eq!(upstream.total_hits(), 1);
+
+        let collection = CollectionId::new();
+        let (requests, examples) = recordings_to_requests(
+            &[recordings[0].clone(), recordings[0].clone()],
+            &collection,
+            "https://api.example.test/",
+            &local_routes,
+        );
+        assert_eq!(requests.len(), 1, "one request per method and path");
+        assert_eq!(requests[0].url, "https://api.example.test/users/5");
+        assert_eq!(examples[0].request_id, requests[0].id);
+        assert_eq!(examples[0].response.status, 200);
+    }
+
+    #[test]
+    fn options_are_checked_before_listening() {
+        let bad = [
+            MockOptions {
+                latency_ms: (10, 5),
+                ..MockOptions::default()
+            },
+            MockOptions {
+                failure_percent: 101.0,
+                ..MockOptions::default()
+            },
+            MockOptions {
+                upstream: Some("ftp://x".into()),
+                ..MockOptions::default()
+            },
+            MockOptions {
+                upstream: Some("not a url".into()),
+                ..MockOptions::default()
+            },
+        ];
+        for options in bad {
+            assert!(options.validate().is_err(), "{options:?}");
+        }
+        assert_eq!(dechunk(b"3\r\nabc\r\n2;x=y\r\nde\r\n0\r\n\r\n"), b"abcde");
     }
 }

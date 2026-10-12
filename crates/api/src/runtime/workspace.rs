@@ -410,6 +410,11 @@ pub enum StorageCommand {
         request_id: RequestId,
         example_id: ExampleId,
     },
+    /// New requests with their examples, from a mock server's recordings.
+    SaveRecordings {
+        requests: Vec<SavedRequest>,
+        examples: Vec<Example>,
+    },
     UpsertEnvironment {
         environment: Environment,
         secrets: DraftSecrets,
@@ -515,6 +520,18 @@ pub fn execute(
         } => store
             .update_request_urls(&workspace, &collection_id, &updates)
             .map_err(|error| error.to_string())?,
+        StorageCommand::SaveRecordings { requests, examples } => {
+            for request in &requests {
+                store
+                    .upsert_request(request)
+                    .map_err(|error| error.to_string())?;
+            }
+            for example in &examples {
+                store
+                    .upsert_example(example, &[])
+                    .map_err(|error| error.to_string())?;
+            }
+        }
         StorageCommand::UpsertExample {
             example,
             redactions,

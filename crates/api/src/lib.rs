@@ -10,6 +10,7 @@
 //! core runtime sends them.
 
 mod compile;
+pub mod contract;
 mod cookie_jar;
 mod diff;
 pub mod http;

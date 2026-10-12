@@ -3291,6 +3291,7 @@ impl WorkbenchPanel {
                     .into_any_element()
             }
             (ResponseTab::Trace, Some(response)) => self.render_trace(response, cx),
+            (ResponseTab::Contract, Some(_)) => self.render_contract(cx),
             (ResponseTab::Tests, Some(response)) => {
                 if response.test_results.is_empty() {
                     div()

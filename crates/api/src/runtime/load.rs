@@ -820,7 +820,8 @@ mod tests {
             sort_key: 0,
         };
         let routes = crate::mock::mock_routes(&[saved], &[example]);
-        let server = crate::mock::MockServer::start(runtime.handle(), routes, 0).unwrap();
+        let server =
+            crate::mock::MockServer::start(runtime.handle(), routes, Default::default()).unwrap();
         let mut prepared = request();
         prepared.url = format!("{}/health", server.url());
         prepared.settings.allow_private_network = true;
