@@ -53,6 +53,7 @@ mod cloud;
 mod named_secrets;
 pub(crate) use named_secrets::NamedSecrets;
 mod redis;
+mod schema_compare;
 
 /// The SSH layer's description of a saved forward.
 fn forward_spec(f: &switchyard_store::PortForward) -> ForwardSpec {
@@ -938,6 +939,29 @@ impl Service {
                 connection,
                 request,
             } => self.activity(session, connection, request).await,
+            Command::CompareCatalog {
+                session,
+                connection,
+                request,
+                database,
+            } => {
+                let span = info_span!("compare_catalog", request, session);
+                self.compare_catalog(session, connection, request, database)
+                    .instrument(span)
+                    .await
+            }
+            Command::CompareSnapshot {
+                session,
+                connection,
+                request,
+                database,
+                schema,
+            } => {
+                let span = info_span!("compare_snapshot", request, session);
+                self.compare_snapshot(session, connection, request, database, schema)
+                    .instrument(span)
+                    .await
+            }
             Command::SessionAction {
                 session,
                 request,

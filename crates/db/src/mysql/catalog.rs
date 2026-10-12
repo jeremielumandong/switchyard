@@ -66,7 +66,7 @@ const USERS_HINT: &str = "Listing users needs SELECT on mysql.user";
 
 /// Columns of one table (`?` schema, `?` table).
 const COLUMNS_SQL: &str = "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, \
-     IS_NULLABLE, COLUMN_DEFAULT, ORDINAL_POSITION, COLUMN_KEY, COLUMN_COMMENT \
+     IS_NULLABLE, COLUMN_DEFAULT, ORDINAL_POSITION, COLUMN_KEY, COLUMN_COMMENT, EXTRA \
      FROM information_schema.COLUMNS \
      WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION";
 
@@ -227,6 +227,10 @@ fn column_info(r: &Row) -> ColumnInfo {
         ordinal: int(r, 6).unwrap_or_default() as i32,
         is_primary_key: text(r, 7) == "PRI",
         comment: opt_text(r, 8).filter(|c| !c.is_empty()),
+        // `EXTRA` (only in the detail query): `auto_increment`, `DEFAULT_GENERATED`, …
+        identity: opt_text(r, 9)
+            .filter(|e| e.to_ascii_lowercase().contains("auto_increment"))
+            .map(|_| "AUTO_INCREMENT".to_owned()),
     }
 }
 

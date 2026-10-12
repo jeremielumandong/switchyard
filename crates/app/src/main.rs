@@ -15,6 +15,7 @@ mod assistant_settings;
 mod bulk_edit;
 mod chat_markdown;
 mod cloud_tab;
+mod compare_tab;
 mod completion;
 mod conn_editor;
 mod ddl_tab;

@@ -1,0 +1,14 @@
+---
+source: crates/db/src/compare/tests.rs
+expression: summary(&d)
+---
+identical: 0
+[Only in source] View BigOrders
+[Only in source] Procedure Purge
+[Only in target] Table Old (destructive)
+[Different] Table Orders (destructive)
+    ~ column Qty: type int → bigint, NULL → NOT NULL, default ((0)) → ((1))
+    + column Status
+    − column Legacy
+    + check constraint CK_Orders_Qty
+    + index IX_Orders_Status

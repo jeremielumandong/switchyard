@@ -1,0 +1,19 @@
+---
+source: crates/db/src/compare/tests.rs
+expression: summary(&d)
+---
+identical: 2
+[Only in source] Table invoices
+[Only in source] Function order_total(oid bigint)
+[Only in target] Table audit (destructive)
+[Only in target] Procedure purge()
+[Different] Table orders (destructive)
+    ~ column qty: type integer → bigint, NULL → NOT NULL, default none → 1
+    + column note
+    − column legacy_code
+    + check constraint orders_qty_check
+    ~ foreign key orders_customer_id_fkey: [(customer_id) → customers(id)] → [(customer_id) → customers(id) ON DELETE CASCADE]
+    + index orders_customer_idx
+    − index orders_legacy_idx
+[Different] View big_orders
+    ~ definition

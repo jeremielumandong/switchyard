@@ -1399,3 +1399,30 @@ Decisions:
   signed in with an access key cannot resolve references.
 - Bulk edits run one by one (neither service has transactions) and report "X of N done"
   with each failure; restoring a revision and every bulk delete or copy always confirm.
+
+## 2026-10-12 — Schema compare (user request)
+
+- The migration script makes the target match the source and is only ever opened in a SQL
+  editor tab on the target connection; nothing runs it. Agents get no compare tool yet.
+- Destructive statements (DROP TABLE, DROP COLUMN, and a SQLite rebuild that leaves target
+  columns behind) are written commented out under a "WARNING: destructive" line, with a
+  count at the top. Type changes that may truncate are not flagged. Objects only in the
+  target (whose script is a DROP) start unticked in the list.
+- Script generation is per engine behind `Dialect::schema_scripter` (`SchemaScripter` in
+  `db::compare`), so the app never branches on the engine. Local SQLite only: D1 and
+  Durable Objects refuse the rebuild's `BEGIN` / `PRAGMA foreign_keys`.
+- Constraints and indexes pair by name first, then by what they do, because SQL Server
+  generates names (`PK__t__…`); a name-only difference is not reported.
+- Comparing two schemas on one server retargets the source schema name in DDL (code
+  segments and PostgreSQL dollar-quoted bodies, never string literals) before comparing
+  and scripting. PostgreSQL `nextval(…)` defaults compare equal (each schema has its own
+  sequence) and new tables use `serial` / `bigserial`.
+- PostgreSQL refuses to alter a column a view reads: the script drops the changed views,
+  and unchanged views whose text names an altered table, before the table changes and
+  creates them again after.
+- MySQL definers (`DEFINER=…`) are ignored when comparing and dropped from the script, so
+  objects are created as whoever runs it. The script starts with `USE <target>`.
+- A side in another database than the connection's default gets `USE` at the top (SQL
+  Server, MySQL) or a note to switch the tab's database (PostgreSQL reconnects).
+- `ColumnInfo::identity` was added (serde default) rather than folding identity into the
+  type or default, so the explorer's columns are unchanged.
