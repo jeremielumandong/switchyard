@@ -5,6 +5,11 @@ tunnels and file transfer behind one connection model. It also visualizes query 
 finds optimization hotspots, and lets coding CLIs (Claude Code, Codex CLI, Gemini CLI or a
 custom one) plan and optimize queries through a read-only MCP server.
 
+Around that core sit the tools you would otherwise open next to it: server workspaces with
+RDP / VNC launch, commands and a health dashboard across many Hosts, Docker and Kubernetes,
+Terraform state, cloud inventory, network checks and logs, runbooks, schema compare, cloud
+storage and config services, and an API workbench for HTTP, WebSocket, SSE and gRPC.
+
 Written in Rust on [GPUI](https://www.gpui.rs/) and
 [gpui-component](https://github.com/longbridge/gpui-kit). Runs on macOS, Windows and Linux.
 Licensed under Apache-2.0.
@@ -27,6 +32,18 @@ Licensed under Apache-2.0.
   <tr>
     <td><img src="docs/screenshots/api-request.png" alt="API explorer: a GET request with query parameters, a pretty JSON response and passing tests"><br><sub><b>API explorer</b>: collections, environments, scripts and tests, next to your databases.</sub></td>
     <td><img src="docs/screenshots/api-runner.png" alt="API explorer collection runner with per-request results"><br><sub><b>Collection runs</b> with iteration data and AI-generated sample data.</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/servers.png" alt="Servers view grouped by folder with the workspace menu open"><br><sub><b>Server workspaces</b>: per-team views, a Servers list with OS and reachability, RDP / VNC.</sub></td>
+    <td><img src="docs/screenshots/fleet.png" alt="Fleet run of one command on four Hosts with one Host's output expanded"><br><sub><b>Fleet</b>: one command on many Hosts, with the outlier easy to spot.</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/containers.png" alt="Docker containers with streamed logs of the selected container"><br><sub><b>Containers</b>: Docker and Kubernetes, logs, shells and port forwards.</sub></td>
+    <td><img src="docs/screenshots/terraform.png" alt="Terraform state viewer with a database instance and masked sensitive attributes"><br><sub><b>Terraform state</b>: resources, attributes and outputs, secrets masked.</sub></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/schema-compare.png" alt="Schema compare between staging and production with a side-by-side DDL diff"><br><sub><b>Schema compare</b>: per-object changes and a migration script to review.</sub></td>
+    <td><img src="docs/screenshots/runbook.png" alt="Runbook run with a SQL step's result grid and an HTTP step's response"><br><sub><b>Runbooks</b>: SQL, HTTP, shell and confirm steps with parameters.</sub></td>
   </tr>
 </table>
 
@@ -63,6 +80,28 @@ administrator rights.
 - **Import Hosts from `~/.ssh/config`** with a preview (alias, user@host:port, auth,
   ProxyJump; already-saved entries greyed out).
 - **Profiles** stored in local SQLite; JSON export and import, always without secrets.
+- **Shared credentials**: one user name and password or SSH key used by many Hosts,
+  database connections and remote desktops. Rotate it once and every user picks it up.
+- **Secret vault**: name a secret once and type `{{vault.name}}` in any password, token or
+  key field. It lives in the keychain, is read from 1Password (`op`), or is linked to Azure
+  Key Vault, AWS Secrets Manager or Parameter Store and read when used, never written to disk.
+
+### Server workspaces and remote desktops
+
+- **Workspaces** in the title bar menu: a "Payments" or "Platform" view of your Hosts,
+  connections, clusters and remote desktops, by members, tag rules and folder rules. An
+  item can be in several workspaces; each one keeps its own tabs and layout.
+- **Share a workspace** as a `.switchyard-workspace.json` file. Secrets stay out unless you
+  choose to include them, encrypted with a passphrase; the import shows a preview and asks
+  for what is missing.
+- **Servers view**: every Host and remote desktop of the workspace as a list or cards, with
+  OS, tags, environment, last connected and a live reachability dot; search by name, IP,
+  `tag:web` or OS; group by folder, tag or environment; SSH, SFTP, Fleet, RDP / VNC per row.
+- **Connect to…** (Ctrl/⌘+K): fuzzy search over every Host, desktop and connection that
+  opens the right kind of session.
+- **RDP and VNC** servers open in the system client (`mstsc`, Windows App, FreeRDP,
+  Remmina, TigerVNC), optionally through an SSH tunnel or an RD Gateway. Passwords never
+  appear on a command line.
 
 ### Databases
 
@@ -78,6 +117,8 @@ administrator rights.
 | Durable Object SQLite | The SQLite storage of one Cloudflare Durable Object through Cloudflare's `query/v2` API, so your Worker needs no change |
 | MongoDB | `mongosh`-style statements (`db.orders.find(...)`), `mongodb+srv://` seed lists, documents in the grid with edits by `_id`, plans |
 | Redis | Key browser in the style of Redis Insight (tree by `:` folders, type filter, TTL and size), per-type value editors, `redis-cli`-style console |
+
+![Redis key browser with a hash open and the console below](docs/screenshots/redis.png)
 
 All SQL engines sit behind the same `Driver` / `Dialect` traits, so quoting, LIMIT vs TOP vs
 FETCH FIRST, script splitting and catalog queries are engine-aware everywhere.
@@ -138,6 +179,10 @@ FETCH FIRST, script splitting and catalog queries are engine-aware everywhere.
 - **Object properties** tab (columns, indexes, constraints, foreign keys, triggers, DDL) and
   **dependencies** (uses / used by).
 - **ER diagram** laid out from foreign keys.
+- **Schema compare** between two connections, databases or schemas (PostgreSQL, SQL Server,
+  MySQL / MariaDB, SQLite): objects only in one side or different, per-column changes, a
+  side-by-side DDL diff, and a migration script opened in a new tab, never run. Drops are
+  commented out under a warning.
 - **Activity monitor** with kill session (double-confirmed on Production, never available to
   agents).
 - Keyboard navigation: arrows, Enter, Ctrl/⌘+C, F5 to refresh.
@@ -231,6 +276,20 @@ MCP tools: `list_connections`, `list_tables`, `describe_table`, `run_query`, `ex
 - Tunnel manager in the status bar: direction, local port, target, status, bytes, Start / Stop.
   Stopping a tunnel ends its dependent sessions with a clear message.
 
+### Fleet
+
+- **Host tags** (`role:web`, `team:payments`) with an Explorer grouping by tag and a
+  `tag:` filter; groups from an **Ansible inventory** (INI or YAML) become tags on import.
+- **Run a command** or a saved macro on a folder, a tag or a selection of Hosts: bounded
+  concurrency, per-Host timeout, cancel all, streamed output, and filters for "failed only"
+  and "differs from the majority".
+- **Dashboard**: uptime, load, CPU count, disk, memory, failed systemd units and OS for every
+  Host from one read-only probe, refreshed on a timer, with full disks and failed units flagged.
+- **Push a file or folder** over SFTP to every Host, with an overwrite policy and chmod.
+- **SSH key rollout**: audit which Hosts have a key, add it, or remove it, with a backup of
+  `authorized_keys` and never the key the session signed in with.
+- A change on a selection that includes a Production Host needs the word PRODUCTION typed.
+
 ### File transfer
 
 - SFTP on the Host's existing SSH session (no second login), and FTP / FTPS (explicit or
@@ -242,17 +301,62 @@ MCP tools: `list_connections`, `list_tables`, `describe_table`, `run_query`, `ex
   app was killed.
 - **Remote edit**: open a remote file in the editor; saving checks the remote modification
   time and offers Overwrite or Discard and reload on conflict.
+- **Images** open in a viewer tab from any file browser; other binary files open in your
+  default app through a temporary copy.
 
 ### Cloud storage and developer tools
 
 - **Object storage** in the Files tab: Amazon S3 and S3-compatible endpoints, Cloudflare R2
-  and Azure Blob Storage, with streamed multipart uploads and transfers both ways.
-- **Key / value tools**: Azure App Configuration (labels, locks, feature flags), Azure Key
-  Vault secrets, AWS Secrets Manager, AWS Parameter Store and Cloudflare Workers KV.
-  Secrets stay hidden until shown; Production saves and every delete are confirmed.
+  and Azure Blob Storage, with streamed multipart uploads and transfers both ways. Large
+  buckets and containers load 100 entries at a time with *Load more* and a server-side
+  prefix search.
+- **Key / value tools**: Azure App Configuration, Azure Key Vault secrets, AWS Secrets
+  Manager, AWS Parameter Store and Cloudflare Workers KV. Secrets stay hidden until shown;
+  Production saves and every delete are confirmed.
+- **Azure App Configuration**: keys grouped by prefix, labels and locks, a feature flag form,
+  revision history with restore, label compare with copy, JSON / `.env` / kvset import and
+  export, and Key Vault references resolved on request. Key Vault shows versions, dates and
+  soft-deleted secrets you can recover.
 - Sign in with access keys, AWS CLI profiles (including SSO), Cloudflare API tokens, Azure
   connection strings, SAS, Microsoft Entra or the Azure CLI. No cloud SDKs: small REST
   clients with their own request signing.
+
+### Containers
+
+- **Docker**: containers, images, volumes and networks; start, stop, restart and remove;
+  inspect, streamed logs, and *Open shell* (`docker exec`) in a terminal tab.
+- **Kubernetes**: context and namespace pickers, pods, deployments and services, describe and
+  YAML, logs with a container picker, scale, rollout restart, port forwards with Copy URL,
+  and a shell into a pod.
+- **Add cluster** from AKS, GKE, EKS, Rancher or a local cluster (kind, minikube, k3d, Docker
+  Desktop, Rancher Desktop). Contexts are labelled by provider, and expired sign-ins say which
+  `az`, `gcloud` or `aws` command to run.
+- Runs the CLIs on this computer or on a Host over its SSH session. Read-only mode, and a
+  typed-name confirmation for changes on Production.
+
+### Infra tools
+
+- **Terraform / OpenTofu state** (read-only) from a local file, an S3 or Azure Blob backend
+  with its object versions, or HCP Terraform: resources by module and type, attributes with
+  sensitive values masked, outputs, dependencies, and a compare of two states.
+- **Cloud inventory**: AWS (EC2, RDS, load balancers, EKS, S3), Azure Resource Graph,
+  Cloudflare and Google Cloud in one filterable table; add a VM as an SSH Host or a database
+  as a connection in one click.
+- **Network checks**: DNS, TLS certificate (chain, SANs, days to expiry), TCP and HTTP(S)
+  timing, run here or from an SSH Host, in saved lists with *Run all*.
+- **Logs**: `tail -F` and `journalctl -f` on a Host, CloudWatch Logs and Azure Log Analytics,
+  streamed into a filtered, level-colored view with pause, follow and export.
+
+### Runbooks
+
+- Step-by-step procedures with a Markdown description, parameters (secret ones stay in the
+  keychain) and Note, SQL, HTTP, Shell and Confirm steps.
+- `{{param}}` values are quoted per SQL dialect or shell, and secrets are bound as statement
+  parameters, never inlined; you see the resolved text before each step runs.
+- Run one step, run from here or run all; the run stops at the first failure, waits at
+  Confirm and Shell steps, streams output and shows SQL results in a grid. Every step goes to
+  history tagged `runbook`.
+- Import and export as JSON, without secrets.
 
 ### API explorer
 
@@ -271,12 +375,16 @@ test the API in front of a database without opening another tool.
   </tr>
 </table>
 
-- **Projects** hold collections, folders and requests; rename in place (double-click or F2);
+- **Projects** hold collections, folders and requests; rename or delete a project from the
+  header menu, rename items in place (double-click or F2);
   each project reopens its request tabs. A first-run page offers Create project, Import
   collection, Paste cURL or a sample request.
 - **Requests**: params, headers, body (JSON, XML, text, form, multipart, file, GraphQL),
   auth (including OAuth), variables, scripts and per-request settings; Ctrl/⌘+L focuses the
   URL, Ctrl/⌘+Enter sends.
+- **WebSocket, Server-Sent Events and gRPC** requests beside HTTP: saved messages, a live
+  message log with timestamps and filter, and for gRPC services from server reflection or
+  `.proto` files, JSON request templates and all four streaming modes.
 - **Environments** with labels (Production, Staging, Development, Local). Production is red
   on the environment chip, URL bar and request, and confirms before sending unsafe methods.
   Secret values live in the keychain or vault.
@@ -297,7 +405,8 @@ test the API in front of a database without opening another tool.
 Everything above works with no extra installs except where a native component is needed;
 then the Driver Manager detects it, explains why, installs it and retries the connection.
 
-- Components: Kerberos / GSSAPI, Oracle Instant Client, SSH agent, X server, and coding CLIs.
+- Components: Kerberos / GSSAPI, Oracle Instant Client, SSH agent, X server, RDP and VNC
+  clients, and coding CLIs.
 - Strategies: user-level archive install into the app's data directory (no admin rights),
   package-manager command shown and run with elevation after confirmation, *Use existing path*,
   *Install from file* for offline machines, and a mirror setting.
@@ -311,13 +420,17 @@ then the Driver Manager detects it, explains why, installs it and retries the co
   everything by place (servers, cloud accounts, direct connections) or by type (databases,
   terminals, files and storage, config and secrets), with one filter over all of it.
 - **Tools** pane: port forwards, history, workload statistics, activity monitor, snippets,
-  drivers, and one entry per cloud service. **Activity** pane: sessions, running queries,
+  drivers, Servers, Fleet, Containers, Runbooks, Infra tools, and one entry per cloud
+  service. **Activity** pane: sessions, running queries,
   tunnels and transfers.
 - Title bar menus, **Open anything** (Ctrl/⌘+P) over connections, tools and commands, and a
   **New** button (Ctrl/⌘+N) that asks what you want to connect to.
 - Tabbed center area that splits right or down, inspector panel, status bar with
   connection, environment, transaction, tunnels and transfers.
 - Command palette (Ctrl/⌘+Shift+P) reaches every action.
+- **Updates** download in the background, are checked against their SHA-256 (and signature
+  when configured), and install on restart: the AppImage is replaced in place, Windows runs
+  the new installer, macOS opens the verified disk image.
 - Dark and light themes. UI zoom from 70 % to 200 % (Ctrl/⌘ + `=` / `-` / `0`) scales the
   whole window, editors, grid and terminal; editor font family and size in Settings →
   Appearance.
@@ -335,6 +448,7 @@ then the Driver Manager detects it, explains why, installs it and retries the co
 | --- | --- | --- |
 | Command palette | ⌘⇧P | Ctrl+Shift+P |
 | Quick switch | ⌘P | Ctrl+P |
+| Connect to a server or connection | ⌘K | Ctrl+K |
 | Run statement / script | ⌘↩ / ⌘⇧↩ | Ctrl+Enter / Ctrl+Shift+Enter |
 | Explain / Explain Analyze | ⌘E / ⌘⇧E | Ctrl+E / Ctrl+Shift+E |
 | Stop query | ⌘. | Ctrl+. |
@@ -350,15 +464,16 @@ then the Driver Manager detects it, explains why, installs it and retries the co
 
 ## Status
 
-Switchyard is pre-beta (v0.1.10). Not finished yet (see [`PLAN.md`](PLAN.md)):
+Switchyard is pre-beta (v0.1.11). Not finished yet (see [`PLAN.md`](PLAN.md)):
 
 - Corporate CA import and per-connection certificate pinning.
 - Query plans and workload stats for Oracle and Snowflake; workload stats for MySQL; in-app
   approval for agent actual plans.
 - Terminal extras: SSH key generator, PuTTY / MobaXterm session import, Telnet, SCP, a
-  shell picker, the SFTP pane following the shell's folder, external RDP / Mosh viewers.
-- Packaging: MSI/winget, `.deb`/`.rpm`/AUR, Homebrew cask, auto-update, portable mode,
-  performance gates in CI.
+  shell picker, the SFTP pane following the shell's folder, Mosh.
+- Schema compare of data, triggers and sequences; Kubernetes port forwards through a Host.
+- Packaging: MSI/winget, `.deb`/`.rpm`/AUR, Homebrew cask, portable mode, performance gates
+  in CI.
 
 <a id="install-linux"></a>
 ## Install (Linux)
@@ -388,7 +503,9 @@ The release is built on Ubuntu 22.04, so it needs glibc 2.35 or newer. Make sure
 `~/.local/bin` is on your `PATH` so the `switchyard` and `swy` commands resolve; the
 installer warns if it is not.
 
-- **Update:** quit Switchyard and run the same command again. The previous version is
+- **Update:** Switchyard downloads and verifies new releases itself and replaces the
+  AppImage when you click *Restart to update* (Settings → General turns this off). To update
+  by hand, quit Switchyard and run the same command again. The previous version is
   kept as `Switchyard.AppImage.bak`. The installer won't replace an AppImage that is
   running (it may have open transactions or unsaved edits) unless you add
   `--stop-running`: `curl -fsSL …/install.sh | sh -s -- --stop-running`.
@@ -404,7 +521,7 @@ under [Quick start](#quick-start)):
 
 ```sh
 ./install.sh --build                         # build the AppImage, then install it
-./install.sh dist/Switchyard-0.1.10-x86_64.AppImage   # install an AppImage you already have
+./install.sh dist/Switchyard-0.1.11-x86_64.AppImage   # install an AppImage you already have
 ./install.sh --uninstall
 ```
 
@@ -457,4 +574,5 @@ cargo test --workspace -- --ignored
 | `switchyard-cli` | `swy` binary and MCP server |
 | `switchyard-agents` | `AgentAdapter` trait and Claude Code / Codex / Gemini / custom adapters |
 | `switchyard-api` | API workspace: collections, requests, environments, OAuth, scripts |
-| `switchyard-cloud` | S3, R2 and Azure Blob as `RemoteFs`; App Configuration, Key Vault, Secrets Manager, Parameter Store, Workers KV |
+| `switchyard-cloud` | S3, R2 and Azure Blob as `RemoteFs`; App Configuration, Key Vault, Secrets Manager, Parameter Store, Workers KV; Terraform state, cloud inventory, cloud logs |
+| `switchyard-containers` | `docker` / `kubectl` / `az` / `gcloud` / `aws` calls and their JSON for the Containers tab |
