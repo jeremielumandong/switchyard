@@ -78,6 +78,10 @@ pub struct Detect {
     /// First version not supported (a newer major Switchyard was not tested with).
     #[serde(default)]
     pub below_version: Option<String>,
+    /// Programs never run with `--version` (GUI programs such as `mstsc` or
+    /// `vncviewer` open a window instead of printing a version).
+    #[serde(default)]
+    pub no_version_probe: Vec<String>,
 }
 
 /// Install strategy per platform.

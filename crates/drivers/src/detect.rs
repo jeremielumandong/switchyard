@@ -237,11 +237,29 @@ fn detect_program(spec: &ComponentSpec, env: &DetectEnv) -> ComponentStatus {
                 .find_map(|n| (env.program)(n))
                 .map(|p| (p, Source::System))
         });
+    // GUI clients may also be app bundles or fixed system paths (`paths`).
+    let found = found.or_else(|| {
+        spec.detect
+            .paths
+            .iter()
+            .map(|p| expand_home(p, env))
+            .find(|p| p.as_ref().is_some_and(|p| p.exists()))
+            .flatten()
+            .map(|p| (p, Source::System))
+    });
     let Some((path, source)) = found else {
         return ComponentStatus::Missing;
     };
     let location = path.display().to_string();
-    let version = (env.version_of)(&path);
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let version = if spec.detect.no_version_probe.contains(&stem) || path.is_dir() {
+        None
+    } else {
+        (env.version_of)(&path)
+    };
     if let Some(v) = &version {
         if let Some(min) = spec.detect.min_version.as_deref()
             && !version::at_least(v, min)
@@ -266,6 +284,16 @@ fn detect_program(spec: &ComponentSpec, env: &DetectEnv) -> ComponentStatus {
         version,
         location,
         source,
+    }
+}
+
+/// `p` with a leading `~/` replaced by the home folder.
+fn expand_home(p: &str, env: &DetectEnv) -> Option<PathBuf> {
+    match p.strip_prefix("~/") {
+        Some(rest) => (env.var)("HOME")
+            .or_else(|| (env.var)("USERPROFILE"))
+            .map(|h| Path::new(&h).join(rest)),
+        None => Some(PathBuf::from(p)),
     }
 }
 
@@ -554,6 +582,53 @@ mod tests {
                 .and_then(|(_, _, v)| version::parse_version(v))
         });
         e
+    }
+
+    #[test]
+    fn remote_desktop_clients() {
+        let m = Manifest::bundled();
+        let rdp = m.component("rdp-client").unwrap().clone();
+        let vnc = m.component("vnc-client").unwrap().clone();
+        assert_eq!(detect(&rdp, &cli_env(&[])), ComponentStatus::Missing);
+        let e = cli_env(&[
+            (
+                "xfreerdp",
+                "/usr/bin/xfreerdp",
+                "This is FreeRDP version 2.11.5",
+            ),
+            (
+                "vncviewer",
+                "/usr/bin/vncviewer",
+                "TigerVNC Viewer 64-bit v1.13.1",
+            ),
+        ]);
+        assert_eq!(
+            detect(&rdp, &e),
+            ComponentStatus::Installed {
+                version: Some("2.11.5".into()),
+                location: "/usr/bin/xfreerdp".into(),
+                source: Source::System,
+            }
+        );
+        // vncviewer opens a window on `--version`: it is never run.
+        assert_eq!(
+            detect(&vnc, &e),
+            ComponentStatus::Installed {
+                version: None,
+                location: "/usr/bin/vncviewer".into(),
+                source: Source::System,
+            }
+        );
+        // An app bundle or fixed path when no program is on PATH.
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("Windows App.app");
+        std::fs::create_dir(&app).unwrap();
+        let mut spec = rdp.clone();
+        spec.detect.paths = vec![app.display().to_string()];
+        assert!(matches!(
+            detect(&spec, &cli_env(&[])),
+            ComponentStatus::Installed { version: None, .. }
+        ));
     }
 
     #[test]

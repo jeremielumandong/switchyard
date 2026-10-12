@@ -979,6 +979,8 @@ pub enum Command {
     /// Fleet: commands, probes, pushes and key changes on many Hosts, Ansible import
     /// ([`Event::Fleet`]).
     Fleet(crate::fleet::FleetCommand),
+    /// Workspaces, workspace files, reachability, credentials and remote desktops.
+    Servers(crate::servers::ServersCommand),
     /// Read `~/.ssh/config` and answer with [`Event::SshConfigPreview`]; nothing is saved.
     PreviewSshConfig,
     /// Import Hosts from `~/.ssh/config`: the entries named in `only`, or every new one.
@@ -1363,6 +1365,8 @@ pub enum Event {
     },
     /// Fleet progress and results ([`Command::Fleet`]).
     Fleet(crate::fleet::FleetEvent),
+    /// Answers to [`Command::Servers`] (and reachability results).
+    Servers(crate::servers::ServersEvent),
     /// What importing `~/.ssh/config` would add (answer to `PreviewSshConfig`).
     SshConfigPreview {
         /// The file read.

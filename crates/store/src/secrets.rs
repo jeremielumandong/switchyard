@@ -241,10 +241,13 @@ struct VaultFile {
     entries: BTreeMap<String, Sealed>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-struct Sealed {
-    nonce: String,
-    data: String,
+/// A value encrypted with ChaCha20-Poly1305 (hex nonce and ciphertext with tag).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sealed {
+    /// 12-byte nonce, hex.
+    pub nonce: String,
+    /// Ciphertext and tag, hex.
+    pub data: String,
 }
 
 const CHECK_PLAINTEXT: &[u8] = b"switchyard-vault-v1";
@@ -255,7 +258,7 @@ pub struct VaultStore {
     state: Mutex<Option<(ChaCha20Poly1305, VaultFile)>>,
 }
 
-fn derive_key(password: &SecretString, salt: &[u8]) -> Result<ChaCha20Poly1305> {
+pub(crate) fn derive_key(password: &SecretString, salt: &[u8]) -> Result<ChaCha20Poly1305> {
     let mut key = [0u8; 32];
     Argon2::default()
         .hash_password_into(password.expose_secret().as_bytes(), salt, &mut key)
@@ -265,7 +268,7 @@ fn derive_key(password: &SecretString, salt: &[u8]) -> Result<ChaCha20Poly1305> 
     Ok(cipher)
 }
 
-fn seal(cipher: &ChaCha20Poly1305, plaintext: &[u8]) -> Result<Sealed> {
+pub(crate) fn seal(cipher: &ChaCha20Poly1305, plaintext: &[u8]) -> Result<Sealed> {
     let nonce_bytes: [u8; 12] = random_bytes();
     let nonce = Nonce::from(nonce_bytes);
     let data = cipher
@@ -277,7 +280,7 @@ fn seal(cipher: &ChaCha20Poly1305, plaintext: &[u8]) -> Result<Sealed> {
     })
 }
 
-fn open(cipher: &ChaCha20Poly1305, sealed: &Sealed) -> Result<Vec<u8>> {
+pub(crate) fn open(cipher: &ChaCha20Poly1305, sealed: &Sealed) -> Result<Vec<u8>> {
     let nonce: [u8; 12] = unhex(&sealed.nonce)
         .and_then(|n| n.try_into().ok())
         .ok_or(StoreError::BadPassword)?;
