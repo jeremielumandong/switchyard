@@ -71,6 +71,8 @@ pub enum ConnAction {
     Files,
     /// Open any other saved profile (cloud services).
     Profile,
+    /// Open a runbook by id (`None`: a new runbook).
+    Runbook(Option<String>),
 }
 
 /// One Explorer row.
@@ -546,6 +548,59 @@ fn place_rows(
     rows
 }
 
+/// The RUNBOOKS section: a heading, the runbooks (id, name) by name and "New runbook".
+/// With a filter, only matching runbooks are listed (and no "New runbook" row).
+pub fn runbook_rows(
+    runbooks: &[(String, String)],
+    collapsed: &HashSet<String>,
+    filter: &str,
+) -> Vec<ConnRow> {
+    let filter = filter.trim();
+    let mut list: Vec<(usize, &(String, String))> = runbooks
+        .iter()
+        .filter_map(|r| fuzzy_score(filter, &r.1).map(|s| (s, r)))
+        .collect();
+    if !filter.is_empty() {
+        if list.is_empty() {
+            return Vec::new();
+        }
+        list.sort_by_key(|(s, _)| *s);
+    }
+    let key = "g:runbooks";
+    let open = !collapsed.contains(key);
+    let mut rows = vec![ConnRow::head(
+        key,
+        "RUNBOOKS",
+        list.len().to_string(),
+        !open,
+    )];
+    if !open {
+        return rows;
+    }
+    let leaf = |key: String, badge: &'static str, label: String, id: Option<String>| ConnRow {
+        kind: RowKind::Leaf,
+        key,
+        depth: 0,
+        badge,
+        label: label.into(),
+        sub: "".into(),
+        env: None,
+        live: false,
+        profile: None,
+        action: ConnAction::Runbook(id),
+        drag_group: None,
+        folder: None,
+    };
+    rows.extend(
+        list.into_iter()
+            .map(|(_, (id, name))| leaf(format!("rb:{id}"), "RB", name.clone(), Some(id.clone()))),
+    );
+    if filter.is_empty() {
+        rows.push(leaf("rb:new".into(), "+", "New runbook".into(), None));
+    }
+    rows
+}
+
 /// Production first, Local last.
 fn env_rank(e: EnvironmentLabel) -> u8 {
     match e {
@@ -832,5 +887,25 @@ mod tests {
             assert_eq!(ExplorerGroup::from_key(g.key()), g);
         }
         assert_eq!(ExplorerGroup::from_key("?"), ExplorerGroup::Place);
+    }
+
+    #[test]
+    fn runbook_section() {
+        let rbs = vec![
+            ("a".to_owned(), "Fail over".to_owned()),
+            ("b".to_owned(), "Rotate keys".to_owned()),
+        ];
+        let rows = runbook_rows(&rbs, &HashSet::new(), "");
+        assert_eq!(
+            rows.iter().map(|r| r.label.to_string()).collect::<Vec<_>>(),
+            ["RUNBOOKS", "Fail over", "Rotate keys", "New runbook"]
+        );
+        assert_eq!(rows[1].action, ConnAction::Runbook(Some("a".into())));
+        assert_eq!(rows[3].action, ConnAction::Runbook(None));
+        let rows = runbook_rows(&rbs, &HashSet::new(), "rot");
+        assert_eq!(rows.len(), 2);
+        assert!(runbook_rows(&rbs, &HashSet::new(), "zzz").is_empty());
+        let collapsed: HashSet<String> = ["g:runbooks".to_owned()].into();
+        assert_eq!(runbook_rows(&rbs, &collapsed, "").len(), 1);
     }
 }
