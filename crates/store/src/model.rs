@@ -262,6 +262,12 @@ pub struct HostPatch {
     pub start_directory: Option<Option<String>>,
     /// Keepalive interval in seconds.
     pub keepalive_secs: Option<u32>,
+    /// Tags to add (Fleet).
+    #[serde(default)]
+    pub add_tags: Vec<String>,
+    /// Tags to remove (Fleet); applied before `add_tags`.
+    #[serde(default)]
+    pub remove_tags: Vec<String>,
 }
 
 fn non_empty(v: &Option<String>) -> Option<String> {
@@ -299,6 +305,13 @@ impl HostPatch {
         }
         if let Some(k) = self.keepalive_secs {
             h.keepalive_secs = k;
+        }
+        if !self.remove_tags.is_empty() || !self.add_tags.is_empty() {
+            let gone = crate::tags::normalize_tags(&self.remove_tags);
+            let mut tags = crate::tags::normalize_tags(&h.tags);
+            tags.retain(|t| !gone.contains(t));
+            tags.extend(crate::tags::normalize_tags(&self.add_tags));
+            h.tags = crate::tags::normalize_tags(tags);
         }
     }
 }
@@ -2080,5 +2093,18 @@ mod tests {
         assert_ne!(d.id, h.id);
         assert_eq!(d.name, "web copy");
         assert!(d.secret.is_none() && d.favorite);
+    }
+
+    #[test]
+    fn host_patch_adds_and_removes_tags() {
+        let mut h = Host::new("web", "10.0.0.1", "deploy");
+        h.tags = vec!["Web".into(), "role:old".into()];
+        HostPatch {
+            add_tags: vec!["region:EU".into(), "web".into()],
+            remove_tags: vec!["ROLE:old".into()],
+            ..HostPatch::default()
+        }
+        .apply(&mut h);
+        assert_eq!(h.tags, ["web", "region:eu"]);
     }
 }

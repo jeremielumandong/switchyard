@@ -10,6 +10,7 @@ mod entra;
 pub mod env;
 pub mod error;
 pub mod files;
+pub mod fleet;
 pub mod handoff;
 pub mod prompts;
 pub mod runbook;

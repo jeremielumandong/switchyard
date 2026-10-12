@@ -52,6 +52,7 @@ mod assistant;
 mod cloud;
 mod clusters;
 mod containers;
+mod fleet;
 mod named_secrets;
 pub(crate) use named_secrets::NamedSecrets;
 mod redis;
@@ -208,6 +209,8 @@ pub struct Service {
     agent_runs: Mutex<HashMap<crate::bus::AgentRunId, switchyard_agents::CancelHandle>>,
     /// Agent commands on Hosts waiting for the user's approval.
     agent_approvals: agent_ssh::Approvals,
+    /// Running Fleet runs, to cancel.
+    fleet_runs: fleet::FleetRuns,
     /// Data directory (assistant session tokens).
     data_dir: PathBuf,
     /// `swy` override for assistant runs.
@@ -351,6 +354,7 @@ impl Service {
             cloud: Mutex::default(),
             agent_runs: Mutex::default(),
             agent_approvals: Mutex::default(),
+            fleet_runs: Mutex::default(),
             data_dir: config.data_dir.clone(),
             swy: config.swy.clone(),
             one_password: config.one_password.clone(),
@@ -1371,6 +1375,7 @@ impl Service {
                     Err(e) => self.error("Export", e),
                 }
             }
+            Command::Fleet(c) => self.fleet(c).await,
             Command::PreviewSshConfig => match self.preview_ssh_config().await {
                 Ok((path, hosts)) => self.emit(Event::SshConfigPreview { path, hosts }),
                 Err(e) => self.error("Read ssh config", e),

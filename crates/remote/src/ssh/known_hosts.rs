@@ -47,6 +47,21 @@ pub fn fingerprint(key: &PublicKey) -> String {
     key.fingerprint(HashAlg::Sha256).to_string()
 }
 
+/// `SHA256:…` fingerprint of a base64 public key blob (the second field of an
+/// `authorized_keys` or `.pub` line); `None` when it is not a key this build reads.
+pub fn blob_fingerprint(base64: &str) -> Option<String> {
+    parse_public_key_base64(base64.trim())
+        .ok()
+        .map(|k| fingerprint(&k))
+}
+
+/// The base64 blob of a public key, as `authorized_keys` writes it.
+pub fn key_blob(key: &PublicKey) -> Option<String> {
+    key.to_openssh()
+        .ok()
+        .and_then(|s| s.split_whitespace().nth(1).map(str::to_owned))
+}
+
 /// The `known_hosts` host field for a host and port.
 fn host_entry(host: &str, port: u16) -> String {
     if port == 22 {
@@ -243,6 +258,14 @@ mod tests {
 
     fn key(b64: &str) -> PublicKey {
         parse_public_key_base64(b64).expect("key")
+    }
+
+    #[test]
+    fn blob_fingerprints_match_key_fingerprints() {
+        assert_eq!(blob_fingerprint(ED_A), Some(fingerprint(&key(ED_A))));
+        assert_ne!(blob_fingerprint(ED_A), blob_fingerprint(ED_B));
+        assert_eq!(blob_fingerprint("not-base64!"), None);
+        assert_eq!(key_blob(&key(ED_B)).as_deref(), Some(ED_B));
     }
 
     fn setup(user: &str) -> (tempfile::TempDir, KnownHosts) {

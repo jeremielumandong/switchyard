@@ -104,7 +104,35 @@ const MIGRATIONS: &[&str] = &[
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
     );",
+    // 7: Host tags (Fleet), indexed for the Explorer's tag filter and fleet selections.
+    // The Host's JSON keeps its tags too; `save_profile` keeps both in step. Existing
+    // tags are copied over (lower case, trimmed; later saves normalize fully).
+    "CREATE TABLE host_tags (
+        host_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+        tag TEXT NOT NULL,
+        PRIMARY KEY (host_id, tag)
+    );
+    CREATE INDEX host_tags_tag_idx ON host_tags (tag);
+    INSERT OR IGNORE INTO host_tags (host_id, tag)
+        SELECT p.id, lower(trim(j.value))
+        FROM profiles p, json_each(p.data, '$.tags') j
+        WHERE p.kind = 'host' AND j.type = 'text' AND trim(j.value) <> '';",
 ];
+
+/// Replace the `host_tags` rows of `profile` (a Host) with its tags.
+fn sync_host_tags(conn: &Connection, profile: &Profile) -> Result<()> {
+    let Profile::Host(h) = profile else {
+        return Ok(());
+    };
+    conn.execute("DELETE FROM host_tags WHERE host_id = ?1", [&h.id.0])?;
+    for tag in crate::tags::normalize_tags(&h.tags) {
+        conn.execute(
+            "INSERT OR IGNORE INTO host_tags (host_id, tag) VALUES (?1, ?2)",
+            params![h.id.0, tag],
+        )?;
+    }
+    Ok(())
+}
 
 /// Milliseconds since the Unix epoch.
 pub fn now_ms() -> i64 {
@@ -267,6 +295,16 @@ impl Store {
     /// Insert or update a profile after validation. New profiles go to the end.
     pub fn save_profile(&mut self, profile: &Profile) -> Result<()> {
         profile.validate()?;
+        let normalized;
+        let profile = match profile {
+            Profile::Host(h) => {
+                let mut h = h.clone();
+                h.tags = crate::tags::normalize_tags(&h.tags);
+                normalized = Profile::Host(h);
+                &normalized
+            }
+            other => other,
+        };
         for r in profile.references() {
             if r != profile.id() && self.profile(r)?.is_none() {
                 return Err(StoreError::NotFound(format!("referenced profile {r}")));
@@ -291,6 +329,7 @@ impl Store {
                 now_ms()
             ],
         )?;
+        sync_host_tags(&self.conn, profile)?;
         Ok(())
     }
 
@@ -354,7 +393,13 @@ impl Store {
         let mut profiles: Vec<Profile> = export
             .profiles
             .iter()
-            .map(Profile::without_secret)
+            .map(|p| match p.without_secret() {
+                Profile::Host(mut h) => {
+                    h.tags = crate::tags::normalize_tags(&h.tags);
+                    Profile::Host(h)
+                }
+                other => other,
+            })
             .collect();
         profiles.sort_by_key(|p| match p {
             Profile::Host(_) => 0,
@@ -374,6 +419,7 @@ impl Store {
                  ON CONFLICT(id) DO UPDATE SET kind = ?2, name = ?3, data = ?4, updated_at = ?5",
                 params![p.id().0, p.kind(), p.name(), data, now_ms()],
             )?;
+            sync_host_tags(&self.conn, p)?;
         }
         for p in &profiles {
             for r in p.references() {
@@ -383,6 +429,39 @@ impl Store {
             }
         }
         Ok(tx_count)
+    }
+
+    // ---- host tags ----
+
+    /// Every Host tag with the number of Hosts carrying it, by tag.
+    pub fn tags(&self) -> Result<Vec<(String, usize)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT tag, COUNT(*) FROM host_tags GROUP BY tag ORDER BY tag")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as usize)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// The Hosts carrying `tag` (normalized first), in sidebar order.
+    pub fn hosts_with_tag(&self, tag: &str) -> Result<Vec<ProfileId>> {
+        let Some(tag) = crate::tags::normalize_tag(tag) else {
+            return Ok(Vec::new());
+        };
+        let mut stmt = self.conn.prepare(
+            "SELECT p.id FROM host_tags t JOIN profiles p ON p.id = t.host_id
+             WHERE t.tag = ?1 ORDER BY p.sort_order, p.name COLLATE NOCASE",
+        )?;
+        let rows = stmt.query_map([tag], |r| Ok(ProfileId(r.get(0)?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// The indexed tags of one Host.
+    pub fn host_tags(&self, id: &ProfileId) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT tag FROM host_tags WHERE host_id = ?1 ORDER BY tag")?;
+        let rows = stmt.query_map([&id.0], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     // ---- workspace buffers ----
@@ -1325,6 +1404,80 @@ mod tests {
     }
 
     #[test]
+    fn host_tags_round_trip_and_follow_saves() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("profiles.db");
+        let mut s = Store::open(&path).unwrap();
+        let mut web = Host::new("web-1", "10.0.0.1", "deploy");
+        web.tags = vec![" Web ".into(), "role:App".into(), "web".into()];
+        let mut db = Host::new("db-1", "10.0.0.2", "deploy");
+        db.tags = vec!["role:db".into()];
+        s.save_profile(&Profile::Host(web.clone())).unwrap();
+        s.save_profile(&Profile::Host(db.clone())).unwrap();
+        drop(s);
+        let mut s = Store::open(&path).unwrap();
+        // Normalized in the profile and in the index.
+        let Some(Profile::Host(saved)) = s.profile(&web.id).unwrap() else {
+            panic!("host missing");
+        };
+        assert_eq!(saved.tags, ["web", "role:app"]);
+        assert_eq!(s.host_tags(&web.id).unwrap(), ["role:app", "web"]);
+        assert_eq!(
+            s.tags().unwrap(),
+            [
+                ("role:app".to_owned(), 1),
+                ("role:db".to_owned(), 1),
+                ("web".to_owned(), 1)
+            ]
+        );
+        assert_eq!(s.hosts_with_tag("WEB").unwrap(), [web.id.clone()]);
+        // Re-saving replaces the tags; deleting removes them.
+        let mut changed = saved.clone();
+        changed.tags = vec!["role:db".into()];
+        s.save_profile(&Profile::Host(changed)).unwrap();
+        assert_eq!(
+            s.hosts_with_tag("role:db").unwrap(),
+            [web.id.clone(), db.id.clone()]
+        );
+        assert!(s.hosts_with_tag("web").unwrap().is_empty());
+        s.delete_profile(&db.id).unwrap();
+        assert_eq!(s.tags().unwrap(), [("role:db".to_owned(), 1)]);
+        // Imports index their tags too.
+        let json = s.export_json().unwrap();
+        let mut other = Store::open_in_memory().unwrap();
+        other.import_json(&json).unwrap();
+        assert_eq!(other.hosts_with_tag("role:db").unwrap(), [web.id]);
+    }
+
+    #[test]
+    fn migrates_v6_store_tags_into_the_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("profiles.db");
+        let mut h = Host::new("web", "10.0.0.1", "deploy");
+        h.tags = vec!["Web".into(), " role:app ".into(), String::new()];
+        {
+            let conn = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..6] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.pragma_update(None, "user_version", 6).unwrap();
+            conn.execute(
+                "INSERT INTO profiles (id, kind, name, sort_order, data, updated_at)
+                 VALUES (?1, 'host', 'web', 0, ?2, 0)",
+                params![
+                    h.id.0,
+                    serde_json::to_string(&Profile::Host(h.clone())).unwrap()
+                ],
+            )
+            .unwrap();
+        }
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.schema_version().unwrap(), MIGRATIONS.len() as i64);
+        assert_eq!(s.host_tags(&h.id).unwrap(), ["role:app", "web"]);
+        assert_eq!(s.hosts_with_tag("web").unwrap(), [h.id]);
+    }
+
+    #[test]
     fn macros_are_saved_listed_and_deleted() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("profiles.db");
@@ -1420,7 +1573,7 @@ mod tests {
             .unwrap();
         }
         let mut s = Store::open(&path).unwrap();
-        assert_eq!(s.schema_version().unwrap(), 6);
+        assert_eq!(s.schema_version().unwrap(), MIGRATIONS.len() as i64);
         assert_eq!(s.macros().unwrap().len(), 1);
         assert!(s.runbooks().unwrap().is_empty());
         s.save_runbook(&Runbook::new("rb")).unwrap();
