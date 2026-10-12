@@ -157,6 +157,13 @@ fn place_of(p: &Profile, profiles: &Profiles) -> String {
         },
         Profile::Host(h) => h.address.clone(),
         Profile::Cloud(c) => account_of_cloud(c.service, c.folder.as_deref(), &c.endpoint).1,
+        Profile::Containers(c) => match &c.host_id {
+            Some(h) => host(h).unwrap_or_else(|| "server".into()),
+            None => match crate::app_state::cluster_label(c) {
+                Some(l) => format!("{} · {l}", c.platform.display_name()),
+                None => format!("this machine · {}", c.platform.display_name()),
+            },
+        },
     }
 }
 
@@ -219,11 +226,13 @@ enum TypeSec {
     Terminals,
     Files,
     Config,
+    Containers,
 }
 
-const TYPE_SECTIONS: [(TypeSec, &str, &str); 4] = [
+const TYPE_SECTIONS: [(TypeSec, &str, &str); 5] = [
     (TypeSec::Databases, "t:db", "DATABASES"),
     (TypeSec::Terminals, "t:shell", "TERMINALS"),
+    (TypeSec::Containers, "t:containers", "CONTAINERS & CLUSTERS"),
     (TypeSec::Files, "t:files", "FILES & STORAGE"),
     (TypeSec::Config, "t:config", "CONFIG & SECRETS"),
 ];
@@ -233,6 +242,7 @@ fn type_of(p: &Profile) -> TypeSec {
         Profile::Db(_) => TypeSec::Databases,
         Profile::Host(_) | Profile::Terminal(_) => TypeSec::Terminals,
         Profile::File(_) => TypeSec::Files,
+        Profile::Containers(_) => TypeSec::Containers,
         Profile::Cloud(c) => match c.service {
             CloudService::S3 | CloudService::R2 | CloudService::AzureBlob => TypeSec::Files,
             _ => TypeSec::Config,
@@ -280,6 +290,15 @@ fn leaf(p: &Profile, depth: u8, drag_group: Option<&str>, live: &HashSet<Profile
             ConnAction::Files,
         ),
         Profile::Cloud(c) => (c.region.trim().to_owned(), ConnAction::Profile),
+        Profile::Containers(c) => (
+            match (crate::app_state::cluster_label(c), c.context.as_deref()) {
+                (Some(l), Some(ctx)) if !ctx.trim().is_empty() => format!("{l} · {}", ctx.trim()),
+                (Some(l), _) => l.to_owned(),
+                (None, Some(ctx)) => ctx.trim().to_owned(),
+                (None, None) => String::new(),
+            },
+            ConnAction::Profile,
+        ),
         Profile::Terminal(t) => (String::new(), ConnAction::Terminal(t.host_id.clone())),
         Profile::Host(h) => (h.address.clone(), ConnAction::Terminal(Some(h.id.clone()))),
     };

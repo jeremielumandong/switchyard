@@ -50,6 +50,8 @@ pub mod agent_plan;
 pub mod agent_ssh;
 mod assistant;
 mod cloud;
+mod clusters;
+mod containers;
 mod named_secrets;
 pub(crate) use named_secrets::NamedSecrets;
 mod redis;
@@ -226,6 +228,10 @@ pub struct Service {
     files: Arc<crate::files::Files>,
     /// Named secrets read from cloud stores, with when they were read.
     named_cache: Mutex<HashMap<String, (Instant, SecretString)>>,
+    /// Running Docker / Kubernetes calls, to cancel.
+    container_ops: Mutex<HashMap<RequestId, futures::future::AbortHandle>>,
+    /// `kubectl port-forward`s by the UI's id.
+    container_forwards: Mutex<HashMap<u64, containers::ForwardSlot>>,
 }
 
 /// Run one statement and drain its results (session settings such as `USE`).
@@ -351,6 +357,8 @@ impl Service {
             components,
             files: Arc::default(),
             named_cache: Mutex::default(),
+            container_ops: Mutex::default(),
+            container_forwards: Mutex::default(),
             package_runner: config
                 .package_runner
                 .clone()
@@ -516,6 +524,10 @@ impl Service {
                 if let Profile::Cloud(c) = &profile {
                     self.entra.drop_cloud(&c.id);
                 }
+                // A changed Rancher server, cluster or token: generate its kubeconfig again.
+                if let Profile::Containers(c) = &profile {
+                    self.drop_managed_kubeconfig(&c.id).await;
+                }
                 self.save_profile(request, profile, secret).await
             }
             Command::DeleteProfile { id } => {
@@ -523,6 +535,9 @@ impl Service {
                 match removed {
                     Ok(Some(p)) => {
                         self.files.conns.lock().await.remove(&p.id().0);
+                        if matches!(p, Profile::Containers(_)) {
+                            self.drop_managed_kubeconfig(p.id()).await;
+                        }
                         if let Some(key) = p.secret().cloned()
                             && key.named_secret().is_none()
                         {
@@ -775,6 +790,97 @@ impl Service {
                 size,
             } => {
                 self.open_agent_terminal(term, agent, connection, size)
+                    .await
+            }
+            Command::ContainersList {
+                request,
+                connection,
+                context,
+                query,
+            } => {
+                self.containers_list(request, connection, context, query)
+                    .await
+            }
+            Command::ContainersInspect {
+                request,
+                connection,
+                context,
+                inspect,
+            } => {
+                self.containers_inspect(request, connection, context, inspect)
+                    .await
+            }
+            Command::ContainersAction {
+                request,
+                connection,
+                context,
+                action,
+                confirmed,
+            } => {
+                self.containers_action(request, connection, context, action, confirmed)
+                    .await
+            }
+            Command::ContainersLogs {
+                request,
+                connection,
+                context,
+                source,
+                options,
+            } => {
+                self.containers_logs(request, connection, context, source, options)
+                    .await
+            }
+            Command::ContainersCancel { request } => self.containers_cancel(request),
+            Command::ContainersForward {
+                id,
+                connection,
+                context,
+                forward,
+            } => {
+                self.containers_forward(id, connection, context, forward)
+                    .await
+            }
+            Command::ContainersStopForward { id } => self.containers_stop_forward(id),
+            Command::ContainersListForwards => self.emit_container_forwards(),
+            Command::TestContainers {
+                request,
+                connection,
+                secret,
+            } => {
+                let result = self.test_containers(connection, secret).await;
+                self.emit(Event::TestResult {
+                    request,
+                    result: result.map_err(|e| match e {
+                        switchyard_containers::ContainersError::SignIn { message, hint } => {
+                            format!("{message}\n\n{hint}")
+                        }
+                        e => e.to_string(),
+                    }),
+                });
+            }
+            Command::KubeContexts {
+                request,
+                kubeconfig,
+            } => self.kube_contexts(request, kubeconfig).await,
+            Command::DiscoverClusters {
+                request,
+                provider,
+                options,
+            } => self.discover_clusters(request, provider, options).await,
+            Command::AddClusterCredentials {
+                request,
+                cluster,
+                admin,
+            } => self.add_cluster_credentials(request, cluster, admin).await,
+            Command::AwsProfiles { request } => self.aws_profiles(request).await,
+            Command::RancherClusters {
+                request,
+                server,
+                token,
+                connection,
+                trusted_ca_pem,
+            } => {
+                self.rancher_clusters(request, server, token, connection, trusted_ca_pem)
                     .await
             }
             Command::StartForward { host, forward } => {
@@ -1769,6 +1875,7 @@ impl Service {
                             size,
                             startup,
                             env,
+                            command: None,
                         },
                         self.ssh.clone(),
                         self.events.clone(),
@@ -1777,6 +1884,14 @@ impl Service {
                 }
                 Err(e) => Err(e.to_string()),
             },
+            TermTarget::Container {
+                connection,
+                context,
+                shell,
+            } => {
+                self.container_terminal(term, connection, context, shell, size)
+                    .await
+            }
         };
         match result {
             Ok((terminal, description)) => self.emit(Event::TerminalOpened {
@@ -1888,6 +2003,11 @@ impl Service {
                 c.name = format!("{} copy", c.name);
                 c.secret = None;
                 Profile::Cloud(c)
+            }
+            Profile::Containers(mut c) => {
+                c.id = ProfileId::new();
+                c.name = format!("{} copy", c.name);
+                Profile::Containers(c)
             }
         };
         if let Some(old) = old_secret.clone().filter(|r| r.named_secret().is_some()) {
