@@ -61,6 +61,13 @@ Downloads the latest published release, verifies its SHA-256 checksum, and insta
 Switchyard with a desktop launcher and the `swy` CLI. No Rust compiler or sudo is needed.
 See [Install (Linux)](#install-linux) for requirements, updates and uninstalling.
 
+## Download (macOS)
+
+[Download the latest Switchyard release for macOS](https://github.com/jeremielumandong/switchyard/releases/latest/download/Switchyard-macos-universal.dmg)
+
+A universal app for Apple Silicon and Intel Macs (macOS 11 or later). Open the disk image
+and drag Switchyard to Applications.
+
 ## Download (Windows x64)
 
 [Download the latest Switchyard release for Windows](https://github.com/jeremielumandong/switchyard/releases/latest/download/Switchyard-windows-x64-setup.exe)
@@ -489,7 +496,7 @@ then the Driver Manager detects it, explains why, installs it and retries the co
 
 ## Status
 
-Switchyard is pre-beta (v0.1.12). Not finished yet (see [`PLAN.md`](PLAN.md)):
+Switchyard is pre-beta (v0.1.13). Not finished yet (see [`PLAN.md`](PLAN.md)):
 
 - Corporate CA import and per-connection certificate pinning.
 - Query plans and workload stats for Oracle and Snowflake; workload stats for MySQL; in-app
@@ -546,7 +553,7 @@ under [Quick start](#quick-start)):
 
 ```sh
 ./install.sh --build                         # build the AppImage, then install it
-./install.sh dist/Switchyard-0.1.12-x86_64.AppImage   # install an AppImage you already have
+./install.sh dist/Switchyard-0.1.13-x86_64.AppImage   # install an AppImage you already have
 ./install.sh --uninstall
 ```
 
