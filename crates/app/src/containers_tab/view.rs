@@ -470,6 +470,7 @@ impl ContainersTab {
                             Some(
                                 div()
                                     .id(("ct-row", r))
+                                    .w_full()
                                     .h(rpx(ROW_H))
                                     .flex()
                                     .items_center()

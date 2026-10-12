@@ -1234,6 +1234,7 @@ impl FleetTab {
                                 Some(
                                     div()
                                         .id(("fleet-row", n))
+                                        .w_full()
                                         .h(rpx(ROW_H))
                                         .flex()
                                         .items_center()
