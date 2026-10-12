@@ -69,9 +69,10 @@ impl Service {
                     .with_store(move |s| s.create_workspace(&name, scope))
                     .await
                 {
-                    Ok(workspace) => {
-                        self.servers_emit(ServersEvent::Created { request, workspace })
-                    }
+                    Ok(workspace) => self.servers_emit(ServersEvent::Created {
+                        request,
+                        workspace: Box::new(workspace),
+                    }),
                     Err(e) => self.error("New workspace", e),
                 }
                 self.emit_workspaces().await;
@@ -90,9 +91,10 @@ impl Service {
                     .with_store(move |s| s.duplicate_workspace(&id, &name))
                     .await
                 {
-                    Ok(workspace) => {
-                        self.servers_emit(ServersEvent::Created { request, workspace })
-                    }
+                    Ok(workspace) => self.servers_emit(ServersEvent::Created {
+                        request,
+                        workspace: Box::new(workspace),
+                    }),
                     Err(e) => self.error("Duplicate workspace", e),
                 }
                 self.emit_workspaces().await;
@@ -229,7 +231,7 @@ impl Service {
         }
     }
 
-    async fn emit_workspaces(&self) {
+    pub(super) async fn emit_workspaces(&self) {
         match self
             .with_store(|s| Ok((s.workspaces()?, s.current_workspace_id()?)))
             .await
@@ -440,13 +442,15 @@ impl Service {
             "Imported {}: {} added, {} updated, {} skipped",
             file.workspace.name, outcome.added, outcome.updated, outcome.skipped
         );
+        // The UI switches to the workspace and asks for missing secrets: send what it
+        // needs first.
+        self.emit_profiles().await;
+        self.emit_workspaces().await;
         self.servers_emit(ServersEvent::Imported {
             workspace: outcome.workspace_id,
             missing,
             summary,
         });
-        self.emit_profiles().await;
-        self.emit_workspaces().await;
     }
 
     async fn start_reach(&self, ids: Vec<ProfileId>) {

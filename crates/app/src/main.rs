@@ -18,6 +18,7 @@ mod cloud_tab;
 mod compare_tab;
 mod completion;
 mod conn_editor;
+mod connect_to;
 mod container_editor;
 mod containers_tab;
 mod ddl_tab;
@@ -46,6 +47,8 @@ mod remote_files;
 mod result_diff;
 mod rich_text;
 mod runbook_tab;
+mod server_workspaces;
+mod servers_view;
 mod sidebar;
 mod snippets;
 mod split;
@@ -61,6 +64,7 @@ mod updates;
 mod viewer;
 mod workload_tab;
 mod workspace;
+mod workspace_dialogs;
 
 use std::borrow::Cow;
 

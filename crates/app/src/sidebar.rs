@@ -1218,6 +1218,8 @@ pub enum CtxTarget {
     Tag(String),
     /// Hosts picked with Ctrl/⌘-click in the Explorer (Fleet).
     Hosts(Vec<ProfileId>),
+    /// Items of several kinds picked with Ctrl/⌘-click (workspace actions only).
+    Items(Vec<ProfileId>),
     /// A schema (its row or one of its folders) on a connection.
     Schema(ProfileId, String),
 }
@@ -1560,8 +1562,9 @@ impl Workspace {
             })
             .collect();
         let filter = self.explorer_filter.read(cx).value().to_string();
+        // The current workspace's items only ("All" shows everything).
         let mut rows = explorer_rows(
-            &self.profiles,
+            &self.servers.scoped,
             &self.collapsed,
             &live,
             self.explorer_group,
@@ -2021,12 +2024,15 @@ impl Workspace {
         let ctx_profile = r.profile.clone();
         let ctx_folder = r.folder.clone();
         let ctx_tag = r.tag.clone();
-        // Ctrl/⌘-click picks Hosts for Fleet actions.
+        // Ctrl/⌘-click picks items: Hosts for Fleet actions, any item for workspaces.
         let host_row = r
             .profile
             .as_ref()
-            .filter(|id| self.profiles.host(id).is_some() && r.kind != RowKind::Head)
-            .filter(|_| matches!(r.action, ConnAction::Terminal(_) | ConnAction::Toggle))
+            .filter(|_| r.kind != RowKind::Head)
+            .filter(|id| {
+                self.profiles.host(id).is_none()
+                    || matches!(r.action, ConnAction::Terminal(_) | ConnAction::Toggle)
+            })
             .cloned();
         let picked = host_row
             .as_ref()
@@ -2133,7 +2139,12 @@ impl Workspace {
                         && this.host_selection.contains(id)
                     {
                         let sel = this.host_selection.clone();
-                        this.ctx = Some(CtxMenu::new(ev.position, CtxTarget::Hosts(sel)));
+                        let target = if sel.iter().all(|s| this.profiles.host(s).is_some()) {
+                            CtxTarget::Hosts(sel)
+                        } else {
+                            CtxTarget::Items(sel)
+                        };
+                        this.ctx = Some(CtxMenu::new(ev.position, target));
                         cx.notify();
                     } else if let Some(id) = &ctx_profile {
                         this.ctx = Some(CtxMenu::new(ev.position, CtxTarget::Profile(id.clone())));

@@ -1556,3 +1556,67 @@ Decisions:
 - Fleet is not exposed to MCP / agents: `run_ssh_command`'s per-command approval stays the
   only agent path to a Host.
 
+## 2026-10-12 — Server workspaces, shared credentials and RDP / VNC (user request)
+
+- Workspaces are scopes, not copies: a workspace stores members, tag rules, folder rules
+  and exclusions over the same profiles. "Remove from this workspace" drops a membership,
+  or adds an exclusion when a rule still matches; it never deletes the item, which stays
+  in "All". An item can be in any number of workspaces.
+- "All" (id `all`) is built in and is where the v7 single layout migrates (schema 8).
+  Buffers get a `workspace_id` (default `all`). It cannot be renamed or deleted.
+- A workspace also shows what its items need (jump Hosts, tunnel Hosts, SFTP Hosts,
+  credentials), so a member always works, and the app also lists the databases, SFTP and
+  container connections living on a member Host. Credentials are never members.
+- A Host or connection created (or duplicated) while a workspace is current joins it;
+  bulk imports (`~/.ssh/config`, Ansible, profile JSON) only land in "All", so an import
+  does not fill whichever workspace happens to be open.
+- Layout saves (`SaveWorkspace`) keep the stored name and scope (`save_workspace_layout`),
+  so a stale layout from the UI cannot undo a rename or a scope change made meanwhile.
+- Open tabs stay alive across switches: each tab is owned by the workspace it was opened
+  in and hidden elsewhere (terminals keep running, queries keep streaming). Opening the
+  same thing from another workspace moves the tab there. Saved tabs (terminals, files,
+  the Servers view, Redis / cloud / container browsers) reopen once per run on the first
+  switch; SQL editors are the per-workspace buffers.
+- Deleting a workspace removes its scope, layout and SQL buffers; its open tabs close
+  (unsaved files move to "All"). "Also delete the N items in no other workspace" is
+  unchecked by default; items another item still references (a jump Host, a tunnel Host)
+  are kept and named, and deleted items lose their stored secrets.
+- Workspace files: `.switchyard-workspace.json`, format `switchyard-workspace` version 1,
+  readable JSON for Git. Secrets are left out by default and listed as "needs a value";
+  `{{vault.x}}` references travel as references. "Include secrets" encrypts only the
+  secret values with a passphrase, using the fallback vault's Argon2id + ChaCha20-Poly1305
+  (key from a per-file salt; a check value detects a wrong passphrase before anything is
+  written). Profile ids are kept, so re-importing updates items; "keep both" imports a copy
+  with a new id and remaps its references. Replace keeps the local stored secret.
+- Shared credentials are a profile kind (`Profile::Credential`) whose secret lives under
+  the credential's own key. A Host, database connection, remote desktop or RD Gateway
+  stores only the credential id; the runtime builds the effective login at connect time
+  (`Host::with_credential`, `DbConnection::with_credential`), so rotation needs one save.
+  Deleting a credential in use is refused unless the users are detached; detached items
+  keep the user name and need their own password. The JSON field is `auth` (not `kind`,
+  which is `Profile`'s tag).
+- RDP / VNC credentials per client, never on a command line other processes can read:
+  - Linux FreeRDP (`xfreerdp3`, `xfreerdp`): `/from-stdin:force` and the password (then the
+    gateway password) written to its stdin; `/cert:tofu` (FreeRDP's own known-hosts check).
+  - Windows mstsc: a `.rdp` file without a password; mstsc asks. Pre-seeding would need
+    `cmdkey /pass:` (the password on the command line) or a `TERMSRV/<host>` generic
+    credential with its own user name, which the approved `keyring` crate's API cannot
+    create. Revisit if a credential-manager crate is approved.
+  - macOS Windows App / Microsoft Remote Desktop: a `.rdp` file through `open -a`; the app
+    has no way to receive a password, so the user types it (documented in the editor).
+  - Remmina: `remmina -c` with the same `.rdp` file (or `vnc://host:port`), no password
+    (Remmina asks).
+  - VNC: TigerVNC reads `VNC_PASSWORD` from its environment (not visible to other users,
+    unlike argv); macOS Screen Sharing and Remmina ask.
+  `.rdp` files always set `prompt for credentials:i:1` when no password can be passed.
+  Temp files go in a private 0700 folder (files 0600, `create_new`) removed when the client
+  exits (30 s after a hand-off to `open`).
+- RDP / VNC through an existing Host: the shared SSH session opens a local forward and the
+  client connects to `127.0.0.1:<local port>`; the forward closes with the client.
+- Reachability is a plain TCP connect (no login, nothing sent) to 22 / 3389 / 5900, 16 at a
+  time, 3 s timeout, every 30 s, only while the Servers view is open; servers behind a jump
+  Host or tunnel are not probed from here (they would test the wrong network path).
+- Ctrl/Cmd+K opens "Connect to…" (it was unbound; Terminal keeps Ctrl+K for the shell on
+  Linux and Windows, like the other app shortcuts).
+- None of this (workspaces, credentials, remote desktops, launches) is exposed to MCP or
+  `swy`.

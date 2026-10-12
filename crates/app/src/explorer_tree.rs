@@ -165,6 +165,15 @@ fn place_of(p: &Profile, profiles: &Profiles) -> String {
             None => "direct".into(),
         },
         Profile::Host(h) => h.address.clone(),
+        Profile::Desktop(d) => match &d.via_host {
+            Some(h) => format!(
+                "{} · via {}",
+                d.address,
+                host(h).unwrap_or_else(|| "server".into())
+            ),
+            None => d.address.clone(),
+        },
+        Profile::Credential(c) => c.qualified_user(),
         Profile::Cloud(c) => account_of_cloud(c.service, c.folder.as_deref(), &c.endpoint).1,
         Profile::Containers(c) => match &c.host_id {
             Some(h) => host(h).unwrap_or_else(|| "server".into()),
@@ -236,11 +245,13 @@ enum TypeSec {
     Files,
     Config,
     Containers,
+    Desktops,
 }
 
-const TYPE_SECTIONS: [(TypeSec, &str, &str); 5] = [
+const TYPE_SECTIONS: [(TypeSec, &str, &str); 6] = [
     (TypeSec::Databases, "t:db", "DATABASES"),
     (TypeSec::Terminals, "t:shell", "TERMINALS"),
+    (TypeSec::Desktops, "t:desktop", "REMOTE DESKTOPS"),
     (TypeSec::Containers, "t:containers", "CONTAINERS & CLUSTERS"),
     (TypeSec::Files, "t:files", "FILES & STORAGE"),
     (TypeSec::Config, "t:config", "CONFIG & SECRETS"),
@@ -250,6 +261,9 @@ fn type_of(p: &Profile) -> TypeSec {
     match p {
         Profile::Db(_) => TypeSec::Databases,
         Profile::Host(_) | Profile::Terminal(_) => TypeSec::Terminals,
+        Profile::Desktop(_) => TypeSec::Desktops,
+        // Credentials are not listed (they open from the Credentials dialog).
+        Profile::Credential(_) => TypeSec::Config,
         Profile::File(_) => TypeSec::Files,
         Profile::Containers(_) => TypeSec::Containers,
         Profile::Cloud(c) => match c.service {
@@ -408,6 +422,8 @@ fn leaf(p: &Profile, depth: u8, drag_group: Option<&str>, live: &HashSet<Profile
         ),
         Profile::Terminal(t) => (String::new(), ConnAction::Terminal(t.host_id.clone())),
         Profile::Host(h) => (h.address.clone(), ConnAction::Terminal(Some(h.id.clone()))),
+        Profile::Desktop(d) => (d.address.clone(), ConnAction::Profile),
+        Profile::Credential(c) => (c.qualified_user(), ConnAction::Profile),
     };
     ConnRow {
         kind: RowKind::Leaf,
@@ -559,6 +575,27 @@ fn place_rows(
                     }
                 }
             }
+        }
+    }
+
+    // REMOTE DESKTOPS: RDP and VNC servers (MX-12), one click starts the client.
+    let desktops: Vec<&Profile> = profiles
+        .all
+        .iter()
+        .filter(|p| matches!(p, Profile::Desktop(_)))
+        .collect();
+    if !desktops.is_empty() {
+        rows.push(ConnRow::head(
+            "g:desktops",
+            "REMOTE DESKTOPS · RDP / VNC",
+            String::new(),
+            !open("g:desktops"),
+        ));
+        if open("g:desktops") {
+            rows.extend(desktops.into_iter().map(|p| ConnRow {
+                env: Some(p.environment()),
+                ..leaf(p, 0, Some("g:desktops"), live)
+            }));
         }
     }
 
@@ -749,6 +786,9 @@ fn type_rows(
     // Every openable thing with the place it lives.
     let mut leaves: Vec<(TypeSec, ConnRow, String)> = Vec::new();
     for p in &profiles.all {
+        if matches!(p, Profile::Credential(_)) {
+            continue;
+        }
         let place = place_of(p, profiles);
         let mut row = leaf(p, 0, None, live);
         row.env = Some(p.environment());
@@ -1074,6 +1114,38 @@ mod tests {
             "",
         );
         assert!(labels(&rows).contains(&"AWS · sandbox".to_owned()));
+    }
+
+    #[test]
+    fn remote_desktops_list_and_credentials_do_not() {
+        use switchyard_core::store::{Credential, DesktopProtocol, DesktopServer};
+        let mut p = sample();
+        let mut dc = DesktopServer::new("dc01", DesktopProtocol::Rdp);
+        dc.address = "dc01.corp".into();
+        p.all.push(Profile::Desktop(dc));
+        p.all
+            .push(Profile::Credential(Credential::new("ops", "ops")));
+        let rows = explorer_rows(
+            &p,
+            &HashSet::new(),
+            &HashSet::new(),
+            ExplorerGroup::Place,
+            "",
+        );
+        let l = labels(&rows);
+        let at = l.iter().position(|x| x == "REMOTE DESKTOPS · RDP / VNC");
+        assert!(at.is_some_and(|i| l[i + 1] == "dc01"));
+        assert!(!l.contains(&"ops".to_owned()));
+        let rows = explorer_rows(
+            &p,
+            &HashSet::new(),
+            &HashSet::new(),
+            ExplorerGroup::Type,
+            "",
+        );
+        let l = labels(&rows);
+        assert!(l.contains(&"REMOTE DESKTOPS".to_owned()));
+        assert!(!l.contains(&"ops".to_owned()));
     }
 
     #[test]

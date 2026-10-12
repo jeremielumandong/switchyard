@@ -283,6 +283,16 @@ impl TerminalTab {
         }
     }
 
+    /// What a workspace remembers to reopen this tab: `Some(host)` for a plain shell on a
+    /// Host or this computer (`Some(None)`); `None` for coding agent and container shells.
+    pub fn saved_target(&self) -> Option<Option<ProfileId>> {
+        match &self.target {
+            TermTarget::Host(h) => Some(Some(h.clone())),
+            TermTarget::Local { profile: None } if self.agent.is_none() => Some(None),
+            _ => None,
+        }
+    }
+
     /// Whether the shell runs on a Host.
     pub fn is_remote(&self) -> bool {
         matches!(self.target, TermTarget::Host(_))

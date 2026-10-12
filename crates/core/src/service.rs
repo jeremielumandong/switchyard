@@ -1234,7 +1234,7 @@ impl Service {
                 Err(e) => self.error("Workspace", e),
             },
             Command::SaveWorkspace(w) => {
-                if let Err(e) = self.with_store(move |s| s.save_workspace(&w)).await {
+                if let Err(e) = self.with_store(move |s| s.save_workspace_layout(&w)).await {
                     self.error("Workspace", e);
                 }
             }
@@ -1938,11 +1938,18 @@ impl Service {
             profile.set_secret(key);
         }
         let id = profile.id().clone();
-        match self.with_store(move |s| s.save_profile(&profile)).await {
-            Ok(()) => {
+        match self
+            .with_store(move |s| s.save_profile_in_current(&profile))
+            .await
+        {
+            Ok(joined) => {
                 // An edited FTP connection logs in again with its new settings.
                 self.files.conns.lock().await.remove(&id.0);
-                self.emit(Event::ProfileSaved { request, id })
+                self.emit(Event::ProfileSaved { request, id });
+                if joined {
+                    // A new connection joined the current workspace.
+                    self.emit_workspaces().await;
+                }
             }
             Err(CoreError::Store(StoreError::Validation(v))) => self.emit(Event::ProfileError {
                 request,
@@ -2185,7 +2192,13 @@ impl Service {
             copy.set_secret(key);
         }
         let name = copy.name().to_owned();
-        self.with_store(move |s| s.save_profile(&copy)).await?;
+        // The copy joins the current workspace, like any new item.
+        if self
+            .with_store(move |s| s.save_profile_in_current(&copy))
+            .await?
+        {
+            self.emit_workspaces().await;
+        }
         Ok(name)
     }
 

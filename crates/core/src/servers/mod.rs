@@ -212,7 +212,7 @@ pub enum ServersEvent {
         /// Request.
         request: RequestId,
         /// The new workspace.
-        workspace: Workspace,
+        workspace: Box<Workspace>,
     },
     /// What deleting a workspace would also remove.
     DeletePreview {
