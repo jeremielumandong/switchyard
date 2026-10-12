@@ -1620,3 +1620,51 @@ Decisions:
   Linux and Windows, like the other app shortcuts).
 - None of this (workspaces, credentials, remote desktops, launches) is exposed to MCP or
   `swy`.
+
+## 2026-10-12 — In-app RDP tab with IronRDP, vendored connector (user request)
+
+- The user approved adding the IronRDP crates (Devolutions, MIT OR Apache-2.0) and vendoring
+  a patched connector. Used from crates.io unchanged: `ironrdp-session` 0.11, `-pdu` 0.9,
+  `-graphics` 0.9, `-input` 0.7, `-core` 0.2, `-tokio` 0.10 (no default features, so no
+  reqwest); new transitive crates: the other `ironrdp-*` crates they need, `asn1-rs`,
+  `der-parser`, `rusticata-macros` (MIT OR Apache-2.0) and `yuv` (BSD-3-Clause OR
+  Apache-2.0). No GPL. `ironrdp-tls` and `ironrdp-client` are not used: Switchyard does TLS
+  itself (the certificate check below) and drives the session loop itself.
+- `ironrdp-connector` 0.10.0 is vendored (`vendor/ironrdp-connector`, `[patch.crates-io]`):
+  upstream pins sspi 0.21 / picky 7.0.0-rc.25, which would add a second sspi / picky /
+  crypto stack next to the vendored tiberius' sspi 0.23 / picky rc.26 and clash with russh's
+  curve25519-dalek 5 and the hmac 0.13.0 pin. The copy is moved to sspi 0.23 / picky rc.26
+  (one source fix: `TsRequest::buffer_len` became fallible), smart-card logon goes behind an
+  opt-in `scard` feature (sspi's `scard` pulls winscard / cryptoki), and `Credentials`'
+  derived `Debug`, which printed the password, is replaced. No existing pin moved.
+- `image` 0.25 (MIT OR Apache-2.0, already built by GPUI) becomes a direct dependency of
+  the app, default features off: GPUI's `RenderImage` is built from `image::Frame`s, so the
+  desktop image cannot be handed to GPUI without it. Flagged for confirmation like other
+  additions; the alternative is encoding a BMP per frame for `img()`.
+- Feature `rdp-embedded`: off by default in `switchyard-remote` (enabled by core), on by
+  default in `switchyard-core` and `switchyard-app`. Without it the tab says the build has no
+  in-app client and the "Open in Switchyard" entries are hidden; the system-client launcher
+  is unchanged either way.
+- Session on the core runtime; the UI never does I/O. The decoded desktop lives in a shared
+  BGRA buffer; the session sends `Event::Rdp(Frame)` only when the buffer goes from seen to
+  changed, so a slow UI gets fewer, larger updates instead of a growing queue of frames.
+  Input goes the other way as `RdpInput`s; `Command::Rdp` input and close are handled in the
+  command loop itself (not one task per command) so key presses and releases stay in order.
+- TLS certificate policy (RDP servers are mostly self-signed): the handshake records the
+  certificate and the OS store's verdict (signatures are still verified) and nothing is sent
+  until the decision: pinned fingerprint matches → connect; no pin and OS-trusted for the
+  name → connect; no pin, untrusted → ask through the prompter (Trust once / Trust and pin /
+  Cancel); pinned fingerprint differs → refused, like a changed SSH host key, until the user
+  clicks "Forget pinned certificate" and answers the question again. Pins are per remote
+  desktop (`DesktopServer::tls_pin`, SHA-256 of the certificate). The name checked, the SNI
+  and the CredSSP target are the profile's address even through an SSH tunnel.
+- Sign-in: NLA (CredSSP) with NTLM; plain TLS is still offered for servers without NLA.
+  The password comes from the profile's own secret or its shared credential through the
+  keychain / vault (`SecretString`, never logged, never in history); when none is stored the
+  password prompt asks, for this connection only. Kerberos needs a KDC client for CredSSP and
+  is not wired: such accounts use the system client. A user name is required.
+- Not in the in-app client yet (system client still available): RD Gateway, clipboard,
+  audio, drives, smart cards, dynamic resize, admin session. Redirection being off is also
+  the safer default: nothing on this computer reaches the server.
+- History: one entry per session tagged `rdp` (user, address, port, "(SSH tunnel)"), with
+  duration and error. Nothing here is exposed to MCP or `swy`.

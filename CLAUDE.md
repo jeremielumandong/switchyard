@@ -152,6 +152,7 @@ pin them in `[workspace.dependencies]`.
 | Errors / logs | `thiserror`, `anyhow`, `tracing`, `tracing-subscriber` |
 | Plans / CLI / MCP | `quick-xml` (showplan), `clap` (`swy`), `rmcp` (official Rust MCP SDK) |
 | Diagrams | `dagre` (ER diagram layout; see `docs/DECISIONS.md`) |
+| RDP | IronRDP: `ironrdp-connector` (vendored), `-session`, `-pdu`, `-graphics`, `-input`, `-core`, `-tokio` (see `docs/DECISIONS.md`) |
 | Testing | `insta`, `criterion`, `tempfile` |
 
 ## Licensing
@@ -320,4 +321,18 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
   A followed `kubectl logs -f` over SSH needs a PTY, or closing the channel leaves it running.
 - Linking `switchyard-app` on Linux needs `libxkbcommon-dev` and `libxkbcommon-x11-dev`;
   clippy and `cargo check` pass without them, so a missing one only shows at link time.
+- `ironrdp-connector` is vendored (`vendor/ironrdp-connector`) onto the tree's sspi 0.23 /
+  picky rc.26; upstream's sspi 0.21 / picky rc.25 pull a second crypto stack that clashes
+  with russh and the hmac pin. Read `vendor/ironrdp-connector/VENDORED.md` before bumping
+  any IronRDP crate, and check `cargo tree -i sspi` still shows one version.
+- The service runs each `Command` in its own task, so two commands can be handled out of
+  order. Order-sensitive input (terminal bytes, RDP keys and mouse) is handled in the
+  command loop itself (`Service::run`), not in `handle`.
+- RDP servers mostly present self-signed certificates: `remote::rdp::cert` lets the TLS
+  handshake finish while recording the OS verdict, and decides (pin / ask / refuse) before
+  CredSSP sends anything. CredSSP needs the certificate's subject public key (the BIT
+  STRING's bytes), not the whole SPKI.
+- GPUI `RenderImage` pixels are BGRA. Every replaced image must go through
+  `cx.drop_image(old, Some(window))`, or its sprite-atlas tile is never freed (the RDP tab
+  swaps one per update).
 

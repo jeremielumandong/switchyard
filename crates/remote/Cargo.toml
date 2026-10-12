@@ -23,6 +23,27 @@ tokio = { workspace = true, features = ["fs", "net", "sync", "time", "macros", "
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# In-app RDP client (IronRDP), see `rdp`.
+ironrdp-connector = { workspace = true, optional = true }
+ironrdp-session = { workspace = true, optional = true }
+ironrdp-pdu = { workspace = true, optional = true }
+ironrdp-graphics = { workspace = true, optional = true }
+ironrdp-input = { workspace = true, optional = true }
+ironrdp-core = { workspace = true, optional = true }
+ironrdp-tokio = { workspace = true, optional = true }
+
+[features]
+default = []
+# The in-app RDP client (`rdp` module). Off: only external RDP clients.
+rdp-embedded = [
+    "dep:ironrdp-connector",
+    "dep:ironrdp-session",
+    "dep:ironrdp-pdu",
+    "dep:ironrdp-graphics",
+    "dep:ironrdp-input",
+    "dep:ironrdp-core",
+    "dep:ironrdp-tokio",
+]
 
 [dev-dependencies]
 tempfile.workspace = true

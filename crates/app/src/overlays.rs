@@ -649,13 +649,25 @@ impl Workspace {
                     ("-", "", false, "".into()),
                     ("delete", "Delete", true, "".into()),
                 ],
-                None => vec![
-                    ("open", "Open", false, "↵".into()),
-                    ("edit", "Edit…", false, "".into()),
-                    ("duplicate", "Duplicate", false, "".into()),
-                    ("-", "", false, "".into()),
-                    ("delete", "Delete", true, "".into()),
-                ],
+                None => {
+                    let mut items = vec![
+                        ("open", "Open", false, "↵".into()),
+                        ("edit", "Edit…", false, "".into()),
+                        ("duplicate", "Duplicate", false, "".into()),
+                        ("-", "", false, "".into()),
+                        ("delete", "Delete", true, "".into()),
+                    ];
+                    // RDP: also in a tab here (the in-app client) beside the system client.
+                    let rdp = self.profiles.all.iter().any(|p| {
+                        matches!(p, switchyard_core::store::Profile::Desktop(d)
+                            if d.id == *id
+                                && d.protocol == switchyard_core::store::DesktopProtocol::Rdp)
+                    });
+                    if rdp && switchyard_core::servers::embedded::RDP_EMBEDDED {
+                        items.insert(1, ("open_app", "Open in Switchyard", false, "".into()));
+                    }
+                    items
+                }
             },
             CtxTarget::Folder(_) => vec![
                 ("bulk", "Edit Hosts in folder…", false, "".into()),
@@ -1072,6 +1084,7 @@ impl Workspace {
             }
             CtxTarget::Profile(id) => match action {
                 "open" => self.open_profile(id, window, cx),
+                "open_app" => self.open_rdp_tab(id, cx),
                 "edit" => {
                     let found = self.profiles.all.iter().find(|p| p.id() == id).cloned();
                     if let Some(switchyard_core::store::Profile::Desktop(d)) = found {

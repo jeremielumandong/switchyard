@@ -79,6 +79,8 @@ pub enum Tab {
     Runbook(Entity<crate::runbook_tab::RunbookTab>),
     /// Docker or Kubernetes explorer of a container connection.
     Containers(Entity<crate::containers_tab::ContainersTab>),
+    /// An RDP session in the app (in-app client).
+    Rdp(Entity<crate::rdp_tab::RdpTab>),
     /// Every Host and remote desktop of the current workspace (one per window).
     Servers,
 }
@@ -528,6 +530,8 @@ impl Workspace {
                 }
             }
             Event::HostKeyPrompt { request, key } => self.push_host_key_prompt(request, key, cx),
+            Event::Rdp(ev) => self.on_rdp_event(ev, window, cx),
+            Event::RdpCertPrompt { request, cert } => self.push_rdp_cert_prompt(request, cert, cx),
             Event::SecretPrompt {
                 request,
                 host,
@@ -626,6 +630,19 @@ impl Workspace {
                         });
                         if let Some(fresh) = fresh {
                             c.update(cx, |c, cx| c.set_connection(fresh, cx));
+                        }
+                    }
+                    if let Tab::Rdp(r) = t {
+                        let id = r.read(cx).desktop.id.clone();
+                        let fresh = self.profiles.all.iter().find_map(|p| match p {
+                            Profile::Desktop(fresh) if fresh.id == id => Some(fresh.clone()),
+                            _ => None,
+                        });
+                        if let Some(fresh) = fresh {
+                            r.update(cx, |r, cx| {
+                                r.desktop = fresh;
+                                cx.notify();
+                            });
                         }
                     }
                 }
@@ -1465,6 +1482,7 @@ impl Workspace {
             Some(Tab::Compare(c)) => c.clone().into_any_element(),
             Some(Tab::Runbook(r)) => r.clone().into_any_element(),
             Some(Tab::Containers(c)) => c.clone().into_any_element(),
+            Some(Tab::Rdp(r)) => r.clone().into_any_element(),
             Some(Tab::Servers) => self.render_servers(p, cx),
             _ => self.render_welcome(p, cx),
         }
@@ -1846,6 +1864,9 @@ impl Workspace {
         }
         if let Tab::Containers(c) = &self.tabs[ix] {
             c.update(cx, |c, _| c.shutdown());
+        }
+        if let Tab::Rdp(r) = &self.tabs[ix] {
+            r.update(cx, |r, _| r.shutdown());
         }
         if let Tab::Editor(e) = &self.tabs[ix] {
             e.update(cx, |e, cx| e.shutdown(cx));
@@ -3039,6 +3060,15 @@ impl Workspace {
         match tab {
             Tab::Welcome => ("SY".into(), "Welcome".into(), None, false),
             Tab::Servers => ("SRV".into(), "Servers".into(), None, false),
+            Tab::Rdp(t) => {
+                let d = &t.read(cx).desktop;
+                (
+                    "RDP".into(),
+                    d.name.clone().into(),
+                    Some(d.environment),
+                    false,
+                )
+            }
             Tab::Sql(t) => {
                 let t = t.read(cx);
                 let badge = t.connection.as_ref().map_or("SQL", |c| c.engine.badge());
