@@ -1,0 +1,45 @@
+{
+    "kind": "Config",
+    "apiVersion": "v1",
+    "preferences": {},
+    "clusters": [
+        {"name": "shop-aks", "cluster": {"server": "https://shop-aks-dns-1a2b3c4d.hcp.westeurope.azmk8s.io:443", "certificate-authority-data": "DATA+OMITTED"}},
+        {"name": "gke_acme-prod_europe-west1_web", "cluster": {"server": "https://34.76.10.20", "certificate-authority-data": "DATA+OMITTED"}},
+        {"name": "arn:aws:eks:eu-west-1:123456789012:cluster/payments", "cluster": {"server": "https://ABCDEF0123456789.gr7.eu-west-1.eks.amazonaws.com", "certificate-authority-data": "DATA+OMITTED"}},
+        {"name": "edge", "cluster": {"server": "https://rancher.example.com/k8s/clusters/c-m-x7k2p9qz"}},
+        {"name": "kind-dev", "cluster": {"server": "https://127.0.0.1:41235", "certificate-authority-data": "DATA+OMITTED"}},
+        {"name": "minikube", "cluster": {"server": "https://192.168.49.2:8443", "certificate-authority": "/home/me/.minikube/ca.crt"}},
+        {"name": "k3d-demo", "cluster": {"server": "https://0.0.0.0:38031"}},
+        {"name": "docker-desktop", "cluster": {"server": "https://kubernetes.docker.internal:6443"}},
+        {"name": "rancher-desktop", "cluster": {"server": "https://127.0.0.1:6443"}},
+        {"name": "default", "cluster": {"server": "https://127.0.0.1:6443"}},
+        {"name": "corp", "cluster": {"server": "https://k8s.corp.example.com:6443"}}
+    ],
+    "users": [
+        {"name": "clusterUser_shop-rg_shop-aks", "user": {"exec": {"apiVersion": "client.authentication.k8s.io/v1beta1", "command": "kubelogin", "args": ["get-token", "--login", "azurecli", "--server-id", "6dae42f8-4368-4678-94ff-3960e28e3630"], "provideClusterInfo": false}}},
+        {"name": "gke_acme-prod_europe-west1_web", "user": {"exec": {"apiVersion": "client.authentication.k8s.io/v1beta1", "command": "gke-gcloud-auth-plugin", "installHint": "Install gke-gcloud-auth-plugin for use with kubectl by following https://cloud.google.com/kubernetes-engine/docs/how-to/cluster-access-for-kubectl#install_plugin", "provideClusterInfo": true}}},
+        {"name": "arn:aws:eks:eu-west-1:123456789012:cluster/payments", "user": {"exec": {"apiVersion": "client.authentication.k8s.io/v1beta1", "command": "aws", "args": ["--region", "eu-west-1", "eks", "get-token", "--cluster-name", "payments", "--output", "json"], "env": [{"name": "AWS_PROFILE", "value": "prod"}]}}},
+        {"name": "edge", "user": {"token": "REDACTED"}},
+        {"name": "kind-dev", "user": {"client-certificate-data": "DATA+OMITTED", "client-key-data": "DATA+OMITTED"}},
+        {"name": "minikube", "user": {"client-certificate": "/home/me/.minikube/profiles/minikube/client.crt", "client-key": "/home/me/.minikube/profiles/minikube/client.key"}},
+        {"name": "admin@k3d-demo", "user": {"client-certificate-data": "DATA+OMITTED", "client-key-data": "DATA+OMITTED"}},
+        {"name": "docker-desktop", "user": {"client-certificate-data": "DATA+OMITTED", "client-key-data": "DATA+OMITTED"}},
+        {"name": "rancher-desktop", "user": {"client-certificate-data": "DATA+OMITTED", "client-key-data": "DATA+OMITTED"}},
+        {"name": "default", "user": {"client-certificate-data": "DATA+OMITTED", "client-key-data": "DATA+OMITTED"}},
+        {"name": "corp-oidc", "user": {"exec": {"apiVersion": "client.authentication.k8s.io/v1beta1", "command": "kubectl", "args": ["oidc-login", "get-token", "--oidc-issuer-url=https://sso.corp.example.com"]}}}
+    ],
+    "contexts": [
+        {"name": "shop-aks", "context": {"cluster": "shop-aks", "user": "clusterUser_shop-rg_shop-aks"}},
+        {"name": "gke_acme-prod_europe-west1_web", "context": {"cluster": "gke_acme-prod_europe-west1_web", "user": "gke_acme-prod_europe-west1_web"}},
+        {"name": "arn:aws:eks:eu-west-1:123456789012:cluster/payments", "context": {"cluster": "arn:aws:eks:eu-west-1:123456789012:cluster/payments", "user": "arn:aws:eks:eu-west-1:123456789012:cluster/payments", "namespace": "payments"}},
+        {"name": "edge", "context": {"cluster": "edge", "user": "edge"}},
+        {"name": "kind-dev", "context": {"cluster": "kind-dev", "user": "kind-dev"}},
+        {"name": "minikube", "context": {"cluster": "minikube", "user": "minikube", "namespace": "default"}},
+        {"name": "k3d-demo", "context": {"cluster": "k3d-demo", "user": "admin@k3d-demo"}},
+        {"name": "docker-desktop", "context": {"cluster": "docker-desktop", "user": "docker-desktop"}},
+        {"name": "rancher-desktop", "context": {"cluster": "rancher-desktop", "user": "rancher-desktop"}},
+        {"name": "default", "context": {"cluster": "default", "user": "default"}},
+        {"name": "corp", "context": {"cluster": "corp", "user": "corp-oidc"}}
+    ],
+    "current-context": "shop-aks"
+}

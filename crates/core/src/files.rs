@@ -26,7 +26,8 @@ pub const PARALLEL_TRANSFERS: usize = 4;
 pub const PART_SUFFIX: &str = ".swypart";
 
 const RUN: u8 = 0;
-const CANCEL: u8 = 1;
+/// Control flag value that stops a transfer and deletes its partial file.
+pub(crate) const CANCEL: u8 = 1;
 const PAUSE: u8 = 2;
 
 /// A transfer's control flag, flipped by Pause and Cancel.

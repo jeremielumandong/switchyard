@@ -37,6 +37,12 @@ pub fn init(cx: &mut App, data_dir: PathBuf, runtime: RuntimeHandle) {
 
 static RUNTIME: OnceLock<RuntimeHandle> = OnceLock::new();
 
+/// The core runtime's tokio handle, for long-lived async work such as the API
+/// Workbench's WebSocket, event-stream and gRPC sessions. `None` before [`init`].
+pub fn tokio_handle() -> Option<tokio::runtime::Handle> {
+    RUNTIME.get().map(RuntimeHandle::tokio)
+}
+
 /// Run `f` on the core runtime's blocking pool; await the result from a GPUI task.
 /// (AgentOps ran these on GPUI's background executor; Switchyard keeps disk and network
 /// work on the core runtime.)

@@ -312,6 +312,10 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
 - Linking the workspace's debug test binaries needs a lot of disk; a full disk shows up as
   `ld terminated with signal 7 [Bus error]`, not "no space". `CARGO_PROFILE_DEV_DEBUG=0`
   halves `target/`.
+- `docker … --format '{{json .}}'` prints one JSON object per line (not an array), with
+  sizes and ports as display strings; `kubectl config view -o json` redacts credentials but
+  keeps `users[].user.exec`, which is how auth plugins and providers are detected.
+  A followed `kubectl logs -f` over SSH needs a PTY, or closing the channel leaves it running.
 - Linking `switchyard-app` on Linux needs `libxkbcommon-dev` and `libxkbcommon-x11-dev`;
   clippy and `cargo check` pass without them, so a missing one only shows at link time.
 

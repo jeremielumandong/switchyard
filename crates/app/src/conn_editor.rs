@@ -380,6 +380,14 @@ impl ConnEditor {
                     "None",
                     false,
                 );
+                // Fleet tags.
+                add(
+                    self,
+                    "tags",
+                    &switchyard_core::store::tags::format_tags(&h.tags),
+                    "web, role:db, region:eu",
+                    false,
+                );
                 add(
                     self,
                     "startup_command",
@@ -733,6 +741,7 @@ impl ConnEditor {
                 h.connect_macro = Some(self.chosen("connect_macro")).filter(|m| !m.is_empty());
                 h.favorite = self.favorite;
                 h.folder = opt(self.value("folder", cx));
+                h.tags = switchyard_core::store::tags::parse_tags(&self.value("tags", cx));
                 h.startup_command = opt(self.value("startup_command", cx));
                 h.start_directory = opt(self.value("start_directory", cx));
                 h.env = parse_env(&self.value("env", cx)).map_err(|m| (Some("env"), m))?;
@@ -1347,6 +1356,11 @@ impl ConnEditor {
                     Field::new("startup_command", "Startup command")
                         .span(3)
                         .mono(),
+                );
+                v.push(
+                    Field::new("tags", "Tags")
+                        .span(6)
+                        .hint("Comma separated; group and filter Hosts in the Explorer (tag:web)"),
                 );
                 v.push(
                     Field::new("env", "Environment variables")

@@ -7,6 +7,10 @@
 //!   labels, locks and feature flags), Azure Key Vault secrets, AWS Secrets Manager, AWS
 //!   Systems Manager Parameter Store and Cloudflare Workers KV.
 //!
+//! - Infra tools: Terraform / OpenTofu state ([`tfstate`], read from HCP Terraform with
+//!   [`tfcloud`]), a resource inventory across clouds ([`inventory`]) and log sources
+//!   (CloudWatch Logs, Log Analytics: [`logs`]).
+//!
 //! Requests are signed here (AWS Signature V4, Azure Shared Key, App Configuration HMAC);
 //! sign-in that needs a person (Microsoft Entra) happens in `core`, which hands the clients a
 //! [`auth::TokenSource`].
@@ -19,14 +23,18 @@ pub mod blob;
 pub mod cloudflare;
 mod error;
 mod http;
+pub mod inventory;
 pub mod keyvault;
 pub mod kv;
 pub mod kv_file;
+pub mod logs;
 pub mod parameters;
 pub mod s3;
 pub mod secrets_manager;
 pub mod sigv4;
 mod stream;
+pub mod tfcloud;
+pub mod tfstate;
 mod time;
 pub mod workers_kv;
 mod xml;

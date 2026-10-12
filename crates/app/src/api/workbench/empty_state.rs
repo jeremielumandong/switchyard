@@ -29,6 +29,8 @@ pub(super) struct RequestSeed {
     pub url: String,
     pub headers: Vec<switchyard_api::KeyValueRow>,
     pub body: Body,
+    /// Streaming settings; `None` for HTTP.
+    pub protocol: Option<switchyard_api::protocol::ProtocolSettings>,
 }
 
 impl Default for RequestSeed {
@@ -39,6 +41,7 @@ impl Default for RequestSeed {
             url: String::new(),
             headers: Vec::new(),
             body: Body::None,
+            protocol: None,
         }
     }
 }
@@ -53,6 +56,22 @@ impl RequestSeed {
         }
     }
 
+    /// A new streaming request of `protocol`.
+    pub fn protocol(protocol: switchyard_api::protocol::RequestProtocol) -> Self {
+        use switchyard_api::protocol::RequestProtocol;
+        let name = match protocol {
+            RequestProtocol::Http => "New request",
+            RequestProtocol::WebSocket => "New WebSocket",
+            RequestProtocol::Sse => "New event stream",
+            RequestProtocol::Grpc => "New gRPC call",
+        };
+        Self {
+            name: name.into(),
+            protocol: switchyard_api::protocol::ProtocolSettings::for_protocol(protocol),
+            ..Self::default()
+        }
+    }
+
     /// A request the assistant wrote.
     pub fn generated(request: &crate::api::generated::GeneratedRequest) -> Self {
         Self {
@@ -61,6 +80,7 @@ impl RequestSeed {
             url: request.url.clone(),
             headers: request.header_rows(),
             body: request.body(),
+            protocol: None,
         }
     }
 }

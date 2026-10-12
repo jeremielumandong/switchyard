@@ -69,6 +69,16 @@ pub enum Tab {
     Redis(Entity<crate::redis_tab::RedisTab>),
     /// Key / value tool of a cloud connection (App Configuration, secrets, Workers KV).
     Cloud(Entity<crate::cloud_tab::CloudTab>),
+    /// An infra tool: Terraform state, cloud inventory, network checks or logs.
+    Infra(crate::infra::InfraTab),
+    /// Fleet: a command, dashboard, push or key tool on many Hosts.
+    Fleet(Entity<crate::fleet_tab::FleetTab>),
+    /// Schema compare and migration script.
+    Compare(Entity<crate::compare_tab::CompareTab>),
+    /// A runbook (edit and run).
+    Runbook(Entity<crate::runbook_tab::RunbookTab>),
+    /// Docker or Kubernetes explorer of a container connection.
+    Containers(Entity<crate::containers_tab::ContainersTab>),
 }
 
 /// The root view.
@@ -138,6 +148,10 @@ pub struct Workspace {
     /// The sidebar Files panel per Host (kept while the app runs, so its folder is kept).
     pub(crate) remote_files: HashMap<String, Entity<RemoteFiles>>,
     pub(crate) history: Vec<HistoryEntry>,
+    /// The saved runbooks by name.
+    pub(crate) runbooks: Vec<switchyard_core::store::Runbook>,
+    /// The pending runbook import.
+    pub(crate) runbook_import: Option<switchyard_core::RequestId>,
     pub(crate) focus: FocusHandle,
     pub(crate) overlay_focus: FocusHandle,
     pub(crate) ctx: Option<crate::sidebar::CtxMenu>,
@@ -152,6 +166,8 @@ pub struct Workspace {
     pub(crate) unsaved: crate::unsaved::UnsavedState,
     /// The sidebar asked for the Files tab with this Host.
     pending_files: Option<Option<ProfileId>>,
+    /// Hosts picked in the Explorer with Ctrl/⌘-click (Fleet actions on a selection).
+    pub(crate) host_selection: Vec<ProfileId>,
     rebind: Vec<(Entity<SqlTab>, Option<ProfileId>)>,
     /// Two tabs on screen at once.
     pub(crate) split: Option<crate::split::Split>,
@@ -160,7 +176,7 @@ pub struct Workspace {
     _events: Task<()>,
     /// Re-reads the Omarchy theme so "Follow Omarchy" tracks theme switches.
     _omarchy: Option<Task<()>>,
-    _subs: Vec<Subscription>,
+    pub(crate) _subs: Vec<Subscription>,
 }
 
 impl Focusable for Workspace {
@@ -214,7 +230,11 @@ impl Workspace {
         core.send(Command::LoadSetting {
             key: switchyard_core::term_settings::TERMINAL_SETTINGS_KEY.into(),
         });
+        core.send(Command::LoadSetting {
+            key: switchyard_core::fleet::CONCURRENCY_KEY.into(),
+        });
         core.send(Command::LoadMacros);
+        core.send(Command::LoadRunbooks);
         core.send(Command::DetectComponents);
         crate::updates::load_setting(&core);
         // Pins and the explorer's connection nodes (DBX-5e).
@@ -330,6 +350,8 @@ impl Workspace {
             drivers: Default::default(),
             remote_files: HashMap::new(),
             history: Vec::new(),
+            runbooks: Vec::new(),
+            runbook_import: None,
             focus,
             overlay_focus: cx.focus_handle(),
             ctx: None,
@@ -340,6 +362,7 @@ impl Workspace {
             transfers,
             unsaved: Default::default(),
             pending_files: None,
+            host_selection: Vec::new(),
             rebind: Vec::new(),
             split: None,
             viewer_image: None,
@@ -390,6 +413,18 @@ impl Workspace {
     fn on_event(&mut self, ev: Event, window: &mut Window, cx: &mut Context<Self>) {
         match ev {
             Event::Pong { .. } => {}
+            ev @ (Event::Runbooks(_)
+            | Event::RunbookSaved { .. }
+            | Event::ApiRequests { .. }
+            | Event::RunbookResolved { .. }
+            | Event::RunbookOutput { .. }
+            | Event::RunbookStepDone { .. }) => self.on_runbook_event(ev, window, cx),
+            Event::Infra { request, update } => self.on_infra_event(request, update, window, cx),
+            Event::Setting { key, value }
+                if key == switchyard_core::infra::netcheck::CHECK_LISTS_SETTING =>
+            {
+                self.on_check_lists(value, cx)
+            }
             ev @ (Event::RedisOpened { .. }
             | Event::RedisKeys { .. }
             | Event::RedisKey { .. }
@@ -402,6 +437,17 @@ impl Workspace {
             | Event::CloudRevisions { .. }
             | Event::CloudLabels { .. }
             | Event::CloudResolved { .. }) => self.on_cloud_event(ev, window, cx),
+            ev @ (Event::ContainersListed { .. }
+            | Event::ContainersInspected { .. }
+            | Event::ContainersActionDone { .. }
+            | Event::ContainersLog { .. }
+            | Event::ContainersLogEnded { .. }
+            | Event::ContainerForwards(_)) => self.on_containers_event(ev, window, cx),
+            ev @ (Event::KubeContexts { .. }
+            | Event::ClustersDiscovered { .. }
+            | Event::ClusterCredentials { .. }
+            | Event::AwsProfiles { .. }
+            | Event::RancherClusters { .. }) => self.on_add_cluster_event(ev, window, cx),
             Event::TerminalOpened {
                 term,
                 terminal,
@@ -516,6 +562,13 @@ impl Workspace {
                 crate::named_secrets::on_profiles(&list, cx);
                 self.profiles = Profiles { all: list };
                 self.profiles_loaded = true;
+                self.infra_profiles(cx);
+                for t in &self.tabs {
+                    if let Tab::Runbook(r) = t {
+                        let profiles = self.profiles.clone();
+                        r.update(cx, |r, cx| r.set_profiles(profiles, cx));
+                    }
+                }
                 // The schema explorer lists SQL databases; Redis opens its own browser.
                 let dbs: Vec<_> = self
                     .profiles
@@ -548,13 +601,44 @@ impl Workspace {
                         }
                     }
                 }
+                for t in &self.tabs {
+                    if let Tab::Containers(c) = t {
+                        let id = c.read(cx).connection.id.clone();
+                        let fresh = self.profiles.all.iter().find_map(|p| match p {
+                            Profile::Containers(fresh) if fresh.id == id => Some(fresh.clone()),
+                            _ => None,
+                        });
+                        if let Some(fresh) = fresh {
+                            c.update(cx, |c, cx| c.set_connection(fresh, cx));
+                        }
+                    }
+                }
                 if let Some(Overlay::Palette(p)) = &self.overlay {
                     let profiles = self.profiles.clone();
                     p.update(cx, |p, cx| p.set_profiles(profiles, cx));
                 }
+                // Fleet tabs follow renamed, re-tagged and deleted Hosts.
+                for t in &self.tabs {
+                    if let Tab::Fleet(f) = t {
+                        let all = &self.profiles.all;
+                        f.update(cx, |f, cx| {
+                            f.set_profiles(all);
+                            cx.notify();
+                        });
+                    }
+                }
+                let hosts: Vec<ProfileId> = self.profiles.hosts().map(|h| h.id.clone()).collect();
+                self.host_selection.retain(|id| hosts.contains(id));
             }
             Event::ProfileSaved { request, id } => {
                 self.reconnect_failed(&id, cx);
+                if let Some(Overlay::ContainerEditor(ed)) = &self.overlay
+                    && ed.read(cx).request() == Some(request)
+                {
+                    self.overlay = None;
+                    self.toast("Saved", cx);
+                    self.pending_open = Some(id.clone());
+                }
                 if let Some(Overlay::ConnEditor(ed)) = &self.overlay
                     && ed.read(cx).request() == Some(request)
                 {
@@ -574,7 +658,13 @@ impl Workspace {
                 if let Some(Overlay::ConnEditor(ed)) = &self.overlay
                     && ed.read(cx).request() == Some(request)
                 {
-                    ed.update(cx, |ed, cx| ed.set_error(field, message, cx));
+                    ed.update(cx, |ed, cx| ed.set_error(field, message.clone(), cx));
+                }
+                if let Some(Overlay::ContainerEditor(ed)) = &self.overlay
+                    && ed.read(cx).request() == Some(request)
+                {
+                    let message = message.clone();
+                    ed.update(cx, |ed, cx| ed.set_error(message, cx));
                 }
             }
             Event::Setting { key, value } if key == "inspector.width" => {
@@ -602,13 +692,28 @@ impl Workspace {
                     theme::apply_fonts(Some(window), cx);
                 }
             }
-            Event::Setting { key, value } if key == switchyard_core::update::CHECK_SETTING => {
-                self.on_update_setting(value);
+            Event::Setting { key, value } if crate::updates::is_setting(&key) => {
+                self.on_update_setting(&key, value);
             }
             Event::UpdateStatus { manual, status } => self.on_update_status(manual, status, cx),
+            Event::UpdateProgress {
+                version,
+                done,
+                total,
+            } => self.on_update_progress(version, done, total, cx),
+            Event::UpdateDownloaded {
+                info,
+                result,
+                cancelled,
+            } => self.on_update_downloaded(info, result, cancelled, cx),
             Event::Setting { key, value } if key == crate::sidebar::EXPLORER_GROUP_KEY => {
                 if let Some(g) = value.as_ref().and_then(|v| v.as_str()) {
                     self.explorer_group = crate::explorer_tree::ExplorerGroup::from_key(g);
+                }
+            }
+            Event::Setting { key, value } if key == switchyard_core::fleet::CONCURRENCY_KEY => {
+                if let Some(n) = value.as_ref().and_then(|v| v.as_u64()).filter(|n| *n > 0) {
+                    cx.set_global(crate::fleet_tab::FleetConcurrency(n as usize));
                 }
             }
             Event::Setting { key, value } if key == "sidebar.width" => {
@@ -650,11 +755,15 @@ impl Workspace {
             Event::SecretBackend { name, locked } => {
                 self.secret_backend = (name, locked);
             }
-            Event::TestResult { request, result } => {
-                if let Some(Overlay::ConnEditor(ed)) = &self.overlay {
-                    ed.update(cx, |ed, cx| ed.on_test_result(request, result, cx));
+            Event::TestResult { request, result } => match &self.overlay {
+                Some(Overlay::ConnEditor(ed)) => {
+                    ed.update(cx, |ed, cx| ed.on_test_result(request, result, cx))
                 }
-            }
+                Some(Overlay::ContainerEditor(ed)) => {
+                    ed.update(cx, |ed, cx| ed.on_test_result(request, result, cx))
+                }
+                _ => {}
+            },
             Event::SessionOpened {
                 session,
                 server_version,
@@ -666,6 +775,9 @@ impl Workspace {
                     .is_some()
                 {
                     self.explorer.try_reveal();
+                }
+                if let Some(r) = self.runbook_tab_for_session(session, cx) {
+                    r.update(cx, |r, cx| r.on_session(session, Ok(()), cx));
                 }
                 if let Some(o) = self.object_tab_for_session(session, cx) {
                     let version = server_version.clone();
@@ -691,6 +803,10 @@ impl Workspace {
                     s.on_failed(message.clone());
                     self.explorer.try_reveal();
                 }
+                if let Some(r) = self.runbook_tab_for_session(session, cx) {
+                    let m = message.clone();
+                    r.update(cx, |r, cx| r.on_session(session, Err(m), cx));
+                }
                 if let Some(o) = self.object_tab_for_session(session, cx) {
                     let failed = SessionState::Failed(message.clone());
                     o.update(cx, |o, cx| o.on_session(failed, cx));
@@ -705,7 +821,9 @@ impl Workspace {
                 self.toast(format!("Connection failed: {message}"), cx);
             }
             Event::Query { query, event } => {
-                if let Some(o) = self.object_tab_for_query(query, cx) {
+                if let Some(r) = self.runbook_tab_for_query(query, cx) {
+                    r.update(cx, |r, cx| r.on_query(query, event, window, cx));
+                } else if let Some(o) = self.object_tab_for_query(query, cx) {
                     o.update(cx, |o, cx| o.on_query(event, window, cx));
                 } else {
                     for t in &self.tabs {
@@ -825,6 +943,25 @@ impl Workspace {
             }
             Event::Activity { request, result } => self.on_activity(request, result, window, cx),
             Event::SessionAction { request, result } => self.on_session_action(request, result, cx),
+            Event::CompareCatalog { request, result } => {
+                if let Some(tab) = self.compare_tab(request, cx) {
+                    tab.update(cx, |t, cx| t.on_catalog(request, result, cx));
+                }
+            }
+            Event::CompareProgress {
+                request,
+                done,
+                total,
+            } => {
+                if let Some(tab) = self.compare_tab(request, cx) {
+                    tab.update(cx, |t, cx| t.on_progress(request, done, total, cx));
+                }
+            }
+            Event::CompareSnapshot { request, result } => {
+                if let Some(tab) = self.compare_tab(request, cx) {
+                    tab.update(cx, |t, cx| t.on_snapshot(request, result, cx));
+                }
+            }
             Event::WhatIf { request, result } => {
                 if let Some(tab) = self.plan_tab(cx, |v| v.owns(request)) {
                     tab.update(cx, |t, cx| {
@@ -927,6 +1064,7 @@ impl Workspace {
                 }
             }
             Event::Toast(t) => self.toast(t, cx),
+            Event::Fleet(ev) => self.on_fleet_event(ev, window, cx),
             Event::SshConfigPreview { path, hosts } => {
                 let chosen = hosts
                     .iter()
@@ -937,6 +1075,7 @@ impl Workspace {
                     path,
                     hosts,
                     chosen,
+                    inventory: None,
                 }));
                 window.focus(&self.overlay_focus, cx);
                 cx.notify();
@@ -948,6 +1087,13 @@ impl Workspace {
         {
             self.pending_open = None;
             self.open_connection(&id, window, cx);
+        }
+        if let Some(id) = self.pending_open.clone()
+            && let Some(Profile::Containers(c)) =
+                self.profiles.all.iter().find(|p| p.id() == &id).cloned()
+        {
+            self.pending_open = None;
+            self.open_containers(c, window, cx);
         }
         cx.notify();
     }
@@ -1239,6 +1385,11 @@ impl Workspace {
             Some(Tab::Er(e)) => e.clone().into_any_element(),
             Some(Tab::Redis(r)) => r.clone().into_any_element(),
             Some(Tab::Cloud(c)) => c.clone().into_any_element(),
+            Some(Tab::Infra(i)) => i.view(),
+            Some(Tab::Fleet(f)) => f.clone().into_any_element(),
+            Some(Tab::Compare(c)) => c.clone().into_any_element(),
+            Some(Tab::Runbook(r)) => r.clone().into_any_element(),
+            Some(Tab::Containers(c)) => c.clone().into_any_element(),
             _ => self.render_welcome(p, cx),
         }
     }
@@ -1596,6 +1747,9 @@ impl Workspace {
         if let Tab::Activity(a) = &self.tabs[ix] {
             a.update(cx, |a, _| a.shutdown());
         }
+        if let Tab::Fleet(f) = &self.tabs[ix] {
+            f.update(cx, |f, _| f.shutdown());
+        }
         if let Tab::Er(e) = &self.tabs[ix] {
             e.update(cx, |e, _| e.shutdown());
         }
@@ -1603,6 +1757,18 @@ impl Workspace {
             r.update(cx, |r, _| r.shutdown());
         }
         if let Tab::Cloud(c) = &self.tabs[ix] {
+            c.update(cx, |c, _| c.shutdown());
+        }
+        if let Tab::Infra(i) = &self.tabs[ix] {
+            i.stop(cx);
+        }
+        if let Tab::Compare(c) = &self.tabs[ix] {
+            c.update(cx, |c, _| c.shutdown());
+        }
+        if let Tab::Runbook(r) = &self.tabs[ix] {
+            r.update(cx, |r, _| r.shutdown());
+        }
+        if let Tab::Containers(c) = &self.tabs[ix] {
             c.update(cx, |c, _| c.shutdown());
         }
         if let Tab::Editor(e) = &self.tabs[ix] {
@@ -1842,12 +2008,19 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let profiles = self.profiles.clone();
-        let view = cx.new(|cx| PaletteView::new(mode, profiles, window, cx));
+        let runbooks = self
+            .runbooks
+            .iter()
+            .map(|r| (r.id.clone(), r.name.clone()))
+            .collect();
+        let view =
+            cx.new(|cx| PaletteView::new(mode, profiles, window, cx).with_runbooks(runbooks));
         let sub = cx.subscribe_in(&view, window, |this, _, ev: &PaletteEvent, window, cx| {
             this.overlay = None;
             match ev {
                 PaletteEvent::Run(id) => this.run_command(*id, window, cx),
                 PaletteEvent::Open(id) => this.open_profile(id, window, cx),
+                PaletteEvent::OpenRunbook(id) => this.open_runbook(Some(id.clone()), window, cx),
                 PaletteEvent::Dismiss => {}
             }
             cx.notify();
@@ -1890,6 +2063,7 @@ impl Workspace {
                 self.open_files_on(Some(FsRef::Conn(c.id)), cx)
             }
             Some(Profile::Cloud(c)) => self.open_cloud(c, window, cx),
+            Some(Profile::Containers(c)) => self.open_containers(c, window, cx),
             None => {}
         }
     }
@@ -2252,6 +2426,9 @@ impl Workspace {
             CommandId::Settings => self.open_settings(SettingsPage::General, window, cx),
             CommandId::SettingsDrivers => self.open_settings(SettingsPage::Drivers, window, cx),
             CommandId::ManageSnippets => crate::snippets::open_manager(self.core.clone(), cx),
+            CommandId::NewRunbook => self.open_runbook(None, window, cx),
+            CommandId::OpenRunbook => self.open_palette(PaletteMode::Runbooks, window, cx),
+            CommandId::ImportRunbook => self.import_runbook(cx),
             CommandId::ManageSecrets => crate::named_secrets::open_manager(self.core.clone(), cx),
             CommandId::ToggleTheme => {
                 let next = if palette(cx).dark {
@@ -2311,6 +2488,7 @@ impl Workspace {
             CommandId::ShowWorkload => self.open_workload(cx),
             CommandId::ShowActivity => self.open_activity_palette(window, cx),
             CommandId::ErDiagram => self.open_er_for_current_schema(window, cx),
+            CommandId::CompareSchemas => self.open_compare_palette(window, cx),
             CommandId::SplitRight => self.split_view(crate::split::SplitDir::Right, window, cx),
             CommandId::SplitDown => self.split_view(crate::split::SplitDir::Down, window, cx),
             CommandId::Unsplit => self.split = None,
@@ -2334,6 +2512,26 @@ impl Workspace {
             CommandId::GroupByType => {
                 self.set_explorer_group(crate::explorer_tree::ExplorerGroup::Type, cx)
             }
+            CommandId::GroupByTag => {
+                self.set_explorer_group(crate::explorer_tree::ExplorerGroup::Tag, cx)
+            }
+            CommandId::FleetRun => {
+                let pick = self.fleet_palette_pick();
+                self.open_fleet(crate::fleet_tab::Mode::Run, pick, window, cx)
+            }
+            CommandId::FleetDashboard => {
+                let pick = self.fleet_palette_pick();
+                self.open_fleet(crate::fleet_tab::Mode::Dashboard, pick, window, cx)
+            }
+            CommandId::FleetPush => {
+                let pick = self.fleet_palette_pick();
+                self.open_fleet(crate::fleet_tab::Mode::Push, pick, window, cx)
+            }
+            CommandId::FleetKeys => {
+                let pick = self.fleet_palette_pick();
+                self.open_fleet(crate::fleet_tab::Mode::Keys, pick, window, cx)
+            }
+            CommandId::ImportAnsible => self.import_ansible(cx),
             CommandId::CloseTab => self.close_tab(self.active, window, cx),
             CommandId::NextTab | CommandId::PrevTab if !self.tabs.is_empty() => {
                 let n = self.tabs.len();
@@ -2347,6 +2545,19 @@ impl Workspace {
             CommandId::NextTab | CommandId::PrevTab => {}
             CommandId::SettingsKeybindings => {
                 self.open_settings(SettingsPage::Keybindings, window, cx)
+            }
+            CommandId::AddContainers(platform) => {
+                self.open_container_editor(platform, None, window, cx)
+            }
+            CommandId::OpenContainers(platform) => {
+                let saved = self.profiles.all.iter().find_map(|p| match p {
+                    Profile::Containers(c) if c.platform == platform => Some(c.clone()),
+                    _ => None,
+                });
+                match saved {
+                    Some(c) => self.open_containers(c, window, cx),
+                    None => self.open_container_editor(platform, None, window, cx),
+                }
             }
             CommandId::OpenCloud(service) => {
                 let saved = self.profiles.all.iter().find_map(|p| match p {
@@ -2369,6 +2580,7 @@ impl Workspace {
                     None => self.open_conn_editor(ConnKind::Db(engine), None, window, cx),
                 }
             }
+            CommandId::OpenInfra(tool) => self.open_infra(tool, window, cx),
         }
         cx.notify();
     }
@@ -2765,6 +2977,36 @@ impl Workspace {
                 let c = &t.read(cx).connection;
                 (
                     c.service.badge().into(),
+                    c.name.clone().into(),
+                    Some(c.environment),
+                    false,
+                )
+            }
+            Tab::Infra(i) => {
+                let (badge, title) = i.chip(cx);
+                (badge, title, None, false)
+            }
+            Tab::Fleet(f) => {
+                let f = f.read(cx);
+                ("FL".into(), f.title().into(), f.environment(), false)
+            }
+            Tab::Compare(t) => {
+                let t = t.read(cx);
+                (
+                    "SC".into(),
+                    t.title.clone(),
+                    t.connection().map(|c| c.environment),
+                    false,
+                )
+            }
+            Tab::Runbook(r) => {
+                let r = r.read(cx);
+                ("RB".into(), r.title(), None, r.is_dirty())
+            }
+            Tab::Containers(t) => {
+                let c = &t.read(cx).connection;
+                (
+                    c.platform.badge().into(),
                     c.name.clone().into(),
                     Some(c.environment),
                     false,

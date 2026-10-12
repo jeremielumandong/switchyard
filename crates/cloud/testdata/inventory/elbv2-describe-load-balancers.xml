@@ -1,0 +1,21 @@
+<DescribeLoadBalancersResponse xmlns="http://elasticloadbalancing.amazonaws.com/doc/2015-12-01/">
+  <DescribeLoadBalancersResult>
+    <LoadBalancers>
+      <member>
+        <LoadBalancerArn>arn:aws:elasticloadbalancing:eu-west-1:123456789012:loadbalancer/app/web/50dc6c495c0c9188</LoadBalancerArn>
+        <Scheme>internet-facing</Scheme>
+        <LoadBalancerName>web</LoadBalancerName>
+        <VpcId>vpc-3ac0fb5f</VpcId>
+        <CanonicalHostedZoneId>Z2P70J7EXAMPLE</CanonicalHostedZoneId>
+        <CreatedTime>2016-03-25T21:26:12.920Z</CreatedTime>
+        <AvailabilityZones>
+          <member><SubnetId>subnet-8360a9e7</SubnetId><ZoneName>eu-west-1a</ZoneName></member>
+        </AvailabilityZones>
+        <DNSName>web-123.eu-west-1.elb.amazonaws.com</DNSName>
+        <State><Code>active</Code></State>
+        <Type>application</Type>
+      </member>
+    </LoadBalancers>
+  </DescribeLoadBalancersResult>
+  <ResponseMetadata><RequestId>6581c0ac</RequestId></ResponseMetadata>
+</DescribeLoadBalancersResponse>

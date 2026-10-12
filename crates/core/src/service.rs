@@ -50,9 +50,15 @@ pub mod agent_plan;
 pub mod agent_ssh;
 mod assistant;
 mod cloud;
+mod clusters;
+mod containers;
+mod fleet;
+mod infra;
 mod named_secrets;
 pub(crate) use named_secrets::NamedSecrets;
 mod redis;
+mod runbook;
+mod schema_compare;
 
 /// The SSH layer's description of a saved forward.
 fn forward_spec(f: &switchyard_store::PortForward) -> ForwardSpec {
@@ -204,6 +210,8 @@ pub struct Service {
     agent_runs: Mutex<HashMap<crate::bus::AgentRunId, switchyard_agents::CancelHandle>>,
     /// Agent commands on Hosts waiting for the user's approval.
     agent_approvals: agent_ssh::Approvals,
+    /// Running Fleet runs, to cancel.
+    fleet_runs: fleet::FleetRuns,
     /// Data directory (assistant session tokens).
     data_dir: PathBuf,
     /// `swy` override for assistant runs.
@@ -226,6 +234,18 @@ pub struct Service {
     files: Arc<crate::files::Files>,
     /// Named secrets read from cloud stores, with when they were read.
     named_cache: Mutex<HashMap<String, (Instant, SecretString)>>,
+    /// How this copy is installed (decides how it updates).
+    update_install: crate::update::Install,
+    /// Cancels the running update download; `Some` while one runs.
+    update_cancel: Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>,
+    /// Running infra requests (log tails, inventories), to cancel.
+    infra_tasks: crate::infra::InfraTasks,
+    /// Running runbook HTTP and shell steps, to cancel.
+    runbook_runs: runbook::RunbookRuns,
+    /// Running Docker / Kubernetes calls, to cancel.
+    container_ops: Mutex<HashMap<RequestId, futures::future::AbortHandle>>,
+    /// `kubectl port-forward`s by the UI's id.
+    container_forwards: Mutex<HashMap<u64, containers::ForwardSlot>>,
 }
 
 /// Run one statement and drain its results (session settings such as `USE`).
@@ -337,6 +357,7 @@ impl Service {
             cloud: Mutex::default(),
             agent_runs: Mutex::default(),
             agent_approvals: Mutex::default(),
+            fleet_runs: Mutex::default(),
             data_dir: config.data_dir.clone(),
             swy: config.swy.clone(),
             one_password: config.one_password.clone(),
@@ -351,6 +372,12 @@ impl Service {
             components,
             files: Arc::default(),
             named_cache: Mutex::default(),
+            update_install: crate::update::Install::detect(),
+            update_cancel: Mutex::default(),
+            infra_tasks: crate::infra::InfraTasks::default(),
+            runbook_runs: Mutex::default(),
+            container_ops: Mutex::default(),
+            container_forwards: Mutex::default(),
             package_runner: config
                 .package_runner
                 .clone()
@@ -502,6 +529,8 @@ impl Service {
                 tokio::time::sleep(delay).await;
                 self.emit(Event::Pong { id });
             }
+            Command::Infra { request, op } => self.infra(request, op).await,
+            Command::InfraCancel { request } => self.infra_cancel(request),
             Command::LoadProfiles => self.emit_profiles().await,
             Command::SaveProfile {
                 request,
@@ -516,6 +545,10 @@ impl Service {
                 if let Profile::Cloud(c) = &profile {
                     self.entra.drop_cloud(&c.id);
                 }
+                // A changed Rancher server, cluster or token: generate its kubeconfig again.
+                if let Profile::Containers(c) = &profile {
+                    self.drop_managed_kubeconfig(&c.id).await;
+                }
                 self.save_profile(request, profile, secret).await
             }
             Command::DeleteProfile { id } => {
@@ -523,6 +556,9 @@ impl Service {
                 match removed {
                     Ok(Some(p)) => {
                         self.files.conns.lock().await.remove(&p.id().0);
+                        if matches!(p, Profile::Containers(_)) {
+                            self.drop_managed_kubeconfig(p.id()).await;
+                        }
                         if let Some(key) = p.secret().cloned()
                             && key.named_secret().is_none()
                         {
@@ -777,6 +813,97 @@ impl Service {
                 self.open_agent_terminal(term, agent, connection, size)
                     .await
             }
+            Command::ContainersList {
+                request,
+                connection,
+                context,
+                query,
+            } => {
+                self.containers_list(request, connection, context, query)
+                    .await
+            }
+            Command::ContainersInspect {
+                request,
+                connection,
+                context,
+                inspect,
+            } => {
+                self.containers_inspect(request, connection, context, inspect)
+                    .await
+            }
+            Command::ContainersAction {
+                request,
+                connection,
+                context,
+                action,
+                confirmed,
+            } => {
+                self.containers_action(request, connection, context, action, confirmed)
+                    .await
+            }
+            Command::ContainersLogs {
+                request,
+                connection,
+                context,
+                source,
+                options,
+            } => {
+                self.containers_logs(request, connection, context, source, options)
+                    .await
+            }
+            Command::ContainersCancel { request } => self.containers_cancel(request),
+            Command::ContainersForward {
+                id,
+                connection,
+                context,
+                forward,
+            } => {
+                self.containers_forward(id, connection, context, forward)
+                    .await
+            }
+            Command::ContainersStopForward { id } => self.containers_stop_forward(id),
+            Command::ContainersListForwards => self.emit_container_forwards(),
+            Command::TestContainers {
+                request,
+                connection,
+                secret,
+            } => {
+                let result = self.test_containers(connection, secret).await;
+                self.emit(Event::TestResult {
+                    request,
+                    result: result.map_err(|e| match e {
+                        switchyard_containers::ContainersError::SignIn { message, hint } => {
+                            format!("{message}\n\n{hint}")
+                        }
+                        e => e.to_string(),
+                    }),
+                });
+            }
+            Command::KubeContexts {
+                request,
+                kubeconfig,
+            } => self.kube_contexts(request, kubeconfig).await,
+            Command::DiscoverClusters {
+                request,
+                provider,
+                options,
+            } => self.discover_clusters(request, provider, options).await,
+            Command::AddClusterCredentials {
+                request,
+                cluster,
+                admin,
+            } => self.add_cluster_credentials(request, cluster, admin).await,
+            Command::AwsProfiles { request } => self.aws_profiles(request).await,
+            Command::RancherClusters {
+                request,
+                server,
+                token,
+                connection,
+                trusted_ca_pem,
+            } => {
+                self.rancher_clusters(request, server, token, connection, trusted_ca_pem)
+                    .await
+            }
             Command::StartForward { host, forward } => {
                 if let Err(e) = self.start_forward(&host, &forward).await {
                     self.emit(Event::Error {
@@ -870,6 +997,9 @@ impl Service {
                 }
             }
             Command::Cancel { query } => {
+                if self.cancel_runbook_step(query) {
+                    return;
+                }
                 let ctl = lock(&self.queries)
                     .get(&query)
                     .map(|q| (q.cancel.clone(), q.resume.clone()));
@@ -938,6 +1068,29 @@ impl Service {
                 connection,
                 request,
             } => self.activity(session, connection, request).await,
+            Command::CompareCatalog {
+                session,
+                connection,
+                request,
+                database,
+            } => {
+                let span = info_span!("compare_catalog", request, session);
+                self.compare_catalog(session, connection, request, database)
+                    .instrument(span)
+                    .await
+            }
+            Command::CompareSnapshot {
+                session,
+                connection,
+                request,
+                database,
+                schema,
+            } => {
+                let span = info_span!("compare_snapshot", request, session);
+                self.compare_snapshot(session, connection, request, database, schema)
+                    .instrument(span)
+                    .await
+            }
             Command::SessionAction {
                 session,
                 request,
@@ -1003,6 +1156,29 @@ impl Service {
                     Err(e) => self.error("Macros", e),
                 }
             }
+            Command::LoadRunbooks => self.emit_runbooks().await,
+            Command::SaveRunbook {
+                request,
+                runbook,
+                secrets,
+            } => self.save_runbook(request, runbook, secrets).await,
+            Command::DeleteRunbook { id } => self.delete_runbook(id).await,
+            Command::ImportRunbook { request, path } => self.import_runbook(request, path).await,
+            Command::ExportRunbook { runbook, path } => self.export_runbook(runbook, path).await,
+            Command::RunbookStep {
+                query,
+                session,
+                runbook,
+                step,
+                values,
+                confirmed_destructive,
+            } => {
+                let span = info_span!("runbook_step", query, step);
+                self.runbook_step(query, session, runbook, step, values, confirmed_destructive)
+                    .instrument(span)
+                    .await
+            }
+            Command::ListApiRequests { request } => self.list_api_requests(request).await,
             Command::LoadFavorites => self.emit_favorites().await,
             Command::AddFavorite(fav) => {
                 match self.with_store(move |s| s.add_favorite(&fav)).await {
@@ -1205,6 +1381,7 @@ impl Service {
                     Err(e) => self.error("Export", e),
                 }
             }
+            Command::Fleet(c) => self.fleet(c).await,
             Command::PreviewSshConfig => match self.preview_ssh_config().await {
                 Ok((path, hosts)) => self.emit(Event::SshConfigPreview { path, hosts }),
                 Err(e) => self.error("Read ssh config", e),
@@ -1236,9 +1413,26 @@ impl Service {
                 });
             }
             Command::DetectComponents => self.emit_components().await,
-            Command::CheckForUpdates { manual } => {
-                let status = crate::update::check(&self.data_dir.join("updates")).await;
+            Command::CheckForUpdates { manual, download } => {
+                let status = crate::update::check(&self.update_install).await;
+                let fetch = match &status {
+                    crate::update::UpdateStatus::Available(info)
+                        if download && info.asset.is_some() =>
+                    {
+                        Some(info.clone())
+                    }
+                    _ => None,
+                };
                 self.emit(Event::UpdateStatus { manual, status });
+                if let Some(info) = fetch {
+                    self.download_update(info).await;
+                }
+            }
+            Command::DownloadUpdate { info } => self.download_update(info).await,
+            Command::CancelUpdateDownload => {
+                if let Some(cancel) = lock(&self.update_cancel).as_ref() {
+                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
             }
             Command::InstallComponent { id, accept_license } => {
                 let r = crate::components::install(
@@ -1500,6 +1694,47 @@ impl Service {
             &progress,
         )
         .await
+    }
+
+    /// Download, verify and stage an update; one at a time.
+    async fn download_update(&self, info: crate::update::UpdateInfo) {
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let mut slot = lock(&self.update_cancel);
+            if slot.is_some() {
+                return;
+            }
+            *slot = Some(cancel.clone());
+        }
+        let events = self.events.clone();
+        let version = info.version.clone();
+        let progress = move |done: u64, total: u64| {
+            events.emit(Event::UpdateProgress {
+                version: version.clone(),
+                done,
+                total,
+            });
+        };
+        let result = crate::update::download(
+            &info,
+            &self.update_install,
+            &self.data_dir.join("updates"),
+            &progress,
+            &cancel,
+        )
+        .await;
+        *lock(&self.update_cancel) = None;
+        let cancelled = matches!(result, Err(crate::update::UpdateError::Cancelled));
+        if let Err(e) = &result
+            && !cancelled
+        {
+            warn!(error = %e, "update download failed");
+        }
+        self.emit(Event::UpdateDownloaded {
+            info,
+            result: result.map_err(|e| e.to_string()),
+            cancelled,
+        });
     }
 
     async fn emit_components(&self) {
@@ -1769,6 +2004,7 @@ impl Service {
                             size,
                             startup,
                             env,
+                            command: None,
                         },
                         self.ssh.clone(),
                         self.events.clone(),
@@ -1777,6 +2013,14 @@ impl Service {
                 }
                 Err(e) => Err(e.to_string()),
             },
+            TermTarget::Container {
+                connection,
+                context,
+                shell,
+            } => {
+                self.container_terminal(term, connection, context, shell, size)
+                    .await
+            }
         };
         match result {
             Ok((terminal, description)) => self.emit(Event::TerminalOpened {
@@ -1888,6 +2132,11 @@ impl Service {
                 c.name = format!("{} copy", c.name);
                 c.secret = None;
                 Profile::Cloud(c)
+            }
+            Profile::Containers(mut c) => {
+                c.id = ProfileId::new();
+                c.name = format!("{} copy", c.name);
+                Profile::Containers(c)
             }
         };
         if let Some(old) = old_secret.clone().filter(|r| r.named_secret().is_some()) {

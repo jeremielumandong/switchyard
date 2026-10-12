@@ -163,6 +163,7 @@ pub fn menu_lines(menu: TopMenu, s: MenuState) -> Vec<MenuLine> {
             Item("New terminal", k("⌘T", "Ctrl+Shift+T"), NewTerminal, false),
             Sep,
             Item("Import from ~/.ssh/config…", none(), ImportSshConfig, false),
+            Item("Import Ansible inventory…", none(), ImportAnsible, false),
             Item(
                 "Export profiles (no secrets)…",
                 none(),
@@ -200,6 +201,7 @@ pub fn menu_lines(menu: TopMenu, s: MenuState) -> Vec<MenuLine> {
                 s.group == ExplorerGroup::Place,
             ),
             Item("Type", none(), GroupByType, s.group == ExplorerGroup::Type),
+            Item("Tag", none(), GroupByTag, s.group == ExplorerGroup::Tag),
             Sep,
             Item("Assistant", k("⌘J", "Ctrl+J"), ToggleAssistant, s.assistant),
             Item("Value inspector", none(), ToggleInspector, s.inspector),
@@ -348,6 +350,34 @@ pub fn tool_groups(profiles: &Profiles) -> Vec<ToolGroup> {
                 tag: "Open",
             },
             Tool {
+                badge: "RUN",
+                name: "Run on many hosts",
+                desc: "One command or macro on a folder, tag or selection",
+                cmd: CommandId::FleetRun,
+                tag: "Open",
+            },
+            Tool {
+                badge: "FLT",
+                name: "Fleet dashboard",
+                desc: "Uptime, load, disk, memory and failed units per server",
+                cmd: CommandId::FleetDashboard,
+                tag: "Open",
+            },
+            Tool {
+                badge: "KEY",
+                name: "SSH key rollout",
+                desc: "Add, remove or audit authorized_keys across servers",
+                cmd: CommandId::FleetKeys,
+                tag: "Open",
+            },
+            Tool {
+                badge: "ANS",
+                name: "Import Ansible inventory",
+                desc: "Hosts and groups (as tags) from an INI or YAML inventory",
+                cmd: CommandId::ImportAnsible,
+                tag: "Open",
+            },
+            Tool {
                 badge: "HIS",
                 name: "Query history",
                 desc: "Every statement you and agents ran",
@@ -376,6 +406,13 @@ pub fn tool_groups(profiles: &Profiles) -> Vec<ToolGroup> {
                 tag: "Open",
             },
             Tool {
+                badge: "RB",
+                name: "Runbooks",
+                desc: "Saved step-by-step procedures: SQL, HTTP, shell",
+                cmd: CommandId::OpenRunbook,
+                tag: "Open",
+            },
+            Tool {
                 badge: "SV",
                 name: "Secret vault",
                 desc: "Named secrets, local or from Key Vault",
@@ -391,6 +428,58 @@ pub fn tool_groups(profiles: &Profiles) -> Vec<ToolGroup> {
             },
         ],
     }];
+    {
+        use switchyard_core::store::ContainerPlatform;
+        let count = |pl: ContainerPlatform| {
+            profiles
+                .all
+                .iter()
+                .filter(|p| matches!(p, Profile::Containers(c) if c.platform == pl))
+                .count()
+        };
+        let (docker, kube) = (
+            count(ContainerPlatform::Docker),
+            count(ContainerPlatform::Kubernetes),
+        );
+        let tag = |n: usize| if n > 0 { "Open" } else { "Add" };
+        out.push(ToolGroup {
+            badge: "K8S",
+            name: "Containers",
+            ident: if docker + kube == 0 {
+                "Nothing added yet".into()
+            } else {
+                format!(
+                    "{docker} Docker · {kube} cluster{}",
+                    if kube == 1 { "" } else { "s" }
+                )
+            },
+            ready: docker + kube > 0,
+            tools: vec![
+                Tool {
+                    badge: "DKR",
+                    name: "Docker",
+                    desc: "Containers, images, volumes, logs and shells",
+                    cmd: CommandId::OpenContainers(ContainerPlatform::Docker),
+                    tag: tag(docker),
+                },
+                Tool {
+                    badge: "K8S",
+                    name: "Kubernetes",
+                    desc: "Pods, deployments, services, logs and port forwards",
+                    cmd: CommandId::OpenContainers(ContainerPlatform::Kubernetes),
+                    tag: tag(kube),
+                },
+                Tool {
+                    badge: "ADD",
+                    name: "Add cluster",
+                    desc: "AKS, GKE, EKS, Rancher or a local cluster",
+                    cmd: CommandId::AddContainers(ContainerPlatform::Kubernetes),
+                    tag: "Add",
+                },
+            ],
+        });
+    }
+    out.push(crate::infra::tool_group());
     for (provider, badge) in [
         (CloudProvider::Aws, "AWS"),
         (CloudProvider::Azure, "AZ"),
@@ -1126,34 +1215,53 @@ impl Workspace {
     /// The chooser's dialog.
     pub(crate) fn render_new_chooser(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         use crate::conn_editor::ConnKind;
-        let options: [(&[&str], &str, &str, ConnKind); 4] = [
+        use switchyard_core::store::ContainerPlatform;
+        /// What a card opens.
+        #[derive(Clone, Copy)]
+        enum NewTarget {
+            Conn(ConnKind),
+            Containers(ContainerPlatform),
+        }
+        let options: [(&[&str], &str, &str, NewTarget); 6] = [
             (
                 &["SSH"],
                 "Server",
                 "Terminal, SFTP files and database tunnels, all over one SSH login.",
-                ConnKind::Ssh,
+                NewTarget::Conn(ConnKind::Ssh),
             ),
             (
                 &["PG", "MS", "MY", "D1"],
                 "Database",
                 "PostgreSQL, SQL Server, MySQL, Oracle, SQLite, MongoDB, Redis or Cloudflare D1: direct, or through a saved server.",
-                ConnKind::Db(Engine::Postgres),
+                NewTarget::Conn(ConnKind::Db(Engine::Postgres)),
             ),
             (
                 &["SFTP", "FTP"],
                 "File server",
                 "SFTP on a saved server, or a standalone FTP / FTPS login.",
-                ConnKind::Ftp,
+                NewTarget::Conn(ConnKind::Ftp),
             ),
             (
                 &["AWS", "AZ", "CF"],
                 "Cloud service",
                 "Buckets, config, secrets and key-value stores on AWS, Azure or Cloudflare.",
-                ConnKind::Cloud(CloudService::S3),
+                NewTarget::Conn(ConnKind::Cloud(CloudService::S3)),
+            ),
+            (
+                &["DKR"],
+                "Docker",
+                "Containers, images, volumes and logs with your docker CLI, here or on a saved server.",
+                NewTarget::Containers(ContainerPlatform::Docker),
+            ),
+            (
+                &["K8S", "AKS", "GKE", "EKS"],
+                "Kubernetes cluster",
+                "Pods, deployments, logs and port forwards: AKS, GKE, EKS, Rancher or a local cluster.",
+                NewTarget::Containers(ContainerPlatform::Kubernetes),
             ),
         ];
         let card = |i: usize,
-                    (badges, title, desc, kind): (&[&str], &str, &str, ConnKind),
+                    (badges, title, desc, target): (&[&str], &str, &str, NewTarget),
                     cx: &mut Context<Self>| {
             div()
                 .id(("new-opt", i))
@@ -1171,7 +1279,12 @@ impl Workspace {
                 .hover(|s| s.border_color(p.acc))
                 .on_click(cx.listener(move |this, _, w, cx| {
                     this.overlay = None;
-                    this.open_conn_editor(kind, None, w, cx);
+                    match target {
+                        NewTarget::Conn(kind) => this.open_conn_editor(kind, None, w, cx),
+                        NewTarget::Containers(platform) => {
+                            this.open_container_editor(platform, None, w, cx)
+                        }
+                    }
                 }))
                 .child(
                     div()
@@ -1199,7 +1312,7 @@ impl Workspace {
             .gap(rpx(10.))
             .px(rpx(20.))
             .py(rpx(14.));
-        for _ in 0..2 {
+        for _ in 0..3 {
             let row = div()
                 .flex()
                 .gap(rpx(10.))
@@ -1240,6 +1353,7 @@ impl Workspace {
                             )),
                     )
                     .child(grid)
+                    .child(self.render_infra_links(p, cx))
                     .child(
                         div()
                             .px(rpx(20.))
@@ -1355,9 +1469,16 @@ mod tests {
         let groups = tool_groups(&empty);
         assert_eq!(
             groups.iter().map(|g| g.name).collect::<Vec<_>>(),
-            ["Servers & databases", "AWS", "Azure", "Cloudflare"]
+            [
+                "Servers & databases",
+                "Containers",
+                "Infra tools",
+                "AWS",
+                "Azure",
+                "Cloudflare"
+            ]
         );
-        assert!(groups[1..].iter().all(|g| !g.ready));
+        assert!(groups[3..].iter().all(|g| !g.ready));
         let s3: switchyard_core::store::CloudConnection =
             serde_json::from_value(serde_json::json!({
                 "id": "c1", "name": "assets", "service": "s3", "environment": "production",
