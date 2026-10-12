@@ -677,6 +677,68 @@ impl RemoteFs for BlobFs {
     }
 }
 
+/// Versions of exactly `blob` in a `List Blobs` reply with `include=versions`, newest first.
+pub(crate) fn parse_blob_versions(root: &xml::Node, blob: &str) -> Vec<crate::s3::ObjectVersion> {
+    let mut out: Vec<crate::s3::ObjectVersion> = root
+        .child("Blobs")
+        .map(|b| {
+            b.all("Blob")
+                .filter(|b| b.text_of("Name") == Some(blob))
+                .map(|b| crate::s3::ObjectVersion {
+                    version_id: b.text_of("VersionId").unwrap_or_default().to_owned(),
+                    modified_ms: b
+                        .path(&["Properties", "Last-Modified"])
+                        .and_then(crate::time::parse_http_date_ms),
+                    size: b
+                        .path(&["Properties", "Content-Length"])
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0),
+                    latest: b.text_of("IsCurrentVersion") == Some("true")
+                        || b.child("VersionId").is_none(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    out.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
+    out
+}
+
+impl BlobFs {
+    /// The whole blob (a given version id, else the current one).
+    pub async fn get_blob(
+        &self,
+        container: &str,
+        blob: &str,
+        version: Option<&str>,
+    ) -> Result<Vec<u8>> {
+        let mut req = self.inner.req(Method::GET, Some(container), blob);
+        if let Some(v) = version.filter(|v| !v.is_empty()) {
+            req = req.query("versionid", v);
+        }
+        Ok(self.inner.send(req).await?.body)
+    }
+
+    /// Stored versions of `blob`, newest first (just the current one when the account does
+    /// not keep versions).
+    pub async fn blob_versions(
+        &self,
+        container: &str,
+        blob: &str,
+    ) -> Result<Vec<crate::s3::ObjectVersion>> {
+        let req = self
+            .inner
+            .req(Method::GET, Some(container), "")
+            .query("restype", "container")
+            .query("comp", "list")
+            .query("include", "versions")
+            .query("prefix", blob);
+        Ok(parse_blob_versions(
+            &xml::parse(&self.inner.send(req).await?.body)?,
+            blob,
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

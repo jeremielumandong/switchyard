@@ -50,6 +50,7 @@ pub mod agent_plan;
 pub mod agent_ssh;
 mod assistant;
 mod cloud;
+mod infra;
 mod named_secrets;
 pub(crate) use named_secrets::NamedSecrets;
 mod redis;
@@ -230,6 +231,8 @@ pub struct Service {
     update_install: crate::update::Install,
     /// Cancels the running update download; `Some` while one runs.
     update_cancel: Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>,
+    /// Running infra requests (log tails, inventories), to cancel.
+    infra_tasks: crate::infra::InfraTasks,
 }
 
 /// Run one statement and drain its results (session settings such as `USE`).
@@ -357,6 +360,7 @@ impl Service {
             named_cache: Mutex::default(),
             update_install: crate::update::Install::detect(),
             update_cancel: Mutex::default(),
+            infra_tasks: crate::infra::InfraTasks::default(),
             package_runner: config
                 .package_runner
                 .clone()
@@ -508,6 +512,8 @@ impl Service {
                 tokio::time::sleep(delay).await;
                 self.emit(Event::Pong { id });
             }
+            Command::Infra { request, op } => self.infra(request, op).await,
+            Command::InfraCancel { request } => self.infra_cancel(request),
             Command::LoadProfiles => self.emit_profiles().await,
             Command::SaveProfile {
                 request,

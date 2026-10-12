@@ -11,6 +11,7 @@ pub mod env;
 pub mod error;
 pub mod files;
 pub mod handoff;
+pub mod infra;
 pub mod prompts;
 pub mod runtime;
 pub mod service;

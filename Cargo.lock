@@ -9593,6 +9593,8 @@ dependencies = [
  "chrono",
  "futures",
  "reqwest",
+ "rustls",
+ "rustls-native-certs",
  "secrecy",
  "serde",
  "serde_json",
@@ -9609,6 +9611,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-rustls",
  "tracing",
  "url",
 ]

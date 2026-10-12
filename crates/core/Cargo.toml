@@ -18,6 +18,9 @@ switchyard-api.workspace = true
 switchyard-agents.workspace = true
 switchyard-cloud.workspace = true
 url.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+tokio-rustls.workspace = true
 tokio = { workspace = true, features = ["process"] }
 futures.workspace = true
 secrecy.workspace = true
