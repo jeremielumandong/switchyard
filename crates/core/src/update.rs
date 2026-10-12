@@ -1,15 +1,26 @@
-//! Update checks (M6-4): ask GitHub Releases for the latest published version, compare it
-//! with the running one, and, when a minisign public key was configured at build time
-//! (`SWITCHYARD_UPDATE_PUBKEY`), download this platform's installer and check its
-//! signature before offering it. Without a key the app only links to the release page.
+//! In-app updates (M6-4), the same way Emulsion does them: a launch-time check of the latest
+//! GitHub release, a verified background download, and installation when Switchyard
+//! restarts.
 //!
-//! Runs on the core runtime; the UI sees [`crate::Event::UpdateStatus`].
+//! The latest published release is compared with the running version. When it is newer and
+//! this copy was installed from a release package ([`Install`]), the matching asset is
+//! downloaded and checked against the SHA-256 digest GitHub records for it (or the
+//! `.sha256` file published beside it) before anything is replaced. When a minisign public
+//! key was configured at build time (`SWITCHYARD_UPDATE_PUBKEY`) and the release carries a
+//! `.minisig`, the signature must verify too. Development builds, packaged Linux installs and
+//! unpacked copies are only told about the release; they are never modified.
+//!
+//! Runs on the core runtime; the UI sees [`crate::Event::UpdateStatus`],
+//! [`crate::Event::UpdateProgress`] and [`crate::Event::UpdateDownloaded`].
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 use serde::Deserialize;
-use switchyard_drivers::install::Fetcher as _;
+use sha2::Digest as _;
+use tokio::io::AsyncWriteExt as _;
 
 use crate::components::HttpFetcher;
 
@@ -19,14 +30,18 @@ pub const REPOSITORY: &str = "jeremielumandong/switchyard";
 /// Settings key: `false` turns off the check at startup ("Check for Updates" still works).
 pub const CHECK_SETTING: &str = "updates.check";
 
-/// minisign public key (base64) for update installers, set at build time. Without it the
-/// app only notifies.
+/// Settings key: `false` stops the startup check from downloading a newer release by itself
+/// (it is still announced).
+pub const AUTO_DOWNLOAD_SETTING: &str = "updates.auto_download";
+
+/// Optional minisign public key (base64), set at build time. When set, a release asset that
+/// has a `.minisig` beside it must also pass the signature check.
 pub const UPDATE_PUBLIC_KEY: Option<&str> = option_env!("SWITCHYARD_UPDATE_PUBKEY");
 
 /// The running version.
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Why a check failed.
+/// Why a check or download failed.
 #[derive(Debug, thiserror::Error)]
 pub enum UpdateError {
     /// Network or HTTP failure.
@@ -35,12 +50,118 @@ pub enum UpdateError {
     /// GitHub answered something unexpected.
     #[error("unexpected release data: {0}")]
     BadRelease(String),
-    /// A downloaded installer failed its signature check (it is deleted).
-    #[error("the downloaded installer failed its signature check: {0}")]
+    /// The release has no download for this installation.
+    #[error("the release has no {0} download")]
+    MissingAsset(String),
+    /// Neither GitHub nor a `.sha256` file gives the asset's checksum.
+    #[error("the release publishes no checksum for {0}, so it was not installed")]
+    MissingChecksum(String),
+    /// The download's size or SHA-256 differs from the published one (it is deleted).
+    #[error("{0} did not match its published checksum and was discarded")]
+    Checksum(String),
+    /// A downloaded file failed its minisign signature check (it is deleted).
+    #[error("the download failed its signature check: {0}")]
     Signature(String),
+    /// The user cancelled the download.
+    #[error("download cancelled")]
+    Cancelled,
     /// Local file error.
     #[error("{0}")]
     Io(#[from] std::io::Error),
+}
+
+/// How this copy of Switchyard was installed, which decides how it updates.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Install {
+    /// A Linux AppImage at this path, replaced in place.
+    AppImage(PathBuf),
+    /// A Windows per-user installation (NSIS); the new installer runs after exit.
+    WindowsInstaller,
+    /// A macOS application bundle; the new disk image is opened.
+    MacApp(PathBuf),
+    /// A development build, a distribution package, Flatpak or an unpacked copy: nothing is
+    /// replaced, the release page is offered instead.
+    Unmanaged,
+}
+
+impl Install {
+    /// This process's installation.
+    pub fn detect() -> Self {
+        if cfg!(debug_assertions) {
+            return Install::Unmanaged;
+        }
+        let exe = std::env::current_exe().ok();
+        Self::from_environment(
+            exe.as_deref(),
+            std::env::var_os("APPIMAGE").map(PathBuf::from),
+            std::env::var_os("FLATPAK_ID").is_some(),
+        )
+    }
+
+    fn from_environment(exe: Option<&Path>, appimage: Option<PathBuf>, flatpak: bool) -> Self {
+        if cfg!(target_os = "linux") {
+            if flatpak {
+                return Install::Unmanaged;
+            }
+            return match appimage {
+                Some(path) if path.is_absolute() && path.is_file() => Install::AppImage(path),
+                _ => Install::Unmanaged,
+            };
+        }
+        let Some(exe) = exe else {
+            return Install::Unmanaged;
+        };
+        if cfg!(windows) {
+            // The NSIS installer (packaging/windows/switchyard.nsi) writes its uninstaller
+            // beside the executable.
+            return match exe.parent() {
+                Some(dir) if dir.join("uninstall.exe").is_file() => Install::WindowsInstaller,
+                _ => Install::Unmanaged,
+            };
+        }
+        if cfg!(target_os = "macos") {
+            // …/Switchyard.app/Contents/MacOS/switchyard
+            return match exe.ancestors().nth(3) {
+                Some(app) if app.extension().is_some_and(|e| e == "app") => {
+                    Install::MacApp(app.to_path_buf())
+                }
+                _ => Install::Unmanaged,
+            };
+        }
+        Install::Unmanaged
+    }
+
+    /// The stable-named release asset this installation updates from, if it can update (see
+    /// `scripts/upload-release-assets.py`).
+    pub fn asset_name(&self) -> Option<&'static str> {
+        match self {
+            Install::AppImage(_) if cfg!(target_arch = "x86_64") => {
+                Some("Switchyard-linux-x86_64.AppImage")
+            }
+            Install::WindowsInstaller if cfg!(target_arch = "x86_64") => {
+                Some("Switchyard-windows-x64-setup.exe")
+            }
+            Install::MacApp(_) => Some("Switchyard-macos-universal.dmg"),
+            _ => None,
+        }
+    }
+}
+
+/// Where to fetch an update from and how to check it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UpdateAsset {
+    /// File name.
+    pub name: String,
+    /// Download URL.
+    pub url: String,
+    /// Size GitHub reports.
+    pub size: u64,
+    /// SHA-256 (lowercase hex) GitHub recorded at upload, when it did.
+    pub sha256: Option<String>,
+    /// The `<name>.sha256` file, when published.
+    pub checksum_url: Option<String>,
+    /// The `<name>.minisig` file, when published.
+    pub signature_url: Option<String>,
 }
 
 /// A newer release.
@@ -50,9 +171,9 @@ pub struct UpdateInfo {
     pub version: String,
     /// The release page on github.com.
     pub release_url: String,
-    /// This platform's installer, downloaded and signature-checked; `None` when no key is
-    /// configured, the platform has no installer (Linux), or the release lacks one.
-    pub installer: Option<PathBuf>,
+    /// This installation's download; `None` when it can't update itself (the release page
+    /// is offered instead).
+    pub asset: Option<UpdateAsset>,
 }
 
 /// Outcome of a check ([`crate::Event::UpdateStatus`]).
@@ -67,6 +188,20 @@ pub enum UpdateStatus {
     Available(UpdateInfo),
     /// The check failed.
     Failed(String),
+}
+
+/// A downloaded, verified update waiting for a restart.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadyUpdate {
+    /// Its version.
+    pub version: String,
+    /// The release page.
+    pub release_url: String,
+    /// What to start after Switchyard exits: the replaced AppImage, the Windows installer,
+    /// or the macOS disk image (opened, not run).
+    pub file: PathBuf,
+    /// How this copy is installed.
+    pub install: Install,
 }
 
 /// A `major.minor.patch[-pre]` version. Build metadata is ignored.
@@ -136,6 +271,16 @@ impl Ord for Version {
     }
 }
 
+impl std::fmt::Display for Version {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.core[0], self.core[1], self.core[2])?;
+        if !self.pre.is_empty() {
+            write!(f, "-{}", self.pre.join("."))?;
+        }
+        Ok(())
+    }
+}
+
 /// The parts of GitHub's release JSON the check reads.
 #[derive(Debug, Deserialize)]
 pub struct Release {
@@ -161,17 +306,36 @@ pub struct Asset {
     pub name: String,
     /// Download URL.
     pub browser_download_url: String,
+    /// Size in bytes.
+    #[serde(default)]
+    pub size: u64,
+    /// `sha256:<hex>`, recorded by GitHub at upload.
+    #[serde(default)]
+    pub digest: Option<String>,
 }
 
-/// The stable asset name of this platform's installer (see `scripts/upload-release-assets.py`).
-/// Linux has none: package managers and AppImage tools handle updates there.
-pub fn installer_asset_name() -> Option<&'static str> {
-    if cfg!(target_os = "macos") {
-        Some("Switchyard-macos-universal.dmg")
-    } else if cfg!(all(windows, target_arch = "x86_64")) {
-        Some("Switchyard-windows-x64-setup.exe")
-    } else {
-        None
+impl Release {
+    fn asset(&self, name: &str) -> Option<&Asset> {
+        self.assets.iter().find(|a| a.name == name)
+    }
+
+    /// The download for `name`, with whatever checks the release publishes for it.
+    pub fn update_asset(&self, name: &str) -> Option<UpdateAsset> {
+        let asset = self.asset(name)?;
+        let url_of = |n: String| self.asset(&n).map(|a| a.browser_download_url.clone());
+        Some(UpdateAsset {
+            name: asset.name.clone(),
+            url: asset.browser_download_url.clone(),
+            size: asset.size,
+            sha256: asset
+                .digest
+                .as_deref()
+                .and_then(|d| d.strip_prefix("sha256:"))
+                .filter(|hex| is_sha256(hex))
+                .map(str::to_ascii_lowercase),
+            checksum_url: url_of(format!("{name}.sha256")),
+            signature_url: url_of(format!("{name}.minisig")),
+        })
     }
 }
 
@@ -194,15 +358,27 @@ pub fn newer_release(release: &Release, current: &str) -> Result<Option<Version>
     Ok((latest > running).then_some(latest))
 }
 
-/// Check `data` (an installer) against a `.minisig` signature with `public_key`.
-pub fn verify_installer(data: &[u8], signature: &str, public_key: &str) -> Result<(), UpdateError> {
+/// Check `data` against a `.minisig` signature with `public_key`.
+pub fn verify_signature(data: &[u8], signature: &str, public_key: &str) -> Result<(), UpdateError> {
     switchyard_drivers::signature::verify(data, signature, public_key)
         .map_err(|e| UpdateError::Signature(e.to_string()))
 }
 
-/// Run one check. `updates_dir` receives verified installers.
-pub async fn check(updates_dir: &Path) -> UpdateStatus {
-    match check_inner(updates_dir).await {
+fn is_sha256(hex: &str) -> bool {
+    hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// `<hex>  <name>` as written by sha256sum / shasum, for exactly this file.
+pub fn parse_checksum_file(text: &str, name: &str) -> Option<String> {
+    let mut fields = text.trim_start_matches('\u{feff}').split_whitespace();
+    let hex = fields.next()?;
+    let file = fields.next()?.trim_start_matches('*');
+    (is_sha256(hex) && file == name).then(|| hex.to_ascii_lowercase())
+}
+
+/// Run one check for `install`.
+pub async fn check(install: &Install) -> UpdateStatus {
+    match check_inner(install).await {
         Ok(status) => status,
         Err(e) => {
             tracing::warn!(error = %e, "update check failed");
@@ -211,7 +387,7 @@ pub async fn check(updates_dir: &Path) -> UpdateStatus {
     }
 }
 
-async fn check_inner(updates_dir: &Path) -> Result<UpdateStatus, UpdateError> {
+async fn check_inner(install: &Install) -> Result<UpdateStatus, UpdateError> {
     let fetcher = HttpFetcher::new().map_err(|e| UpdateError::Http(e.to_string()))?;
     let url = format!("https://api.github.com/repos/{REPOSITORY}/releases/latest");
     let resp = fetcher
@@ -238,82 +414,220 @@ async fn check_inner(updates_dir: &Path) -> Result<UpdateStatus, UpdateError> {
         .json()
         .await
         .map_err(|e| UpdateError::BadRelease(e.to_string()))?;
-    let Some(latest) = newer_release(&release, CURRENT_VERSION)? else {
+    status_for(&release, install, CURRENT_VERSION)
+}
+
+/// What `release` means for this installation.
+pub fn status_for(
+    release: &Release,
+    install: &Install,
+    current: &str,
+) -> Result<UpdateStatus, UpdateError> {
+    let Some(latest) = newer_release(release, current)? else {
         return Ok(UpdateStatus::UpToDate {
-            current: CURRENT_VERSION.into(),
+            current: current.into(),
         });
     };
-    let version = format!(
-        "{}.{}.{}{}",
-        latest.core[0],
-        latest.core[1],
-        latest.core[2],
-        if latest.pre.is_empty() {
-            String::new()
-        } else {
-            format!("-{}", latest.pre.join("."))
-        }
-    );
+    let version = latest.to_string();
     tracing::info!(%version, "update available");
-    let key = UPDATE_PUBLIC_KEY.filter(|k| !k.trim().is_empty());
-    let installer = match (key, installer_asset_name()) {
-        (Some(key), Some(name)) => {
-            download_verified(&fetcher, &release, name, key, &updates_dir.join(&version)).await?
-        }
-        _ => None,
-    };
     Ok(UpdateStatus::Available(UpdateInfo {
         version,
-        release_url: release.html_url,
-        installer,
+        release_url: release.html_url.clone(),
+        asset: install.asset_name().and_then(|n| release.update_asset(n)),
     }))
 }
 
-/// Download `name` and `name.minisig` from the release into `dir` and keep the installer only
-/// if the signature verifies. `Ok(None)` when the release lacks either file.
-async fn download_verified(
-    fetcher: &HttpFetcher,
-    release: &Release,
-    name: &str,
-    key: &str,
+/// Download `info`'s asset into `dir` (only one pending update is kept there), verify it,
+/// and stage it for `install`. `progress` gets (bytes, total); `cancel` stops the download.
+pub async fn download(
+    info: &UpdateInfo,
+    install: &Install,
     dir: &Path,
-) -> Result<Option<PathBuf>, UpdateError> {
-    let sig_name = format!("{name}.minisig");
-    let find = |n: &str| {
-        release
-            .assets
-            .iter()
-            .find(|a| a.name == n)
-            .map(|a| a.browser_download_url.clone())
+    progress: &(dyn Fn(u64, u64) + Send + Sync),
+    cancel: &Arc<AtomicBool>,
+) -> Result<ReadyUpdate, UpdateError> {
+    let asset = info
+        .asset
+        .as_ref()
+        .ok_or_else(|| UpdateError::MissingAsset(std::env::consts::OS.into()))?;
+    let fetcher = HttpFetcher::new().map_err(|e| UpdateError::Http(e.to_string()))?;
+    let http = fetcher.client();
+    let expected = match &asset.sha256 {
+        Some(hex) => hex.clone(),
+        None => {
+            let url = asset
+                .checksum_url
+                .as_deref()
+                .ok_or_else(|| UpdateError::MissingChecksum(asset.name.clone()))?;
+            let text = get_small(http, url).await?;
+            parse_checksum_file(&text, &asset.name)
+                .ok_or_else(|| UpdateError::MissingChecksum(asset.name.clone()))?
+        }
     };
-    let (Some(file_url), Some(sig_url)) = (find(name), find(&sig_name)) else {
-        tracing::info!(asset = name, "release has no signed installer; notify only");
-        return Ok(None);
+    let key = UPDATE_PUBLIC_KEY.filter(|k| !k.trim().is_empty());
+    let signature = match (key, &asset.signature_url) {
+        (Some(_), Some(url)) => Some(get_small(http, url).await?),
+        _ => None,
     };
+
+    let _ = tokio::fs::remove_dir_all(dir).await;
     tokio::fs::create_dir_all(dir).await?;
-    let file = dir.join(name);
-    let sig = dir.join(&sig_name);
-    let none = |_: u64, _: Option<u64>| {};
-    for (url, dest) in [(&file_url, &file), (&sig_url, &sig)] {
-        fetcher
-            .fetch(url, dest, &none)
-            .await
-            .map_err(|e| UpdateError::Http(e.to_string()))?;
-    }
-    let data = tokio::fs::read(&file).await?;
-    let signature = tokio::fs::read_to_string(&sig).await?;
-    let verified = tokio::task::spawn_blocking({
-        let key = key.to_owned();
-        move || verify_installer(&data, &signature, &key)
-    })
-    .await
-    .map_err(|e| UpdateError::Signature(e.to_string()))?;
-    if let Err(e) = verified {
-        let _ = tokio::fs::remove_file(&file).await;
-        let _ = tokio::fs::remove_file(&sig).await;
+    let dest = dir.join(&asset.name);
+    let part = dir.join(format!("{}.part", asset.name));
+    if let Err(e) = fetch(http, asset, &part, &expected, progress, cancel).await {
+        let _ = tokio::fs::remove_file(&part).await;
         return Err(e);
     }
-    Ok(Some(file))
+    if let (Some(key), Some(sig)) = (key, signature) {
+        let data = tokio::fs::read(&part).await?;
+        let key = key.to_owned();
+        let verified = tokio::task::spawn_blocking(move || verify_signature(&data, &sig, &key))
+            .await
+            .map_err(|e| UpdateError::Signature(e.to_string()))?;
+        if let Err(e) = verified {
+            let _ = tokio::fs::remove_file(&part).await;
+            return Err(e);
+        }
+    }
+    tokio::fs::rename(&part, &dest).await?;
+    let file = match install {
+        Install::AppImage(target) => {
+            let (dest, target) = (dest.clone(), target.clone());
+            tokio::task::spawn_blocking(move || replace_appimage(&dest, &target))
+                .await
+                .map_err(|e| UpdateError::Io(std::io::Error::other(e.to_string())))??
+        }
+        _ => dest,
+    };
+    Ok(ReadyUpdate {
+        version: info.version.clone(),
+        release_url: info.release_url.clone(),
+        file,
+        install: install.clone(),
+    })
+}
+
+/// A checksum or signature file (at most 4 KB).
+async fn get_small(http: &reqwest::Client, url: &str) -> Result<String, UpdateError> {
+    let resp = http
+        .get(url)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|e| UpdateError::Http(e.to_string()))?;
+    if !resp.status().is_success() {
+        return Err(UpdateError::Http(format!(
+            "{url} answered HTTP {}",
+            resp.status().as_u16()
+        )));
+    }
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| UpdateError::Http(e.to_string()))?;
+    if bytes.len() > 4096 {
+        return Err(UpdateError::BadRelease(format!("{url} is too large")));
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+async fn fetch(
+    http: &reqwest::Client,
+    asset: &UpdateAsset,
+    part: &Path,
+    expected: &str,
+    progress: &(dyn Fn(u64, u64) + Send + Sync),
+    cancel: &Arc<AtomicBool>,
+) -> Result<(), UpdateError> {
+    let http_err = |e: reqwest::Error| UpdateError::Http(e.to_string());
+    let mut resp = http.get(&asset.url).send().await.map_err(http_err)?;
+    if !resp.status().is_success() {
+        return Err(UpdateError::Http(format!(
+            "{} answered HTTP {}",
+            asset.name,
+            resp.status().as_u16()
+        )));
+    }
+    let total = if asset.size > 0 {
+        asset.size
+    } else {
+        resp.content_length().unwrap_or(0)
+    };
+    let mut out = tokio::io::BufWriter::new(tokio::fs::File::create(part).await?);
+    let mut hasher = sha2::Sha256::new();
+    let (mut got, mut reported) = (0u64, 0u64);
+    while let Some(chunk) = resp.chunk().await.map_err(http_err)? {
+        if cancel.load(AtomicOrdering::Relaxed) {
+            return Err(UpdateError::Cancelled);
+        }
+        got += chunk.len() as u64;
+        if total > 0 && got > total {
+            return Err(UpdateError::Checksum(asset.name.clone()));
+        }
+        out.write_all(&chunk).await?;
+        hasher.update(&chunk);
+        if got - reported >= 1 << 20 {
+            reported = got;
+            progress(got, total);
+        }
+    }
+    out.flush().await?;
+    out.into_inner().sync_all().await?;
+    progress(got, total);
+    let digest: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    if (total > 0 && got != total) || digest != expected {
+        return Err(UpdateError::Checksum(asset.name.clone()));
+    }
+    Ok(())
+}
+
+/// Atomically replace the AppImage at `target` with the verified `download`. The running
+/// copy keeps its open file, so it is unaffected until restart. Returns `target`.
+pub fn replace_appimage(download: &Path, target: &Path) -> Result<PathBuf, UpdateError> {
+    let dir = target
+        .parent()
+        .ok_or_else(|| std::io::Error::other("the AppImage has no parent folder"))?;
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Switchyard.AppImage".into());
+    let staged = dir.join(format!(".{name}.update-{}", std::process::id()));
+    let result = (|| {
+        std::fs::copy(download, &staged)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))?;
+        }
+        std::fs::File::open(&staged)?.sync_all()?;
+        std::fs::rename(&staged, target)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&staged);
+    }
+    result?;
+    let _ = std::fs::remove_file(download);
+    Ok(target.to_path_buf())
+}
+
+/// Start what a staged update left for after exit: the relaunched AppImage or the Windows
+/// installer. Called by the app binary once its event loop has returned.
+pub fn run_after_exit(ready: &ReadyUpdate) {
+    if matches!(ready.install, Install::MacApp(_) | Install::Unmanaged) {
+        return;
+    }
+    if let Err(error) = std::process::Command::new(&ready.file)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        tracing::warn!(%error, program = %ready.file.display(), "could not start the update");
+    }
 }
 
 #[cfg(test)]
@@ -360,8 +674,17 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "tag_name": tag,
             "html_url": format!("https://github.com/{REPOSITORY}/releases/tag/{tag}"),
-            "assets": [{"name": "Switchyard-macos-universal.dmg",
-                        "browser_download_url": "https://example.invalid/x.dmg"}],
+            "assets": [
+                {"name": "Switchyard-macos-universal.dmg", "size": 3,
+                 "browser_download_url": "https://example.invalid/x.dmg",
+                 "digest": "sha256:BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD"},
+                {"name": "Switchyard-windows-x64-setup.exe", "size": 3,
+                 "browser_download_url": "https://example.invalid/s.exe", "digest": null},
+                {"name": "Switchyard-windows-x64-setup.exe.sha256", "size": 99,
+                 "browser_download_url": "https://example.invalid/s.exe.sha256"},
+                {"name": "Switchyard-windows-x64-setup.exe.minisig", "size": 99,
+                 "browser_download_url": "https://example.invalid/s.exe.minisig"}
+            ],
         }))
         .unwrap()
     }
@@ -398,11 +721,210 @@ mod tests {
         let data = fixture("manifest.json");
         let sig = fixture("manifest.json.minisig");
         let key = fixture("test.pub");
-        verify_installer(data.as_bytes(), &sig, &key).unwrap();
+        verify_signature(data.as_bytes(), &sig, &key).unwrap();
         let tampered = format!("{data} ");
         assert!(matches!(
-            verify_installer(tampered.as_bytes(), &sig, &key),
+            verify_signature(tampered.as_bytes(), &sig, &key),
             Err(UpdateError::Signature(_))
         ));
+    }
+
+    #[test]
+    fn assets_carry_their_checks() {
+        let r = release("v0.6.0");
+        let dmg = r.update_asset("Switchyard-macos-universal.dmg").unwrap();
+        assert_eq!(dmg.size, 3);
+        assert_eq!(
+            dmg.sha256.as_deref(),
+            Some("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        );
+        assert_eq!(dmg.checksum_url, None);
+        let exe = r.update_asset("Switchyard-windows-x64-setup.exe").unwrap();
+        assert_eq!(exe.sha256, None);
+        assert_eq!(
+            exe.checksum_url.as_deref(),
+            Some("https://example.invalid/s.exe.sha256")
+        );
+        assert_eq!(
+            exe.signature_url.as_deref(),
+            Some("https://example.invalid/s.exe.minisig")
+        );
+        assert!(r.update_asset("Switchyard-linux-x86_64.AppImage").is_none());
+    }
+
+    #[test]
+    fn status_offers_a_download_only_to_managed_installs() {
+        let r = release("v0.6.0");
+        let UpdateStatus::Available(info) =
+            status_for(&r, &Install::MacApp("/A/Switchyard.app".into()), "0.5.0").unwrap()
+        else {
+            panic!("expected an update");
+        };
+        assert_eq!(info.version, "0.6.0");
+        assert_eq!(
+            info.asset.map(|a| a.name),
+            Some("Switchyard-macos-universal.dmg".to_owned())
+        );
+        let UpdateStatus::Available(info) = status_for(&r, &Install::Unmanaged, "0.5.0").unwrap()
+        else {
+            panic!("expected an update");
+        };
+        assert_eq!(info.asset, None);
+        assert_eq!(
+            status_for(&r, &Install::Unmanaged, "0.6.0").unwrap(),
+            UpdateStatus::UpToDate {
+                current: "0.6.0".into()
+            }
+        );
+    }
+
+    #[test]
+    fn checksum_files_name_exactly_this_file() {
+        let hex = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert_eq!(
+            parse_checksum_file(&format!("{hex}  a.exe\n"), "a.exe").as_deref(),
+            Some(hex)
+        );
+        assert_eq!(
+            parse_checksum_file(&format!("\u{feff}{hex} *a.exe"), "a.exe").as_deref(),
+            Some(hex)
+        );
+        assert_eq!(parse_checksum_file(&format!("{hex}  b.exe"), "a.exe"), None);
+        assert_eq!(parse_checksum_file("abc  a.exe", "a.exe"), None);
+    }
+
+    #[test]
+    fn versions_print_without_the_v() {
+        assert_eq!(v("v1.2.3").to_string(), "1.2.3");
+        assert_eq!(v("1.0.0-rc.1").to_string(), "1.0.0-rc.1");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_updates_only_appimages() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("Switchyard.AppImage");
+        std::fs::write(&image, b"x").unwrap();
+        assert_eq!(
+            Install::from_environment(None, Some(image.clone()), false),
+            Install::AppImage(image.clone())
+        );
+        assert_eq!(
+            Install::from_environment(None, Some(image), true),
+            Install::Unmanaged
+        );
+        assert_eq!(
+            Install::from_environment(None, Some("relative.AppImage".into()), false),
+            Install::Unmanaged
+        );
+        assert_eq!(
+            Install::from_environment(None, None, false),
+            Install::Unmanaged
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn appimage_is_replaced_in_place() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("Switchyard.AppImage");
+        let download = dir.path().join("new.AppImage");
+        std::fs::write(&target, b"old").unwrap();
+        std::fs::write(&download, b"new").unwrap();
+        assert_eq!(replace_appimage(&download, &target).unwrap(), target);
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+        assert!(!download.exists());
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755);
+    }
+
+    /// Serves `body` for every request on 127.0.0.1; returns the base URL.
+    async fn serve(body: &'static [u8]) -> String {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 2048];
+                let _ = sock.read(&mut buf).await;
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(body).await;
+                let _ = sock.shutdown().await;
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    fn info(url: String, sha256: &str) -> UpdateInfo {
+        UpdateInfo {
+            version: "9.0.0".into(),
+            release_url: "https://github.com/x/y/releases/tag/v9.0.0".into(),
+            asset: Some(UpdateAsset {
+                name: "Switchyard-windows-x64-setup.exe".into(),
+                url,
+                size: 3,
+                sha256: Some(sha256.into()),
+                checksum_url: None,
+                signature_url: None,
+            }),
+        }
+    }
+
+    const ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    #[tokio::test]
+    async fn downloads_are_verified_before_staging() {
+        let url = serve(b"abc").await;
+        let dir = tempfile::tempdir().unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let ready = download(
+            &info(url.clone(), ABC),
+            &Install::WindowsInstaller,
+            &dir.path().join("updates"),
+            &|_, _| {},
+            &cancel,
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read(&ready.file).unwrap(), b"abc");
+        assert_eq!(ready.version, "9.0.0");
+
+        let wrong = "0".repeat(64);
+        let err = download(
+            &info(url, &wrong),
+            &Install::WindowsInstaller,
+            &dir.path().join("updates"),
+            &|_, _| {},
+            &cancel,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, UpdateError::Checksum(_)), "{err}");
+        let left: Vec<_> = std::fs::read_dir(dir.path().join("updates"))
+            .unwrap()
+            .collect();
+        assert!(left.is_empty(), "a rejected download is deleted");
+    }
+
+    #[tokio::test]
+    async fn unmanaged_installs_have_nothing_to_download() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut i = info("http://127.0.0.1:9".into(), ABC);
+        i.asset = None;
+        let err = download(
+            &i,
+            &Install::Unmanaged,
+            dir.path(),
+            &|_, _| {},
+            &Arc::new(AtomicBool::new(false)),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, UpdateError::MissingAsset(_)));
     }
 }

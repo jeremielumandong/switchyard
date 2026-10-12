@@ -1802,28 +1802,7 @@ impl Workspace {
                     false,
                     p,
                 ))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(rpx(12.))
-                        .child(
-                            ui::checkbox(
-                                "set-update-check",
-                                self.updates.enabled,
-                                "Check for updates at startup (GitHub Releases)",
-                                p,
-                            )
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                let on = !this.updates.enabled;
-                                this.set_update_checks(on, cx)
-                            })),
-                        )
-                        .child(
-                            ui::button("set-update-now", "Check now", Kind::Ghost, p)
-                                .on_click(cx.listener(|this, _, _, cx| this.check_for_updates(cx))),
-                        ),
-                )
+                .child(self.render_update_settings(p, cx))
                 .child(
                     div()
                         .flex()

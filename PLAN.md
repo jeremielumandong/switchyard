@@ -891,11 +891,22 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   Partial: AppImage via `packaging/linux/build-appimage.sh` (appimagetool and runtime pinned by
   SHA-256); `release.yml` builds it on Ubuntu 22.04 and uploads to the draft release.
   `.deb`, `.rpm`, AUR pending.
-- [ ] **M6-4 Auto-update.** Signed updates on macOS and Windows; Linux defers to package managers.
-  Partial: `core::update` checks GitHub Releases (startup in release builds, Settings toggle,
-  "Check for Updates"), shows a status-bar notice linking the release; with a build-time
-  `SWITCHYARD_UPDATE_PUBKEY` it downloads the installer and keeps it only if its minisign
-  signature verifies. No key configured yet (notify only); no in-place replace.
+- [x] **M6-4 Auto-update.** Signed updates on macOS and Windows; Linux defers to package managers.
+  Note (2026-10-12, user request: "same implementation as Emulsion"): `core::update` detects
+  how this copy is installed (`Install`: AppImage via `$APPIMAGE`, Windows NSIS install via
+  `uninstall.exe` beside the exe, macOS `.app` bundle; dev builds, Flatpak and packaged or
+  unpacked copies are `Unmanaged` and only get the release page). The startup check (release
+  builds, Settings toggle) downloads the stable-named asset in the background with progress
+  and cancel, verifies its size and SHA-256 (GitHub's recorded `digest`, else the `.sha256`
+  file beside it) and, when `SWITCHYARD_UPDATE_PUBKEY` is set and a `.minisig` exists, its
+  signature. The AppImage is replaced in place; "Restart now" closes the window through the
+  unsaved-files dialog and `main` starts the new AppImage or the Windows installer after the
+  event loop returns; macOS opens the verified DMG. Settings → General: status line, "Check
+  for updates at startup", "Download and verify updates automatically", Check now /
+  Download / Cancel / Restart now / Release notes. Status bar: Download / Downloading n% /
+  Restart to update. Tests: `core::update` unit tests (asset checks, install detection,
+  AppImage replace, a local HTTP server for verified and rejected downloads). Not run on
+  a real Windows or macOS install from here.
 - [ ] **M6-5 Performance gates.** CI jobs that fail when a budget from CLAUDE.md is exceeded.
 - [ ] **M6-6 Crash reporting.** Opt-in, scrubbed of SQL text, hostnames and credentials;
   telemetry off by default.
