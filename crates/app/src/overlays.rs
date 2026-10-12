@@ -102,6 +102,8 @@ pub enum Overlay {
         /// One line per tab and what would be lost.
         reasons: Vec<String>,
     },
+    /// Server workspaces, credentials and remote desktops (`workspace_dialogs`).
+    Servers(crate::workspace_dialogs::ServersOverlay),
 }
 
 /// The `~/.ssh/config` import preview.
@@ -205,10 +207,35 @@ fn object_items(kind: ObjectKind) -> Vec<MenuItem> {
     items
 }
 
-/// The submenu a context-menu item opens, if it has one.
-fn submenu(target: &CtxTarget, action: &str) -> Option<Vec<MenuItem>> {
+/// One submenu entry: like [`MenuItem`], with a label that can be a workspace's name.
+type SubItem = (&'static str, SharedString, bool, SharedString);
+
+/// The submenu a context-menu item opens, if it has one. `workspaces` are the
+/// workspaces "Add to workspace ▸" lists: (id, name).
+fn submenu(
+    target: &CtxTarget,
+    action: &str,
+    workspaces: &[(String, String)],
+) -> Option<Vec<SubItem>> {
     match (target, action) {
-        (CtxTarget::Object(o), "script") => Some(script_items(o.kind)),
+        (CtxTarget::Object(o), "script") => Some(
+            script_items(o.kind)
+                .into_iter()
+                .map(|(a, l, d, k)| (a, SharedString::from(l), d, k))
+                .collect(),
+        ),
+        (_, "ws_add") => {
+            let mut items: Vec<SubItem> = workspaces
+                .iter()
+                .zip(crate::server_workspaces::WS_ADD)
+                .map(|((_, name), action)| (action, name.clone().into(), false, "".into()))
+                .collect();
+            if !items.is_empty() {
+                items.push(("-", "".into(), false, "".into()));
+            }
+            items.push(("ws_new", "New workspace…".into(), false, "".into()));
+            Some(items)
+        }
         _ => None,
     }
 }
@@ -318,6 +345,7 @@ impl Workspace {
                 name,
                 reasons,
             }) => Some(self.render_confirm_disconnect(profile.clone(), name, reasons, p, cx)),
+            Some(Overlay::Servers(_)) => Some(self.render_servers_overlay(p, window, cx)),
         };
         out.extend(overlay);
         out.extend(self.render_ssh_prompt(p, cx));
@@ -657,7 +685,16 @@ impl Workspace {
                 ("open_all", "Open all terminals", false, "".into()),
                 ("clear_selection", "Clear selection", false, "".into()),
             ],
+            CtxTarget::Items(_) => vec![("clear_selection", "Clear selection", false, "".into())],
         };
+        // Workspaces: add the item(s), folder or tag to one; remove from this one.
+        if self.ws_target_of(&ctx.target).is_some() {
+            items.push(("-", "", false, "".into()));
+            items.push(("ws_add", "Add to workspace", false, "▸".into()));
+            if !self.servers.in_all() {
+                items.push(("ws_remove", "Remove from this workspace", false, "".into()));
+            }
+        }
         if matches!(&ctx.target, CtxTarget::Object(o) if o.kind == ObjectKind::Table) {
             items.insert(7, ("er", "Show in ER diagram", false, "".into()));
         }
@@ -705,9 +742,10 @@ impl Workspace {
         }
         let target = ctx.target.clone();
         let actions: Vec<&'static str> = items.iter().map(|i| i.0).collect();
+        let ws = self.servers.menu_targets();
         // The open submenu, beside its item.
         let sub = ctx.sub.and_then(|i| {
-            let items = submenu(&target, actions.get(i)?)?;
+            let items = submenu(&target, actions.get(i)?, &ws)?;
             let top: f32 = actions[..i]
                 .iter()
                 .map(|a| if *a == "-" { SEPARATOR_H } else { ITEM_H })
@@ -721,7 +759,7 @@ impl Workspace {
             actions.clone(),
         );
         let menu_item = |id: (&'static str, usize),
-                         label: &'static str,
+                         label: SharedString,
                          danger: bool,
                          key: SharedString,
                          highlighted: bool| {
@@ -828,9 +866,9 @@ impl Workspace {
                                 return div().h(rpx(1.)).bg(p.bd).my(rpx(4.)).into_any_element();
                             }
                             let target = target.clone();
-                            let has_sub = submenu(&target, action).is_some();
+                            let has_sub = submenu(&target, action, &ws).is_some();
                             let highlighted = ctx.cursor == Some(i) || ctx.sub == Some(i);
-                            menu_item(("ctx", i), label, danger, key, highlighted)
+                            menu_item(("ctx", i), label.into(), danger, key, highlighted)
                                 // Hovering an item with a submenu opens it; any other
                                 // item closes the open one.
                                 .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
@@ -868,10 +906,11 @@ impl Workspace {
     /// Up / Down in the context menu: within the open submenu once it has the keyboard,
     /// else among the menu's items (separators skipped, wrapping).
     fn ctx_move(&mut self, delta: isize, actions: &[&'static str], cx: &mut Context<Self>) {
+        let ws = self.servers.menu_targets();
         let Some(c) = self.ctx.as_mut() else { return };
         let sub_items = c
             .sub
-            .and_then(|i| submenu(&c.target, actions.get(i)?))
+            .and_then(|i| submenu(&c.target, actions.get(i)?, &ws))
             .filter(|_| c.sub_cursor.is_some());
         if let Some(items) = sub_items {
             let names: Vec<&str> = items.iter().map(|i| i.0).collect();
@@ -887,11 +926,12 @@ impl Workspace {
     /// Right: open the highlighted item's submenu and move into it. Returns whether it
     /// opened one.
     fn ctx_open_sub(&mut self, actions: &[&'static str], cx: &mut Context<Self>) -> bool {
+        let ws = self.servers.menu_targets();
         let Some(c) = self.ctx.as_mut() else {
             return false;
         };
         let Some(i) = c.cursor else { return false };
-        let Some(items) = actions.get(i).and_then(|a| submenu(&c.target, a)) else {
+        let Some(items) = actions.get(i).and_then(|a| submenu(&c.target, a, &ws)) else {
             return false;
         };
         let names: Vec<&str> = items.iter().map(|i| i.0).collect();
@@ -920,10 +960,11 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let Some(c) = self.ctx.clone() else { return };
+        let ws = self.servers.menu_targets();
         let chosen = match (c.sub, c.sub_cursor) {
             (Some(i), Some(j)) => actions
                 .get(i)
-                .and_then(|a| submenu(&c.target, a))
+                .and_then(|a| submenu(&c.target, a, &ws))
                 .and_then(|items| items.get(j).map(|it| it.0)),
             _ => {
                 if self.ctx_open_sub(actions, cx) {
@@ -947,7 +988,17 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.ws_ctx_action(action, target, window, cx) {
+            cx.notify();
+            return;
+        }
         match target {
+            CtxTarget::Items(_) => {
+                if action == "clear_selection" {
+                    self.host_selection.clear();
+                    self.servers.view.selection.clear();
+                }
+            }
             CtxTarget::Schema(..) | CtxTarget::Object(_) if matches!(action, "pin" | "unpin") => {
                 self.toggle_pin(target, cx)
             }
@@ -988,7 +1039,10 @@ impl Workspace {
                             self.open_terminal(Some(id), cx);
                         }
                     }
-                    "clear_selection" => self.host_selection.clear(),
+                    "clear_selection" => {
+                        self.host_selection.clear();
+                        self.servers.view.selection.clear();
+                    }
                     "fleet_run" => self.open_fleet(Mode::Run, pick, window, cx),
                     "fleet_dash" => self.open_fleet(Mode::Dashboard, pick, window, cx),
                     "fleet_push" => self.open_fleet(Mode::Push, pick, window, cx),
@@ -1019,9 +1073,12 @@ impl Workspace {
             CtxTarget::Profile(id) => match action {
                 "open" => self.open_profile(id, window, cx),
                 "edit" => {
-                    if let Some(switchyard_core::store::Profile::Containers(c)) =
-                        self.profiles.all.iter().find(|p| p.id() == id).cloned()
-                    {
+                    let found = self.profiles.all.iter().find(|p| p.id() == id).cloned();
+                    if let Some(switchyard_core::store::Profile::Desktop(d)) = found {
+                        self.open_desktop_editor(d.protocol, Some(d), window, cx);
+                    } else if let Some(switchyard_core::store::Profile::Credential(c)) = found {
+                        self.open_credentials(Some(c.id), window, cx);
+                    } else if let Some(switchyard_core::store::Profile::Containers(c)) = found {
                         self.open_container_editor(c.platform, Some(c), window, cx);
                     } else if let Some(p) = self.profiles.all.iter().find(|p| p.id() == id).cloned()
                     {
@@ -2778,8 +2835,8 @@ mod tests {
             name: "t".into(),
             kind: ObjectKind::View,
         });
-        assert!(submenu(&target, "script").is_some());
-        assert!(submenu(&target, "copy").is_none());
-        assert!(submenu(&CtxTarget::Tab(0), "script").is_none());
+        assert!(submenu(&target, "script", &[]).is_some());
+        assert!(submenu(&target, "copy", &[]).is_none());
+        assert!(submenu(&CtxTarget::Tab(0), "script", &[]).is_none());
     }
 }

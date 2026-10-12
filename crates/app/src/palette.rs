@@ -28,6 +28,8 @@ pub enum PaletteMode {
     Anything,
     /// Saved runbooks.
     Runbooks,
+    /// "Connect to…": Hosts, remote desktops and connections, opened in their session.
+    ConnectTo,
 }
 
 /// The palette's filter chips.
@@ -107,6 +109,11 @@ pub struct PaletteView {
     runbooks: Vec<(String, String)>,
     /// Runbooks mode: only runbooks.
     runbooks_only: bool,
+    /// "Connect to…": last connection per profile and the current workspace's items.
+    connect: Option<(
+        std::collections::HashMap<ProfileId, i64>,
+        std::collections::HashSet<ProfileId>,
+    )>,
     _sub: Subscription,
 }
 
@@ -136,7 +143,9 @@ impl PaletteView {
                 PaletteMode::Connections => Chip::Connections,
                 PaletteMode::Anything => Chip::All,
                 PaletteMode::Runbooks => Chip::Tools,
+                PaletteMode::ConnectTo => Chip::Connections,
             },
+            connect: (mode == PaletteMode::ConnectTo).then(Default::default),
             runbooks: Vec::new(),
             runbooks_only: mode == PaletteMode::Runbooks,
             input,
@@ -152,6 +161,18 @@ impl PaletteView {
         self
     }
 
+    /// "Connect to…" ranking data: last connection per profile, current workspace items.
+    pub fn with_connect(
+        mut self,
+        recent: std::collections::HashMap<ProfileId, i64>,
+        current: std::collections::HashSet<ProfileId>,
+    ) -> Self {
+        if self.connect.is_some() {
+            self.connect = Some((recent, current));
+        }
+        self
+    }
+
     /// Update the profile list while open.
     pub fn set_profiles(&mut self, profiles: Profiles, cx: &mut Context<Self>) {
         self.profiles = profiles;
@@ -160,6 +181,27 @@ impl PaletteView {
 
     fn items(&self, query: &str, cx: &Context<Self>) -> Vec<Item> {
         let p = palette(cx);
+        if let Some((recent, current)) = &self.connect {
+            return crate::connect_to::connect_candidates(&self.profiles, query, recent, current)
+                .into_iter()
+                .take(200)
+                .filter_map(|id| self.profiles.all.iter().find(|x| x.id() == &id))
+                .map(|prof| Item {
+                    badge: badge_of(prof).into(),
+                    label: prof.name().to_owned().into(),
+                    group: describe(prof, &self.profiles).into(),
+                    key: match prof {
+                        Profile::Host(_) => "SSH",
+                        Profile::Desktop(d) => d.protocol.badge(),
+                        Profile::File(_) => "Files",
+                        _ => "Open",
+                    }
+                    .into(),
+                    dot: Some(p.env(prof.environment())),
+                    target: Target::Profile(prof.id().clone()),
+                })
+                .collect();
+        }
         let (chip, query) = effective(self.chip, query);
         let want = |c: Chip| chip == Chip::All || chip == c;
         let mut scored: Vec<(usize, Item)> = Vec::new();
@@ -201,6 +243,13 @@ impl PaletteView {
                                 Profile::Terminal(_) => "Terminal".into(),
                                 Profile::Cloud(c) => c.service.display_name().to_owned(),
                                 Profile::Containers(c) => c.platform.display_name().to_owned(),
+                                Profile::Desktop(d) => match d.protocol {
+                                    switchyard_core::store::DesktopProtocol::Rdp => {
+                                        "Remote desktop".into()
+                                    }
+                                    switchyard_core::store::DesktopProtocol::Vnc => "VNC".into(),
+                                },
+                                Profile::Credential(_) => "Credential".into(),
                             };
                             (
                                 s,
@@ -288,6 +337,7 @@ fn placeholder(mode: PaletteMode) -> &'static str {
         PaletteMode::Commands => "Type a command…",
         PaletteMode::Anything => "Open anything…  type > for commands",
         PaletteMode::Runbooks => "Open a runbook…",
+        PaletteMode::ConnectTo => "Connect to a server or connection…",
         _ => "Switch to a connection…",
     }
 }
@@ -416,16 +466,18 @@ impl Render for PaletteView {
                         ),
                     ),
             )
-            .child(
-                div()
-                    .flex()
-                    .gap(rpx(6.))
-                    .px(rpx(12.))
-                    .py(rpx(8.))
-                    .border_b_1()
-                    .border_color(p.bd)
-                    .children(chips),
-            )
+            .when(self.connect.is_none(), |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .gap(rpx(6.))
+                        .px(rpx(12.))
+                        .py(rpx(8.))
+                        .border_b_1()
+                        .border_color(p.bd)
+                        .children(chips),
+                )
+            })
             .child(
                 div()
                     .id("pal-list")

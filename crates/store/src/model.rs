@@ -4,6 +4,10 @@
 use serde::{Deserialize, Serialize};
 use switchyard_db::{DbAuthMethod, Engine, SslMode};
 
+pub use crate::credentials::{Credential, CredentialKind};
+pub use crate::desktop::{
+    DesktopDisplay, DesktopProtocol, DesktopScreen, DesktopServer, RdpGateway,
+};
 use crate::random::random_hex;
 
 /// Stable identifier of a saved profile.
@@ -205,6 +209,9 @@ pub struct Host {
     /// Terminal colors for this Host instead of the theme's.
     #[serde(default)]
     pub terminal_colors: Option<TerminalColors>,
+    /// A shared credential (user, password or key) instead of this Host's own.
+    #[serde(default)]
+    pub credential: Option<ProfileId>,
 }
 
 /// Terminal colors of a Host (`#rrggbb`); `None` keeps the theme's.
@@ -455,6 +462,7 @@ impl Host {
             start_directory: None,
             env: Vec::new(),
             terminal_colors: None,
+            credential: None,
         }
     }
 
@@ -532,6 +540,9 @@ pub struct DbConnection {
     /// `private_key_path`). Never secrets.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub options: std::collections::BTreeMap<String, String>,
+    /// A shared credential (user and password) instead of this connection's own.
+    #[serde(default)]
+    pub credential: Option<ProfileId>,
 }
 
 fn yes() -> bool {
@@ -563,6 +574,7 @@ impl DbConnection {
             tenant: None,
             entra_client_id: None,
             options: std::collections::BTreeMap::new(),
+            credential: None,
         }
     }
 
@@ -1216,11 +1228,34 @@ pub struct BufferState {
     pub cursor: usize,
 }
 
-/// A saved layout.
+/// A saved workspace of the Default side: a named scope (which Hosts, connections,
+/// folders and tags it shows) and its own layout (tabs, explorer, sidebar). The built-in
+/// [`crate::workspaces::ALL_ID`] shows everything.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Workspace {
+    /// Stable id ([`crate::workspaces::ALL_ID`] for "All").
+    #[serde(default = "crate::workspaces::all_id")]
+    pub id: String,
     /// Name.
     pub name: String,
+    /// What it shows.
+    #[serde(default)]
+    pub scope: crate::workspaces::WorkspaceScope,
+    /// Open tabs besides SQL editors (terminals, files, the Servers view), in order.
+    #[serde(default)]
+    pub tabs: Vec<crate::workspaces::SavedTab>,
+    /// Collapsed Explorer rows (their keys).
+    #[serde(default)]
+    pub explorer_collapsed: Vec<String>,
+    /// Sidebar page (`explorer`, `schema`, `tools`, `activity`).
+    #[serde(default)]
+    pub side_tab: Option<String>,
+    /// Explorer grouping (`place`, `type`, `tag`).
+    #[serde(default)]
+    pub explorer_group: Option<String>,
+    /// Sidebar width.
+    #[serde(default)]
+    pub sidebar_width: Option<f32>,
     /// Open editor buffers (autosaved).
     #[serde(default)]
     pub buffers: Vec<BufferState>,
@@ -1251,6 +1286,10 @@ pub enum Profile {
     Cloud(CloudConnection),
     /// Docker engine or Kubernetes cluster.
     Containers(ContainerConnection),
+    /// RDP or VNC server opened with the system client.
+    Desktop(DesktopServer),
+    /// A shared credential.
+    Credential(Credential),
 }
 
 impl Profile {
@@ -1263,6 +1302,8 @@ impl Profile {
             Profile::Terminal(p) => &p.id,
             Profile::Cloud(p) => &p.id,
             Profile::Containers(p) => &p.id,
+            Profile::Desktop(p) => &p.id,
+            Profile::Credential(p) => &p.id,
         }
     }
 
@@ -1275,6 +1316,8 @@ impl Profile {
             Profile::Terminal(p) => &p.name,
             Profile::Cloud(p) => &p.name,
             Profile::Containers(p) => &p.name,
+            Profile::Desktop(p) => &p.name,
+            Profile::Credential(p) => &p.name,
         }
     }
 
@@ -1287,6 +1330,8 @@ impl Profile {
             Profile::Terminal(_) => "terminal",
             Profile::Cloud(_) => "cloud",
             Profile::Containers(_) => "containers",
+            Profile::Desktop(_) => "desktop",
+            Profile::Credential(_) => "credential",
         }
     }
 
@@ -1298,6 +1343,8 @@ impl Profile {
             Profile::File(p) => p.secret.as_ref(),
             Profile::Cloud(p) => p.secret.as_ref(),
             Profile::Containers(p) => p.secret.as_ref(),
+            Profile::Desktop(p) => p.secret.as_ref(),
+            Profile::Credential(p) => p.secret.as_ref(),
             Profile::Terminal(_) => None,
         }
     }
@@ -1311,6 +1358,8 @@ impl Profile {
             Profile::File(f) => f.secret = None,
             Profile::Cloud(c) => c.secret = None,
             Profile::Containers(c) => c.secret = None,
+            Profile::Desktop(d) => d.secret = None,
+            Profile::Credential(c) => c.secret = None,
             Profile::Terminal(_) => {}
         }
         p
@@ -1324,6 +1373,8 @@ impl Profile {
             Profile::File(f) => f.secret = Some(key),
             Profile::Cloud(c) => c.secret = Some(key),
             Profile::Containers(c) => c.secret = Some(key),
+            Profile::Desktop(d) => d.secret = Some(key),
+            Profile::Credential(c) => c.secret = Some(key),
             Profile::Terminal(_) => {}
         }
     }
@@ -1345,11 +1396,12 @@ impl Profile {
                 if h.port == 0 {
                     return Err(ValidationError::new("port", "Port must be 1–65535"));
                 }
-                if h.user.trim().is_empty() {
+                if h.user.trim().is_empty() && h.credential.is_none() {
                     return Err(ValidationError::new("user", "User is required"));
                 }
                 if let SshAuth::PublicKey { key_path } = &h.auth
                     && key_path.trim().is_empty()
+                    && h.credential.is_none()
                 {
                     return Err(ValidationError::new("key_path", "Key file is required"));
                 }
@@ -1544,10 +1596,16 @@ impl Profile {
                 if d.port == 0 {
                     return Err(ValidationError::new("port", "Port must be 1–65535"));
                 }
-                if d.auth == DbAuthMethod::Password && d.user.trim().is_empty() {
+                if d.auth == DbAuthMethod::Password
+                    && d.user.trim().is_empty()
+                    && d.credential.is_none()
+                {
                     return Err(ValidationError::new("user", "User is required"));
                 }
-                if d.auth == DbAuthMethod::WindowsPassword && d.user.trim().is_empty() {
+                if d.auth == DbAuthMethod::WindowsPassword
+                    && d.user.trim().is_empty()
+                    && d.credential.is_none()
+                {
                     return Err(ValidationError::new(
                         "user",
                         "Windows account is required (DOMAIN\\user)",
@@ -1614,6 +1672,46 @@ impl Profile {
             }
             Profile::Cloud(c) => c.validate()?,
             Profile::Containers(c) => c.validate()?,
+            Profile::Desktop(d) => {
+                if d.address.trim().is_empty() {
+                    return Err(ValidationError::new("address", "Address is required"));
+                }
+                if d.port == 0 {
+                    return Err(ValidationError::new("port", "Port must be 1–65535"));
+                }
+                if let Some(g) = &d.gateway
+                    && g.host.trim().is_empty()
+                {
+                    return Err(ValidationError::new(
+                        "gateway",
+                        "Enter the gateway's host name, or turn the gateway off",
+                    ));
+                }
+                if d.gateway.is_some() && d.protocol == crate::DesktopProtocol::Vnc {
+                    return Err(ValidationError::new(
+                        "gateway",
+                        "An RD Gateway is for RDP servers",
+                    ));
+                }
+                if let crate::DesktopScreen::Window { width, height } = d.display.screen
+                    && (width < 200 || height < 200)
+                {
+                    return Err(ValidationError::new(
+                        "size",
+                        "Window size must be at least 200 × 200",
+                    ));
+                }
+            }
+            Profile::Credential(c) => {
+                if c.username.trim().is_empty() {
+                    return Err(ValidationError::new("username", "User name is required"));
+                }
+                if let crate::CredentialKind::SshKey { key_path } = &c.auth
+                    && key_path.trim().is_empty()
+                {
+                    return Err(ValidationError::new("key_path", "Key file is required"));
+                }
+            }
             Profile::Terminal(_) => {}
         }
         Ok(())
@@ -1622,8 +1720,15 @@ impl Profile {
     /// Ids of other profiles this one references.
     pub fn references(&self) -> Vec<&ProfileId> {
         match self {
-            Profile::Host(h) => h.jump_hosts.iter().collect(),
-            Profile::Db(d) => d.via_host.iter().collect(),
+            Profile::Host(h) => h.jump_hosts.iter().chain(h.credential.iter()).collect(),
+            Profile::Db(d) => d.via_host.iter().chain(d.credential.iter()).collect(),
+            Profile::Desktop(d) => d
+                .via_host
+                .iter()
+                .chain(d.credential.iter())
+                .chain(d.gateway.iter().flat_map(|g| g.credential.iter()))
+                .collect(),
+            Profile::Credential(_) => vec![],
             Profile::File(f) => match &f.protocol {
                 FileProtocol::Sftp { host_id } => vec![host_id],
                 FileProtocol::Ftp { .. } => vec![],
@@ -1642,7 +1747,120 @@ impl Profile {
             Profile::File(p) => p.environment,
             Profile::Cloud(p) => p.environment,
             Profile::Containers(p) => p.environment,
-            Profile::Terminal(_) => EnvironmentLabel::Local,
+            Profile::Desktop(p) => p.environment,
+            Profile::Terminal(_) | Profile::Credential(_) => EnvironmentLabel::Local,
+        }
+    }
+
+    /// The folder it is grouped in, trimmed; `None` when it has none.
+    pub fn folder(&self) -> Option<&str> {
+        let f = match self {
+            Profile::Host(p) => p.folder.as_deref(),
+            Profile::Db(p) => p.folder.as_deref(),
+            Profile::File(p) => p.folder.as_deref(),
+            Profile::Cloud(p) => p.folder.as_deref(),
+            Profile::Containers(p) => p.folder.as_deref(),
+            Profile::Desktop(p) => p.folder.as_deref(),
+            Profile::Terminal(_) | Profile::Credential(_) => None,
+        };
+        f.map(str::trim).filter(|f| !f.is_empty())
+    }
+
+    /// Its tags (Hosts and remote desktops carry tags).
+    pub fn tags(&self) -> &[String] {
+        match self {
+            Profile::Host(h) => &h.tags,
+            Profile::Desktop(d) => &d.tags,
+            _ => &[],
+        }
+    }
+
+    /// The shared credential it signs in with, if any.
+    pub fn credential(&self) -> Option<&ProfileId> {
+        match self {
+            Profile::Host(h) => h.credential.as_ref(),
+            Profile::Db(d) => d.credential.as_ref(),
+            Profile::Desktop(d) => d.credential.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Whether `cred` is used by this profile (directly or as a gateway sign-in).
+    pub fn uses_credential(&self, cred: &ProfileId) -> bool {
+        self.credential() == Some(cred)
+            || matches!(self, Profile::Desktop(d)
+                if d.gateway.as_ref().and_then(|g| g.credential.as_ref()) == Some(cred))
+    }
+
+    /// Stop using `cred` (before the credential is deleted).
+    pub fn detach_credential(&mut self, cred: &ProfileId) {
+        match self {
+            Profile::Host(h) if h.credential.as_ref() == Some(cred) => h.credential = None,
+            Profile::Db(d) if d.credential.as_ref() == Some(cred) => d.credential = None,
+            Profile::Desktop(d) => {
+                if d.credential.as_ref() == Some(cred) {
+                    d.credential = None;
+                }
+                if let Some(g) = &mut d.gateway
+                    && g.credential.as_ref() == Some(cred)
+                {
+                    g.credential = None;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether it is something the user connects to (not a credential).
+    pub fn is_connection(&self) -> bool {
+        !matches!(self, Profile::Credential(_))
+    }
+
+    /// Rewrite references to other profiles through `map` (import "keep both").
+    pub fn remap_references(&mut self, map: &std::collections::HashMap<ProfileId, ProfileId>) {
+        let fix = |id: &mut ProfileId| {
+            if let Some(n) = map.get(id) {
+                *id = n.clone();
+            }
+        };
+        match self {
+            Profile::Host(h) => {
+                h.jump_hosts.iter_mut().for_each(fix);
+                h.credential.iter_mut().for_each(fix);
+            }
+            Profile::Db(d) => {
+                d.via_host.iter_mut().for_each(fix);
+                d.credential.iter_mut().for_each(fix);
+            }
+            Profile::File(f) => {
+                if let FileProtocol::Sftp { host_id } = &mut f.protocol {
+                    fix(host_id);
+                }
+            }
+            Profile::Terminal(t) => t.host_id.iter_mut().for_each(fix),
+            Profile::Containers(c) => c.host_id.iter_mut().for_each(fix),
+            Profile::Desktop(d) => {
+                d.via_host.iter_mut().for_each(fix);
+                d.credential.iter_mut().for_each(fix);
+                if let Some(g) = &mut d.gateway {
+                    g.credential.iter_mut().for_each(fix);
+                }
+            }
+            Profile::Cloud(_) | Profile::Credential(_) => {}
+        }
+    }
+
+    /// Give it a new id and the name `name` (import "keep both").
+    pub fn reidentify(&mut self, id: ProfileId, name: String) {
+        match self {
+            Profile::Host(p) => (p.id, p.name) = (id, name),
+            Profile::Db(p) => (p.id, p.name) = (id, name),
+            Profile::File(p) => (p.id, p.name) = (id, name),
+            Profile::Terminal(p) => (p.id, p.name) = (id, name),
+            Profile::Cloud(p) => (p.id, p.name) = (id, name),
+            Profile::Containers(p) => (p.id, p.name) = (id, name),
+            Profile::Desktop(p) => (p.id, p.name) = (id, name),
+            Profile::Credential(p) => (p.id, p.name) = (id, name),
         }
     }
 }

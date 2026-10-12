@@ -1,0 +1,11 @@
+---
+source: crates/core/src/servers/rdp.rs
+expression: "rdp_file(&server(), &at(), &login(), None).replace(\"\\r\\n\", \"\\n\")"
+---
+full address:s:dc1.corp.example:3389
+username:s:CORP\admin
+screen mode id:i:2
+use multimon:i:0
+redirectclipboard:i:1
+authentication level:i:2
+prompt for credentials:i:1
