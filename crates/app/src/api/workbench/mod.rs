@@ -20,6 +20,9 @@ mod login;
 mod move_request;
 mod persistence;
 mod pretty;
+mod protocol_pane;
+// Schema compare's side-by-side DDL uses the same line diff.
+pub(crate) use pretty::{DiffLine, line_diff};
 mod rail_rename;
 mod rename_workspace;
 mod request_creation;
@@ -140,6 +143,8 @@ impl Tab {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ComposerTab {
+    /// A streaming request's own editor (messages, stream options, call).
+    Protocol,
     Params,
     Headers,
     Body,
@@ -172,6 +177,7 @@ impl ComposerTab {
 
     fn label(self) -> &'static str {
         match self {
+            Self::Protocol => "Messages",
             Self::Params => "Params",
             Self::Headers => "Headers",
             Self::Body => "Body",
@@ -455,6 +461,8 @@ pub struct WorkbenchPanel {
     workspaces: Option<Vec<switchyard_api::WorkspaceEntry>>,
     _workspace_work: Option<gpui_kit::Task<()>>,
     request_tabs: Vec<RequestTabState>,
+    /// Streaming panes (WebSocket, SSE, gRPC) by request tab id.
+    protocol_panes: protocol_pane::ProtocolPanes,
     active_request_tab: usize,
     next_request_tab_id: u64,
     right_clicked_request_tab: Option<u64>,
@@ -915,6 +923,7 @@ impl WorkbenchPanel {
             _workspace_work: None,
             // A tab opens only when a request is opened or created.
             request_tabs: Vec::new(),
+            protocol_panes: Default::default(),
             active_request_tab: 0,
             next_request_tab_id: 1,
             right_clicked_request_tab: None,
@@ -1200,6 +1209,7 @@ impl WorkbenchPanel {
     fn clear_request_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(id) = self.active_request_tab_id() {
             self.ux.request_settings.remove(&id);
+            self.protocol_panes.remove(&id);
         }
         self.current_request_id = None;
         self.current_definition = None;
@@ -2248,6 +2258,7 @@ impl WorkbenchPanel {
             request.settings = settings.clone();
             request.settings.allow_private_network = self.allow_private_network;
         }
+        self.apply_protocol_to_draft(&mut request, cx);
         self.session_secrets.merge(secrets.clone());
         Ok((request, self.session_secrets.clone()))
     }
@@ -2528,6 +2539,7 @@ impl WorkbenchPanel {
         );
         set_input(&self.assertions, &request.scripts.tests, window, cx);
         self.allow_private_network = request.settings.allow_private_network;
+        self.sync_protocol_pane(request.protocol_settings(), window, cx);
         self.dirty = false;
         self.error = None;
         self.navigation_notice = None;
@@ -2561,6 +2573,10 @@ impl WorkbenchPanel {
             return;
         }
         if self.send_state != SendState::Idle {
+            return;
+        }
+        if self.active_protocol_pane().is_some() {
+            self.send_protocol(window, cx);
             return;
         }
         let (definition, secrets) = match self.draft_request(cx) {
@@ -3893,6 +3909,14 @@ impl WorkbenchPanel {
     }
 
     fn cancel(&mut self, cx: &mut Context<Self>) {
+        if self.send_state == SendState::Idle
+            && self
+                .active_protocol_pane()
+                .is_some_and(|pane| pane.read(cx).is_live())
+        {
+            self.stop_protocol(cx);
+            return;
+        }
         if self.send_state == SendState::PreparingRun {
             self.send_generation = self.send_generation.wrapping_add(1);
             self.send_state = SendState::Idle;

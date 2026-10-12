@@ -755,6 +755,75 @@ server or bundled Unix tools on Windows (Tier 3).
   Configuration compare and flags, Key Vault, CloudWatch tail), `~/.aws/config` and
   `~/.pgpass` imports, credential expiry in the status bar (see Follow-ups).
 
+## Extra — Schema compare (user request, 2026-10-12)
+
+- [x] SC-1 Diff model and catalog reads (`db::compare`): `load_snapshot` reads one schema
+  (tables, views, materialized views, functions, procedures the engine's explorer shows)
+  through the existing `Objects` / `Detail` / `RoutineDefinition` scopes; `TableModel`
+  normalizes the overlapping catalog lists into primary key, unique constraints, checks,
+  foreign keys and plain indexes; `compare` groups objects as Only in source / Only in
+  target / Different with per-part changes (columns: type, nullability, default,
+  identity). Constraints and indexes pair by name, then by shape (server-generated
+  names); the source's DDL is retargeted to the target schema before comparing.
+  `ColumnInfo::identity` added (PostgreSQL identity / generated, SQL Server
+  `IDENTITY(seed,incr)`, MySQL `AUTO_INCREMENT`). Fixed PostgreSQL index columns (the
+  first was the whole `CREATE INDEX`, the last was missing).
+- [x] SC-2 Migration scripts behind `Dialect::schema_scripter` (`SchemaScripter`) for
+  PostgreSQL, SQL Server, MySQL/MariaDB and local SQLite: foreign keys dropped first and
+  added last, views and routines after tables, `GO` after every SQL Server statement,
+  `DELIMITER` around MySQL routines, the SQLite table-rebuild pattern for anything
+  `ALTER TABLE` cannot do. DROP TABLE / DROP COLUMN (and a rebuild that leaves columns
+  behind) are commented out under a warning header. PostgreSQL views that read an
+  altered table are dropped and created again around the change. Other engines: "Schema
+  compare isn't supported for <engine> yet". Tests: insta snapshots per engine, diff-model
+  unit tests, `db --test compare_pg` (two schemas in the docker PostgreSQL: compare, run
+  the script, compare again; only the commented-out drops remain).
+- [x] SC-3 Compare tab (`app/src/compare_tab.rs`): source and target pickers (connection,
+  database, schema; two connections or two databases / schemas of one), progress and
+  Cancel, a virtualized grouped list with checkboxes (drops of target-only objects start
+  unticked), the selected object's changes and side-by-side DDL diff, and "Open migration
+  script" into a new SQL tab on the target (never run). Each side reads on its own
+  session (`Command::CompareCatalog` / `CompareSnapshot`). Entry points: palette "Compare
+  Schemas…", Explorer context menu "Compare with…" on a connection or schema. Note: the
+  tab was not exercised in a running app here (no display); data compare, triggers,
+  sequences and table options are deferred (Follow-ups).
+
+## Extra — Runbooks (user request, 2026-10-12)
+
+- [x] RB-1 Model and storage: `store::runbooks` (`Runbook`: title, Markdown description,
+  parameters with name / label / default / secret flag, ordered steps: Note, SQL, HTTP,
+  Shell, Confirm), schema version 6 (`runbooks` table, one JSON document per runbook),
+  JSON import/export (`RunbookExport` v1, no ids, no secrets). A secret parameter's value
+  lives in the keychain or vault (`runbook:<id>:<name>`); stored and exported JSON never
+  holds it. Tests: store round trip, v5 → v6 migration, export without secrets.
+- [x] RB-2 `{{param}}` substitution (`core::runbook::params`): plain text as is
+  (`{{x:quote}}` shell-quotes); SQL per dialect: in code a string literal from
+  `Dialect::literal` (`:raw`, `:ident` for unquoted / quoted identifier), escaped inside
+  string literals, quoted identifiers and comments; secrets are bound as statement
+  parameters (`Dialect::bind_params`), never inlined, so history holds a placeholder.
+  Resolved text (secrets masked) is shown before and while a step runs.
+- [x] RB-3 Run engine (`core::runbook::engine`): pure state machine (pending / waiting /
+  running / ok / failed / skipped); run one step, run from here, run all; stops on the
+  first failure; Confirm and Shell steps wait for the user (Run / Continue / Skip) unless
+  the user ran exactly that step. Tests with fake executors.
+- [x] RB-4 Execution in core (`service::runbook`, `Command::RunbookStep`): SQL through the
+  ordinary query path (Production destructive-statement confirm, streaming, cancel,
+  history), first 1,000 rows in a compact grid; HTTP inline or a saved API workspace request
+  (compiled with its collection, folders, active environment and globals; runbook
+  parameters as its local variables) through the workbench sender; Shell locally (own
+  process group, killed with the group) or on a Host over its shared SSH session
+  (`SshConn::run_command_streaming`). Output streams (capped at 256 KB, secrets masked);
+  `Command::Cancel` stops a step. Every executed step goes to history tagged `runbook`,
+  `runbook:<name>` (plus `http` / `shell`). Tests: local shell stream / cancel / timeout,
+  `core --test runbooks` (shell step with a stored secret; SQL step on docker PostgreSQL
+  with a bound secret, ignored).
+- [x] RB-5 UI: RUNBOOKS section in the Explorer (and "New runbook"), a Runbooks tool, palette
+  commands New Runbook / Open Runbook… / Import Runbook…, a Runbook tab with Edit
+  (title, description, parameters, steps added / reordered / removed, connection, Host
+  and saved-request pickers; Save, Export, Delete) and Run (values for this run, masked for
+  secrets; per-step resolved text, status, duration, output, grid, Production confirm).
+  Note: not exercised in a running window here (no display); agents / MCP not exposed.
+
 ## DBX — Database explorer and editors at DBeaver / SSMS level (user request)
 
 Gap analysis (2026-10-08): the explorer is a lazy, virtualized, single-connection tree
@@ -871,6 +940,29 @@ are shared hotspots: one owner at a time.
   connection, Ctrl/⌘+D, dimmed "missing"; nodes saved as `explorer.connections` and restored
   "not connected". Deferred: pin reordering UI, cross-connection search, restoring expansion.
 
+## Extra — API protocols (user request, 2026-10-12)
+
+- [x] PROTO-1 Workbench requests can be WebSocket or Server-Sent Events as well as HTTP:
+  `switchyard_api::protocol` (settings saved in the request's `extensions`, sessions on
+  core's runtime, events redacted), `protocol::sse` (spec parser, reconnect with optional
+  `Last-Event-ID`, `retry:`), `protocol::websocket` (tokio-tungstenite behind the
+  `websocket` feature: headers, subprotocols, text/JSON/hex/base64, ping, close code,
+  cancel). The rail's `+` menu adds them; the composer's first tab holds messages and
+  saved snippets or stream options; the response pane becomes a virtualized live log
+  with timestamps, sizes, filter, headers and the selected message in full.
+  Note: tests use in-process echo / SSE servers; no history entry for streams yet.
+- [x] PROTO-3 gRPC requests (`protocol::grpc`, tonic + prost-reflect behind the `grpc`
+  feature): services and methods from server reflection (v1, then v1alpha, dependencies
+  fetched by name) or imported `.proto` files (protox, no protoc); JSON request bodies as
+  `DynamicMessage`; unary, server, client and bidi streaming over one streaming call;
+  metadata from the Headers/Auth tabs (`-bin` keys base64), TLS from the URL or forced,
+  deadlines, headers, trailers and status code in the log. "Load services" fills a
+  method picker and a JSON template; gRPC to Production asks first like a POST.
+  Note: tested against an in-process tonic server with reflection.
+- [x] PROTO-2 Rename and delete projects (workspaces) in the Workbench header menu; delete
+  confirms and removes the project's collections, environments, history, runs, cookies,
+  globals and tabs (`WorkbenchStore::delete_workspace`).
+
 ## M6 — Packaging and beta
 
 Exit: every performance budget passes on all three platforms; signed builds published.
@@ -920,13 +1012,22 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 
 - SQLite: a "New database file" save dialog in the connection editor (today a typed path is created on connect).
 
-- API Workbench: rename and delete workspaces (API-5 only adds and switches them).
+- API Workbench streams: record WebSocket / SSE / gRPC sessions in History, AWS SigV4
+  and per-connection pinned TLS exceptions for them, and deleting a project's vault
+  values with the project (delete leaves vault entries in place today).
 
 - Agent runs on systems with only the fallback vault: `swy mcp` cannot unlock it unless
   `SWITCHYARD_VAULT_PASSWORD` is in the app's environment. Option: let `swy mcp` borrow the
   running app's unlocked secrets over the loopback handoff, scoped by the session token.
 
 (Add items here instead of doing them mid-task.)
+- Schema compare (SC-1..3) leftovers: data compare (row diff and sync script); triggers,
+  sequences, user-defined types, PostgreSQL EXCLUDE constraints, comments and grants;
+  table options (MySQL engine / charset, SQL Server filegroups, PostgreSQL partitions and
+  storage); MySQL `ON UPDATE CURRENT_TIMESTAMP`; renames (today a drop and an add);
+  ordering views that read other views when PostgreSQL rebuilds them; SQL Server
+  identity changes (scripted as a note); Oracle, Snowflake and D1 scripters; saving a
+  compare (sides and ticks) to run again; a compare from the CLI / MCP (read-only diff).
 - UI v3 (UI3-1) leftovers from the design: an Edit menu (undo/redo/copy/paste routed to the
   focused view); a full-page Tools tab with one card per cloud and its sign-in state;
   cloud account entities (today an account is inferred from provider plus folder) with
@@ -1018,3 +1119,11 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 - Durable Objects (DO-1): pick the namespace and object from lists in the connection form
   (`GET …/durable_objects/namespaces`, `…/namespaces/{id}/objects`, which only lists objects
   that have stored data); open several objects of one namespace from the sidebar.
+
+- Runbooks (RB-1..5): scheduled and unattended runs; agents / MCP access (read-only
+  listing, run with approval); per-step "continue on failure"; step outputs as
+  parameters of later steps (`{{steps.2.output}}`); a run log kept per runbook (today:
+  query history); Confirm steps are not recorded in history; secret values split across
+  two output chunks are not masked; multipart / file bodies of saved API requests;
+  Markdown links and inline styles in notes (plain text today); a Monaco-style SQL editor
+  in step editing (a text area today); drag-and-drop reordering; UI tests.

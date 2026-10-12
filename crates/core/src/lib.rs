@@ -13,6 +13,7 @@ pub mod files;
 pub mod fleet;
 pub mod handoff;
 pub mod prompts;
+pub mod runbook;
 pub mod runtime;
 pub mod service;
 pub mod ssh_import;
@@ -21,10 +22,10 @@ pub mod terminals;
 pub mod update;
 
 pub use bus::{
-    AgentApproval, ApprovalKind, CloudEdit, CloudInfo, Command, Event, FetchLimit, FileBytes, FsOp,
-    FsRef, OnConflict, PromptAnswer, QueryEvent, QueryId, ReadError, RequestId, SaveError,
-    SessionContext, SessionId, StatementRequest, TermId, TermLogState, TermStatus, TermTarget,
-    TextFile, TransferError,
+    AgentApproval, ApprovalKind, CloudEdit, CloudInfo, Command, CompareCatalog, Event, FetchLimit,
+    FileBytes, FsOp, FsRef, OnConflict, PromptAnswer, QueryEvent, QueryId, ReadError, RequestId,
+    SaveError, SessionContext, SessionId, StatementRequest, TermId, TermLogState, TermStatus,
+    TermTarget, TextFile, TransferError,
 };
 pub use error::{CoreError, Result};
 pub use runtime::{Core, EventReceiver, EventSender, RuntimeHandle};

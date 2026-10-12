@@ -564,7 +564,7 @@ impl SshConn {
         cap: usize,
         timeout: Duration,
     ) -> Result<CommandOutput, SshError> {
-        self.run_command_streaming(
+        self.run_command_io(
             command,
             None,
             cap,
@@ -579,7 +579,7 @@ impl SshConn {
     /// (then closes it), hands each piece of output to `on_output` (`true` for standard
     /// error) as it arrives, and stops early when `stop` completes: the channel is closed
     /// and the result has `cancelled` set.
-    pub async fn run_command_streaming(
+    pub async fn run_command_io(
         &self,
         command: &str,
         input: Option<&[u8]>,
@@ -645,6 +645,76 @@ impl SshConn {
             }
         }
         Ok(out)
+    }
+}
+
+/// Which stream a chunk of command output came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutputStream {
+    /// Standard output.
+    Stdout,
+    /// Standard error.
+    Stderr,
+}
+
+/// How a command run with [`SshConn::run_command_streaming`] ended.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CommandExit {
+    /// Exit status; `None` when the server sent none.
+    pub exit_status: Option<u32>,
+    /// Still running at the deadline; its channel was closed.
+    pub timed_out: bool,
+    /// Cancelled by the caller; its channel was closed.
+    pub cancelled: bool,
+}
+
+impl SshConn {
+    /// Run `command` in its own channel (no PTY), handing output to `on_output` as it
+    /// arrives. At `timeout`, or when `cancel` completes, the channel is closed.
+    pub async fn run_command_streaming(
+        &self,
+        command: &str,
+        timeout: Duration,
+        cancel: impl std::future::Future<Output = ()>,
+        mut on_output: impl FnMut(OutputStream, &[u8]),
+    ) -> Result<CommandExit, SshError> {
+        let mut ch = self
+            .handle()?
+            .channel_open_session()
+            .await
+            .map_err(|e| SshError::Channel(e.to_string()))?;
+        ch.exec(true, command)
+            .await
+            .map_err(|e| SshError::Channel(e.to_string()))?;
+        let mut exit = CommandExit::default();
+        let deadline = tokio::time::Instant::now() + timeout;
+        tokio::pin!(cancel);
+        loop {
+            tokio::select! {
+                () = &mut cancel => {
+                    exit.cancelled = true;
+                    let _ = ch.close().await;
+                    break;
+                }
+                () = tokio::time::sleep_until(deadline) => {
+                    exit.timed_out = true;
+                    let _ = ch.close().await;
+                    break;
+                }
+                msg = ch.wait() => match msg {
+                    Some(ChannelMsg::Data { data }) => on_output(OutputStream::Stdout, &data),
+                    Some(ChannelMsg::ExtendedData { data, .. }) => {
+                        on_output(OutputStream::Stderr, &data)
+                    }
+                    Some(ChannelMsg::ExitStatus { exit_status }) => {
+                        exit.exit_status = Some(exit_status)
+                    }
+                    Some(_) => {}
+                    None => break,
+                },
+            }
+        }
+        Ok(exit)
     }
 }
 

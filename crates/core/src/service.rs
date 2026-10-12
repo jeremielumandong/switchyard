@@ -54,6 +54,8 @@ mod fleet;
 mod named_secrets;
 pub(crate) use named_secrets::NamedSecrets;
 mod redis;
+mod runbook;
+mod schema_compare;
 
 /// The SSH layer's description of a saved forward.
 fn forward_spec(f: &switchyard_store::PortForward) -> ForwardSpec {
@@ -233,6 +235,8 @@ pub struct Service {
     update_install: crate::update::Install,
     /// Cancels the running update download; `Some` while one runs.
     update_cancel: Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>,
+    /// Running runbook HTTP and shell steps, to cancel.
+    runbook_runs: runbook::RunbookRuns,
 }
 
 /// Run one statement and drain its results (session settings such as `USE`).
@@ -361,6 +365,7 @@ impl Service {
             named_cache: Mutex::default(),
             update_install: crate::update::Install::detect(),
             update_cancel: Mutex::default(),
+            runbook_runs: Mutex::default(),
             package_runner: config
                 .package_runner
                 .clone()
@@ -880,6 +885,9 @@ impl Service {
                 }
             }
             Command::Cancel { query } => {
+                if self.cancel_runbook_step(query) {
+                    return;
+                }
                 let ctl = lock(&self.queries)
                     .get(&query)
                     .map(|q| (q.cancel.clone(), q.resume.clone()));
@@ -948,6 +956,29 @@ impl Service {
                 connection,
                 request,
             } => self.activity(session, connection, request).await,
+            Command::CompareCatalog {
+                session,
+                connection,
+                request,
+                database,
+            } => {
+                let span = info_span!("compare_catalog", request, session);
+                self.compare_catalog(session, connection, request, database)
+                    .instrument(span)
+                    .await
+            }
+            Command::CompareSnapshot {
+                session,
+                connection,
+                request,
+                database,
+                schema,
+            } => {
+                let span = info_span!("compare_snapshot", request, session);
+                self.compare_snapshot(session, connection, request, database, schema)
+                    .instrument(span)
+                    .await
+            }
             Command::SessionAction {
                 session,
                 request,
@@ -1013,6 +1044,29 @@ impl Service {
                     Err(e) => self.error("Macros", e),
                 }
             }
+            Command::LoadRunbooks => self.emit_runbooks().await,
+            Command::SaveRunbook {
+                request,
+                runbook,
+                secrets,
+            } => self.save_runbook(request, runbook, secrets).await,
+            Command::DeleteRunbook { id } => self.delete_runbook(id).await,
+            Command::ImportRunbook { request, path } => self.import_runbook(request, path).await,
+            Command::ExportRunbook { runbook, path } => self.export_runbook(runbook, path).await,
+            Command::RunbookStep {
+                query,
+                session,
+                runbook,
+                step,
+                values,
+                confirmed_destructive,
+            } => {
+                let span = info_span!("runbook_step", query, step);
+                self.runbook_step(query, session, runbook, step, values, confirmed_destructive)
+                    .instrument(span)
+                    .await
+            }
+            Command::ListApiRequests { request } => self.list_api_requests(request).await,
             Command::LoadFavorites => self.emit_favorites().await,
             Command::AddFavorite(fav) => {
                 match self.with_store(move |s| s.add_favorite(&fav)).await {
