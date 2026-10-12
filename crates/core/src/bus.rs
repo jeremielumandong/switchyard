@@ -13,10 +13,13 @@ use switchyard_db::{
 use switchyard_drivers::{Component, InstallProgress};
 use switchyard_remote::FileEntry;
 use switchyard_remote::ssh::{HostKeyDecision, HostKeyRequest, InteractiveRequest, TunnelInfo};
+use switchyard_store::{ApiRequestRef, Runbook};
 use switchyard_store::{
     BufferState, CloudConnection, CloudService, DbConnection, Favorite, FileConnection,
     HistoryEntry, Host, HostPatch, Macro, NamedSecret, Profile, ProfileId, Snippet, Workspace,
 };
+
+use crate::runbook::ParamValues;
 use switchyard_term::{TermSize, Terminal};
 
 /// Identifies one UI request so its answer can be matched.
@@ -666,6 +669,62 @@ pub enum Command {
     DeleteMacro {
         /// Macro id.
         id: String,
+    },
+    /// Load the runbooks ([`Event::Runbooks`]).
+    LoadRunbooks,
+    /// Save a runbook (new when its id is empty): [`Event::RunbookSaved`], then
+    /// [`Event::Runbooks`]. `secrets` sets stored values of secret parameters (keychain or
+    /// vault); stored values of parameters that are gone or no longer secret are removed.
+    SaveRunbook {
+        /// Request id.
+        request: RequestId,
+        /// The runbook.
+        runbook: Runbook,
+        /// New stored values of secret parameters, by name.
+        secrets: Vec<(String, SecretString)>,
+    },
+    /// Delete a runbook and its stored secrets, then reload.
+    DeleteRunbook {
+        /// Runbook id.
+        id: String,
+    },
+    /// Import a runbook from a JSON file as a new runbook ([`Event::RunbookSaved`]).
+    ImportRunbook {
+        /// Request id.
+        request: RequestId,
+        /// The file.
+        path: PathBuf,
+    },
+    /// Export a runbook as JSON (no secrets) to `path` (a toast reports the result).
+    ExportRunbook {
+        /// The runbook as the tab has it.
+        runbook: Runbook,
+        /// Target file.
+        path: PathBuf,
+    },
+    /// Execute one runbook step. SQL steps run on `session` and answer with
+    /// [`Event::Query`] events (Production confirmation, history and cancel as in a SQL
+    /// tab); HTTP and shell steps answer with [`Event::RunbookOutput`] and
+    /// [`Event::RunbookStepDone`]. Every step first reports its resolved text
+    /// ([`Event::RunbookResolved`]). [`Command::Cancel`] with `query` stops it.
+    RunbookStep {
+        /// New id chosen by the UI (a query id for SQL steps).
+        query: QueryId,
+        /// Open session of the step's connection (SQL steps).
+        session: Option<SessionId>,
+        /// The runbook (as the tab has it).
+        runbook: Runbook,
+        /// Step index.
+        step: usize,
+        /// Values entered for this run; defaults (and stored secrets) fill the rest.
+        values: ParamValues,
+        /// The user confirmed destructive statements on a Production connection.
+        confirmed_destructive: bool,
+    },
+    /// List the API workspace's saved requests ([`Event::ApiRequests`]).
+    ListApiRequests {
+        /// Request id.
+        request: RequestId,
     },
     /// Load the pinned schema-tree objects ([`Event::Favorites`]).
     LoadFavorites,
@@ -1335,6 +1394,47 @@ pub enum Event {
     Favorites(Vec<Favorite>),
     /// The terminal macros by name, answering the macro commands.
     Macros(Vec<Macro>),
+    /// The runbooks by name, answering the runbook commands.
+    Runbooks(Vec<Runbook>),
+    /// Answer to [`Command::SaveRunbook`] / [`Command::ImportRunbook`].
+    RunbookSaved {
+        /// Request id.
+        request: RequestId,
+        /// The runbook as stored, or why not.
+        result: Result<Runbook, String>,
+    },
+    /// The exact text a [`Command::RunbookStep`] runs (secrets masked).
+    RunbookResolved {
+        /// The step's id.
+        query: QueryId,
+        /// Resolved text.
+        text: String,
+    },
+    /// Output of a running HTTP or shell step (secrets masked).
+    RunbookOutput {
+        /// The step's id.
+        query: QueryId,
+        /// Text chunk.
+        text: String,
+    },
+    /// An HTTP or shell step ended (or any step could not start).
+    RunbookStepDone {
+        /// The step's id.
+        query: QueryId,
+        /// Summary (`200 OK`, `exit 0`), or the error.
+        result: Result<String, String>,
+        /// Run time.
+        elapsed: Duration,
+        /// It was cancelled.
+        cancelled: bool,
+    },
+    /// Answer to [`Command::ListApiRequests`].
+    ApiRequests {
+        /// Request id.
+        request: RequestId,
+        /// Saved requests (`Collection / Request` names), or why not.
+        result: Result<Vec<ApiRequestRef>, String>,
+    },
     /// The named-secret catalog by name, answering the named-secret commands.
     NamedSecrets(Vec<NamedSecret>),
     /// Saving a named secret failed.
