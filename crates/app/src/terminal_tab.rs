@@ -135,7 +135,7 @@ impl TerminalTab {
     pub fn host_id(&self) -> Option<&ProfileId> {
         match &self.target {
             TermTarget::Host(id) => Some(id),
-            TermTarget::Local { .. } => None,
+            TermTarget::Local { .. } | TermTarget::Container { .. } => None,
         }
     }
 
@@ -207,6 +207,43 @@ impl TerminalTab {
         this
     }
 
+    /// `docker exec -it` / `kubectl exec -it` into a container of a Docker or Kubernetes
+    /// connection ("Open shell"). A split pane opens another shell in the same container.
+    pub fn new_container(
+        core: RuntimeHandle,
+        env: EnvironmentLabel,
+        connection: ProfileId,
+        context: Option<String>,
+        shell: switchyard_core::containers::ShellTarget,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut this = Self {
+            title: shell.title().into(),
+            env,
+            core,
+            target: TermTarget::Container {
+                connection,
+                context,
+                shell,
+            },
+            panes: Vec::new(),
+            active: 0,
+            broadcast: false,
+            search: None,
+            _search_sub: None,
+            search_task: None,
+            startup: None,
+            pending_paste: None,
+            recording: None,
+            macro_save: None,
+            macro_menu: false,
+            colors: (None, None),
+            agent: None,
+        };
+        this.add_pane(cx);
+        this
+    }
+
     /// Draw with a Host's own terminal colors.
     pub fn with_colors(mut self, colors: Option<&TerminalColors>) -> Self {
         let hex = |v: &Option<String>| {
@@ -242,7 +279,7 @@ impl TerminalTab {
     pub fn host(&self) -> Option<&ProfileId> {
         match &self.target {
             TermTarget::Host(h) => Some(h),
-            TermTarget::Local { .. } => None,
+            TermTarget::Local { .. } | TermTarget::Container { .. } => None,
         }
     }
 

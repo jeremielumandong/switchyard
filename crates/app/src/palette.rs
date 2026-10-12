@@ -200,6 +200,7 @@ impl PaletteView {
                                 Profile::File(_) => "Files".into(),
                                 Profile::Terminal(_) => "Terminal".into(),
                                 Profile::Cloud(c) => c.service.display_name().to_owned(),
+                                Profile::Containers(c) => c.platform.display_name().to_owned(),
                             };
                             (
                                 s,

@@ -1,0 +1,22 @@
+[
+  {
+    "createTime": "2026-03-02T10:11:12+00:00",
+    "currentMasterVersion": "1.31.1-gke.1678000",
+    "endpoint": "34.76.10.20",
+    "location": "europe-west1",
+    "locations": ["europe-west1-b", "europe-west1-c", "europe-west1-d"],
+    "name": "web",
+    "selfLink": "https://container.googleapis.com/v1/projects/acme-prod/locations/europe-west1/clusters/web",
+    "status": "RUNNING",
+    "zone": "europe-west1"
+  },
+  {
+    "currentMasterVersion": "1.30.5-gke.1014001",
+    "endpoint": "35.200.1.2",
+    "location": "us-central1-a",
+    "name": "batch",
+    "selfLink": "https://container.googleapis.com/v1/projects/acme-prod/zones/us-central1-a/clusters/batch",
+    "status": "RECONCILING",
+    "zone": "us-central1-a"
+  }
+]
