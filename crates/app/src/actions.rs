@@ -7,6 +7,7 @@ actions!(
     [
         OpenPalette,
         QuickSwitch,
+        ConnectTo,
         RunStatement,
         RunScript,
         StopQuery,
@@ -76,6 +77,7 @@ pub fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("secondary-shift-p", OpenPalette, None),
         KeyBinding::new("secondary-p", QuickSwitch, None),
+        KeyBinding::new("secondary-k", ConnectTo, None),
         KeyBinding::new("secondary-enter", RunStatement, Some("Workspace")),
         KeyBinding::new("secondary-shift-enter", RunScript, Some("Workspace")),
         // Registered after gpui-component's own `Input` bindings, so these win inside
@@ -150,6 +152,7 @@ pub fn init(cx: &mut App) {
         cx.bind_keys(
             [
                 "ctrl-p",
+                "ctrl-k",
                 "ctrl-n",
                 "ctrl-b",
                 "ctrl-w",
@@ -275,6 +278,34 @@ pub enum CommandId {
     OpenContainers(switchyard_core::store::ContainerPlatform),
     /// New Docker connection / Add Kubernetes cluster.
     AddContainers(switchyard_core::store::ContainerPlatform),
+    /// "Connect to…": fuzzy-find a Host, remote desktop or connection and open it (⌘K).
+    ConnectTo,
+    /// The Servers view of the current workspace.
+    ShowServers,
+    /// Shared credentials (one sign-in for many Hosts, connections and desktops).
+    ManageCredentials,
+    /// A new RDP or VNC server.
+    NewDesktop(switchyard_core::store::DesktopProtocol),
+    /// Add the picked items (or the tab's connection) to a workspace.
+    AddToWorkspace,
+    /// Remove the picked items (or the tab's connection) from the current workspace.
+    RemoveFromWorkspace,
+    /// Create a workspace.
+    NewWorkspace,
+    /// Open the title bar's workspace menu.
+    SwitchWorkspace,
+    /// The current workspace's settings (members, rules).
+    WorkspaceSettings,
+    /// Rename the current workspace.
+    RenameWorkspace,
+    /// Copy the current workspace.
+    DuplicateWorkspace,
+    /// Delete the current workspace.
+    DeleteWorkspace,
+    /// Write the current workspace to a `.switchyard-workspace.json` file.
+    ExportWorkspace,
+    /// Read a workspace file.
+    ImportWorkspace,
 }
 
 /// A palette entry.
@@ -311,6 +342,46 @@ pub fn palette_commands() -> Vec<PaletteCommand> {
             k("⌘N", "Ctrl+N"),
         ),
         c(NewHost, "New Host…", "Connections", "".into()),
+        c(ConnectTo, "Connect to…", "Servers", k("⌘K", "Ctrl+K")),
+        c(ShowServers, "Servers", "Servers", "".into()),
+        c(
+            NewDesktop(switchyard_core::store::DesktopProtocol::Rdp),
+            "New RDP Server…",
+            "Servers",
+            "".into(),
+        ),
+        c(
+            NewDesktop(switchyard_core::store::DesktopProtocol::Vnc),
+            "New VNC Server…",
+            "Servers",
+            "".into(),
+        ),
+        c(ManageCredentials, "Credentials…", "Connections", "".into()),
+        c(AddToWorkspace, "Add to Workspace…", "Workspace", "".into()),
+        c(
+            RemoveFromWorkspace,
+            "Remove from Workspace",
+            "Workspace",
+            "".into(),
+        ),
+        c(NewWorkspace, "New Workspace…", "Workspace", "".into()),
+        c(SwitchWorkspace, "Switch Workspace…", "Workspace", "".into()),
+        c(
+            WorkspaceSettings,
+            "Workspace Settings…",
+            "Workspace",
+            "".into(),
+        ),
+        c(RenameWorkspace, "Rename Workspace…", "Workspace", "".into()),
+        c(
+            DuplicateWorkspace,
+            "Duplicate Workspace…",
+            "Workspace",
+            "".into(),
+        ),
+        c(DeleteWorkspace, "Delete Workspace…", "Workspace", "".into()),
+        c(ExportWorkspace, "Export Workspace…", "Workspace", "".into()),
+        c(ImportWorkspace, "Import Workspace…", "Workspace", "".into()),
         c(
             AddContainers(switchyard_core::store::ContainerPlatform::Kubernetes),
             "Add Kubernetes Cluster…",
@@ -563,6 +634,19 @@ mod tests {
     }
 
     #[test]
+    fn workspace_item_commands_are_listed() {
+        let cmds = palette_commands();
+        for label in [
+            "Add to Workspace…",
+            "Remove from Workspace",
+            "Connect to…",
+            "Credentials…",
+        ] {
+            assert!(cmds.iter().any(|c| c.label == label), "{label} missing");
+        }
+    }
+
+    #[test]
     fn workspace_switch_commands_are_listed() {
         let cmds = palette_commands();
         for id in [CommandId::SwitchToDefault, CommandId::SwitchToApi] {
@@ -577,6 +661,7 @@ mod tests {
         use CommandId::*;
         let bound = [
             NewConnection,
+            ConnectTo,
             NewTerminal,
             NewQueryTab,
             RunStatement,

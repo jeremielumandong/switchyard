@@ -556,8 +556,11 @@ server or bundled Unix tools on Windows (Tier 3).
 - [ ] **MX-10 SCP.** Upload/download through `scp` when the server has no SFTP subsystem.
 - [ ] **MX-11 Telnet and raw TCP sessions.** In-house Telnet client (option negotiation,
   NAWS, terminal type, binary), raw TCP; new session kinds in the connection model.
-- [ ] **MX-12 External viewers.** Mosh, RDP (`xfreerdp`/`mstsc`/Microsoft Remote Desktop)
+- [x] **MX-12 External viewers.** Mosh, RDP (`xfreerdp`/`mstsc`/Microsoft Remote Desktop)
   and VNC sessions launched through tools the Driver Manager detects, with install hints.
+  Note: RDP and VNC landed with server workspaces (SW-5, SW-6 below): FreeRDP 2/3, Remmina,
+  mstsc, Windows App / Microsoft Remote Desktop, TigerVNC, macOS Screen Sharing. Mosh is
+  deferred (Follow-ups); an embedded RDP viewer is future work, not started.
 - [ ] **MX-13 More local shells.** Shell picker (bash, zsh, fish, pwsh, cmd, Git Bash) and
   WSL distributions on Windows.
 - Also counted for parity: M2-5 (SSH agent) and M4-2 (FTP/FTPS) above.
@@ -1095,6 +1098,77 @@ are shared hotspots: one owner at a time.
   (`containers/tests/docker.rs`, `core/tests/containers.rs::docker_through_core`, ignored).
   Not verified against a real cluster, cloud account or Rancher server (none here).
 
+## Extra — Server workspaces and RDP (user request, 2026-10-12)
+
+- [x] SW-1 Store: schema version 8 (`workspaces` table; `buffers.workspace_id`; `server_facts`
+  with OS and last connection). `WorkspaceScope` (members, tag rules, folder rules,
+  exclusions) over Hosts, database, cloud and container connections and remote desktops; a
+  workspace also shows what its items need (jump / tunnel Hosts, credentials) and, in the
+  app, what lives on a member Host. Built-in "All" (migration target of the v7 layout,
+  cannot be renamed or deleted). Create / rename / duplicate / delete, add / remove (an item
+  can be in several workspaces; removing never deletes it). A new connection or Host joins
+  the current workspace. Tests: scope rules, closure, round trip with own buffers, v7 → All
+  migration, layout saves keep name and scope, membership in several workspaces.
+- [x] SW-2 Delete: a dialog naming the workspace; by default only the workspace (scope,
+  tabs, layout) goes and its items stay in All; an unchecked "Also delete the N hosts and
+  connections that are in no other workspace" lists them and removes their stored secrets
+  too (items another item still uses are kept and named). Deleting the current workspace
+  switches to All; its open tabs close. Tests for both paths.
+- [x] SW-3 Share: `.switchyard-workspace.json` (format `switchyard-workspace` v1) with the
+  workspace, its items, the credentials they use, tags, folders and rules. Secrets stay out
+  by default (each listed as "needs a value"; `{{vault.x}}` references stay references);
+  opt-in "Include secrets" encrypts only the values with a passphrase (Argon2id +
+  ChaCha20-Poly1305 from the fallback vault). Import preview with per-item Skip / Replace /
+  Keep both, stable ids (re-import updates instead of duplicating), a wrong passphrase is
+  refused, then a "Missing secrets" dialog. Tests: export without secrets, round trip with a
+  passphrase, wrong passphrase, re-import update / skip / keep both.
+- [x] SW-4 App: the title bar's workspace menu lists the server workspaces under Default
+  (switch, ⋯ settings, New, Import) beside API. Each workspace keeps its own tabs (SQL
+  buffers, terminals, files, the Servers view, Redis / cloud / container browsers), the tab
+  in front, sidebar page, width and state, Explorer grouping and collapsed rows. The Explorer
+  shows the current workspace only. Settings sheet: members with Remove, an "Add…" picker
+  over All with search (virtualized), tag and folder rules, excluded items, Rename,
+  Duplicate, Export, Delete. Context menu on an item, a multi-selection (any kind now),
+  a folder or a tag: "Add to workspace ▸ <list> / New workspace…" and "Remove from this
+  workspace". Edit dialogs (connection editor, remote desktop editor) show workspace
+  checkboxes. Palette: Add to Workspace…, Remove from Workspace, New / Switch / Rename /
+  Duplicate / Delete / Export / Import Workspace, Workspace Settings. Tests: scoped
+  profiles, rules from menus, names and passphrases, export file names, sidebar keys.
+  Note: drag and drop onto the title bar menu not done (Follow-ups).
+- [x] SW-5 Remote desktops: `Profile::Desktop` (RDP: address, port, user / domain or a
+  credential, RD Gateway with its own user / credential, optional SSH tunnel through a Host,
+  full screen or size, all monitors, clipboard, drives, admin session; VNC: address, port,
+  password, tunnel). Launch on the core runtime: Windows `mstsc` with a `.rdp` file, macOS
+  Windows App / Microsoft Remote Desktop through `open -a` with a `.rdp` file, Linux
+  `xfreerdp3` / `xfreerdp` (password on stdin with `/from-stdin`, never `/p:`) or Remmina;
+  VNC through TigerVNC `vncviewer` (password in `VNC_PASSWORD`), Remmina or `open vnc://`.
+  Files go in a private 0700 folder (0600 files) removed afterwards; the client can be
+  stopped; launches are written to history tagged `rdp` / `vnc`. `rdp-client` and
+  `vnc-client` Driver Manager components with install hints; a missing client opens the
+  Drivers page. Tests: `.rdp` insta snapshots, FreeRDP 2 / 3 argv without the password,
+  stdin lines, Remmina / mstsc / macOS plans, private folder modes, a stub client launch
+  (ignored).
+- [x] SW-6 Servers view (Tools, palette "Servers"): every Host and remote desktop of the
+  workspace in a virtualized list or card grid: name, address, OS (from the Fleet probe),
+  tags, environment, last connected, reachability dot (TCP connect to 22 / 3389 / 5900 every
+  30 s, 16 at a time, 3 s timeout, on the core runtime, only while the view is open; a
+  setting turns it off; jump-Host and tunnelled servers show as not checked). Search by name,
+  IP, tag (`tag:web`) or OS; group by folder, tag or environment; recents; per row SSH, SFTP,
+  Fleet dashboard, RDP / VNC and Edit; Ctrl/⌘-click selection for workspace actions. Tests:
+  rows, search, grouping, recents, reachability against a local `TcpListener`.
+- [x] SW-7 "Connect to…" (⌘K / Ctrl+K, free; Ctrl+K stays the shell's in terminals): fuzzy
+  over Hosts, remote desktops and connections, name matches before address / tag matches,
+  then the current workspace, then most recent; opens the right session. Tests: ranking.
+- [x] SW-8 Shared credentials: `Profile::Credential` (user, optional domain, password or
+  SSH key with passphrase in the keychain / vault). Hosts, database connections and remote
+  desktops (and RD Gateways) reference one; the runtime resolves it at connect time, so
+  rotating it changes every user. Credentials dialog: list with usage, edit / rotate, delete
+  asks first and lists the users (they are detached and keep the user name). Existing
+  per-Host secrets are unchanged. Tests: resolution, rotation reaching every user, delete
+  refused while used unless detaching.
+  Nothing here is exposed to MCP / agents.
+  Note: not exercised in a running window here (no display).
+
 ## M6 — Packaging and beta
 
 Exit: every performance budget passes on all three platforms; signed builds published.
@@ -1153,6 +1227,15 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   running app's unlocked secrets over the loopback handoff, scoped by the session token.
 
 (Add items here instead of doing them mid-task.)
+- Server workspaces / RDP (SW-1..8) leftovers: an embedded RDP viewer (future work, not
+  started; today the system client opens); Mosh (MX-12); drag and drop of Explorer items onto
+  a workspace in the title bar menu; mstsc without a password prompt (needs a
+  `TERMSRV/<host>` Credential Manager entry with its own user, which the approved `keyring`
+  API cannot write; see DECISIONS); Windows App on macOS cannot take a password at all;
+  reachability through jump Hosts / tunnels (shown as not checked); the Servers view's OS
+  only fills in after a Fleet dashboard probe; a workspace switch reopens saved terminals
+  (SSH logins) the first time per run, which may prompt; per-workspace pinned connections;
+  workspace import of Hosts' port forwards that clash with local ports; UI tests.
 - Schema compare (SC-1..3) leftovers: data compare (row diff and sync script); triggers,
   sequences, user-defined types, PostgreSQL EXCLUDE constraints, comments and grants;
   table options (MySQL engine / charset, SQL Server filegroups, PostgreSQL partitions and

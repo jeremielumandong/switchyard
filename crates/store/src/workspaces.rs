@@ -375,6 +375,27 @@ impl Store {
         self.write_workspace_row(&w, None)
     }
 
+    /// Save a workspace's layout only (tabs, Explorer, sidebar, active buffer): a stored
+    /// workspace keeps its name and scope, which change through [`Store::rename_workspace`]
+    /// and [`Store::save_workspace`]. An unknown id is saved whole.
+    pub fn save_workspace_layout(&mut self, w: &Workspace) -> Result<()> {
+        let id = if w.id.is_empty() {
+            ALL_ID
+        } else {
+            w.id.as_str()
+        };
+        match self.workspace_by_id(id)? {
+            Some(stored) => {
+                let mut w = w.clone();
+                w.id = stored.id;
+                w.name = stored.name;
+                w.scope = stored.scope;
+                self.write_workspace_row(&w, None)
+            }
+            None => self.save_workspace(w),
+        }
+    }
+
     /// A copy of a workspace (scope, layout and SQL buffers) named `name`.
     pub fn duplicate_workspace(&mut self, id: &str, name: &str) -> Result<Workspace> {
         let src = self
@@ -504,6 +525,22 @@ impl Store {
         }
         self.write_workspace_row(&w, None)?;
         Ok(w)
+    }
+
+    /// Save a profile; a new connection or Host also joins the current workspace (unless
+    /// that is "All", which shows it anyway). Returns whether a workspace changed.
+    pub fn save_profile_in_current(&mut self, p: &Profile) -> Result<bool> {
+        let is_new = self.profile(p.id())?.is_none();
+        self.save_profile(p)?;
+        if !is_new || !p.is_connection() {
+            return Ok(false);
+        }
+        let current = self.current_workspace_id()?;
+        if current == ALL_ID {
+            return Ok(false);
+        }
+        self.add_to_workspace(&current, std::slice::from_ref(p.id()))?;
+        Ok(true)
     }
 
     /// The workspaces (other than "All") that show profile `id` itself.
@@ -718,6 +755,16 @@ mod tests {
         assert_eq!(back.tabs, w.tabs);
         assert_eq!(back.explorer_collapsed, w.explorer_collapsed);
         assert!(back.sidebar_collapsed);
+        // A layout save from a stale copy keeps the stored name and scope.
+        let mut stale = w.clone();
+        stale.name = "Old".into();
+        stale.scope = WorkspaceScope::default();
+        stale.side_tab = Some("schema".into());
+        s.save_workspace_layout(&stale).unwrap();
+        let back = s.workspace_by_id(&prod.id).unwrap().unwrap();
+        assert_eq!(back.name, "Prod");
+        assert_eq!(back.scope.tags, vec!["env:prod".to_owned()]);
+        assert_eq!(back.side_tab.as_deref(), Some("schema"));
         let all = s.workspace_by_id(ALL_ID).unwrap().unwrap();
         assert_eq!(all.buffers[0].text, "select 11");
 
@@ -766,6 +813,35 @@ mod tests {
         assert!(w.scope.all && w.sidebar_collapsed);
         assert_eq!(w.active_buffer.as_deref(), Some("b1"));
         assert_eq!(w.buffers.len(), 1, "existing buffers belong to All");
+    }
+
+    #[test]
+    fn new_items_join_the_current_workspace_and_can_be_in_several() {
+        let mut s = Store::open_in_memory().unwrap();
+        let a = s.create_workspace("A", WorkspaceScope::default()).unwrap();
+        let b = s.create_workspace("B", WorkspaceScope::default()).unwrap();
+        let h = host("web", None, &[]);
+        // In "All", a new Host joins no workspace.
+        assert!(!s.save_profile_in_current(&h).unwrap());
+        assert!(s.workspaces_of(h.id()).unwrap().is_empty());
+        s.set_current_workspace(&a.id).unwrap();
+        let h2 = host("db", None, &[]);
+        assert!(s.save_profile_in_current(&h2).unwrap());
+        // Saving it again changes nothing.
+        assert!(!s.save_profile_in_current(&h2).unwrap());
+        assert_eq!(s.workspaces_of(h2.id()).unwrap(), vec![a.id.clone()]);
+        s.add_to_workspace(&b.id, std::slice::from_ref(h2.id()))
+            .unwrap();
+        let mut of = s.workspaces_of(h2.id()).unwrap();
+        of.sort();
+        let mut want = vec![a.id.clone(), b.id.clone()];
+        want.sort();
+        assert_eq!(of, want);
+        // Removing it from one workspace keeps it, and keeps it in the other.
+        s.remove_from_workspace(&a.id, std::slice::from_ref(h2.id()))
+            .unwrap();
+        assert_eq!(s.workspaces_of(h2.id()).unwrap(), vec![b.id.clone()]);
+        assert!(s.profile(h2.id()).unwrap().is_some());
     }
 
     #[test]

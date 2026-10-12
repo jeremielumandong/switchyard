@@ -336,6 +336,27 @@ pub fn tool_groups(profiles: &Profiles) -> Vec<ToolGroup> {
         ready: true,
         tools: vec![
             Tool {
+                badge: "SRV",
+                name: "Servers",
+                desc: "Every Host and remote desktop of this workspace: status, OS, one-click SSH, SFTP, RDP",
+                cmd: CommandId::ShowServers,
+                tag: "Open",
+            },
+            Tool {
+                badge: "RDP",
+                name: "Remote desktop",
+                desc: "Add an RDP or VNC server; opens in the system client, tunnels through a Host",
+                cmd: CommandId::NewDesktop(switchyard_core::store::DesktopProtocol::Rdp),
+                tag: "New",
+            },
+            Tool {
+                badge: "CRD",
+                name: "Credentials",
+                desc: "One sign-in shared by many Hosts, connections and desktops; rotate it once",
+                cmd: CommandId::ManageCredentials,
+                tag: "Open",
+            },
+            Tool {
                 badge: "TUN",
                 name: "Port forwards",
                 desc: "Every tunnel across servers: start, stop, inspect",
