@@ -1,5 +1,5 @@
 //! Persistent state: the profile model, the SQLite profile store (profiles, buffers,
-//! history, schema cache, settings, snippets, favorites, terminal macros) and secret storage (OS keychain or encrypted vault).
+//! history, schema cache, settings, snippets, favorites, terminal macros, runbooks) and secret storage (OS keychain or encrypted vault).
 
 pub mod error;
 pub mod favorites;
@@ -8,6 +8,7 @@ pub mod model;
 pub mod named_secrets;
 pub mod paths;
 pub mod random;
+pub mod runbooks;
 pub mod secrets;
 pub mod snippets;
 pub mod store;
@@ -23,6 +24,9 @@ pub use model::{
 };
 pub use named_secrets::{NamedSecret, NamedSecretSource};
 pub use paths::AppPaths;
+pub use runbooks::{
+    ApiRequestRef, HttpStep, Runbook, RunbookParam, RunbookStep, ShellTarget, StepKind,
+};
 pub use secrets::{KeychainStore, MemoryStore, SecretStore, VaultStore};
 pub use snippets::Snippet;
 pub use store::{HistoryEntry, HistoryStatus, ProfileExport, Store, now_ms};
