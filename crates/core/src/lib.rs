@@ -10,9 +10,11 @@ mod entra;
 pub mod env;
 pub mod error;
 pub mod files;
+pub mod fleet;
 pub mod handoff;
 pub mod infra;
 pub mod prompts;
+pub mod runbook;
 pub mod runtime;
 pub mod service;
 pub mod ssh_import;
@@ -21,10 +23,10 @@ pub mod terminals;
 pub mod update;
 
 pub use bus::{
-    AgentApproval, ApprovalKind, CloudEdit, CloudInfo, Command, Event, FetchLimit, FileBytes, FsOp,
-    FsRef, OnConflict, PromptAnswer, QueryEvent, QueryId, ReadError, RequestId, SaveError,
-    SessionContext, SessionId, StatementRequest, TermId, TermLogState, TermStatus, TermTarget,
-    TextFile, TransferError,
+    AgentApproval, ApprovalKind, CloudEdit, CloudInfo, Command, CompareCatalog, ContainerForward,
+    Event, FetchLimit, FileBytes, ForwardState, FsOp, FsRef, OnConflict, PromptAnswer, QueryEvent,
+    QueryId, ReadError, RequestId, SaveError, SessionContext, SessionId, StatementRequest, TermId,
+    TermLogState, TermStatus, TermTarget, TextFile, TransferError,
 };
 pub use error::{CoreError, Result};
 pub use runtime::{Core, EventReceiver, EventSender, RuntimeHandle};
@@ -37,6 +39,8 @@ pub use switchyard_agents as agents;
 pub use switchyard_api as api;
 /// Cloud storage and developer services.
 pub use switchyard_cloud as cloud;
+/// Docker and Kubernetes CLIs.
+pub use switchyard_containers as containers;
 /// Re-exported database contracts.
 pub use switchyard_db as db;
 /// Tunnel endpoints are defined in `db` so drivers stay independent of `remote`.

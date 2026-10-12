@@ -6,7 +6,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, AppContext as _, Context, Entity, FontWeight, Hsla, InteractiveElement as _,
     IntoElement, MouseButton, ParentElement as _, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window, div, px,
+    Styled as _, Window, div, px, uniform_list,
 };
 use switchyard_core::db::ObjectKind;
 use switchyard_core::remote::ssh::ForwardKind;
@@ -67,6 +67,8 @@ pub enum Overlay {
     Palette(Entity<PaletteView>),
     /// Connection editor.
     ConnEditor(Entity<ConnEditor>),
+    /// New Docker connection / Add Kubernetes cluster / edit a container connection.
+    ContainerEditor(Entity<crate::container_editor::ContainerEditor>),
     /// Production confirmation.
     Safety {
         tab: Entity<SqlTab>,
@@ -110,6 +112,8 @@ pub struct SshImportPreview {
     pub hosts: Vec<switchyard_core::ssh_import::SshImportCandidate>,
     /// Aliases ticked for import.
     pub chosen: std::collections::HashSet<String>,
+    /// An Ansible inventory (this file) instead of `~/.ssh/config` (Fleet).
+    pub inventory: Option<std::path::PathBuf>,
 }
 
 pub(crate) fn scrim(p: &Palette, top: bool) -> gpui_kit::Stateful<gpui_kit::Div> {
@@ -281,6 +285,13 @@ impl Workspace {
                     .into_any_element(),
             ),
             Some(Overlay::ConnEditor(ed)) => Some(
+                scrim(p, false)
+                    .key_context("Overlay")
+                    .p(rpx(20.))
+                    .child(ed.clone())
+                    .into_any_element(),
+            ),
+            Some(Overlay::ContainerEditor(ed)) => Some(
                 scrim(p, false)
                     .key_context("Overlay")
                     .p(rpx(20.))
@@ -547,7 +558,10 @@ impl Workspace {
 
     fn render_ctx_menu(&self, ctx: &CtxMenu, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let mut items: Vec<(&'static str, &'static str, bool, SharedString)> = match &ctx.target {
-            CtxTarget::Schema(..) => vec![("er", "ER diagram…", false, "".into())],
+            CtxTarget::Schema(..) => vec![
+                ("er", "ER diagram…", false, "".into()),
+                ("compare", "Compare with…", false, "".into()),
+            ],
             CtxTarget::Object(o) if o.kind.is_relation() => vec![
                 ("open", "Open data", false, "↵".into()),
                 ("select", "Generate SELECT", false, "".into()),
@@ -586,6 +600,7 @@ impl Workspace {
                     ("explore", "Show in explorer", false, "".into()),
                     ("refresh_schema", "Refresh schema", false, "".into()),
                     ("activity", "Activity monitor", false, "".into()),
+                    ("compare", "Compare with…", false, "".into()),
                     ("disconnect", "Disconnect", false, "".into()),
                     ("-", "", false, "".into()),
                     ("delete", "Delete", true, "".into()),
@@ -617,6 +632,30 @@ impl Workspace {
             CtxTarget::Folder(_) => vec![
                 ("bulk", "Edit Hosts in folder…", false, "".into()),
                 ("open_all", "Open all terminals", false, "".into()),
+                ("-", "", false, "".into()),
+                ("fleet_run", "Run command…", false, "".into()),
+                ("fleet_dash", "Dashboard", false, "".into()),
+                ("fleet_push", "Push file…", false, "".into()),
+                ("fleet_keys", "Manage keys…", false, "".into()),
+            ],
+            CtxTarget::Tag(_) => vec![
+                ("bulk", "Edit Hosts with this tag…", false, "".into()),
+                ("open_all", "Open all terminals", false, "".into()),
+                ("-", "", false, "".into()),
+                ("fleet_run", "Run command…", false, "".into()),
+                ("fleet_dash", "Dashboard", false, "".into()),
+                ("fleet_push", "Push file…", false, "".into()),
+                ("fleet_keys", "Manage keys…", false, "".into()),
+            ],
+            CtxTarget::Hosts(_) => vec![
+                ("fleet_run", "Run command…", false, "".into()),
+                ("fleet_dash", "Dashboard", false, "".into()),
+                ("fleet_push", "Push file…", false, "".into()),
+                ("fleet_keys", "Manage keys…", false, "".into()),
+                ("-", "", false, "".into()),
+                ("bulk", "Edit selected Hosts…", false, "".into()),
+                ("open_all", "Open all terminals", false, "".into()),
+                ("clear_selection", "Clear selection", false, "".into()),
             ],
         };
         if matches!(&ctx.target, CtxTarget::Object(o) if o.kind == ObjectKind::Table) {
@@ -912,21 +951,48 @@ impl Workspace {
             CtxTarget::Schema(..) | CtxTarget::Object(_) if matches!(action, "pin" | "unpin") => {
                 self.toggle_pin(target, cx)
             }
+            CtxTarget::Schema(c, s) if action == "compare" => {
+                self.open_compare(Some(c.clone()), Some(s.clone()), window, cx)
+            }
             CtxTarget::Schema(c, s) => self.open_er_diagram(c, s.clone(), None, window, cx),
             CtxTarget::Object(o) if action == "er" => {
                 self.open_er_diagram(&o.conn, o.schema.clone(), Some(o.name.clone()), window, cx)
             }
             CtxTarget::Object(o) => self.object_action(action, o.clone(), window, cx),
             CtxTarget::Tab(ix) => self.close_tabs(action, *ix, window, cx),
-            CtxTarget::Folder(name) => {
-                let ids = self.folder_hosts(name);
+            CtxTarget::Folder(_) | CtxTarget::Tag(_) | CtxTarget::Hosts(_) => {
+                use crate::fleet_tab::Mode;
+                use crate::fleet_tab::model::Pick;
+                let (ids, title, pick) = match target {
+                    CtxTarget::Folder(name) => (
+                        self.folder_hosts(name),
+                        format!("Folder {name}"),
+                        Pick::Folder(name.clone()),
+                    ),
+                    CtxTarget::Tag(tag) => (
+                        self.tag_hosts(tag),
+                        format!("Tag {tag}"),
+                        Pick::Tag(tag.clone()),
+                    ),
+                    CtxTarget::Hosts(ids) => (
+                        ids.clone(),
+                        format!("{} selected Hosts", ids.len()),
+                        Pick::Hosts(ids.clone()),
+                    ),
+                    _ => return,
+                };
                 match action {
-                    "bulk" => self.open_bulk_edit(&ids, format!("Folder {name}"), window, cx),
+                    "bulk" => self.open_bulk_edit(&ids, title, window, cx),
                     "open_all" => {
                         for id in ids {
                             self.open_terminal(Some(id), cx);
                         }
                     }
+                    "clear_selection" => self.host_selection.clear(),
+                    "fleet_run" => self.open_fleet(Mode::Run, pick, window, cx),
+                    "fleet_dash" => self.open_fleet(Mode::Dashboard, pick, window, cx),
+                    "fleet_push" => self.open_fleet(Mode::Push, pick, window, cx),
+                    "fleet_keys" => self.open_fleet(Mode::Keys, pick, window, cx),
                     _ => {}
                 }
             }
@@ -953,7 +1019,12 @@ impl Workspace {
             CtxTarget::Profile(id) => match action {
                 "open" => self.open_profile(id, window, cx),
                 "edit" => {
-                    if let Some(p) = self.profiles.all.iter().find(|p| p.id() == id).cloned() {
+                    if let Some(switchyard_core::store::Profile::Containers(c)) =
+                        self.profiles.all.iter().find(|p| p.id() == id).cloned()
+                    {
+                        self.open_container_editor(c.platform, Some(c), window, cx);
+                    } else if let Some(p) = self.profiles.all.iter().find(|p| p.id() == id).cloned()
+                    {
                         self.open_conn_editor(
                             ConnKind::Db(switchyard_core::db::Engine::Postgres),
                             Some(p),
@@ -970,6 +1041,7 @@ impl Workspace {
                 "explorer_remove" => self.remove_from_explorer(id, cx),
                 "refresh_schema" => self.refresh_connection_schema(id, window, cx),
                 "activity" => self.open_activity_for(id, window, cx),
+                "compare" => self.open_compare(Some(id.clone()), None, window, cx),
                 "disconnect" => self.disconnect_connection(id, false, window, cx),
                 _ => {}
             },
@@ -1469,80 +1541,100 @@ impl Workspace {
     ) -> AnyElement {
         let new_count = preview.hosts.iter().filter(|h| !h.exists).count();
         let chosen = preview.chosen.len();
-        let rows: Vec<AnyElement> = preview
-            .hosts
-            .iter()
-            .enumerate()
-            .map(|(i, h)| {
-                let on = preview.chosen.contains(&h.alias);
-                let alias = h.alias.clone();
-                let via = (!h.via.is_empty()).then(|| format!("via {}", h.via.join(" → ")));
-                div()
-                    .id(("ssh-import", i))
-                    .flex()
-                    .items_center()
-                    .gap(rpx(10.))
-                    .h(rpx(34.))
-                    .px(rpx(12.))
-                    .rounded(px(6.))
-                    .when(!h.exists, |d| {
-                        d.hover(|s| s.bg(p.sel))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if let Some(Overlay::SshImport(pr)) = &mut this.overlay
-                                    && !pr.chosen.remove(&alias)
-                                {
-                                    pr.chosen.insert(alias.clone());
-                                }
-                                cx.notify();
-                            }))
+        // Virtualized: an inventory can list thousands of Hosts.
+        let p2 = *p;
+        let count = preview.hosts.len();
+        let list = uniform_list(
+            "ssh-import-rows",
+            count,
+            cx.processor(move |this, range: std::ops::Range<usize>, _w, cx| {
+                let p = &p2;
+                let Some(Overlay::SshImport(pr)) = &this.overlay else {
+                    return Vec::new();
+                };
+                range
+                    .filter_map(|i| pr.hosts.get(i).map(|h| (i, h)))
+                    .map(|(i, h)| {
+                        let on = pr.chosen.contains(&h.alias);
+                        let alias = h.alias.clone();
+                        let via = if !h.via.is_empty() {
+                            Some(format!("via {}", h.via.join(" → ")))
+                        } else if !h.tags.is_empty() {
+                            Some(format!("#{}", h.tags.join(" #")))
+                        } else {
+                            None
+                        };
+                        div()
+                            .id(("ssh-import", i))
+                            .flex()
+                            .items_center()
+                            .gap(rpx(10.))
+                            .h(rpx(34.))
+                            .px(rpx(12.))
+                            .rounded(px(6.))
+                            .when(!h.exists, |d| {
+                                d.hover(|s| s.bg(p.sel)).on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        if let Some(Overlay::SshImport(pr)) = &mut this.overlay
+                                            && !pr.chosen.remove(&alias)
+                                        {
+                                            pr.chosen.insert(alias.clone());
+                                        }
+                                        cx.notify();
+                                    },
+                                ))
+                            })
+                            .when(h.exists, |d| d.opacity(0.55))
+                            .child(ui::checkbox(("ssh-import-check", i), on, "", p))
+                            .child(
+                                div()
+                                    .w(rpx(150.))
+                                    .flex_none()
+                                    .truncate()
+                                    .text_size(ts::UI)
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(h.alias.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .font_family(MONO)
+                                    .text_size(ts::LABEL)
+                                    .text_color(p.fg2)
+                                    .child(h.address.clone()),
+                            )
+                            .when_some(via, |d, v| {
+                                d.child(
+                                    div()
+                                        .flex_none()
+                                        .font_family(MONO)
+                                        .text_size(ts::SMALL)
+                                        .text_color(p.acc)
+                                        .child(v),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .w(rpx(150.))
+                                    .flex_none()
+                                    .truncate()
+                                    .text_size(ts::LABEL)
+                                    .text_color(p.fg3)
+                                    .child(if h.exists {
+                                        "already saved".to_owned()
+                                    } else {
+                                        h.auth.clone()
+                                    }),
+                            )
+                            .into_any_element()
                     })
-                    .when(h.exists, |d| d.opacity(0.55))
-                    .child(ui::checkbox(("ssh-import-check", i), on, "", p))
-                    .child(
-                        div()
-                            .w(rpx(150.))
-                            .flex_none()
-                            .truncate()
-                            .text_size(ts::UI)
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(h.alias.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .font_family(MONO)
-                            .text_size(ts::LABEL)
-                            .text_color(p.fg2)
-                            .child(h.address.clone()),
-                    )
-                    .when_some(via, |d, v| {
-                        d.child(
-                            div()
-                                .flex_none()
-                                .font_family(MONO)
-                                .text_size(ts::SMALL)
-                                .text_color(p.acc)
-                                .child(v),
-                        )
-                    })
-                    .child(
-                        div()
-                            .w(rpx(150.))
-                            .flex_none()
-                            .truncate()
-                            .text_size(ts::LABEL)
-                            .text_color(p.fg3)
-                            .child(if h.exists {
-                                "already saved".to_owned()
-                            } else {
-                                h.auth.clone()
-                            }),
-                    )
-                    .into_any_element()
-            })
-            .collect();
+                    .collect::<Vec<_>>()
+            }),
+        )
+        .h(rpx((count.min(12) as f32) * 34.))
+        .into_any_element();
         let all_new: Vec<String> = preview
             .hosts
             .iter()
@@ -1585,23 +1677,18 @@ impl Workspace {
                                     )),
                             ),
                     )
-                    .child(
-                        div()
-                            .id("ssh-import-list")
-                            .max_h(rpx(420.))
-                            .overflow_y_scroll()
-                            .p(rpx(4.))
-                            .children(rows)
-                            .when(preview.hosts.is_empty(), |d| {
-                                d.child(
-                                    div()
-                                        .p(rpx(24.))
-                                        .text_color(p.fg3)
-                                        .text_size(ts::UI)
-                                        .child("No Host entries (wildcard patterns are skipped)."),
-                                )
-                            }),
-                    )
+                    .child(div().id("ssh-import-list").p(rpx(4.)).child(list).when(
+                        preview.hosts.is_empty(),
+                        |d| {
+                            d.child(div().p(rpx(24.)).text_color(p.fg3).text_size(ts::UI).child(
+                                if preview.inventory.is_some() {
+                                    "No hosts in this inventory."
+                                } else {
+                                    "No Host entries (wildcard patterns are skipped)."
+                                },
+                            ))
+                        },
+                    ))
                     .child(
                         div()
                             .flex()
@@ -1666,9 +1753,18 @@ impl Workspace {
                                             .filter(|h| pr.chosen.contains(&h.alias))
                                             .map(|h| h.alias.clone())
                                             .collect();
-                                        this.core.send(switchyard_core::Command::ImportSshConfig {
+                                        let cmd = match &pr.inventory {
+                                        Some(path) => switchyard_core::Command::Fleet(
+                                            switchyard_core::fleet::FleetCommand::ImportInventory {
+                                                path: path.clone(),
+                                                only: Some(only),
+                                            },
+                                        ),
+                                        None => switchyard_core::Command::ImportSshConfig {
                                             only: Some(only),
-                                        });
+                                        },
+                                    };
+                                        this.core.send(cmd);
                                         this.dismiss(w, cx);
                                     },
                                 )),

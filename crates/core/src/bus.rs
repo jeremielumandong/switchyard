@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use secrecy::SecretString;
 use switchyard_cloud::{KvCaps, KvItem, KvPage, KvQuery, KvWrite};
+use switchyard_containers::ContainersError;
 use switchyard_db::guard::Destructive;
 use switchyard_db::{
     CatalogChunk, ColumnMeta, Completion, DbError, IntrospectScope, Notice, RowBatch, Value,
@@ -13,10 +14,13 @@ use switchyard_db::{
 use switchyard_drivers::{Component, InstallProgress};
 use switchyard_remote::FileEntry;
 use switchyard_remote::ssh::{HostKeyDecision, HostKeyRequest, InteractiveRequest, TunnelInfo};
+use switchyard_store::{ApiRequestRef, Runbook};
 use switchyard_store::{
     BufferState, CloudConnection, CloudService, DbConnection, Favorite, FileConnection,
     HistoryEntry, Host, HostPatch, Macro, NamedSecret, Profile, ProfileId, Snippet, Workspace,
 };
+
+use crate::runbook::ParamValues;
 use switchyard_term::{TermSize, Terminal};
 
 /// Identifies one UI request so its answer can be matched.
@@ -196,6 +200,16 @@ pub enum TermTarget {
     },
     /// A shell on a saved Host over SSH.
     Host(ProfileId),
+    /// `docker exec -it` / `kubectl exec -it` into a container of a saved Docker or
+    /// Kubernetes connection, on this computer or on its Host.
+    Container {
+        /// The [`switchyard_store::ContainerConnection`].
+        connection: ProfileId,
+        /// Its kubeconfig / docker context override (the tab's choice).
+        context: Option<String>,
+        /// Which container.
+        shell: switchyard_containers::ShellTarget,
+    },
 }
 
 /// A session's current database and schema after [`Command::SetSessionContext`].
@@ -206,6 +220,17 @@ pub struct SessionContext {
     pub database: Option<String>,
     /// Current schema, when switched.
     pub schema: Option<String>,
+}
+
+/// What one side of a schema compare can pick from.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CompareCatalog {
+    /// Databases on the server (one or none where the engine has no switching).
+    pub databases: Vec<String>,
+    /// The session's current database, when known.
+    pub database: Option<String>,
+    /// User schemas (system schemas left out).
+    pub schemas: Vec<String>,
 }
 
 /// One statement to execute.
@@ -602,6 +627,34 @@ pub enum Command {
         /// Request id.
         request: RequestId,
     },
+    /// Schema compare: the databases and schemas a side can pick from
+    /// ([`Event::CompareCatalog`]), on the side's own session (opened on `connection`
+    /// first when needed, and switched to `database` when one is given). App only.
+    CompareCatalog {
+        /// The side's session.
+        session: SessionId,
+        /// Connection to open it on.
+        connection: ProfileId,
+        /// Request id.
+        request: RequestId,
+        /// Database to switch to first.
+        database: Option<String>,
+    },
+    /// Schema compare: read one side's schema ([`Event::CompareProgress`], then
+    /// [`Event::CompareSnapshot`]). Only catalog reads; nothing is changed. Closing the
+    /// session ([`Command::CloseSession`]) cancels it. App only.
+    CompareSnapshot {
+        /// The side's session.
+        session: SessionId,
+        /// Connection to open it on.
+        connection: ProfileId,
+        /// Request id.
+        request: RequestId,
+        /// Database to switch to first.
+        database: Option<String>,
+        /// Schema to read.
+        schema: String,
+    },
     /// Cancel a query or end a session from the activity monitor; recorded in history.
     /// App only: never sent by the MCP server or `swy`.
     SessionAction {
@@ -678,6 +731,62 @@ pub enum Command {
     DeleteMacro {
         /// Macro id.
         id: String,
+    },
+    /// Load the runbooks ([`Event::Runbooks`]).
+    LoadRunbooks,
+    /// Save a runbook (new when its id is empty): [`Event::RunbookSaved`], then
+    /// [`Event::Runbooks`]. `secrets` sets stored values of secret parameters (keychain or
+    /// vault); stored values of parameters that are gone or no longer secret are removed.
+    SaveRunbook {
+        /// Request id.
+        request: RequestId,
+        /// The runbook.
+        runbook: Runbook,
+        /// New stored values of secret parameters, by name.
+        secrets: Vec<(String, SecretString)>,
+    },
+    /// Delete a runbook and its stored secrets, then reload.
+    DeleteRunbook {
+        /// Runbook id.
+        id: String,
+    },
+    /// Import a runbook from a JSON file as a new runbook ([`Event::RunbookSaved`]).
+    ImportRunbook {
+        /// Request id.
+        request: RequestId,
+        /// The file.
+        path: PathBuf,
+    },
+    /// Export a runbook as JSON (no secrets) to `path` (a toast reports the result).
+    ExportRunbook {
+        /// The runbook as the tab has it.
+        runbook: Runbook,
+        /// Target file.
+        path: PathBuf,
+    },
+    /// Execute one runbook step. SQL steps run on `session` and answer with
+    /// [`Event::Query`] events (Production confirmation, history and cancel as in a SQL
+    /// tab); HTTP and shell steps answer with [`Event::RunbookOutput`] and
+    /// [`Event::RunbookStepDone`]. Every step first reports its resolved text
+    /// ([`Event::RunbookResolved`]). [`Command::Cancel`] with `query` stops it.
+    RunbookStep {
+        /// New id chosen by the UI (a query id for SQL steps).
+        query: QueryId,
+        /// Open session of the step's connection (SQL steps).
+        session: Option<SessionId>,
+        /// The runbook (as the tab has it).
+        runbook: Runbook,
+        /// Step index.
+        step: usize,
+        /// Values entered for this run; defaults (and stored secrets) fill the rest.
+        values: ParamValues,
+        /// The user confirmed destructive statements on a Production connection.
+        confirmed_destructive: bool,
+    },
+    /// List the API workspace's saved requests ([`Event::ApiRequests`]).
+    ListApiRequests {
+        /// Request id.
+        request: RequestId,
     },
     /// Load the pinned schema-tree objects ([`Event::Favorites`]).
     LoadFavorites,
@@ -867,6 +976,9 @@ pub enum Command {
         /// Contents.
         contents: String,
     },
+    /// Fleet: commands, probes, pushes and key changes on many Hosts, Ansible import
+    /// ([`Event::Fleet`]).
+    Fleet(crate::fleet::FleetCommand),
     /// Read `~/.ssh/config` and answer with [`Event::SshConfigPreview`]; nothing is saved.
     PreviewSshConfig,
     /// Import Hosts from `~/.ssh/config`: the entries named in `only`, or every new one.
@@ -1016,6 +1128,141 @@ pub enum Command {
         /// The new key's fingerprint, as shown to the user.
         fingerprint: String,
     },
+    /// List containers, images, pods, … of a Docker or Kubernetes connection
+    /// ([`Event::ContainersListed`]). Runs the user's `docker` / `kubectl`.
+    ContainersList {
+        /// Request id (also cancels it, [`Command::ContainersCancel`]).
+        request: RequestId,
+        /// The [`switchyard_store::ContainerConnection`].
+        connection: ProfileId,
+        /// Docker / kubeconfig context instead of the connection's.
+        context: Option<String>,
+        /// What to list.
+        query: switchyard_containers::Query,
+    },
+    /// Inspect JSON, describe or YAML of one object ([`Event::ContainersInspected`]).
+    ContainersInspect {
+        /// Request id.
+        request: RequestId,
+        /// Connection.
+        connection: ProfileId,
+        /// Context override.
+        context: Option<String>,
+        /// What to show.
+        inspect: switchyard_containers::Inspect,
+    },
+    /// Start, stop, remove, scale, … ([`Event::ContainersActionDone`]). Refused on a
+    /// read-only connection; a destructive action on Production needs `confirmed` (the
+    /// user typed the object's name).
+    ContainersAction {
+        /// Request id.
+        request: RequestId,
+        /// Connection.
+        connection: ProfileId,
+        /// Context override.
+        context: Option<String>,
+        /// The action.
+        action: switchyard_containers::Action,
+        /// The user confirmed it (typed the name on Production).
+        confirmed: bool,
+    },
+    /// Read (and follow) logs: batches of [`Event::ContainersLog`], then
+    /// [`Event::ContainersLogEnded`]. [`Command::ContainersCancel`] stops it.
+    ContainersLogs {
+        /// Request id (the stream's id).
+        request: RequestId,
+        /// Connection.
+        connection: ProfileId,
+        /// Context override.
+        context: Option<String>,
+        /// Whose logs.
+        source: switchyard_containers::LogSource,
+        /// Tail, follow, timestamps.
+        options: switchyard_containers::LogOptions,
+    },
+    /// Stop a running containers request (kills the CLI).
+    ContainersCancel {
+        /// The request.
+        request: RequestId,
+    },
+    /// Start `kubectl port-forward` on this computer; kept running until stopped. State
+    /// changes arrive as [`Event::ContainerForwards`].
+    ContainersForward {
+        /// Forward id chosen by the UI.
+        id: u64,
+        /// Connection.
+        connection: ProfileId,
+        /// Context override.
+        context: Option<String>,
+        /// What to forward.
+        forward: switchyard_containers::PortForward,
+    },
+    /// Stop a port forward (or drop a failed one from the list).
+    ContainersStopForward {
+        /// Forward id.
+        id: u64,
+    },
+    /// Report the port forwards ([`Event::ContainerForwards`]).
+    ContainersListForwards,
+    /// Test a Docker / Kubernetes connection under edit ([`Event::TestResult`]): lists
+    /// running containers or namespaces. `secret` is a typed Rancher token.
+    TestContainers {
+        /// Request id.
+        request: RequestId,
+        /// The connection as edited.
+        connection: switchyard_store::ContainerConnection,
+        /// Rancher API token typed in the form (else the stored one).
+        secret: Option<SecretString>,
+    },
+    /// The kubeconfig contexts on this computer, with provider labels and missing exec
+    /// plugins ([`Event::KubeContexts`]), for "Add cluster".
+    KubeContexts {
+        /// Request id.
+        request: RequestId,
+        /// Kubeconfig file (`None`: `KUBECONFIG` or `~/.kube/config`).
+        kubeconfig: Option<String>,
+    },
+    /// List a cloud provider's clusters with its own CLI (`az aks list`, `gcloud
+    /// container clusters list`, `aws eks list-clusters`) ([`Event::ClustersDiscovered`]).
+    DiscoverClusters {
+        /// Request id.
+        request: RequestId,
+        /// AKS, GKE or EKS.
+        provider: switchyard_containers::clusters::ClusterProvider,
+        /// Region, profile, project.
+        options: switchyard_containers::clusters::DiscoverOptions,
+    },
+    /// Add a listed cluster's context to the user's kubeconfig with the provider CLI
+    /// (`az aks get-credentials`, …; then `kubelogin convert-kubeconfig` for Entra AKS)
+    /// ([`Event::ClusterCredentials`]).
+    AddClusterCredentials {
+        /// Request id.
+        request: RequestId,
+        /// The cluster.
+        cluster: switchyard_containers::clusters::CloudCluster,
+        /// AKS admin credentials (`--admin`).
+        admin: bool,
+    },
+    /// AWS CLI profile names from `~/.aws/config` and `credentials`
+    /// ([`Event::AwsProfiles`]).
+    AwsProfiles {
+        /// Request id.
+        request: RequestId,
+    },
+    /// List the clusters a Rancher server manages ([`Event::RancherClusters`]). The token is
+    /// the typed one, else `connection`'s stored one.
+    RancherClusters {
+        /// Request id.
+        request: RequestId,
+        /// Server URL.
+        server: String,
+        /// Typed API token.
+        token: Option<SecretString>,
+        /// A saved connection whose token to use.
+        connection: Option<ProfileId>,
+        /// A trusted PEM for a self-signed server.
+        trusted_ca_pem: Option<String>,
+    },
     /// Ask GitHub Releases for a newer version ([`Event::UpdateStatus`]).
     CheckForUpdates {
         /// The user asked (show "up to date" and failures, not only a newer version).
@@ -1114,6 +1361,8 @@ pub enum Event {
         /// The user cancelled it (`result` is an error).
         cancelled: bool,
     },
+    /// Fleet progress and results ([`Command::Fleet`]).
+    Fleet(crate::fleet::FleetEvent),
     /// What importing `~/.ssh/config` would add (answer to `PreviewSshConfig`).
     SshConfigPreview {
         /// The file read.
@@ -1353,6 +1602,29 @@ pub enum Event {
         /// Sessions, or what went wrong.
         result: Result<Arc<switchyard_db::activity::Activity>, String>,
     },
+    /// Result of [`Command::CompareCatalog`].
+    CompareCatalog {
+        /// Request id.
+        request: RequestId,
+        /// The choices, or what went wrong.
+        result: Result<CompareCatalog, String>,
+    },
+    /// Progress of [`Command::CompareSnapshot`]: `done` of `total` objects read.
+    CompareProgress {
+        /// Request id.
+        request: RequestId,
+        /// Objects read.
+        done: usize,
+        /// Objects listed (0 while listing).
+        total: usize,
+    },
+    /// Result of [`Command::CompareSnapshot`].
+    CompareSnapshot {
+        /// Request id.
+        request: RequestId,
+        /// The schema, or what went wrong.
+        result: Result<Arc<switchyard_db::compare::SchemaSnapshot>, String>,
+    },
     /// Result of [`Command::SessionAction`].
     SessionAction {
         /// Request id.
@@ -1382,6 +1654,47 @@ pub enum Event {
     Favorites(Vec<Favorite>),
     /// The terminal macros by name, answering the macro commands.
     Macros(Vec<Macro>),
+    /// The runbooks by name, answering the runbook commands.
+    Runbooks(Vec<Runbook>),
+    /// Answer to [`Command::SaveRunbook`] / [`Command::ImportRunbook`].
+    RunbookSaved {
+        /// Request id.
+        request: RequestId,
+        /// The runbook as stored, or why not.
+        result: Result<Runbook, String>,
+    },
+    /// The exact text a [`Command::RunbookStep`] runs (secrets masked).
+    RunbookResolved {
+        /// The step's id.
+        query: QueryId,
+        /// Resolved text.
+        text: String,
+    },
+    /// Output of a running HTTP or shell step (secrets masked).
+    RunbookOutput {
+        /// The step's id.
+        query: QueryId,
+        /// Text chunk.
+        text: String,
+    },
+    /// An HTTP or shell step ended (or any step could not start).
+    RunbookStepDone {
+        /// The step's id.
+        query: QueryId,
+        /// Summary (`200 OK`, `exit 0`), or the error.
+        result: Result<String, String>,
+        /// Run time.
+        elapsed: Duration,
+        /// It was cancelled.
+        cancelled: bool,
+    },
+    /// Answer to [`Command::ListApiRequests`].
+    ApiRequests {
+        /// Request id.
+        request: RequestId,
+        /// Saved requests (`Collection / Request` names), or why not.
+        result: Result<Vec<ApiRequestRef>, String>,
+    },
     /// The named-secret catalog by name, answering the named-secret commands.
     NamedSecrets(Vec<NamedSecret>),
     /// Saving a named secret failed.
@@ -1668,6 +1981,78 @@ pub enum Event {
         /// Why, when the connection failed rather than the program exiting.
         message: Option<String>,
     },
+    /// Answer to [`Command::ContainersList`].
+    ContainersListed {
+        /// Request id.
+        request: RequestId,
+        /// The rows, or why not (a missing CLI is [`ContainersError::Missing`]).
+        result: Result<switchyard_containers::Listing, ContainersError>,
+    },
+    /// Answer to [`Command::ContainersInspect`].
+    ContainersInspected {
+        /// Request id.
+        request: RequestId,
+        /// The text.
+        result: Result<String, ContainersError>,
+    },
+    /// Answer to [`Command::ContainersAction`].
+    ContainersActionDone {
+        /// Request id.
+        request: RequestId,
+        /// What happened.
+        result: Result<String, ContainersError>,
+    },
+    /// New log lines of a [`Command::ContainersLogs`] stream.
+    ContainersLog {
+        /// The stream's request id.
+        request: RequestId,
+        /// Lines, oldest first.
+        lines: Vec<String>,
+    },
+    /// A log stream ended: the CLI exited, failed or was cancelled.
+    ContainersLogEnded {
+        /// The stream's request id.
+        request: RequestId,
+        /// `Ok` when it ended by itself or was cancelled.
+        result: Result<(), ContainersError>,
+    },
+    /// Answer to [`Command::KubeContexts`].
+    KubeContexts {
+        /// Request id.
+        request: RequestId,
+        /// The contexts.
+        result: Result<switchyard_containers::kube::Contexts, ContainersError>,
+    },
+    /// Answer to [`Command::DiscoverClusters`].
+    ClustersDiscovered {
+        /// Request id.
+        request: RequestId,
+        /// The clusters.
+        result: Result<Vec<switchyard_containers::clusters::CloudCluster>, ContainersError>,
+    },
+    /// Answer to [`Command::AddClusterCredentials`]: the context written.
+    ClusterCredentials {
+        /// Request id.
+        request: RequestId,
+        /// The kubeconfig context name.
+        result: Result<String, ContainersError>,
+    },
+    /// Answer to [`Command::AwsProfiles`].
+    AwsProfiles {
+        /// Request id.
+        request: RequestId,
+        /// Profile names (`default` first when present).
+        profiles: Vec<String>,
+    },
+    /// Answer to [`Command::RancherClusters`].
+    RancherClusters {
+        /// Request id.
+        request: RequestId,
+        /// The clusters.
+        result: Result<Vec<switchyard_containers::clusters::RancherCluster>, ContainersError>,
+    },
+    /// Every port forward and its state (sent whenever one changes).
+    ContainerForwards(Vec<ContainerForward>),
     /// A short confirmation for a toast.
     Toast(String),
     /// A background failure.
@@ -1795,4 +2180,28 @@ pub enum RedisOutcome {
     },
     /// The command was refused or the connection failed.
     Failed(String),
+}
+
+/// State of a `kubectl port-forward`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ForwardState {
+    /// Started, waiting for kubectl's "Forwarding from" line.
+    Starting,
+    /// Listening on 127.0.0.1 at this port.
+    Running(u16),
+    /// It exited; why.
+    Failed(String),
+}
+
+/// A port forward of a Kubernetes connection ([`Event::ContainerForwards`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContainerForward {
+    /// Id the UI chose.
+    pub id: u64,
+    /// Connection.
+    pub connection: ProfileId,
+    /// What it forwards.
+    pub forward: switchyard_containers::PortForward,
+    /// State.
+    pub state: ForwardState,
 }

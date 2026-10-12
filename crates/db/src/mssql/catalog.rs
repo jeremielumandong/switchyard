@@ -552,7 +552,11 @@ fn columns_sql(filter: &str) -> String {
                 CAST((SELECT ep.value FROM sys.extended_properties ep \
                       WHERE ep.class = 1 AND ep.major_id = c.object_id \
                         AND ep.minor_id = c.column_id AND ep.name = 'MS_Description') \
-                     AS nvarchar(max)) \
+                     AS nvarchar(max)), \
+                (SELECT CONCAT('IDENTITY(', CAST(ic.seed_value AS nvarchar(40)), ',', \
+                               CAST(ic.increment_value AS nvarchar(40)), ')') \
+                 FROM sys.identity_columns ic \
+                 WHERE ic.object_id = c.object_id AND ic.column_id = c.column_id) \
          FROM sys.columns c \
          JOIN sys.objects o ON o.object_id = c.object_id \
          JOIN sys.types t ON t.user_type_id = c.user_type_id \
@@ -572,6 +576,7 @@ fn column_from(row: &[Value]) -> ColumnInfo {
         ordinal: int(row, 6) as i32,
         is_primary_key: int(row, 7) != 0,
         comment: opt_text(row, 9),
+        identity: opt_text(row, 10),
     }
 }
 

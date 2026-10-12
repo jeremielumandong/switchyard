@@ -15,6 +15,7 @@ members = [
     "crates/agents",
     "crates/api",
     "crates/cloud",
+    "crates/containers",
 ]
 default-members = [
     "crates/core",
@@ -28,6 +29,7 @@ default-members = [
     "crates/agents",
     "crates/api",
     "crates/cloud",
+    "crates/containers",
     "crates/app",
 ]
 
@@ -52,6 +54,7 @@ switchyard-plan = { path = "crates/plan" }
 switchyard-agents = { path = "crates/agents" }
 switchyard-api = { path = "crates/api" }
 switchyard-cloud = { path = "crates/cloud" }
+switchyard-containers = { path = "crates/containers" }
 
 # UI: gpui-kit is the facade over gpui (gpui-pre =0.3.8) + gpui-component 0.7.1, kept in lockstep.
 gpui-kit = { version = "=0.7.1", features = ["tree-sitter-sql"] }
@@ -145,6 +148,19 @@ url = "2"
 uuid = { version = "1", features = ["v4"] }
 zeroize = "1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# API workbench protocols (WebSocket, gRPC), behind switchyard-api's `websocket` and
+# `grpc` features (on by default). Approved by Jeremie on 2026-10-12, see DECISIONS.
+# WebSocket (MIT): handshake only; TLS is our tokio-rustls config.
+tokio-tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake"] }
+# gRPC (tonic MIT, prost Apache-2.0, prost-reflect / protox MIT OR Apache-2.0): a client
+# channel with rustls (ring) and the OS roots; dynamic messages; `.proto` files compiled in
+# process (no protoc). Tests add tonic's server and tonic-reflection's server.
+tonic = { version = "=0.14.6", default-features = false, features = ["channel", "codegen", "tls-ring", "tls-native-roots"] }
+tonic-reflection = { version = "=0.14.6", default-features = false }
+prost = "=0.14.4"
+prost-types = "=0.14.4"
+prost-reflect = { version = "=0.16.5", features = ["serde"] }
+protox = { version = "=0.10.0", default-features = false }
 
 # editor completion items (must match gpui-component)
 lsp-types = "0.97"

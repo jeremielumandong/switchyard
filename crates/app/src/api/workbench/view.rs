@@ -611,6 +611,7 @@ impl Render for WorkbenchPanel {
             }
         }
         self.load_pending_request(window, cx);
+        self.prune_protocol_panes();
         self.run_pending_start(has_workspace, window, cx);
         self.sync_tab_session(cx);
         let colors = cx.theme().colors;
@@ -873,6 +874,12 @@ impl WorkbenchPanel {
                     |this, window, cx| this.open_rename_workspace(window, cx),
                 ))
                 .item(menu_item(
+                    "workbench-workspace-delete".into(),
+                    "Delete project…",
+                    &handle,
+                    |this, window, cx| this.confirm_delete_workspace(window, cx),
+                ))
+                .item(menu_item(
                     "workbench-workspace-add".into(),
                     "Add project",
                     &handle,
@@ -1014,7 +1021,10 @@ impl WorkbenchPanel {
         }
         let rail = self.render_collection_rail(window, cx);
         let editor = self.render_composer_content(window, cx);
-        let response = self.render_response(window, cx);
+        let response = match self.active_protocol_pane() {
+            Some(pane) => pane.read(cx).log.clone().into_any_element(),
+            None => self.render_response(window, cx),
+        };
         let response_axis = if self.ux.layout.side_by_side {
             gpui_kit::Axis::Horizontal
         } else {
@@ -1140,6 +1150,47 @@ impl WorkbenchPanel {
                     &handle,
                     |this, window, cx| this.new_request(window, cx),
                 ))
+                .item(menu_item(
+                    "workbench-new-websocket".into(),
+                    "Add WebSocket request",
+                    &handle,
+                    |this, window, cx| {
+                        this.new_protocol_request(
+                            switchyard_api::protocol::RequestProtocol::WebSocket,
+                            window,
+                            cx,
+                        )
+                    },
+                ))
+                .item(menu_item(
+                    "workbench-new-sse".into(),
+                    "Add event stream (SSE)",
+                    &handle,
+                    |this, window, cx| {
+                        this.new_protocol_request(
+                            switchyard_api::protocol::RequestProtocol::Sse,
+                            window,
+                            cx,
+                        )
+                    },
+                ))
+                .when(
+                    switchyard_api::protocol::RequestProtocol::Grpc.available(),
+                    |menu| {
+                        menu.item(menu_item(
+                            "workbench-new-grpc".into(),
+                            "Add gRPC request",
+                            &handle,
+                            |this, window, cx| {
+                                this.new_protocol_request(
+                                    switchyard_api::protocol::RequestProtocol::Grpc,
+                                    window,
+                                    cx,
+                                )
+                            },
+                        ))
+                    },
+                )
                 .item(menu_item(
                     "workbench-new-folder".into(),
                     "New folder",
@@ -1773,7 +1824,10 @@ impl WorkbenchPanel {
         // Row callbacks retain identity, not the potentially large
         // body, scripts and credentials of every saved request.
         let request_for_click = request.id.clone();
-        let method = request.method.as_str().to_string();
+        let method = match request.protocol() {
+            switchyard_api::protocol::RequestProtocol::Http => request.method.as_str().to_string(),
+            protocol => protocol.label().to_string(),
+        };
         let active = self.current_request_id.as_ref() == Some(&request.id);
         let dragged = DraggedRequest {
             id: request.id.clone(),
@@ -2092,7 +2146,18 @@ impl WorkbenchPanel {
         let colors = cx.theme().colors;
         let handle = cx.entity().downgrade();
         let save_state = SaveState::for_request(self.current_definition.is_some(), self.dirty);
-        let method = self.current_method(cx);
+        let protocol_pane = self.active_protocol_pane();
+        let protocol = self.active_protocol(cx);
+        let fixed_method = matches!(
+            protocol,
+            switchyard_api::protocol::RequestProtocol::WebSocket
+                | switchyard_api::protocol::RequestProtocol::Grpc
+        );
+        let method = if fixed_method {
+            protocol.label().to_string()
+        } else {
+            self.current_method(cx)
+        };
         let tint = self.method_tint_label(&method, cx);
         let url_focused = self.url.focus_handle(cx).is_focused(window);
         let env_edge = self.environment_label_color(cx);
@@ -2104,7 +2169,34 @@ impl WorkbenchPanel {
         let sending = matches!(
             self.send_state,
             SendState::PreparingRun | SendState::Sending | SendState::Cancelling
-        );
+        ) || protocol_pane
+            .as_ref()
+            .is_some_and(|pane| pane.read(cx).is_live());
+        let send_label = match &protocol_pane {
+            Some(pane) => pane.read(cx).action_label(),
+            None => match self.send_state {
+                SendState::Idle => "Send",
+                SendState::PreparingRun | SendState::Sending => "Stop",
+                SendState::Cancelling => "Cancelling…",
+            },
+        };
+        let method_badge = fixed_method.then(|| {
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .h(rpx(32.))
+                .px(rpx(10.))
+                .rounded(radius::sm())
+                .border_1()
+                .border_color(tint.opacity(0.45))
+                .bg(tint.opacity(0.14))
+                .font_family(crate::api::compat::fonts::mono(cx))
+                .text_size(text::S11)
+                .font_weight(text::weight::MEDIUM)
+                .text_color(tint)
+                .child(method.clone())
+        });
         let method_menu = menu_trigger(
             "workbench-method-pill",
             tint.opacity(0.14),
@@ -2238,14 +2330,20 @@ impl WorkbenchPanel {
                     .gap(space::SP_2)
                     .px(space::SP_4)
                     .py(space::SP_3)
-                    .child(method_menu)
-                    .when(self.method == transport::Method::Custom, |el| {
-                        el.child(
-                            mono_field(&self.custom_method, window, cx)
-                                .w(rpx(96.))
-                                .h(rpx(32.)),
-                        )
+                    .map(|el| match method_badge {
+                        Some(badge) => el.child(badge),
+                        None => el.child(method_menu),
                     })
+                    .when(
+                        !fixed_method && self.method == transport::Method::Custom,
+                        |el| {
+                            el.child(
+                                mono_field(&self.custom_method, window, cx)
+                                    .w(rpx(96.))
+                                    .h(rpx(32.)),
+                            )
+                        },
+                    )
                     .child(
                         div()
                             .flex()
@@ -2321,53 +2419,50 @@ impl WorkbenchPanel {
                             .child(field::bare(&self.url).flex_1().min_w(rpx(0.))),
                     )
                     .child(
-                        accent_button(
-                            "workbench-send".into(),
-                            match self.send_state {
-                                SendState::Idle => "Send",
-                                SendState::PreparingRun | SendState::Sending => "Stop",
-                                SendState::Cancelling => "Cancelling…",
-                            },
-                            32.,
-                            cx,
-                        )
-                        .when(sending, |el| {
-                            el.bg(colors.danger.opacity(0.14))
-                                .border_color(colors.danger.opacity(0.45))
-                                .text_color(colors.danger)
-                        })
-                        .child(icon(
-                            if sending { "stop" } else { "play" },
-                            13.,
-                            if sending {
-                                colors.danger
-                            } else {
-                                colors.primary_foreground
-                            },
-                        ))
-                        .tooltip(move |window, cx| {
-                            let tooltip = gpui_kit::component::tooltip::Tooltip::new(if sending {
-                                "Stop request"
-                            } else {
-                                "Send request"
-                            });
-                            if sending {
-                                tooltip.action(&CancelRequest, Some(KEY_CONTEXT))
-                            } else {
-                                tooltip.action(&SendRequest, Some(KEY_CONTEXT))
-                            }
-                            .build(window, cx)
-                        })
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            if matches!(
-                                this.send_state,
-                                SendState::PreparingRun | SendState::Sending
-                            ) {
-                                this.cancel(cx);
-                            } else if this.send_state == SendState::Idle {
-                                this.send(window, cx);
-                            }
-                        })),
+                        accent_button("workbench-send".into(), send_label, 32., cx)
+                            .when(sending, |el| {
+                                el.bg(colors.danger.opacity(0.14))
+                                    .border_color(colors.danger.opacity(0.45))
+                                    .text_color(colors.danger)
+                            })
+                            .child(icon(
+                                if sending { "stop" } else { "play" },
+                                13.,
+                                if sending {
+                                    colors.danger
+                                } else {
+                                    colors.primary_foreground
+                                },
+                            ))
+                            .tooltip(move |window, cx| {
+                                let tooltip =
+                                    gpui_kit::component::tooltip::Tooltip::new(if sending {
+                                        "Stop request"
+                                    } else {
+                                        "Send request"
+                                    });
+                                if sending {
+                                    tooltip.action(&CancelRequest, Some(KEY_CONTEXT))
+                                } else {
+                                    tooltip.action(&SendRequest, Some(KEY_CONTEXT))
+                                }
+                                .build(window, cx)
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if this
+                                    .active_protocol_pane()
+                                    .is_some_and(|pane| pane.read(cx).is_live())
+                                {
+                                    this.stop_protocol(cx);
+                                } else if matches!(
+                                    this.send_state,
+                                    SendState::PreparingRun | SendState::Sending
+                                ) {
+                                    this.cancel(cx);
+                                } else if this.send_state == SendState::Idle {
+                                    this.send(window, cx);
+                                }
+                            })),
                     )
                     .child(
                         icon_button(
@@ -2408,7 +2503,7 @@ impl WorkbenchPanel {
             .border_b_1()
             .border_color(colors.border)
             .child(self.render_layout_menu(cx))
-            .children(ComposerTab::ALL.into_iter().map(|tab| {
+            .children(self.composer_tabs(cx).into_iter().map(|tab| {
                 let label = match tab {
                     ComposerTab::Headers if header_count > 0 => {
                         format!("Headers ({header_count})")
@@ -2416,7 +2511,7 @@ impl WorkbenchPanel {
                     ComposerTab::Params if param_count > 0 => {
                         format!("Params ({param_count})")
                     }
-                    other => other.label().to_string(),
+                    other => self.composer_tab_label(other, cx).to_string(),
                 };
                 underline_tab(
                     format!("workbench-composer-{}", tab.label()),
@@ -2441,6 +2536,10 @@ impl WorkbenchPanel {
 
 impl WorkbenchPanel {
     fn render_composer_content(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let tabs = self.composer_tabs(cx);
+        if !tabs.contains(&self.composer_tab) {
+            self.composer_tab = tabs.first().copied().unwrap_or(ComposerTab::Params);
+        }
         let body_fills_pane = self.composer_tab == ComposerTab::Body
             && !self.method.forbids_body()
             && !matches!(
@@ -2448,6 +2547,10 @@ impl WorkbenchPanel {
                 draft::BodyMode::Form | draft::BodyMode::Multipart | draft::BodyMode::GraphQl
             );
         let content = match self.composer_tab {
+            ComposerTab::Protocol => match self.active_protocol_pane() {
+                Some(pane) => pane.into_any_element(),
+                None => div().into_any_element(),
+            },
             ComposerTab::Params => self.params_grid.clone().into_any_element(),
             ComposerTab::Headers => self.headers_grid.clone().into_any_element(),
             ComposerTab::Vars => self.render_variables_tab(cx).into_any_element(),

@@ -262,6 +262,12 @@ pub struct HostPatch {
     pub start_directory: Option<Option<String>>,
     /// Keepalive interval in seconds.
     pub keepalive_secs: Option<u32>,
+    /// Tags to add (Fleet).
+    #[serde(default)]
+    pub add_tags: Vec<String>,
+    /// Tags to remove (Fleet); applied before `add_tags`.
+    #[serde(default)]
+    pub remove_tags: Vec<String>,
 }
 
 fn non_empty(v: &Option<String>) -> Option<String> {
@@ -299,6 +305,13 @@ impl HostPatch {
         }
         if let Some(k) = self.keepalive_secs {
             h.keepalive_secs = k;
+        }
+        if !self.remove_tags.is_empty() || !self.add_tags.is_empty() {
+            let gone = crate::tags::normalize_tags(&self.remove_tags);
+            let mut tags = crate::tags::normalize_tags(&h.tags);
+            tags.retain(|t| !gone.contains(t));
+            tags.extend(crate::tags::normalize_tags(&self.add_tags));
+            h.tags = crate::tags::normalize_tags(tags);
         }
     }
 }
@@ -856,6 +869,182 @@ impl CloudAuth {
     }
 }
 
+/// Which container platform a [`ContainerConnection`] browses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ContainerPlatform {
+    /// Docker (or anything with a `docker`-compatible CLI).
+    #[default]
+    Docker,
+    /// Kubernetes, through `kubectl`.
+    Kubernetes,
+}
+
+impl ContainerPlatform {
+    /// Both, in menu order.
+    pub const ALL: [ContainerPlatform; 2] =
+        [ContainerPlatform::Docker, ContainerPlatform::Kubernetes];
+
+    /// Display name.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            ContainerPlatform::Docker => "Docker",
+            ContainerPlatform::Kubernetes => "Kubernetes",
+        }
+    }
+
+    /// Monogram.
+    pub fn badge(self) -> &'static str {
+        match self {
+            ContainerPlatform::Docker => "DKR",
+            ContainerPlatform::Kubernetes => "K8S",
+        }
+    }
+
+    /// The CLI it runs.
+    pub fn cli(self) -> &'static str {
+        match self {
+            ContainerPlatform::Docker => "docker",
+            ContainerPlatform::Kubernetes => "kubectl",
+        }
+    }
+}
+
+/// A Docker engine or Kubernetes cluster, browsed with the user's own `docker` /
+/// `kubectl` CLI on this computer or on a saved Host (over its SSH session). Holds no
+/// secret: the CLI's own contexts and credential helpers sign in.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ContainerConnection {
+    /// Id.
+    pub id: ProfileId,
+    /// Display name.
+    pub name: String,
+    /// Docker or Kubernetes.
+    pub platform: ContainerPlatform,
+    /// Run the CLI on this Host instead of this computer.
+    #[serde(default)]
+    pub host_id: Option<ProfileId>,
+    /// Docker context or kubeconfig context; empty: the CLI's current one.
+    #[serde(default)]
+    pub context: Option<String>,
+    /// Kubeconfig file; empty: `KUBECONFIG` or `~/.kube/config`.
+    #[serde(default)]
+    pub kubeconfig: Option<String>,
+    /// Namespace shown first; empty: the context's (else `default`).
+    #[serde(default)]
+    pub namespace: Option<String>,
+    /// Path or name of the CLI when it is not `docker` / `kubectl` on `PATH` (e.g.
+    /// `podman`).
+    #[serde(default)]
+    pub executable: Option<String>,
+    /// Environment label.
+    pub environment: EnvironmentLabel,
+    /// Refuse every action (start, stop, scale, …); browsing, logs and shells stay.
+    #[serde(default)]
+    pub read_only: bool,
+    /// Folder for grouping in the sidebar.
+    #[serde(default)]
+    pub folder: Option<String>,
+    /// Where the cluster runs (`aks`, `gke`, `eks`, `rancher`, `local`, `other`), set
+    /// when it was added; labels it in the Explorer.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// A cluster reached through Rancher: its kubeconfig is generated with the API token
+    /// ([`Self::secret`]) into a Switchyard-managed file.
+    #[serde(default)]
+    pub rancher: Option<RancherSource>,
+    /// Rancher API token (keychain or vault reference, never the value).
+    #[serde(default)]
+    pub secret: Option<SecretRef>,
+}
+
+/// A Rancher-managed cluster of a [`ContainerConnection`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RancherSource {
+    /// Rancher server URL (`https://rancher.example.com`).
+    pub server: String,
+    /// Cluster id (`c-m-x7k2p9qz`).
+    pub cluster_id: String,
+    /// Cluster name (also its kubeconfig context).
+    #[serde(default)]
+    pub cluster_name: String,
+    /// PEM of a self-signed server certificate (or private CA) trusted for this
+    /// connection only; verification stays on.
+    #[serde(default)]
+    pub trusted_ca_pem: Option<String>,
+}
+
+impl ContainerConnection {
+    /// A new local connection.
+    pub fn new(name: impl Into<String>, platform: ContainerPlatform) -> Self {
+        Self {
+            id: ProfileId::new(),
+            name: name.into(),
+            platform,
+            host_id: None,
+            context: None,
+            kubeconfig: None,
+            namespace: None,
+            executable: None,
+            environment: EnvironmentLabel::Development,
+            read_only: false,
+            folder: None,
+            provider: None,
+            rancher: None,
+            secret: None,
+        }
+    }
+
+    fn validate(&self) -> Result<(), ValidationError> {
+        if let Some(r) = &self.rancher {
+            if r.server.trim().is_empty() {
+                return Err(ValidationError::new(
+                    "server",
+                    "Rancher server URL is required",
+                ));
+            }
+            if r.server.trim().starts_with("http://") {
+                return Err(ValidationError::new(
+                    "server",
+                    "Rancher must be reached over https",
+                ));
+            }
+            if r.cluster_id.trim().is_empty() {
+                return Err(ValidationError::new("cluster", "Pick a cluster"));
+            }
+        }
+        let bad = |v: &Option<String>| {
+            v.as_deref()
+                .is_some_and(|s| s.chars().any(|c| c.is_control()))
+        };
+        for (field, v) in [
+            ("context", &self.context),
+            ("kubeconfig", &self.kubeconfig),
+            ("namespace", &self.namespace),
+            ("executable", &self.executable),
+        ] {
+            if bad(v) {
+                return Err(ValidationError::new(field, "Line breaks are not allowed"));
+            }
+        }
+        if let Some(ns) = self
+            .namespace
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            && !ns
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        {
+            return Err(ValidationError::new(
+                "namespace",
+                "A namespace is lowercase letters, digits and -",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// A cloud service endpoint: object storage (opened in the Files tab) or a key / value
 /// tool (App Configuration, Key Vault, Secrets Manager, Parameter Store, Workers KV).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1060,6 +1249,8 @@ pub enum Profile {
     Terminal(TerminalProfile),
     /// Cloud storage or developer service.
     Cloud(CloudConnection),
+    /// Docker engine or Kubernetes cluster.
+    Containers(ContainerConnection),
 }
 
 impl Profile {
@@ -1071,6 +1262,7 @@ impl Profile {
             Profile::File(p) => &p.id,
             Profile::Terminal(p) => &p.id,
             Profile::Cloud(p) => &p.id,
+            Profile::Containers(p) => &p.id,
         }
     }
 
@@ -1082,6 +1274,7 @@ impl Profile {
             Profile::File(p) => &p.name,
             Profile::Terminal(p) => &p.name,
             Profile::Cloud(p) => &p.name,
+            Profile::Containers(p) => &p.name,
         }
     }
 
@@ -1093,6 +1286,7 @@ impl Profile {
             Profile::File(_) => "file",
             Profile::Terminal(_) => "terminal",
             Profile::Cloud(_) => "cloud",
+            Profile::Containers(_) => "containers",
         }
     }
 
@@ -1103,6 +1297,7 @@ impl Profile {
             Profile::Db(p) => p.secret.as_ref(),
             Profile::File(p) => p.secret.as_ref(),
             Profile::Cloud(p) => p.secret.as_ref(),
+            Profile::Containers(p) => p.secret.as_ref(),
             Profile::Terminal(_) => None,
         }
     }
@@ -1115,6 +1310,7 @@ impl Profile {
             Profile::Db(d) => d.secret = None,
             Profile::File(f) => f.secret = None,
             Profile::Cloud(c) => c.secret = None,
+            Profile::Containers(c) => c.secret = None,
             Profile::Terminal(_) => {}
         }
         p
@@ -1127,6 +1323,7 @@ impl Profile {
             Profile::Db(d) => d.secret = Some(key),
             Profile::File(f) => f.secret = Some(key),
             Profile::Cloud(c) => c.secret = Some(key),
+            Profile::Containers(c) => c.secret = Some(key),
             Profile::Terminal(_) => {}
         }
     }
@@ -1416,6 +1613,7 @@ impl Profile {
                 }
             }
             Profile::Cloud(c) => c.validate()?,
+            Profile::Containers(c) => c.validate()?,
             Profile::Terminal(_) => {}
         }
         Ok(())
@@ -1432,6 +1630,7 @@ impl Profile {
             },
             Profile::Terminal(t) => t.host_id.iter().collect(),
             Profile::Cloud(_) => vec![],
+            Profile::Containers(c) => c.host_id.iter().collect(),
         }
     }
 
@@ -1442,6 +1641,7 @@ impl Profile {
             Profile::Db(p) => p.environment,
             Profile::File(p) => p.environment,
             Profile::Cloud(p) => p.environment,
+            Profile::Containers(p) => p.environment,
             Profile::Terminal(_) => EnvironmentLabel::Local,
         }
     }
@@ -1519,6 +1719,60 @@ mod tests {
         for s in CloudService::ALL {
             assert!(!s.auth_methods().is_empty());
         }
+    }
+
+    #[test]
+    fn container_connections_round_trip_and_validate() {
+        let host = ProfileId::new();
+        let mut k = ContainerConnection::new("prod cluster", ContainerPlatform::Kubernetes);
+        k.host_id = Some(host.clone());
+        k.context = Some("prod-eu".into());
+        k.namespace = Some("shop".into());
+        let p = Profile::Containers(k.clone());
+        assert_eq!(p.kind(), "containers");
+        assert!(p.secret().is_none());
+        let mut r = ContainerConnection::new("edge", ContainerPlatform::Kubernetes);
+        r.rancher = Some(RancherSource {
+            server: "http://rancher.example.com".into(),
+            cluster_id: "c-m-1".into(),
+            cluster_name: "edge".into(),
+            trusted_ca_pem: None,
+        });
+        assert_eq!(
+            Profile::Containers(r.clone()).validate().unwrap_err().field,
+            "server"
+        );
+        if let Some(src) = &mut r.rancher {
+            src.server = "https://rancher.example.com".into();
+        }
+        let mut rp = Profile::Containers(r);
+        assert!(rp.validate().is_ok());
+        rp.set_secret(SecretRef("k".into()));
+        assert!(rp.secret().is_some() && rp.without_secret().secret().is_none());
+        assert_eq!(p.references(), [&host]);
+        assert!(p.validate().is_ok());
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(json.contains("\"kind\":\"containers\""));
+        assert!(json.contains("\"platform\":\"kubernetes\""));
+        let back: Profile = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, p);
+        // Optional fields may be missing in older files.
+        let min: Profile = serde_json::from_str(
+            r#"{"kind":"containers","id":"x","name":"Local Docker","platform":"docker","environment":"local"}"#,
+        )
+        .unwrap();
+        assert!(matches!(min, Profile::Containers(c) if c.host_id.is_none() && !c.read_only));
+        k.namespace = Some("Shop".into());
+        assert_eq!(
+            Profile::Containers(k.clone()).validate().unwrap_err().field,
+            "namespace"
+        );
+        k.namespace = None;
+        k.context = Some("a\nb".into());
+        assert_eq!(
+            Profile::Containers(k).validate().unwrap_err().field,
+            "context"
+        );
     }
 
     #[test]
@@ -1839,5 +2093,18 @@ mod tests {
         assert_ne!(d.id, h.id);
         assert_eq!(d.name, "web copy");
         assert!(d.secret.is_none() && d.favorite);
+    }
+
+    #[test]
+    fn host_patch_adds_and_removes_tags() {
+        let mut h = Host::new("web", "10.0.0.1", "deploy");
+        h.tags = vec!["Web".into(), "role:old".into()];
+        HostPatch {
+            add_tags: vec!["region:EU".into(), "web".into()],
+            remove_tags: vec!["ROLE:old".into()],
+            ..HostPatch::default()
+        }
+        .apply(&mut h);
+        assert_eq!(h.tags, ["web", "region:eu"]);
     }
 }

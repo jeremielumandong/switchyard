@@ -26,6 +26,8 @@ pub enum ExplorerGroup {
     Place,
     /// By what it is: databases, terminals, files and storage, config and secrets.
     Type,
+    /// Hosts by tag (Fleet); a Host with several tags lists under each.
+    Tag,
 }
 
 impl ExplorerGroup {
@@ -34,15 +36,16 @@ impl ExplorerGroup {
         match self {
             ExplorerGroup::Place => "place",
             ExplorerGroup::Type => "type",
+            ExplorerGroup::Tag => "tag",
         }
     }
 
     /// Parse a saved value; anything unknown is [`ExplorerGroup::Place`].
     pub fn from_key(s: &str) -> Self {
-        if s == "type" {
-            ExplorerGroup::Type
-        } else {
-            ExplorerGroup::Place
+        match s {
+            "type" => ExplorerGroup::Type,
+            "tag" => ExplorerGroup::Tag,
+            _ => ExplorerGroup::Place,
         }
     }
 }
@@ -71,6 +74,8 @@ pub enum ConnAction {
     Files,
     /// Open any other saved profile (cloud services).
     Profile,
+    /// Open a runbook by id (`None`: a new runbook).
+    Runbook(Option<String>),
 }
 
 /// One Explorer row.
@@ -100,6 +105,8 @@ pub struct ConnRow {
     pub drag_group: Option<String>,
     /// A session folder's name (its group row; right click edits its Hosts).
     pub folder: Option<String>,
+    /// A Host tag (its group row when grouped by tag; right click acts on its Hosts).
+    pub tag: Option<String>,
 }
 
 impl ConnRow {
@@ -117,6 +124,7 @@ impl ConnRow {
             action: ConnAction::Toggle,
             drag_group: None,
             folder: None,
+            tag: None,
         }
     }
 
@@ -134,6 +142,7 @@ impl ConnRow {
             action: ConnAction::Toggle,
             drag_group: None,
             folder: None,
+            tag: None,
         }
     }
 }
@@ -157,6 +166,13 @@ fn place_of(p: &Profile, profiles: &Profiles) -> String {
         },
         Profile::Host(h) => h.address.clone(),
         Profile::Cloud(c) => account_of_cloud(c.service, c.folder.as_deref(), &c.endpoint).1,
+        Profile::Containers(c) => match &c.host_id {
+            Some(h) => host(h).unwrap_or_else(|| "server".into()),
+            None => match crate::app_state::cluster_label(c) {
+                Some(l) => format!("{} · {l}", c.platform.display_name()),
+                None => format!("this machine · {}", c.platform.display_name()),
+            },
+        },
     }
 }
 
@@ -219,11 +235,13 @@ enum TypeSec {
     Terminals,
     Files,
     Config,
+    Containers,
 }
 
-const TYPE_SECTIONS: [(TypeSec, &str, &str); 4] = [
+const TYPE_SECTIONS: [(TypeSec, &str, &str); 5] = [
     (TypeSec::Databases, "t:db", "DATABASES"),
     (TypeSec::Terminals, "t:shell", "TERMINALS"),
+    (TypeSec::Containers, "t:containers", "CONTAINERS & CLUSTERS"),
     (TypeSec::Files, "t:files", "FILES & STORAGE"),
     (TypeSec::Config, "t:config", "CONFIG & SECRETS"),
 ];
@@ -233,6 +251,7 @@ fn type_of(p: &Profile) -> TypeSec {
         Profile::Db(_) => TypeSec::Databases,
         Profile::Host(_) | Profile::Terminal(_) => TypeSec::Terminals,
         Profile::File(_) => TypeSec::Files,
+        Profile::Containers(_) => TypeSec::Containers,
         Profile::Cloud(c) => match c.service {
             CloudService::S3 | CloudService::R2 | CloudService::AzureBlob => TypeSec::Files,
             _ => TypeSec::Config,
@@ -249,11 +268,109 @@ pub fn explorer_rows(
     filter: &str,
 ) -> Vec<ConnRow> {
     let filter = filter.trim();
-    if filter.is_empty() && group == ExplorerGroup::Place {
-        place_rows(profiles, collapsed, live)
-    } else {
-        type_rows(profiles, collapsed, live, filter)
+    if let Some(tag) = tag_filter(filter) {
+        return tag_rows(profiles, collapsed, live, Some(&tag));
     }
+    match group {
+        ExplorerGroup::Place if filter.is_empty() => place_rows(profiles, collapsed, live),
+        ExplorerGroup::Tag if filter.is_empty() => tag_rows(profiles, collapsed, live, None),
+        _ => type_rows(profiles, collapsed, live, filter),
+    }
+}
+
+/// The tag a `tag:<name>` filter asks for (`tag:role:` matches every `role:*` tag).
+pub fn tag_filter(filter: &str) -> Option<String> {
+    let rest = filter.trim().strip_prefix("tag:")?.trim();
+    (!rest.is_empty()).then(|| rest.to_lowercase())
+}
+
+/// Whether `tag` is selected by a `tag:` filter value: equal, or under a `key:` prefix.
+fn tag_matches(tag: &str, wanted: &str) -> bool {
+    tag == wanted || (wanted.ends_with([':', '=']) && tag.starts_with(wanted))
+}
+
+/// Every tag with its Hosts, by tag, then the Hosts without tags (`None`).
+pub fn hosts_by_tag(profiles: &Profiles) -> Vec<(Option<String>, Vec<&Host>)> {
+    let mut groups: Vec<(Option<String>, Vec<&Host>)> = Vec::new();
+    let mut untagged = Vec::new();
+    for h in profiles.hosts() {
+        let tags = switchyard_core::store::tags::normalize_tags(&h.tags);
+        if tags.is_empty() {
+            untagged.push(h);
+        }
+        for t in tags {
+            match groups
+                .iter_mut()
+                .find(|(g, _)| g.as_deref() == Some(t.as_str()))
+            {
+                Some((_, list)) => list.push(h),
+                None => groups.push((Some(t), vec![h])),
+            }
+        }
+    }
+    groups.sort_by(|a, b| a.0.cmp(&b.0));
+    if !untagged.is_empty() {
+        groups.push((None, untagged));
+    }
+    groups
+}
+
+/// Hosts grouped by tag (Fleet); with `only`, just the tags it selects.
+fn tag_rows(
+    profiles: &Profiles,
+    collapsed: &HashSet<String>,
+    live: &HashSet<ProfileId>,
+    only: Option<&str>,
+) -> Vec<ConnRow> {
+    let groups: Vec<(Option<String>, Vec<&Host>)> = hosts_by_tag(profiles)
+        .into_iter()
+        .filter(|(t, _)| match (only, t) {
+            (Some(w), Some(t)) => tag_matches(t, w),
+            (Some(_), None) => false,
+            (None, _) => true,
+        })
+        .collect();
+    let mut rows = Vec::new();
+    if groups.is_empty() {
+        return rows;
+    }
+    let count: usize = groups.iter().map(|(_, l)| l.len()).sum();
+    rows.push(ConnRow::head(
+        "g:tags",
+        "SERVERS BY TAG",
+        count.to_string(),
+        collapsed.contains("g:tags") && only.is_none(),
+    ));
+    if collapsed.contains("g:tags") && only.is_none() {
+        return rows;
+    }
+    for (tag, hosts) in groups {
+        let key = format!("tg:{}", tag.as_deref().unwrap_or(""));
+        let label = match &tag {
+            Some(t) => format!("# {t}"),
+            None => "Untagged".to_owned(),
+        };
+        rows.push(ConnRow {
+            tag: tag.clone(),
+            env: hosts
+                .iter()
+                .map(|h| h.environment)
+                .min_by_key(|e| env_rank(*e)),
+            live: hosts.iter().any(|h| live.contains(&h.id)),
+            ..ConnRow::group(key.clone(), 0, label, hosts.len().to_string())
+        });
+        if collapsed.contains(&key) {
+            continue;
+        }
+        for h in hosts {
+            rows.push(ConnRow {
+                key: format!("{key}:{}", h.id),
+                env: Some(h.environment),
+                ..leaf(&Profile::Host(h.clone()), 1, None, live)
+            });
+        }
+    }
+    rows
 }
 
 /// A leaf for a saved profile.
@@ -280,6 +397,15 @@ fn leaf(p: &Profile, depth: u8, drag_group: Option<&str>, live: &HashSet<Profile
             ConnAction::Files,
         ),
         Profile::Cloud(c) => (c.region.trim().to_owned(), ConnAction::Profile),
+        Profile::Containers(c) => (
+            match (crate::app_state::cluster_label(c), c.context.as_deref()) {
+                (Some(l), Some(ctx)) if !ctx.trim().is_empty() => format!("{l} · {}", ctx.trim()),
+                (Some(l), _) => l.to_owned(),
+                (None, Some(ctx)) => ctx.trim().to_owned(),
+                (None, None) => String::new(),
+            },
+            ConnAction::Profile,
+        ),
         Profile::Terminal(t) => (String::new(), ConnAction::Terminal(t.host_id.clone())),
         Profile::Host(h) => (h.address.clone(), ConnAction::Terminal(Some(h.id.clone()))),
     };
@@ -296,6 +422,7 @@ fn leaf(p: &Profile, depth: u8, drag_group: Option<&str>, live: &HashSet<Profile
         action,
         drag_group: drag_group.map(str::to_owned),
         folder: None,
+        tag: None,
     }
 }
 
@@ -313,6 +440,7 @@ fn local_shell(depth: u8) -> ConnRow {
         action: ConnAction::Terminal(None),
         drag_group: None,
         folder: None,
+        tag: None,
     }
 }
 
@@ -330,6 +458,7 @@ fn local_files(depth: u8) -> ConnRow {
         action: ConnAction::Files,
         drag_group: None,
         folder: None,
+        tag: None,
     }
 }
 
@@ -348,6 +477,7 @@ fn host_terminal(h: &Host, depth: u8) -> ConnRow {
         action: ConnAction::Terminal(Some(h.id.clone())),
         drag_group: None,
         folder: None,
+        tag: None,
     }
 }
 
@@ -546,6 +676,60 @@ fn place_rows(
     rows
 }
 
+/// The RUNBOOKS section: a heading, the runbooks (id, name) by name and "New runbook".
+/// With a filter, only matching runbooks are listed (and no "New runbook" row).
+pub fn runbook_rows(
+    runbooks: &[(String, String)],
+    collapsed: &HashSet<String>,
+    filter: &str,
+) -> Vec<ConnRow> {
+    let filter = filter.trim();
+    let mut list: Vec<(usize, &(String, String))> = runbooks
+        .iter()
+        .filter_map(|r| fuzzy_score(filter, &r.1).map(|s| (s, r)))
+        .collect();
+    if !filter.is_empty() {
+        if list.is_empty() {
+            return Vec::new();
+        }
+        list.sort_by_key(|(s, _)| *s);
+    }
+    let key = "g:runbooks";
+    let open = !collapsed.contains(key);
+    let mut rows = vec![ConnRow::head(
+        key,
+        "RUNBOOKS",
+        list.len().to_string(),
+        !open,
+    )];
+    if !open {
+        return rows;
+    }
+    let leaf = |key: String, badge: &'static str, label: String, id: Option<String>| ConnRow {
+        kind: RowKind::Leaf,
+        key,
+        depth: 0,
+        badge,
+        label: label.into(),
+        sub: "".into(),
+        env: None,
+        live: false,
+        profile: None,
+        action: ConnAction::Runbook(id),
+        drag_group: None,
+        folder: None,
+        tag: None,
+    };
+    rows.extend(
+        list.into_iter()
+            .map(|(_, (id, name))| leaf(format!("rb:{id}"), "RB", name.clone(), Some(id.clone()))),
+    );
+    if filter.is_empty() {
+        rows.push(leaf("rb:new".into(), "+", "New runbook".into(), None));
+    }
+    rows
+}
+
 /// Production first, Local last.
 fn env_rank(e: EnvironmentLabel) -> u8 {
     match e {
@@ -576,7 +760,12 @@ fn type_rows(
                 env: Some(h.environment),
                 ..host_terminal(h, 0)
             };
-            leaves.push((TypeSec::Terminals, row, h.name.clone()));
+            let place = if h.tags.is_empty() {
+                h.name.clone()
+            } else {
+                format!("{} {}", h.name, h.tags.join(" "))
+            };
+            leaves.push((TypeSec::Terminals, row, place));
             continue;
         }
         leaves.push((type_of(p), row, place));
@@ -692,6 +881,67 @@ mod tests {
         rows.iter()
             .map(|r| format!("{}{}", "  ".repeat(r.depth as usize), r.label))
             .collect()
+    }
+
+    fn tagged(id: &str, name: &str, tags: &[&str]) -> Profile {
+        let Profile::Host(mut h) = host(id, name, false) else {
+            unreachable!()
+        };
+        h.tags = tags.iter().map(|t| (*t).to_owned()).collect();
+        Profile::Host(h)
+    }
+
+    #[test]
+    fn tag_grouping_and_tag_filter() {
+        let profiles = Profiles {
+            all: vec![
+                tagged("a", "web-1", &["web", "Role:Front"]),
+                tagged("b", "web-2", &["web"]),
+                tagged("c", "db-1", &["role:db"]),
+                tagged("d", "bare", &[]),
+            ],
+        };
+        let rows = explorer_rows(
+            &profiles,
+            &HashSet::new(),
+            &HashSet::new(),
+            ExplorerGroup::Tag,
+            "",
+        );
+        assert_eq!(
+            labels(&rows),
+            [
+                "SERVERS BY TAG",
+                "# role:db",
+                "  db-1",
+                "# role:front",
+                "  web-1",
+                "# web",
+                "  web-1",
+                "  web-2",
+                "Untagged",
+                "  bare",
+            ]
+        );
+        assert_eq!(tag_filter(" tag:Role: ").as_deref(), Some("role:"));
+        assert_eq!(tag_filter("web"), None);
+        let rows = explorer_rows(
+            &profiles,
+            &HashSet::new(),
+            &HashSet::new(),
+            ExplorerGroup::Place,
+            "tag:role:",
+        );
+        assert_eq!(
+            labels(&rows),
+            [
+                "SERVERS BY TAG",
+                "# role:db",
+                "  db-1",
+                "# role:front",
+                "  web-1"
+            ]
+        );
     }
 
     #[test]
@@ -828,9 +1078,33 @@ mod tests {
 
     #[test]
     fn group_setting_round_trips() {
-        for g in [ExplorerGroup::Place, ExplorerGroup::Type] {
+        for g in [
+            ExplorerGroup::Place,
+            ExplorerGroup::Type,
+            ExplorerGroup::Tag,
+        ] {
             assert_eq!(ExplorerGroup::from_key(g.key()), g);
         }
         assert_eq!(ExplorerGroup::from_key("?"), ExplorerGroup::Place);
+    }
+
+    #[test]
+    fn runbook_section() {
+        let rbs = vec![
+            ("a".to_owned(), "Fail over".to_owned()),
+            ("b".to_owned(), "Rotate keys".to_owned()),
+        ];
+        let rows = runbook_rows(&rbs, &HashSet::new(), "");
+        assert_eq!(
+            rows.iter().map(|r| r.label.to_string()).collect::<Vec<_>>(),
+            ["RUNBOOKS", "Fail over", "Rotate keys", "New runbook"]
+        );
+        assert_eq!(rows[1].action, ConnAction::Runbook(Some("a".into())));
+        assert_eq!(rows[3].action, ConnAction::Runbook(None));
+        let rows = runbook_rows(&rbs, &HashSet::new(), "rot");
+        assert_eq!(rows.len(), 2);
+        assert!(runbook_rows(&rbs, &HashSet::new(), "zzz").is_empty());
+        let collapsed: HashSet<String> = ["g:runbooks".to_owned()].into();
+        assert_eq!(runbook_rows(&rbs, &collapsed, "").len(), 1);
     }
 }

@@ -1,0 +1,25 @@
+{
+    "apiVersion": "v1",
+    "items": [
+        {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {"creationTimestamp": "2026-10-05T12:31:00Z", "generation": 4, "name": "web", "namespace": "shop"},
+            "spec": {
+                "replicas": 3,
+                "selector": {"matchLabels": {"app": "web"}},
+                "template": {"spec": {"containers": [{"image": "nginx:1.27", "name": "nginx"}, {"image": "envoyproxy/envoy:v1.31", "name": "envoy"}]}}
+            },
+            "status": {"availableReplicas": 2, "readyReplicas": 2, "replicas": 3, "updatedReplicas": 3}
+        },
+        {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {"creationTimestamp": "2026-10-06T07:00:00Z", "name": "worker", "namespace": "shop"},
+            "spec": {"replicas": 0, "template": {"spec": {"containers": [{"image": "acme/worker:2.3", "name": "worker"}]}}},
+            "status": {}
+        }
+    ],
+    "kind": "List",
+    "metadata": {"resourceVersion": ""}
+}
