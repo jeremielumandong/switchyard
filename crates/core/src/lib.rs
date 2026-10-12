@@ -12,6 +12,7 @@ pub mod error;
 pub mod files;
 pub mod handoff;
 pub mod prompts;
+pub mod runbook;
 pub mod runtime;
 pub mod service;
 pub mod ssh_import;

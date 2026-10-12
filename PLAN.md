@@ -788,6 +788,42 @@ server or bundled Unix tools on Windows (Tier 3).
   tab was not exercised in a running app here (no display); data compare, triggers,
   sequences and table options are deferred (Follow-ups).
 
+## Extra — Runbooks (user request, 2026-10-12)
+
+- [x] RB-1 Model and storage: `store::runbooks` (`Runbook`: title, Markdown description,
+  parameters with name / label / default / secret flag, ordered steps: Note, SQL, HTTP,
+  Shell, Confirm), schema version 6 (`runbooks` table, one JSON document per runbook),
+  JSON import/export (`RunbookExport` v1, no ids, no secrets). A secret parameter's value
+  lives in the keychain or vault (`runbook:<id>:<name>`); stored and exported JSON never
+  holds it. Tests: store round trip, v5 → v6 migration, export without secrets.
+- [x] RB-2 `{{param}}` substitution (`core::runbook::params`): plain text as is
+  (`{{x:quote}}` shell-quotes); SQL per dialect: in code a string literal from
+  `Dialect::literal` (`:raw`, `:ident` for unquoted / quoted identifier), escaped inside
+  string literals, quoted identifiers and comments; secrets are bound as statement
+  parameters (`Dialect::bind_params`), never inlined, so history holds a placeholder.
+  Resolved text (secrets masked) is shown before and while a step runs.
+- [x] RB-3 Run engine (`core::runbook::engine`): pure state machine (pending / waiting /
+  running / ok / failed / skipped); run one step, run from here, run all; stops on the
+  first failure; Confirm and Shell steps wait for the user (Run / Continue / Skip) unless
+  the user ran exactly that step. Tests with fake executors.
+- [x] RB-4 Execution in core (`service::runbook`, `Command::RunbookStep`): SQL through the
+  ordinary query path (Production destructive-statement confirm, streaming, cancel,
+  history), first 1,000 rows in a compact grid; HTTP inline or a saved API workspace request
+  (compiled with its collection, folders, active environment and globals; runbook
+  parameters as its local variables) through the workbench sender; Shell locally (own
+  process group, killed with the group) or on a Host over its shared SSH session
+  (`SshConn::run_command_streaming`). Output streams (capped at 256 KB, secrets masked);
+  `Command::Cancel` stops a step. Every executed step goes to history tagged `runbook`,
+  `runbook:<name>` (plus `http` / `shell`). Tests: local shell stream / cancel / timeout,
+  `core --test runbooks` (shell step with a stored secret; SQL step on docker PostgreSQL
+  with a bound secret, ignored).
+- [x] RB-5 UI: RUNBOOKS section in the Explorer (and "New runbook"), a Runbooks tool, palette
+  commands New Runbook / Open Runbook… / Import Runbook…, a Runbook tab with Edit
+  (title, description, parameters, steps added / reordered / removed, connection, Host
+  and saved-request pickers; Save, Export, Delete) and Run (values for this run, masked for
+  secrets; per-step resolved text, status, duration, output, grid, Production confirm).
+  Note: not exercised in a running window here (no display); agents / MCP not exposed.
+
 ## DBX — Database explorer and editors at DBeaver / SSMS level (user request)
 
 Gap analysis (2026-10-08): the explorer is a lazy, virtualized, single-connection tree
@@ -1083,3 +1119,11 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 - Durable Objects (DO-1): pick the namespace and object from lists in the connection form
   (`GET …/durable_objects/namespaces`, `…/namespaces/{id}/objects`, which only lists objects
   that have stored data); open several objects of one namespace from the sidebar.
+
+- Runbooks (RB-1..5): scheduled and unattended runs; agents / MCP access (read-only
+  listing, run with approval); per-step "continue on failure"; step outputs as
+  parameters of later steps (`{{steps.2.output}}`); a run log kept per runbook (today:
+  query history); Confirm steps are not recorded in history; secret values split across
+  two output chunks are not masked; multipart / file bodies of saved API requests;
+  Markdown links and inline styles in notes (plain text today); a Monaco-style SQL editor
+  in step editing (a text area today); drag-and-drop reordering; UI tests.
