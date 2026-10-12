@@ -305,6 +305,7 @@ impl Workspace {
                 cx,
             ),
             ("desktop", Some(Profile::Desktop(_))) => self.launch_desktop(id, cx),
+            ("desktop-app", Some(Profile::Desktop(_))) => self.open_rdp_tab(id, cx),
             ("edit", Some(Profile::Desktop(d))) => {
                 self.open_desktop_editor(d.protocol, Some(d), window, cx)
             }
@@ -351,6 +352,10 @@ impl Workspace {
                     .child(btn("Fleet", "fleet", false, cx));
             }
             ServerKind::Desktop(DesktopProtocol::Rdp) => {
+                // The in-app client beside the system one.
+                if switchyard_core::servers::embedded::RDP_EMBEDDED {
+                    row = row.child(btn("Open in Switchyard", "desktop-app", true, cx));
+                }
                 row = row.child(btn("RDP", "desktop", true, cx))
             }
             ServerKind::Desktop(DesktopProtocol::Vnc) => {

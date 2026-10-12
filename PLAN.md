@@ -560,7 +560,7 @@ server or bundled Unix tools on Windows (Tier 3).
   and VNC sessions launched through tools the Driver Manager detects, with install hints.
   Note: RDP and VNC landed with server workspaces (SW-5, SW-6 below): FreeRDP 2/3, Remmina,
   mstsc, Windows App / Microsoft Remote Desktop, TigerVNC, macOS Screen Sharing. Mosh is
-  deferred (Follow-ups); an embedded RDP viewer is future work, not started.
+  deferred (Follow-ups). An in-app RDP tab landed later (SW-9, SW-10).
 - [ ] **MX-13 More local shells.** Shell picker (bash, zsh, fish, pwsh, cmd, Git Bash) and
   WSL distributions on Windows.
 - Also counted for parity: M2-5 (SSH agent) and M4-2 (FTP/FTPS) above.
@@ -1168,6 +1168,34 @@ are shared hotspots: one owner at a time.
   refused while used unless detaching.
   Nothing here is exposed to MCP / agents.
   Note: not exercised in a running window here (no display).
+- [x] SW-9 IronRDP in the tree (user approved the crates and a vendored connector):
+  `ironrdp-connector` 0.10.0 vendored (`vendor/ironrdp-connector`, `[patch.crates-io]`) on
+  the tree's sspi 0.23 / picky rc.26 (upstream pins sspi 0.21 / picky rc.25, a second crypto
+  stack that clashes with russh and the hmac pin); smart-card logon behind an opt-in `scard`
+  feature; `Credentials`' `Debug` no longer prints the password. No existing pin moved
+  (tiberius, russh, sspi, picky-krb 0.12.4). See `vendor/ironrdp-connector/VENDORED.md`.
+- [x] SW-10 In-app RDP tab (`rdp-embedded` feature on remote / core / app; on by default
+  in core and app). `remote::rdp`: the IronRDP session on the core runtime (TLS, then NLA /
+  CredSSP with NTLM; RemoteFX, 32-bit colour, MPPC 64K; pointer drawn into the image; no
+  audio, clipboard or drive redirection), a shared BGRA `FrameBuffer` whose change
+  notifications coalesce (at most one in flight), key / mouse mapping (scan codes for keys
+  and shortcuts, Unicode for typed text, modifiers by change, Ctrl+Alt+Del, wheel, fit /
+  1:1 placement) and the certificate decision (OS-trusted → connect; untrusted → ask
+  through the prompter: Trust once / Trust and pin; pinned fingerprint differs → refused
+  until "Forget pinned certificate"). Pins live on the profile (`DesktopServer::tls_pin`).
+  Core: `Command::Rdp` / `Event::Rdp` / `Event::RdpCertPrompt`; input and close bypass the
+  per-command task so keystrokes stay in order; sign-in from the profile's secret or shared
+  credential (asked through the password prompt when none is stored); through the Host's
+  shared SSH session when the profile has a tunnel Host; cancellable connect; history
+  tagged `rdp`. App: `RdpTab` (GPUI canvas painting the image; toolbar with status,
+  Disconnect / Reconnect, Ctrl+Alt+Del, Fit / 1:1); "Open in Switchyard" beside "RDP" in
+  the Servers view and in a remote desktop's context menu. Tests: input mapping, cert
+  pinning decisions and DER key extraction, frame buffer coalescing, connector config
+  (and that its `Debug` hides the password), fast-path conversion, the service's refusals
+  and pin save / forget.
+  Note: not exercised against a real RDP server or in a running window here (no Windows
+  host, no display); RD Gateway, Kerberos, clipboard, audio, drives, dynamic resize and
+  the admin session stay with the system client (Follow-ups).
 
 ## M6 — Packaging and beta
 
@@ -1227,8 +1255,14 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   running app's unlocked secrets over the loopback handoff, scoped by the session token.
 
 (Add items here instead of doing them mid-task.)
-- Server workspaces / RDP (SW-1..8) leftovers: an embedded RDP viewer (future work, not
-  started; today the system client opens); Mosh (MX-12); drag and drop of Explorer items onto
+- In-app RDP (SW-9..10) leftovers: RD Gateway (`ironrdp-mstsgu`), Kerberos (needs a KDC
+  network client for CredSSP), clipboard (`ironrdp-cliprdr`), audio, drive redirection,
+  dynamic resize when the tab resizes (display control channel), the admin / console
+  session, a hidden local cursor over the image, partial image uploads instead of a full
+  copy per update, app shortcuts (Ctrl/Cmd+W, K, …) that still go to the app while the
+  desktop has focus, an integration test against a real RDP server (none in docker), and a
+  Windows / macOS type-check of the sspi build on those targets.
+- Server workspaces / RDP (SW-1..8) leftovers: Mosh (MX-12); drag and drop of Explorer items onto
   a workspace in the title bar menu; mstsc without a password prompt (needs a
   `TERMSRV/<host>` Credential Manager entry with its own user, which the approved `keyring`
   API cannot write; see DECISIONS); Windows App on macOS cannot take a password at all;
