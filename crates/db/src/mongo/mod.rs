@@ -427,22 +427,33 @@ fn qualify(command: &mut Document, current: &str) {
     }
 }
 
-/// Up to `max` documents from `cursor`; fewer means it is exhausted.
+/// Up to `max` documents from `cursor`, and whether it is exhausted. Waits for the
+/// first document, then takes only what the current server batch already holds: the
+/// next `getMore` can carry up to 16 MB, so waiting for it to fill `max` held back
+/// rows that had arrived (a minute over a slow link). The started `getMore` stays in
+/// the cursor and is awaited by the next call.
 async fn chunk(
     cursor: &mut Cursor<Document>,
     cancel: &Cancel,
     max: usize,
-) -> Result<Vec<Document>> {
+) -> Result<(Vec<Document>, bool)> {
     let mut docs = Vec::new();
     while docs.len() < max {
-        let next = cancel.run(async { Ok(cursor.next().await) }).await?;
+        let next = if docs.is_empty() {
+            cancel.run(async { Ok(cursor.next().await) }).await?
+        } else {
+            match futures::poll!(cursor.next()) {
+                std::task::Poll::Ready(next) => next,
+                std::task::Poll::Pending => break,
+            }
+        };
         match next {
             Some(Ok(d)) => docs.push(d),
             Some(Err(e)) => return Err(server_error(&e)),
-            None => break,
+            None => return Ok((docs, true)),
         }
     }
-    Ok(docs)
+    Ok((docs, false))
 }
 
 /// Streaming state for a cursor result.
@@ -468,8 +479,8 @@ fn cursor_stream(state: CursorRows) -> ResultStream {
             return Some((Ok(done(s.started, None)), s));
         };
         match chunk(cursor, &s.cancel, DEFAULT_BATCH_ROWS).await {
-            Ok(docs) => {
-                if docs.len() < DEFAULT_BATCH_ROWS {
+            Ok((docs, exhausted)) => {
+                if exhausted {
                     s.cursor = None;
                 }
                 if docs.is_empty() {
@@ -525,22 +536,27 @@ impl MongoSession {
         let mut affected = None;
         match shape {
             Shape::Cursor => {
+                // The server's first batch (101 documents unless the statement says)
+                // shows quickly; later `getMore`s would otherwise fill 16 MB each, far
+                // more than a grid batch.
                 let database = self.client.database(&db);
-                let fut = database.run_cursor_command(command);
+                let fut = database
+                    .run_cursor_command(command)
+                    .batch_size(DEFAULT_BATCH_ROWS as u32);
                 let mut cursor = self
                     .cancel
                     .run(async { fut.await.map_err(|e| server_error(&e)) })
                     .await?;
-                let first = chunk(&mut cursor, &self.cancel, DEFAULT_BATCH_ROWS).await?;
+                let (first, exhausted) =
+                    chunk(&mut cursor, &self.cancel, DEFAULT_BATCH_ROWS).await?;
                 let layout = Layout::infer(&first);
                 let mut queued = VecDeque::new();
                 queued.push_back(ResultEvent::Columns(layout.columns()));
                 if !first.is_empty() {
                     queued.push_back(ResultEvent::Rows(layout.batch(&first)));
                 }
-                let more = first.len() == DEFAULT_BATCH_ROWS;
                 return Ok(cursor_stream(CursorRows {
-                    cursor: more.then_some(cursor),
+                    cursor: (!exhausted).then_some(cursor),
                     layout,
                     cancel: self.cancel.clone(),
                     queued,
