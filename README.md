@@ -396,6 +396,13 @@ test the API in front of a database without opening another tool.
   results show next to the response.
 - **Runner**: run a folder or collection with CSV or JSON iteration data, a seed, a delay and
   stop on first error; describe a scenario and let the assistant generate the data.
+- **Load tests**: send the open request thousands of times from up to 64 workers, by count
+  or for a duration, and watch p50 / p95 / p99, throughput, error rate, status codes and a
+  per-second timeline update live; set a p95 and error budget for a pass / fail verdict.
+- **Mock servers**: serve a collection's saved examples on localhost with one click.
+  `:id` and `{{id}}` path segments match anything, Postman's `x-mock-response-name` and
+  `x-mock-response-code` headers pick an example, CORS is open for browser apps, and every
+  call is logged.
 - **Response panel**: Pretty (JSONPath / XPath filter) and Raw views, headers, trace, test
   results and console, with copy actions everywhere. Cookies carry between requests;
   History and Diff tabs sit beside Compose.

@@ -1,5 +1,5 @@
 //! Panel-level keyboard commands: focus the URL bar and switch between the
-//! six header tabs. Bound in [`crate::api::compat::bind_keys`] under the
+//! header tabs. Bound in [`crate::api::compat::bind_keys`] under the
 //! Workbench's [`KEY_CONTEXT`], so they never fire from the SQL tab.
 
 use super::*;
@@ -14,7 +14,9 @@ gpui_kit::actions!(
         ShowRunner,
         ShowEnvs,
         ShowHistory,
-        ShowDiff
+        ShowDiff,
+        ShowLoadTest,
+        ShowMocks
     ]
 );
 
@@ -28,6 +30,8 @@ impl Tab {
             Self::Environments => Box::new(ShowEnvs),
             Self::History => Box::new(ShowHistory),
             Self::Diff => Box::new(ShowDiff),
+            Self::Load => Box::new(ShowLoadTest),
+            Self::Mocks => Box::new(ShowMocks),
         }
     }
 }
@@ -45,6 +49,8 @@ impl WorkbenchPanel {
         let root = switch_on::<ShowEnvs>(root, Tab::Environments, cx);
         let root = switch_on::<ShowHistory>(root, Tab::History, cx);
         let root = switch_on::<ShowDiff>(root, Tab::Diff, cx);
+        let root = switch_on::<ShowLoadTest>(root, Tab::Load, cx);
+        let root = switch_on::<ShowMocks>(root, Tab::Mocks, cx);
         root.on_action(cx.listener(|this, _: &FocusUrl, window, cx| {
             this.show_tab(Tab::Compose, cx);
             this.url.focus_handle(cx).focus(window, cx);

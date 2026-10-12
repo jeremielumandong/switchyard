@@ -223,7 +223,7 @@ impl WorkbenchPanel {
         methods
     }
 
-    fn confirm_production(
+    pub(super) fn confirm_production(
         &mut self,
         title: &'static str,
         message: String,

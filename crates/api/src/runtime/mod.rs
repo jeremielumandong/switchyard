@@ -13,6 +13,7 @@
 //! fails closed with a message pointing at the desktop app.
 
 pub mod collection;
+pub mod load;
 pub mod login;
 pub mod oauth;
 pub mod secrets;
@@ -23,6 +24,11 @@ pub mod workspace;
 pub use collection::{
     MAX_DELAY_MS, MAX_ITERATIONS, NextRunItem, RunControl, RunOutcome, RunPreparation,
     RunPreparationInput, RunSession, prepare_collection_run, run_collection, select_run_requests,
+};
+pub use load::{
+    HistogramBucket, LatencySummary, LoadProgress, LoadReport, LoadSample, LoadTestConfig,
+    LoadThresholds, MAX_LOAD_CONCURRENCY, MAX_LOAD_DURATION, MAX_LOAD_REQUESTS, PhaseMeans,
+    ThresholdCheck, TimelinePoint, run_load_test,
 };
 pub use login::{LoginChain, LoginOwner, LoginSession, replace_bearer, session_status};
 pub use oauth::{
