@@ -332,6 +332,9 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
   handshake finish while recording the OS verdict, and decides (pin / ask / refuse) before
   CredSSP sends anything. CredSSP needs the certificate's subject public key (the BIT
   STRING's bytes), not the whole SPKI.
+- sspi's `Username::new(user, Some(domain))` rejects a `\` in the account name
+  ("invalid username" from CredSSP), so `DOMAIN\user` typed with the Domain field set
+  fails; `rdp::session::sign_in_name` normalizes the user and domain first.
 - GPUI `RenderImage` pixels are BGRA. Every replaced image must go through
   `cx.drop_image(old, Some(window))`, or its sprite-atlas tile is never freed (the RDP tab
   swaps one per update).

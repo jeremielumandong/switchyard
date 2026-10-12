@@ -1196,6 +1196,8 @@ are shared hotspots: one owner at a time.
   Note: not exercised against a real RDP server or in a running window here (no Windows
   host, no display); RD Gateway, Kerberos, clipboard, audio, drives, dynamic resize and
   the admin session stay with the system client (Follow-ups).
+  Fix: `DOMAIN\user` with the Domain field also set failed CredSSP with "invalid username";
+  `rdp::session::sign_in_name` splits `DOMAIN\user` / `user@domain` before sspi sees them.
 
 ## M6 — Packaging and beta
 
