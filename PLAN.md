@@ -882,6 +882,14 @@ are shared hotspots: one owner at a time.
   saved snippets or stream options; the response pane becomes a virtualized live log
   with timestamps, sizes, filter, headers and the selected message in full.
   Note: tests use in-process echo / SSE servers; no history entry for streams yet.
+- [x] PROTO-3 gRPC requests (`protocol::grpc`, tonic + prost-reflect behind the `grpc`
+  feature): services and methods from server reflection (v1, then v1alpha, dependencies
+  fetched by name) or imported `.proto` files (protox, no protoc); JSON request bodies as
+  `DynamicMessage`; unary, server, client and bidi streaming over one streaming call;
+  metadata from the Headers/Auth tabs (`-bin` keys base64), TLS from the URL or forced,
+  deadlines, headers, trailers and status code in the log. "Load services" fills a
+  method picker and a JSON template; gRPC to Production asks first like a POST.
+  Note: tested against an in-process tonic server with reflection.
 - [x] PROTO-2 Rename and delete projects (workspaces) in the Workbench header menu; delete
   confirms and removes the project's collections, environments, history, runs, cookies,
   globals and tabs (`WorkbenchStore::delete_workspace`).
