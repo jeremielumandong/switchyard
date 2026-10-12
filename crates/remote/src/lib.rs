@@ -1,9 +1,10 @@
 //! Remote access: SSH sessions shared per Host, the [`RemoteFs`] file-system abstraction
-//! (local, SFTP, FTP/FTPS) and `~/.ssh/config` import.
+//! (local, SFTP, FTP/FTPS), `~/.ssh/config` import and the in-app RDP client ([`rdp`]).
 
 pub mod fs;
 pub mod ftp;
 mod ftp_tls;
+pub mod rdp;
 pub mod sftp;
 pub mod ssh;
 pub mod ssh_config;
