@@ -87,6 +87,7 @@ pub(crate) fn tab_key(tab: &Tab) -> Option<TabKey> {
         Tab::Compare(e) => e.entity_id(),
         Tab::Runbook(e) => e.entity_id(),
         Tab::Containers(e) => e.entity_id(),
+        Tab::Rdp(e) => e.entity_id(),
     };
     Some(TabKey::Entity(id))
 }
