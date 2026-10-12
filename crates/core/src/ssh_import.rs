@@ -19,6 +19,8 @@ pub struct SshImportCandidate {
     pub via: Vec<String>,
     /// A Host with this name is already saved (it is skipped).
     pub exists: bool,
+    /// Tags it gets (Ansible groups; none from `~/.ssh/config`).
+    pub tags: Vec<String>,
 }
 
 /// The Host an entry becomes (without jump hosts).
@@ -95,6 +97,7 @@ pub(crate) fn candidates(
                 auth: auth_label(&h),
                 via: e.proxy_jump.clone(),
                 exists: saved.contains(&e.alias),
+                tags: Vec::new(),
             }
         })
         .collect()

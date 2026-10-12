@@ -239,6 +239,12 @@ pub trait Dialect: Send + Sync {
         None
     }
 
+    /// DDL generation for schema compare, or `None` when the engine cannot be compared
+    /// yet ([`crate::compare::unsupported_message`]).
+    fn schema_scripter(&self) -> Option<&'static dyn crate::compare::SchemaScripter> {
+        None
+    }
+
     /// Whether the engine can list an object's dependencies (DBX-5a).
     fn supports_dependencies(&self) -> bool {
         true

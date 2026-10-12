@@ -1,0 +1,35 @@
+{
+    "apiVersion": "v1",
+    "items": [
+        {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {"creationTimestamp": "2026-10-01T08:00:00Z", "name": "kubernetes", "namespace": "default"},
+            "spec": {"clusterIP": "10.96.0.1", "ports": [{"name": "https", "port": 443, "protocol": "TCP", "targetPort": 6443}], "type": "ClusterIP"},
+            "status": {"loadBalancer": {}}
+        },
+        {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {"creationTimestamp": "2026-10-05T12:31:00Z", "name": "web", "namespace": "shop"},
+            "spec": {
+                "clusterIP": "10.96.12.40",
+                "ports": [
+                    {"name": "http", "nodePort": 30080, "port": 80, "protocol": "TCP", "targetPort": "http"},
+                    {"name": "admin", "nodePort": 30901, "port": 9901, "protocol": "TCP", "targetPort": 9901}
+                ],
+                "selector": {"app": "web"},
+                "type": "LoadBalancer"
+            },
+            "status": {"loadBalancer": {"ingress": [{"ip": "203.0.113.10"}, {"hostname": "web.example.com"}]}}
+        },
+        {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {"creationTimestamp": "2026-10-05T12:31:00Z", "name": "db", "namespace": "shop"},
+            "spec": {"clusterIP": "None", "ports": [{"port": 5432, "protocol": "TCP", "targetPort": 5432}], "type": "ClusterIP"}
+        }
+    ],
+    "kind": "List",
+    "metadata": {"resourceVersion": ""}
+}

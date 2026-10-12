@@ -200,8 +200,16 @@ pub enum CommandId {
     ManageSnippets,
     /// Open the secret vault (named secrets).
     ManageSecrets,
+    /// A new runbook tab.
+    NewRunbook,
+    /// Pick a runbook to open.
+    OpenRunbook,
+    /// Import a runbook from a JSON file.
+    ImportRunbook,
     /// ER diagram of the schema under the tree cursor (DBX-5d).
     ErDiagram,
+    /// Schema compare and migration script.
+    CompareSchemas,
     SplitRight,
     SplitDown,
     Unsplit,
@@ -237,6 +245,18 @@ pub enum CommandId {
     GroupByPlace,
     /// Group the Explorer by type.
     GroupByType,
+    /// Group the Explorer's Hosts by tag (Fleet).
+    GroupByTag,
+    /// Fleet: run a command on many Hosts.
+    FleetRun,
+    /// Fleet: health dashboard of many Hosts.
+    FleetDashboard,
+    /// Fleet: push a file to many Hosts.
+    FleetPush,
+    /// Fleet: SSH keys on many Hosts.
+    FleetKeys,
+    /// Import Hosts from an Ansible inventory.
+    ImportAnsible,
     /// Close the tab in front.
     CloseTab,
     /// Next tab.
@@ -251,6 +271,10 @@ pub enum CommandId {
     OpenEngine(switchyard_core::db::Engine),
     /// Open an infra tool (Terraform state, inventory, network checks, logs).
     OpenInfra(crate::infra::InfraTool),
+    /// Open the first saved Docker / Kubernetes connection, or add one.
+    OpenContainers(switchyard_core::store::ContainerPlatform),
+    /// New Docker connection / Add Kubernetes cluster.
+    AddContainers(switchyard_core::store::ContainerPlatform),
 }
 
 /// A palette entry.
@@ -287,6 +311,18 @@ pub fn palette_commands() -> Vec<PaletteCommand> {
             k("⌘N", "Ctrl+N"),
         ),
         c(NewHost, "New Host…", "Connections", "".into()),
+        c(
+            AddContainers(switchyard_core::store::ContainerPlatform::Kubernetes),
+            "Add Kubernetes Cluster…",
+            "Connections",
+            "".into(),
+        ),
+        c(
+            AddContainers(switchyard_core::store::ContainerPlatform::Docker),
+            "New Docker Connection…",
+            "Connections",
+            "".into(),
+        ),
         c(
             ImportSshConfig,
             "Import Hosts from ~/.ssh/config",
@@ -348,6 +384,9 @@ pub fn palette_commands() -> Vec<PaletteCommand> {
         c(ShowActivity, "Activity Monitor", "Editor", "".into()),
         c(ManageSnippets, "Manage Snippets…", "Editor", "".into()),
         c(ManageSecrets, "Secret Vault…", "Connections", "".into()),
+        c(NewRunbook, "New Runbook", "Runbooks", "".into()),
+        c(OpenRunbook, "Open Runbook…", "Runbooks", "".into()),
+        c(ImportRunbook, "Import Runbook…", "Runbooks", "".into()),
         c(RefreshSchema, "Refresh Schema", "Schema", "".into()),
         c(
             ErDiagram,
@@ -355,6 +394,7 @@ pub fn palette_commands() -> Vec<PaletteCommand> {
             "Schema",
             "".into(),
         ),
+        c(CompareSchemas, "Compare Schemas…", "Schema", "".into()),
         c(SplitRight, "Split Right", "View", k("⌘\\", "Ctrl+\\")),
         c(SplitDown, "Split Down", "View", k("⇧⌘\\", "Ctrl+Shift+\\")),
         c(Unsplit, "Close Split", "View", "".into()),
@@ -421,6 +461,27 @@ pub fn palette_commands() -> Vec<PaletteCommand> {
         c(ShowActivityPane, "Show Activity", "View", "".into()),
         c(GroupByPlace, "Group Explorer by Place", "View", "".into()),
         c(GroupByType, "Group Explorer by Type", "View", "".into()),
+        c(GroupByTag, "Group Explorer by Tag", "View", "".into()),
+        c(
+            FleetRun,
+            "Fleet: Run Command on Hosts…",
+            "Servers",
+            "".into(),
+        ),
+        c(FleetDashboard, "Fleet: Dashboard", "Servers", "".into()),
+        c(
+            FleetPush,
+            "Fleet: Push File to Hosts…",
+            "Servers",
+            "".into(),
+        ),
+        c(FleetKeys, "Fleet: Manage SSH Keys…", "Servers", "".into()),
+        c(
+            ImportAnsible,
+            "Import Hosts from Ansible Inventory…",
+            "Connections",
+            "".into(),
+        ),
         c(NextTab, "Next Tab", "View", "".into()),
         c(PrevTab, "Previous Tab", "View", "".into()),
         c(ShowWelcome, "Show Welcome", "View", "".into()),

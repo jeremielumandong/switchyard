@@ -133,6 +133,7 @@ fn column_info(t: &Table<'_>, row: &[Json], table: &str) -> ColumnInfo {
         ordinal: t.int(row, "cid") as i32 + 1,
         is_primary_key: t.int(row, "pk") > 0,
         comment: None,
+        identity: None,
     }
 }
 

@@ -1433,3 +1433,126 @@ Decisions:
   (Describe / List / Get / Filter), state is never written, and none of it is exposed to
   agents or the MCP server.
 
+## 2026-10-12 — API Workbench: WebSocket, Server-Sent Events and gRPC (user request)
+
+- tokio-tungstenite, tonic, prost-reflect approved for API workbench (approved by Jeremie on
+  2026-10-12), with the crates they need: `tokio-tungstenite` 0.30 (MIT, `handshake` feature
+  only), `tonic` / `tonic-prost` / `tonic-reflection` 0.14 (MIT), `prost` / `prost-types` 0.14
+  (Apache-2.0), `prost-reflect` 0.16 (MIT OR Apache-2.0) and `protox` 0.10 (MIT OR
+  Apache-2.0, pure-Rust `.proto` compiler, so no `protoc` is needed). No GPL code.
+- They sit behind `switchyard-api`'s cargo features `websocket` and `grpc`, on by default.
+  Turning one off removes its crates; starting that kind then fails with "… support is not
+  included in this build" and the app hides "Add gRPC request".
+- A streaming request is a `SavedRequest` like any other: URL, params, headers, auth and
+  variables stay in their usual fields, so the compiler resolves them (and runs the
+  pre-request script and sign-in) exactly as for HTTP. The kind's own options live in
+  `extensions["switchyard_protocol"]` (tagged JSON), which existing storage, import/export
+  and duplication already carry; requests saved before this stay HTTP.
+- The compiler only accepts `http(s)`, so `ws(s)://` and `grpc(s)://` are compiled as their
+  `http(s)` form and mapped back for the wire (`protocol::compile_url` / `wire_url`).
+- WebSocket TCP goes to the addresses the private-network policy validated, and `wss://`
+  uses the same rustls config (OS trust store, verification on) as HTTP sends; tungstenite
+  only does the handshake. SSE uses a pinned reqwest client without a total timeout
+  (connect timeout only). Resolved secrets are redacted from every log line and error.
+- Sessions run on core's tokio runtime; the UI receives `StreamEvent`s over a channel and
+  appends them to a virtualized log capped at 10,000 rows (64 KiB of text per row).
+- Streaming sessions are not recorded in History yet (see PLAN follow-ups).
+
+## 2026-10-12 — Schema compare (user request)
+
+- The migration script makes the target match the source and is only ever opened in a SQL
+  editor tab on the target connection; nothing runs it. Agents get no compare tool yet.
+- Destructive statements (DROP TABLE, DROP COLUMN, and a SQLite rebuild that leaves target
+  columns behind) are written commented out under a "WARNING: destructive" line, with a
+  count at the top. Type changes that may truncate are not flagged. Objects only in the
+  target (whose script is a DROP) start unticked in the list.
+- Script generation is per engine behind `Dialect::schema_scripter` (`SchemaScripter` in
+  `db::compare`), so the app never branches on the engine. Local SQLite only: D1 and
+  Durable Objects refuse the rebuild's `BEGIN` / `PRAGMA foreign_keys`.
+- Constraints and indexes pair by name first, then by what they do, because SQL Server
+  generates names (`PK__t__…`); a name-only difference is not reported.
+- Comparing two schemas on one server retargets the source schema name in DDL (code
+  segments and PostgreSQL dollar-quoted bodies, never string literals) before comparing
+  and scripting. PostgreSQL `nextval(…)` defaults compare equal (each schema has its own
+  sequence) and new tables use `serial` / `bigserial`.
+- PostgreSQL refuses to alter a column a view reads: the script drops the changed views,
+  and unchanged views whose text names an altered table, before the table changes and
+  creates them again after.
+- MySQL definers (`DEFINER=…`) are ignored when comparing and dropped from the script, so
+  objects are created as whoever runs it. The script starts with `USE <target>`.
+- A side in another database than the connection's default gets `USE` at the top (SQL
+  Server, MySQL) or a note to switch the tab's database (PostgreSQL reconnects).
+- `ColumnInfo::identity` was added (serde default) rather than folding identity into the
+  type or default, so the explorer's columns are unchanged.
+
+## 2026-10-12 — Runbooks (user request)
+
+- Runbooks are a store document (one JSON per row) rather than normalized tables: steps
+  are heterogeneous and only ever read whole. A secret parameter's value is a keychain /
+  vault item keyed by runbook id; `Runbook::sanitized` clears it from anything stored or
+  exported.
+- SQL parameters: plain values are inlined as dialect literals (shown before running, so
+  the user sees exactly what runs) instead of bound, because bound text parameters fail on
+  typed comparisons in PostgreSQL; secret values are always bound so they never reach the
+  SQL kept in history.
+- The run engine lives in core as a pure state machine and the tab drives it; steps run
+  through core commands (SQL reuses `Service::execute` for Production confirmation,
+  streaming, cancel and history).
+- HTTP steps allow private networks (on-call targets are often internal) and treat a
+  4xx / 5xx answer as a failed step, which stops a run.
+
+## 2026-10-12 — Docker and Kubernetes through the user's CLIs (user request)
+
+- Docker and Kubernetes are driven by shelling out to the user's own `docker` and `kubectl`
+  (JSON output: `--format {{json .}}`, `-o json`) on the core runtime with `tokio::process`
+  (`kill_on_drop`, timeouts, abortable per request), not a Docker API or Kubernetes client
+  crate. It reuses the user's contexts, credential helpers and exec auth plugins exactly as
+  their terminal does, works the same on a Host (the command runs over the shared SSH
+  session), needs no new dependency, and lets `podman` stand in via the CLI override.
+- New workspace crate `switchyard-containers` (serde, serde_json, thiserror, tracing, tokio):
+  invocation building, output parsing and local process running. Direction: `core →
+  containers`; `core` re-exports it as `switchyard_core::containers` for the app.
+- Cloud clusters are added with each provider's own CLI (`az aks get-credentials`, `gcloud
+  container clusters get-credentials`, `aws eks update-kubeconfig`), which write the user's
+  kubeconfig; Switchyard stores no cloud credentials. Entra AKS contexts are converted with
+  `kubelogin convert-kubeconfig -l azurecli` (non-admin only).
+- Rancher has no CLI step: the API token is a secret of the connection (keychain or vault,
+  never in the profile JSON, logs or history). `GET /v3/clusters` and `generateKubeconfig`
+  use reqwest with certificate verification on; a self-signed server is trusted through a
+  per-connection PEM (text or file path) added to the roots, never by turning checks off.
+  The generated kubeconfig (it embeds a token) goes to `<data dir>/kubeconfigs/<id>.yaml`
+  with mode 0600, is passed with `--kubeconfig`, regenerated on a sign-in failure and deleted
+  with the connection.
+- Provider labels are inferred, not stored per context: server host suffixes (`azmk8s.io`,
+  `eks.amazonaws.com`, …), the exec plugin (`kubelogin`, `gke-gcloud-auth-plugin`, `aws`),
+  Rancher's `/k8s/clusters/` path, and local names / loopback servers.
+- Destructive actions (stop, restart, remove, delete pod, scale, rollout restart) on a
+  Production connection need the object's name typed; remove, delete, scale and rollout
+  restart always ask. Read-only connections refuse every action in core. Not exposed to MCP
+  in this round.
+
+## 2026-10-12 — Fleet (user request)
+
+- Host tags live in the Host JSON (source of truth, exported with it) and in a `host_tags`
+  index table (schema version 7, after runbooks' 6) for the tag filter and selections.
+  Tags are lower-cased and normalized on save so `Web` and `web` are one group.
+- Ansible YAML inventories reuse `serde_yaml`, already approved for the API workspace;
+  core now depends on it (and on `tokio-util` for `CancellationToken`). No new crates.
+- Production: a Fleet change (command, push, key add / remove) on any Production Host needs
+  the word PRODUCTION typed, checked again in core (`confirmed`), like bulk edits. The
+  dashboard probe and the key audit are read-only and skip it.
+- A per-Host timeout covers the job only, not opening the SSH session: a Host waiting on a
+  host-key or password prompt is not killed while the user answers.
+- "Differs from majority" compares a digest of exit status + stdout + stderr per Host; Hosts
+  still running are left out.
+- Ansible hosts without `ansible_ssh_private_key_file` import with SSH agent auth (what
+  Ansible itself falls back to), not password.
+- Keys are compared by their decoded blob (type + key), never the comment or options; the
+  key the session authenticated with (`SshConn::auth_key`, also through an agent) is never
+  removed. A password login has no session key, so removal relies on the confirmation.
+- `SshConn::run_command_io` (stdin, cancel, streamed output with caps) is separate from
+  runbooks' `run_command_streaming`; both landed the same day and merging them is a
+  follow-up refactor.
+- Fleet is not exposed to MCP / agents: `run_ssh_command`'s per-command approval stays the
+  only agent path to a Host.
+
