@@ -16,6 +16,7 @@ pub mod http;
 mod import_export;
 mod model;
 mod persistence_safety;
+pub mod protocol;
 pub mod runtime;
 pub mod script;
 pub mod secrets;
