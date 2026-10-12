@@ -36,9 +36,19 @@ pub fn expand_home(arg: &str) -> String {
 fn extra_dirs() -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = Vec::new();
     if cfg!(windows) {
-        v.push(PathBuf::from(
-            r"C:\Program Files\Docker\Docker\resources\bin",
-        ));
+        v.extend(
+            [
+                r"C:\Program Files\Docker\Docker\resources\bin",
+                r"C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin",
+                r"C:\Program Files (x86)\Microsoft SDKs\Azure\CLI2\wbin",
+                r"C:\Program Files\Amazon\AWSCLIV2",
+                r"C:\Program Files (x86)\Google\Cloud SDK\google-cloud-sdk\bin",
+            ]
+            .map(PathBuf::from),
+        );
+        if let Some(l) = std::env::var_os("LOCALAPPDATA") {
+            v.push(PathBuf::from(l).join(r"Google\Cloud SDK\google-cloud-sdk\bin"));
+        }
     } else {
         v.extend(
             [
@@ -75,11 +85,28 @@ fn extra_dirs() -> Vec<PathBuf> {
     v
 }
 
-fn executable_names(name: &str) -> Vec<String> {
-    if cfg!(windows) && Path::new(name).extension().is_none() {
-        vec![format!("{name}.exe"), name.to_owned()]
-    } else {
-        vec![name.to_owned()]
+/// Extensions Windows can start. The Azure CLI and gcloud are batch files (`az.cmd`), and
+/// their folders also hold an extensionless shell script for Git Bash and WSL: starting
+/// that fails with "%1 is not a valid Win32 application" (os error 193).
+const WINDOWS_EXTS: [&str; 4] = ["exe", "com", "cmd", "bat"];
+
+/// The files that can start `path`, best first. On Windows a path without an extension
+/// tries each of [`WINDOWS_EXTS`] (never the bare name) and any other extension is
+/// refused; elsewhere it is `path` itself. `std` runs `.cmd` / `.bat` through `cmd.exe`
+/// with its own argument quoting.
+fn candidates(path: &Path, windows: bool) -> Vec<PathBuf> {
+    if !windows {
+        return vec![path.to_path_buf()];
+    }
+    match path.extension().and_then(|e| e.to_str()) {
+        None => WINDOWS_EXTS
+            .iter()
+            .map(|e| path.with_extension(e))
+            .collect(),
+        Some(e) if WINDOWS_EXTS.contains(&e.to_ascii_lowercase().as_str()) => {
+            vec![path.to_path_buf()]
+        }
+        Some(_) => Vec::new(),
     }
 }
 
@@ -102,8 +129,9 @@ pub fn find_named(name: &str) -> Option<PathBuf> {
         return None;
     }
     if name.contains('/') || name.contains('\\') {
-        let p = PathBuf::from(&name);
-        return p.is_file().then_some(p);
+        return candidates(Path::new(&name), cfg!(windows))
+            .into_iter()
+            .find(|p| p.is_file());
     }
     let path_dirs = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
@@ -111,7 +139,7 @@ pub fn find_named(name: &str) -> Option<PathBuf> {
     path_dirs
         .into_iter()
         .chain(extra_dirs())
-        .flat_map(|d| executable_names(&name).into_iter().map(move |n| d.join(n)))
+        .flat_map(|d| candidates(&d.join(&name), cfg!(windows)))
         .find(|p| p.is_file())
 }
 
@@ -333,6 +361,24 @@ mod tests {
                 Some(PathBuf::from("/bin/sh"))
             );
         }
+    }
+
+    #[test]
+    fn windows_skips_extensionless_scripts() {
+        let p = |s: &str| PathBuf::from(s);
+        assert_eq!(
+            candidates(Path::new("wbin/az"), true),
+            ["wbin/az.exe", "wbin/az.com", "wbin/az.cmd", "wbin/az.bat"].map(p)
+        );
+        assert_eq!(
+            candidates(Path::new("bin/gcloud.CMD"), true),
+            [p("bin/gcloud.CMD")]
+        );
+        assert_eq!(
+            candidates(Path::new("bin/gcloud.ps1"), true),
+            Vec::<PathBuf>::new()
+        );
+        assert_eq!(candidates(Path::new("bin/az"), false), [p("bin/az")]);
     }
 
     #[test]
