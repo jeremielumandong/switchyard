@@ -47,7 +47,7 @@ pub(super) fn icon(name: &'static str, size: f32, color: Hsla) -> Svg {
         .text_color(color)
 }
 
-fn dot(size: f32, color: Hsla) -> Div {
+pub(super) fn dot(size: f32, color: Hsla) -> Div {
     div()
         .size(rpx(size))
         .flex_none()
@@ -92,7 +92,7 @@ fn underline_tab(id: String, label: impl Into<SharedString>, active: bool, cx: &
 }
 
 /// A tinted verb (`GET`, `POST`…) in a fixed-width mono column.
-fn verb(label: impl Into<SharedString>, tint: Hsla, width: f32, cx: &App) -> Div {
+pub(super) fn verb(label: impl Into<SharedString>, tint: Hsla, width: f32, cx: &App) -> Div {
     div()
         .w(rpx(width))
         .flex_none()
@@ -162,7 +162,7 @@ fn ai_button(
 }
 
 /// The accent (`#7c8cff`) call to action: Send, Import, Run.
-fn accent_button(
+pub(super) fn accent_button(
     id: String,
     label: impl Into<SharedString>,
     height: f32,
@@ -238,7 +238,7 @@ pub(super) fn code_box(cx: &App) -> Div {
 }
 
 /// The tinted note (`border tint .35 · bg tint .06`) with an optional icon.
-fn note_card(
+pub(super) fn note_card(
     tint: Hsla,
     name: Option<&'static str>,
     body: impl Into<SharedString>,
@@ -319,11 +319,11 @@ pub(super) fn header_cells(labels: &[&str]) -> Vec<AnyElement> {
         .collect()
 }
 
-fn cell(text: impl Into<SharedString>) -> AnyElement {
+pub(super) fn cell(text: impl Into<SharedString>) -> AnyElement {
     div().truncate().child(text.into()).into_any_element()
 }
 
-fn tinted_cell(text: impl Into<SharedString>, color: Hsla) -> AnyElement {
+pub(super) fn tinted_cell(text: impl Into<SharedString>, color: Hsla) -> AnyElement {
     div()
         .truncate()
         .text_color(color)
@@ -341,7 +341,7 @@ fn tick(enabled: bool, cx: &App) -> AnyElement {
 }
 
 /// A pill (`padding 2px 8px; radius 9999`) on the raised surface.
-fn pill(label: impl Into<SharedString>, fg: Hsla, cx: &App) -> Div {
+pub(super) fn pill(label: impl Into<SharedString>, fg: Hsla, cx: &App) -> Div {
     div()
         .flex_none()
         .px(space::SP_2)
@@ -543,7 +543,7 @@ fn request_move_menu(
 }
 
 /// Which mock tint a status code takes: 2xx success, 4xx warm, else danger.
-fn status_tint(status: u16, cx: &App) -> Hsla {
+pub(super) fn status_tint(status: u16, cx: &App) -> Hsla {
     let colors = cx.theme().colors;
     if (200..300).contains(&status) {
         colors.success
@@ -633,6 +633,8 @@ impl Render for WorkbenchPanel {
             Tab::Environments => self.render_envs(window, cx),
             Tab::History => self.render_history(window, cx),
             Tab::Diff => self.render_diff(cx),
+            Tab::Load => self.render_load_test(window, cx),
+            Tab::Mocks => self.render_mocks(window, cx),
         };
         div()
             .id("api-workbench")
@@ -3289,6 +3291,7 @@ impl WorkbenchPanel {
                     .into_any_element()
             }
             (ResponseTab::Trace, Some(response)) => self.render_trace(response, cx),
+            (ResponseTab::Contract, Some(_)) => self.render_contract(cx),
             (ResponseTab::Tests, Some(response)) => {
                 if response.test_results.is_empty() {
                     div()

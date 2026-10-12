@@ -34,6 +34,10 @@ Licensed under Apache-2.0.
     <td><img src="docs/screenshots/api-runner.png" alt="API explorer collection runner with per-request results"><br><sub><b>Collection runs</b> with iteration data and AI-generated sample data.</sub></td>
   </tr>
   <tr>
+    <td><img src="docs/screenshots/api-load.png" alt="Load test of a request with latency percentiles, throughput, a latency histogram and requests per second"><br><sub><b>Load tests</b>: p50 / p95 / p99, throughput and errors, live, with a pass / fail budget.</sub></td>
+    <td><img src="docs/screenshots/api-mocks.png" alt="Mock server serving a collection's examples with chaos settings and a call log"><br><sub><b>Mock servers</b> from saved examples, with chaos and record mode.</sub></td>
+  </tr>
+  <tr>
     <td><img src="docs/screenshots/servers.png" alt="Servers view grouped by folder with the workspace menu open"><br><sub><b>Server workspaces</b>: per-team views, a Servers list with OS and reachability, RDP / VNC.</sub></td>
     <td><img src="docs/screenshots/fleet.png" alt="Fleet run of one command on four Hosts with one Host's output expanded"><br><sub><b>Fleet</b>: one command on many Hosts, with the outlier easy to spot.</sub></td>
   </tr>
@@ -373,6 +377,14 @@ test the API in front of a database without opening another tool.
     <td><img src="docs/screenshots/api-import.png" alt="Import review of a Postman collection with parser findings"></td>
     <td><img src="docs/screenshots/api-runner.png" alt="Collection runner results"></td>
   </tr>
+  <tr>
+    <td><img src="docs/screenshots/api-load.png" alt="Load test results with latency percentiles, histogram and per-second throughput"></td>
+    <td><img src="docs/screenshots/api-mocks.png" alt="Local mock server with routes, chaos settings and a call log"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/api-contract.png" alt="Contract tab listing a removed field and a type change against earlier responses"></td>
+    <td></td>
+  </tr>
 </table>
 
 - **Projects** hold collections, folders and requests; rename or delete a project from the
@@ -396,6 +408,19 @@ test the API in front of a database without opening another tool.
   results show next to the response.
 - **Runner**: run a folder or collection with CSV or JSON iteration data, a seed, a delay and
   stop on first error; describe a scenario and let the assistant generate the data.
+- **Load tests**: send the open request thousands of times from up to 64 workers, by count
+  or for a duration, and watch p50 / p95 / p99, throughput, error rate, status codes and a
+  per-second timeline update live; set a p95 and error budget for a pass / fail verdict.
+- **Mock servers**: serve a collection's saved examples on localhost with one click.
+  `:id` and `{{id}}` path segments match anything, Postman's `x-mock-response-name` and
+  `x-mock-response-code` headers pick an example, CORS is open for browser apps, and every
+  call is logged. **Chaos** adds latency and a share of injected 500s to test a client's
+  timeouts and retries; **record mode** forwards calls no example matches to the real API
+  and saves what it answered as new requests and examples, so the mock fills itself.
+- **Contract drift**: every JSON response is checked against the shape learned from the
+  request's earlier responses and examples. Removed fields and type changes are flagged as
+  breaking, new fields as additive, with no schema to write; copy the learned shape as JSON
+  Schema.
 - **Response panel**: Pretty (JSONPath / XPath filter) and Raw views, headers, trace, test
   results and console, with copy actions everywhere. Cookies carry between requests;
   History and Diff tabs sit beside Compose.

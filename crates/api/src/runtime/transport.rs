@@ -150,7 +150,7 @@ impl FileCapabilities {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Response {
     pub console: Vec<crate::ConsoleEntry>,
     pub status: u16,

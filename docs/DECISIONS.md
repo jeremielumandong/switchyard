@@ -1668,3 +1668,26 @@ Decisions:
   the safer default: nothing on this computer reaches the server.
 - History: one entry per session tagged `rdp` (user, address, port, "(SSH tunnel)"), with
   duration and error. Nothing here is exposed to MCP or `swy`.
+
+## API explorer: load tests and mock servers (2026-10-12)
+
+- Load tests reuse the Workbench service and its SSRF checks instead of a separate HTTP
+  client: every send is one service operation, so Stop reaches the sockets in flight. The
+  service builds a client pinned to the validated addresses per send, so each request opens
+  its own connection; the tab says so and shows mean connect / TLS phases. Latency is the
+  service's own timing of the exchange, not the hop to it.
+- The service's operation table keeps finished operations for 5 minutes and refused new
+  ones at 1,024; at capacity it now drops the oldest *completed* ones (cancel reservations
+  stay, so a cancelled operation still cannot start).
+- Load tests to a Production environment always confirm, even GET: the risk is the
+  traffic, not the method.
+- Mock servers listen on 127.0.0.1 only, with a hand-written HTTP/1.1 responder on core's
+  runtime (no new dependency; one request per connection, `Connection: close`). Example
+  selection follows Postman's mock headers so imported collections behave the same.
+- Contract drift is inferred, not declared: the "contract" is the union of shapes the API
+  has already returned for this request and status. A field missing from some samples is
+  optional and never reported as removed; drift is checked only against bodies that differ
+  from the shown one, so resending an unchanged API says "identical" instead of "matches".
+- Mock chaos applies to matched calls only; forwarded (recorded) calls pass through as the
+  upstream answered, so a recording never stores an injected failure. Recorded calls carry
+  no cookies or dates, and the upstream is reached with the app's TLS settings.
