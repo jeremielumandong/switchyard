@@ -273,6 +273,9 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
 - gpui-base's window text selection copies on the `Root` context's Ctrl/Cmd+C, but a focused
   `Input` takes that key first and copies its own (empty) selection. A view whose selectable
   text sits beside an input focuses itself on mouse down (`assistant_panel.rs` transcript).
+- The Azure CLI and gcloud on Windows are batch files (`az.cmd`) whose folders also hold an
+  extensionless shell script; spawning the bare name gives "%1 is not a valid Win32
+  application" (os error 193). Resolve `.exe`/`.cmd`/`.bat` only (`containers::local`).
 - Pageant comes with russh on Windows (`AgentClient::connect_pageant`, `pageant` crate,
   Apache-2.0); no feature flag.
 - suppaftp 12: `connect_secure_implicit` sends no `PBSZ 0` / `PROT P` but still wraps data
