@@ -827,6 +827,7 @@ impl TfTab {
                             let key = key.clone();
                             div()
                                 .id(("tf-g", i))
+                                .w_full()
                                 .h(rpx(ROW_H))
                                 .flex()
                                 .items_center()
@@ -869,6 +870,7 @@ impl TfTab {
                             let ix = *ix;
                             div()
                                 .id(("tf-i", i))
+                                .w_full()
                                 .h(rpx(ROW_H))
                                 .flex()
                                 .items_center()
@@ -964,6 +966,7 @@ impl TfTab {
                             let key = format!("{prefix}{}", r.path);
                             div()
                                 .id(("tf-a", i))
+                                .w_full()
                                 .h(rpx(ROW_H))
                                 .flex()
                                 .items_center()
@@ -1237,6 +1240,7 @@ impl TfTab {
                 range
                     .map(|i| {
                         let base = div()
+                            .w_full()
                             .h(rpx(ROW_H))
                             .flex()
                             .items_center()

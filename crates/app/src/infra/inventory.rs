@@ -599,6 +599,7 @@ impl InventoryTab {
                         ];
                         let mut row = div()
                             .id(("inv-r", i))
+                            .w_full()
                             .h(rpx(ROW_H))
                             .flex()
                             .items_center()
