@@ -200,6 +200,12 @@ pub enum CommandId {
     ManageSnippets,
     /// Open the secret vault (named secrets).
     ManageSecrets,
+    /// A new runbook tab.
+    NewRunbook,
+    /// Pick a runbook to open.
+    OpenRunbook,
+    /// Import a runbook from a JSON file.
+    ImportRunbook,
     /// ER diagram of the schema under the tree cursor (DBX-5d).
     ErDiagram,
     SplitRight,
@@ -346,6 +352,9 @@ pub fn palette_commands() -> Vec<PaletteCommand> {
         c(ShowActivity, "Activity Monitor", "Editor", "".into()),
         c(ManageSnippets, "Manage Snippets…", "Editor", "".into()),
         c(ManageSecrets, "Secret Vault…", "Connections", "".into()),
+        c(NewRunbook, "New Runbook", "Runbooks", "".into()),
+        c(OpenRunbook, "Open Runbook…", "Runbooks", "".into()),
+        c(ImportRunbook, "Import Runbook…", "Runbooks", "".into()),
         c(RefreshSchema, "Refresh Schema", "Schema", "".into()),
         c(
             ErDiagram,

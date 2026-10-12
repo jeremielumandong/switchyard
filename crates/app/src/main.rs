@@ -40,6 +40,7 @@ mod redis_tab;
 mod remote_files;
 mod result_diff;
 mod rich_text;
+mod runbook_tab;
 mod sidebar;
 mod snippets;
 mod split;
