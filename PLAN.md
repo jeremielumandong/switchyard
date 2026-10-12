@@ -1051,6 +1051,25 @@ are shared hotspots: one owner at a time.
   confirms and removes the project's collections, environments, history, runs, cookies,
   globals and tabs (`WorkbenchStore::delete_workspace`).
 
+## Extra — API explorer (user request, 2026-10-12)
+
+- [x] APX-1 Load tests (Workbench "Load test" tab): the open HTTP request compiles once like
+  Send, then `runtime::load` sends it N times or for a duration from up to 64 workers, each
+  send its own service operation (Stop cancels the ones in flight). Live p50/p90/p95/p99,
+  mean, max, req/s, error rate, status codes, top errors, mean connect / TLS / first-byte
+  phases, a latency histogram and a per-second timeline; optional pass/fail budgets
+  (p95 ms, error %). Production environments always confirm first, whatever the method.
+  The service now forgets the oldest completed operations when its 1,024-entry table is full
+  (it kept them 5 minutes, so a big test locked out every send).
+  Note: post-response scripts do not run per request; no ramp-up, no history entry.
+- [x] APX-2 Local mock servers (Workbench "Mocks" tab): `switchyard_api::mock` serves a
+  collection's saved examples on `127.0.0.1` (port picked or typed): `:id` / `{id}` /
+  `{{id}}` path segments match anything, the most specific route wins, Postman's
+  `x-mock-response-name` / `x-mock-response-code` pick an example (else the first 2xx),
+  CORS preflights answered, 404 / 405 list the served routes. A call log per server.
+  Note: a small HTTP/1.1 responder (one request per connection), no new dependency;
+  examples are read at start (restart to pick up new ones); no response delays or templating.
+
 ## Extra — Containers (user request, 2026-10-12)
 
 - [x] CT-1 `switchyard-containers` crate: build `docker` / `kubectl` / `az` / `gcloud` / `aws`
@@ -1247,6 +1266,10 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 ## Follow-ups
 
 - SQLite: a "New database file" save dialog in the connection editor (today a typed path is created on connect).
+
+- API explorer: GraphQL schema introspection and field completion; load-test ramp-up
+  stages and connection reuse (the service builds a pinned client per send); load tests
+  and mock calls in History; mock response delays and templated bodies.
 
 - API Workbench streams: record WebSocket / SSE / gRPC sessions in History, AWS SigV4
   and per-connection pinned TLS exceptions for them, and deleting a project's vault

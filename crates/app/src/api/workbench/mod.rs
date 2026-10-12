@@ -16,7 +16,9 @@ mod environment_label;
 mod globals;
 mod keys;
 mod layout;
+mod load_test;
 mod login;
+mod mocks;
 mod move_request;
 mod persistence;
 mod pretty;
@@ -79,7 +81,10 @@ use crate::api::compat::theme::tokens::{radius, space};
 use crate::api::compat::theme::{palette, text};
 use crate::api::compat::{AnyInput, TextValue};
 
-pub use keys::{FocusUrl, ShowCompose, ShowDiff, ShowEnvs, ShowHistory, ShowImport, ShowRunner};
+pub use keys::{
+    FocusUrl, ShowCompose, ShowDiff, ShowEnvs, ShowHistory, ShowImport, ShowLoadTest, ShowMocks,
+    ShowRunner,
+};
 
 /// Key scope for request-draft commands such as Save.
 pub const KEY_CONTEXT: &str = "Workbench";
@@ -106,16 +111,20 @@ enum Tab {
     Environments,
     History,
     Diff,
+    Load,
+    Mocks,
 }
 
 impl Tab {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 8] = [
         Self::Compose,
         Self::Import,
         Self::Data,
         Self::Environments,
         Self::History,
         Self::Diff,
+        Self::Load,
+        Self::Mocks,
     ];
 
     fn id(self) -> &'static str {
@@ -126,6 +135,8 @@ impl Tab {
             Self::Environments => "envs",
             Self::History => "history",
             Self::Diff => "diff",
+            Self::Load => "load",
+            Self::Mocks => "mocks",
         }
     }
 
@@ -137,6 +148,8 @@ impl Tab {
             Self::Environments => "Envs",
             Self::History => "History",
             Self::Diff => "Diff",
+            Self::Load => "Load test",
+            Self::Mocks => "Mocks",
         }
     }
 }
@@ -538,6 +551,10 @@ pub struct WorkbenchPanel {
     _export_work: Option<gpui_kit::Task<()>>,
     assist_generation: u64,
     _assist_work: Option<gpui_kit::Task<()>>,
+    /// The Load test tab.
+    load_test: load_test::LoadTestState,
+    /// The Mocks tab and its running servers.
+    mocks: mocks::MockState,
 }
 
 impl WorkbenchPanel {
@@ -994,6 +1011,8 @@ impl WorkbenchPanel {
             _export_work: None,
             assist_generation: 0,
             _assist_work: None,
+            load_test: load_test::LoadTestState::new(window, cx),
+            mocks: mocks::MockState::new(window, cx),
         };
         let environment = panel
             .workspace_data
@@ -6176,10 +6195,12 @@ mod tests {
     use switchyard_api::{HttpMethod, RequestSettings, RowId, SecretRef};
 
     #[test]
-    fn workbench_exposes_the_six_specified_tabs_in_order() {
+    fn workbench_exposes_its_tabs_in_order() {
         assert_eq!(
             Tab::ALL.map(Tab::id),
-            ["compose", "import", "data", "envs", "history", "diff"]
+            [
+                "compose", "import", "data", "envs", "history", "diff", "load", "mocks"
+            ]
         );
         assert_eq!(
             SNIPPET_LANGUAGES.map(|(_, label)| label),
