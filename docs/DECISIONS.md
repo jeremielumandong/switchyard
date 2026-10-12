@@ -1467,3 +1467,20 @@ Decisions:
   Server, MySQL) or a note to switch the tab's database (PostgreSQL reconnects).
 - `ColumnInfo::identity` was added (serde default) rather than folding identity into the
   type or default, so the explorer's columns are unchanged.
+
+## 2026-10-12 — Runbooks (user request)
+
+- Runbooks are a store document (one JSON per row) rather than normalized tables: steps
+  are heterogeneous and only ever read whole. A secret parameter's value is a keychain /
+  vault item keyed by runbook id; `Runbook::sanitized` clears it from anything stored or
+  exported.
+- SQL parameters: plain values are inlined as dialect literals (shown before running, so
+  the user sees exactly what runs) instead of bound, because bound text parameters fail on
+  typed comparisons in PostgreSQL; secret values are always bound so they never reach the
+  SQL kept in history.
+- The run engine lives in core as a pure state machine and the tab drives it; steps run
+  through core commands (SQL reuses `Service::execute` for Production confirmation,
+  streaming, cancel and history).
+- HTTP steps allow private networks (on-call targets are often internal) and treat a
+  4xx / 5xx answer as a failed step, which stops a run.
+
