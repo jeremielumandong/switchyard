@@ -56,6 +56,7 @@ mod fleet;
 mod infra;
 mod named_secrets;
 pub(crate) use named_secrets::NamedSecrets;
+mod rdp;
 mod redis;
 mod runbook;
 mod schema_compare;
@@ -249,6 +250,8 @@ pub struct Service {
     container_forwards: Mutex<HashMap<u64, containers::ForwardSlot>>,
     /// Reachability checks and launched remote desktop clients.
     servers_state: servers::ServersState,
+    /// In-app RDP sessions, by the tab's session id.
+    rdp_sessions: rdp::RdpSessions,
 }
 
 /// Run one statement and drain its results (session settings such as `USE`).
@@ -382,6 +385,7 @@ impl Service {
             container_ops: Mutex::default(),
             container_forwards: Mutex::default(),
             servers_state: servers::ServersState::default(),
+            rdp_sessions: rdp::RdpSessions::default(),
             package_runner: config
                 .package_runner
                 .clone()
@@ -437,6 +441,8 @@ impl Service {
                     self.prompter.answer(request, answer);
                     continue;
                 }
+                // RDP input must reach the session in order: not through a task each.
+                Command::Rdp(c) if self.rdp_now(&c) => continue,
                 Command::StartHandoff { data_dir } => {
                     tokio::spawn(crate::handoff::serve(
                         crate::handoff::handoff_file(&data_dir),
@@ -1390,6 +1396,7 @@ impl Service {
             }
             Command::Fleet(c) => self.fleet(c).await,
             Command::Servers(c) => self.servers(c).await,
+            Command::Rdp(c) => self.rdp(c).await,
             Command::PreviewSshConfig => match self.preview_ssh_config().await {
                 Ok((path, hosts)) => self.emit(Event::SshConfigPreview { path, hosts }),
                 Err(e) => self.error("Read ssh config", e),

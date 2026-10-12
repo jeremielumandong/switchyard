@@ -155,6 +155,10 @@ pub struct DesktopServer {
     /// Operating system shown in the Servers view (`Windows Server 2022`).
     #[serde(default)]
     pub os: Option<String>,
+    /// SHA-256 fingerprint (`AB:CD:…`) of the TLS certificate the user pinned for the
+    /// in-app RDP client; a different certificate is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_pin: Option<String>,
 }
 
 impl DesktopServer {
@@ -178,6 +182,7 @@ impl DesktopServer {
             folder: None,
             tags: Vec::new(),
             os: None,
+            tls_pin: None,
         }
     }
 }
