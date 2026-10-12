@@ -249,6 +249,10 @@ pub enum CommandId {
     OpenCloud(switchyard_core::store::CloudService),
     /// Open the first saved connection of an engine, or add one.
     OpenEngine(switchyard_core::db::Engine),
+    /// Open the first saved Docker / Kubernetes connection, or add one.
+    OpenContainers(switchyard_core::store::ContainerPlatform),
+    /// New Docker connection / Add Kubernetes cluster.
+    AddContainers(switchyard_core::store::ContainerPlatform),
 }
 
 /// A palette entry.
@@ -285,6 +289,18 @@ pub fn palette_commands() -> Vec<PaletteCommand> {
             k("⌘N", "Ctrl+N"),
         ),
         c(NewHost, "New Host…", "Connections", "".into()),
+        c(
+            AddContainers(switchyard_core::store::ContainerPlatform::Kubernetes),
+            "Add Kubernetes Cluster…",
+            "Connections",
+            "".into(),
+        ),
+        c(
+            AddContainers(switchyard_core::store::ContainerPlatform::Docker),
+            "New Docker Connection…",
+            "Connections",
+            "".into(),
+        ),
         c(
             ImportSshConfig,
             "Import Hosts from ~/.ssh/config",

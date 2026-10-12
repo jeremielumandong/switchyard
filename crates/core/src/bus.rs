@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use secrecy::SecretString;
 use switchyard_cloud::{KvCaps, KvItem, KvPage, KvQuery, KvWrite};
+use switchyard_containers::ContainersError;
 use switchyard_db::guard::Destructive;
 use switchyard_db::{
     CatalogChunk, ColumnMeta, Completion, DbError, IntrospectScope, Notice, RowBatch, Value,
@@ -196,6 +197,16 @@ pub enum TermTarget {
     },
     /// A shell on a saved Host over SSH.
     Host(ProfileId),
+    /// `docker exec -it` / `kubectl exec -it` into a container of a saved Docker or
+    /// Kubernetes connection, on this computer or on its Host.
+    Container {
+        /// The [`switchyard_store::ContainerConnection`].
+        connection: ProfileId,
+        /// Its kubeconfig / docker context override (the tab's choice).
+        context: Option<String>,
+        /// Which container.
+        shell: switchyard_containers::ShellTarget,
+    },
 }
 
 /// A session's current database and schema after [`Command::SetSessionContext`].
@@ -1004,6 +1015,141 @@ pub enum Command {
         /// The new key's fingerprint, as shown to the user.
         fingerprint: String,
     },
+    /// List containers, images, pods, … of a Docker or Kubernetes connection
+    /// ([`Event::ContainersListed`]). Runs the user's `docker` / `kubectl`.
+    ContainersList {
+        /// Request id (also cancels it, [`Command::ContainersCancel`]).
+        request: RequestId,
+        /// The [`switchyard_store::ContainerConnection`].
+        connection: ProfileId,
+        /// Docker / kubeconfig context instead of the connection's.
+        context: Option<String>,
+        /// What to list.
+        query: switchyard_containers::Query,
+    },
+    /// Inspect JSON, describe or YAML of one object ([`Event::ContainersInspected`]).
+    ContainersInspect {
+        /// Request id.
+        request: RequestId,
+        /// Connection.
+        connection: ProfileId,
+        /// Context override.
+        context: Option<String>,
+        /// What to show.
+        inspect: switchyard_containers::Inspect,
+    },
+    /// Start, stop, remove, scale, … ([`Event::ContainersActionDone`]). Refused on a
+    /// read-only connection; a destructive action on Production needs `confirmed` (the
+    /// user typed the object's name).
+    ContainersAction {
+        /// Request id.
+        request: RequestId,
+        /// Connection.
+        connection: ProfileId,
+        /// Context override.
+        context: Option<String>,
+        /// The action.
+        action: switchyard_containers::Action,
+        /// The user confirmed it (typed the name on Production).
+        confirmed: bool,
+    },
+    /// Read (and follow) logs: batches of [`Event::ContainersLog`], then
+    /// [`Event::ContainersLogEnded`]. [`Command::ContainersCancel`] stops it.
+    ContainersLogs {
+        /// Request id (the stream's id).
+        request: RequestId,
+        /// Connection.
+        connection: ProfileId,
+        /// Context override.
+        context: Option<String>,
+        /// Whose logs.
+        source: switchyard_containers::LogSource,
+        /// Tail, follow, timestamps.
+        options: switchyard_containers::LogOptions,
+    },
+    /// Stop a running containers request (kills the CLI).
+    ContainersCancel {
+        /// The request.
+        request: RequestId,
+    },
+    /// Start `kubectl port-forward` on this computer; kept running until stopped. State
+    /// changes arrive as [`Event::ContainerForwards`].
+    ContainersForward {
+        /// Forward id chosen by the UI.
+        id: u64,
+        /// Connection.
+        connection: ProfileId,
+        /// Context override.
+        context: Option<String>,
+        /// What to forward.
+        forward: switchyard_containers::PortForward,
+    },
+    /// Stop a port forward (or drop a failed one from the list).
+    ContainersStopForward {
+        /// Forward id.
+        id: u64,
+    },
+    /// Report the port forwards ([`Event::ContainerForwards`]).
+    ContainersListForwards,
+    /// Test a Docker / Kubernetes connection under edit ([`Event::TestResult`]): lists
+    /// running containers or namespaces. `secret` is a typed Rancher token.
+    TestContainers {
+        /// Request id.
+        request: RequestId,
+        /// The connection as edited.
+        connection: switchyard_store::ContainerConnection,
+        /// Rancher API token typed in the form (else the stored one).
+        secret: Option<SecretString>,
+    },
+    /// The kubeconfig contexts on this computer, with provider labels and missing exec
+    /// plugins ([`Event::KubeContexts`]), for "Add cluster".
+    KubeContexts {
+        /// Request id.
+        request: RequestId,
+        /// Kubeconfig file (`None`: `KUBECONFIG` or `~/.kube/config`).
+        kubeconfig: Option<String>,
+    },
+    /// List a cloud provider's clusters with its own CLI (`az aks list`, `gcloud
+    /// container clusters list`, `aws eks list-clusters`) ([`Event::ClustersDiscovered`]).
+    DiscoverClusters {
+        /// Request id.
+        request: RequestId,
+        /// AKS, GKE or EKS.
+        provider: switchyard_containers::clusters::ClusterProvider,
+        /// Region, profile, project.
+        options: switchyard_containers::clusters::DiscoverOptions,
+    },
+    /// Add a listed cluster's context to the user's kubeconfig with the provider CLI
+    /// (`az aks get-credentials`, …; then `kubelogin convert-kubeconfig` for Entra AKS)
+    /// ([`Event::ClusterCredentials`]).
+    AddClusterCredentials {
+        /// Request id.
+        request: RequestId,
+        /// The cluster.
+        cluster: switchyard_containers::clusters::CloudCluster,
+        /// AKS admin credentials (`--admin`).
+        admin: bool,
+    },
+    /// AWS CLI profile names from `~/.aws/config` and `credentials`
+    /// ([`Event::AwsProfiles`]).
+    AwsProfiles {
+        /// Request id.
+        request: RequestId,
+    },
+    /// List the clusters a Rancher server manages ([`Event::RancherClusters`]). The token is
+    /// the typed one, else `connection`'s stored one.
+    RancherClusters {
+        /// Request id.
+        request: RequestId,
+        /// Server URL.
+        server: String,
+        /// Typed API token.
+        token: Option<SecretString>,
+        /// A saved connection whose token to use.
+        connection: Option<ProfileId>,
+        /// A trusted PEM for a self-signed server.
+        trusted_ca_pem: Option<String>,
+    },
     /// Ask GitHub Releases for a newer version ([`Event::UpdateStatus`]).
     CheckForUpdates {
         /// The user asked (show "up to date" and failures, not only a newer version).
@@ -1621,6 +1767,78 @@ pub enum Event {
         /// Why, when the connection failed rather than the program exiting.
         message: Option<String>,
     },
+    /// Answer to [`Command::ContainersList`].
+    ContainersListed {
+        /// Request id.
+        request: RequestId,
+        /// The rows, or why not (a missing CLI is [`ContainersError::Missing`]).
+        result: Result<switchyard_containers::Listing, ContainersError>,
+    },
+    /// Answer to [`Command::ContainersInspect`].
+    ContainersInspected {
+        /// Request id.
+        request: RequestId,
+        /// The text.
+        result: Result<String, ContainersError>,
+    },
+    /// Answer to [`Command::ContainersAction`].
+    ContainersActionDone {
+        /// Request id.
+        request: RequestId,
+        /// What happened.
+        result: Result<String, ContainersError>,
+    },
+    /// New log lines of a [`Command::ContainersLogs`] stream.
+    ContainersLog {
+        /// The stream's request id.
+        request: RequestId,
+        /// Lines, oldest first.
+        lines: Vec<String>,
+    },
+    /// A log stream ended: the CLI exited, failed or was cancelled.
+    ContainersLogEnded {
+        /// The stream's request id.
+        request: RequestId,
+        /// `Ok` when it ended by itself or was cancelled.
+        result: Result<(), ContainersError>,
+    },
+    /// Answer to [`Command::KubeContexts`].
+    KubeContexts {
+        /// Request id.
+        request: RequestId,
+        /// The contexts.
+        result: Result<switchyard_containers::kube::Contexts, ContainersError>,
+    },
+    /// Answer to [`Command::DiscoverClusters`].
+    ClustersDiscovered {
+        /// Request id.
+        request: RequestId,
+        /// The clusters.
+        result: Result<Vec<switchyard_containers::clusters::CloudCluster>, ContainersError>,
+    },
+    /// Answer to [`Command::AddClusterCredentials`]: the context written.
+    ClusterCredentials {
+        /// Request id.
+        request: RequestId,
+        /// The kubeconfig context name.
+        result: Result<String, ContainersError>,
+    },
+    /// Answer to [`Command::AwsProfiles`].
+    AwsProfiles {
+        /// Request id.
+        request: RequestId,
+        /// Profile names (`default` first when present).
+        profiles: Vec<String>,
+    },
+    /// Answer to [`Command::RancherClusters`].
+    RancherClusters {
+        /// Request id.
+        request: RequestId,
+        /// The clusters.
+        result: Result<Vec<switchyard_containers::clusters::RancherCluster>, ContainersError>,
+    },
+    /// Every port forward and its state (sent whenever one changes).
+    ContainerForwards(Vec<ContainerForward>),
     /// A short confirmation for a toast.
     Toast(String),
     /// A background failure.
@@ -1748,4 +1966,28 @@ pub enum RedisOutcome {
     },
     /// The command was refused or the connection failed.
     Failed(String),
+}
+
+/// State of a `kubectl port-forward`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ForwardState {
+    /// Started, waiting for kubectl's "Forwarding from" line.
+    Starting,
+    /// Listening on 127.0.0.1 at this port.
+    Running(u16),
+    /// It exited; why.
+    Failed(String),
+}
+
+/// A port forward of a Kubernetes connection ([`Event::ContainerForwards`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContainerForward {
+    /// Id the UI chose.
+    pub id: u64,
+    /// Connection.
+    pub connection: ProfileId,
+    /// What it forwards.
+    pub forward: switchyard_containers::PortForward,
+    /// State.
+    pub state: ForwardState,
 }

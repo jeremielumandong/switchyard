@@ -871,6 +871,53 @@ are shared hotspots: one owner at a time.
   connection, Ctrl/⌘+D, dimmed "missing"; nodes saved as `explorer.connections` and restored
   "not connected". Deferred: pin reordering UI, cross-connection search, restoring expansion.
 
+## Extra — Containers (user request, 2026-10-12)
+
+- [x] CT-1 `switchyard-containers` crate: build `docker` / `kubectl` / `az` / `gcloud` / `aws`
+  calls and parse their JSON (no `Command` spawning outside it and core).
+  Note: `docker ps|images|volume ls|network ls --format {{json .}}`, `kubectl get -o json`
+  (pod status like `kubectl get pods`), `kubectl config view -o json`; recorded fixtures in
+  `crates/containers/testdata/` (Docker 29.8 recorded here; kubectl, az, gcloud, aws and
+  Rancher hand-written from their docs). `local.rs` finds the CLI on `PATH` plus installer
+  folders, runs it with `kill_on_drop` and a timeout, streams lines in 500-line / 80 ms batches.
+- [x] CT-2 Store: `Profile::Containers(ContainerConnection)` (Docker or Kubernetes; Host,
+  context, kubeconfig, namespace, CLI override, read-only, provider, Rancher source + token ref).
+- [x] CT-3 Core: `Command::Containers{List,Inspect,Action,Logs,Cancel,Forward,StopForward,
+  ListForwards}`, `TestContainers`; each request abortable (kills the CLI). Runs on this
+  computer or on the connection's Host over its shared SSH session (`SshConn::exec_stream`,
+  PTY for followed logs so the remote CLI dies with the channel). Read-only and Production
+  checks are repeated in core (`NeedsConfirmation` unless the UI says the name was typed).
+  Missing CLI → `ContainersError::Missing` (a hint card, not an error).
+- [x] CT-4 App: `containers_tab.rs` (Docker: containers running/all, images, volumes, networks;
+  start / stop / restart / remove; Kubernetes: context and namespace pickers incl. All
+  namespaces, pods, deployments, services, port forwards; describe / YAML / inspect in a
+  read-only editor; logs streamed into a capped (20k lines), filtered, virtualized pane with
+  follow, tail and container picker; scale and rollout restart; typed-name confirmation on
+  Production). "Open shell" opens a terminal tab with `docker exec -it … sh -c 'bash || sh'`
+  / `kubectl exec -it … --` (`TermTarget::Container`, local PTY or SSH PTY).
+- [x] CT-5 Port forwards: `kubectl port-forward --address 127.0.0.1`, kept running in core,
+  listed in the tab (state from kubectl's "Forwarding from" line), Copy URL, Stop.
+  Note: on this computer only (see Follow-ups).
+- [x] CT-6 Add cluster (AKS, GKE, EKS, Rancher, Local, kubeconfig context) in
+  `container_editor.rs`; New chooser cards "Docker" and "Kubernetes cluster"; Tools →
+  Containers; palette "Add Kubernetes Cluster…" / "New Docker Connection…".
+  Note: AKS `az aks list` + `get-credentials [--admin]` (+ `kubelogin convert-kubeconfig -l
+  azurecli` for Entra clusters), GKE `gcloud container clusters list` + `get-credentials
+  --region|--zone --project`, EKS `aws eks list-clusters` / `describe-cluster` (region and
+  profile pickers, profiles read from `~/.aws/config` and `credentials`) + `update-kubeconfig`.
+  Rancher: `GET /v3/clusters`, `POST /v3/clusters/<id>?action=generateKubeconfig` with reqwest
+  (TLS on, optional per-connection PEM), token in the keychain / vault, kubeconfig written to
+  `<data dir>/kubeconfigs/<id>.yaml` (0600) and refreshed once on a sign-in error.
+- [x] CT-7 Provider labels and auth plugins: each context is labelled AKS / GKE / EKS /
+  Rancher / Local (kind, minikube, k3d, k3s, Docker Desktop, Rancher Desktop, …) / Other
+  from its server URL, names and `users[].exec.command`; a missing exec plugin (kubelogin,
+  gke-gcloud-auth-plugin, aws) shows an install hint; kubectl auth failures become a
+  "sign-in expired: run az login / gcloud auth login / aws sso login" card.
+  Verified: unit tests on recorded kubeconfigs and az / gcloud / aws / Rancher JSON; a stand-in
+  kubectl script through core (`core/tests/containers.rs`); Docker against a real daemon
+  (`containers/tests/docker.rs`, `core/tests/containers.rs::docker_through_core`, ignored).
+  Not verified against a real cluster, cloud account or Rancher server (none here).
+
 ## M6 — Packaging and beta
 
 Exit: every performance budget passes on all three platforms; signed builds published.
@@ -1007,3 +1054,11 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 - Durable Objects (DO-1): pick the namespace and object from lists in the connection form
   (`GET …/durable_objects/namespaces`, `…/namespaces/{id}/objects`, which only lists objects
   that have stored data); open several objects of one namespace from the sidebar.
+- Containers: port forwards on a Host (run `kubectl port-forward` there and tunnel the port
+  over the shared SSH session); cloud cluster discovery (az / gcloud / aws) and Rancher on a
+  Host; container actions written to history; per-context subtree in the Explorer; MCP tools
+  (read-only listing / logs) once agent rules for clusters are decided; Docker
+  compose-project grouping, image pull / prune, `docker stats`; exec container picker before
+  "Open shell" on multi-container pods (today: the first container); remove the managed
+  Rancher kubeconfig of a connection deleted while the app was closed; test Rancher against a
+  real server (only unit-tested on recorded JSON).

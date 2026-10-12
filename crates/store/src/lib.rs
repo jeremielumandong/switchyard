@@ -16,10 +16,10 @@ pub use error::{Result, StoreError};
 pub use favorites::Favorite;
 pub use macros::Macro;
 pub use model::{
-    BufferState, CloudAuth, CloudConnection, CloudProvider, CloudService, DbConnection,
-    EnvironmentLabel, FileConnection, FileProtocol, ForwardDirection, FtpMode, FtpTls, Host,
-    HostPatch, PortForward, Profile, ProfileId, SecretRef, SshAuth, TerminalColors,
-    TerminalProfile, ValidationError, Workspace,
+    BufferState, CloudAuth, CloudConnection, CloudProvider, CloudService, ContainerConnection,
+    ContainerPlatform, DbConnection, EnvironmentLabel, FileConnection, FileProtocol,
+    ForwardDirection, FtpMode, FtpTls, Host, HostPatch, PortForward, Profile, ProfileId,
+    RancherSource, SecretRef, SshAuth, TerminalColors, TerminalProfile, ValidationError, Workspace,
 };
 pub use named_secrets::{NamedSecret, NamedSecretSource};
 pub use paths::AppPaths;

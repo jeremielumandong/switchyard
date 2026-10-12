@@ -1399,3 +1399,34 @@ Decisions:
   signed in with an access key cannot resolve references.
 - Bulk edits run one by one (neither service has transactions) and report "X of N done"
   with each failure; restoring a revision and every bulk delete or copy always confirm.
+
+## 2026-10-12 — Docker and Kubernetes through the user's CLIs (user request)
+
+- Docker and Kubernetes are driven by shelling out to the user's own `docker` and `kubectl`
+  (JSON output: `--format {{json .}}`, `-o json`) on the core runtime with `tokio::process`
+  (`kill_on_drop`, timeouts, abortable per request), not a Docker API or Kubernetes client
+  crate. It reuses the user's contexts, credential helpers and exec auth plugins exactly as
+  their terminal does, works the same on a Host (the command runs over the shared SSH
+  session), needs no new dependency, and lets `podman` stand in via the CLI override.
+- New workspace crate `switchyard-containers` (serde, serde_json, thiserror, tracing, tokio):
+  invocation building, output parsing and local process running. Direction: `core →
+  containers`; `core` re-exports it as `switchyard_core::containers` for the app.
+- Cloud clusters are added with each provider's own CLI (`az aks get-credentials`, `gcloud
+  container clusters get-credentials`, `aws eks update-kubeconfig`), which write the user's
+  kubeconfig; Switchyard stores no cloud credentials. Entra AKS contexts are converted with
+  `kubelogin convert-kubeconfig -l azurecli` (non-admin only).
+- Rancher has no CLI step: the API token is a secret of the connection (keychain or vault,
+  never in the profile JSON, logs or history). `GET /v3/clusters` and `generateKubeconfig`
+  use reqwest with certificate verification on; a self-signed server is trusted through a
+  per-connection PEM (text or file path) added to the roots, never by turning checks off.
+  The generated kubeconfig (it embeds a token) goes to `<data dir>/kubeconfigs/<id>.yaml`
+  with mode 0600, is passed with `--kubeconfig`, regenerated on a sign-in failure and deleted
+  with the connection.
+- Provider labels are inferred, not stored per context: server host suffixes (`azmk8s.io`,
+  `eks.amazonaws.com`, …), the exec plugin (`kubelogin`, `gke-gcloud-auth-plugin`, `aws`),
+  Rancher's `/k8s/clusters/` path, and local names / loopback servers.
+- Destructive actions (stop, restart, remove, delete pod, scale, rollout restart) on a
+  Production connection need the object's name typed; remove, delete, scale and rollout
+  restart always ask. Read-only connections refuse every action in core. Not exposed to MCP
+  in this round.
+

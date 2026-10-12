@@ -215,8 +215,12 @@ async fn run_shell(
     input: &mut mpsc::UnboundedReceiver<TermInput>,
     startup: &[u8],
     env: &[(String, String)],
+    command: Option<&str>,
 ) -> Result<ShellEnd, SshError> {
-    let mut ch = conn.open_shell_with_env(size.cols, size.rows, env).await?;
+    let mut ch = match command {
+        Some(c) => conn.open_exec_pty(size.cols, size.rows, env, c).await?,
+        None => conn.open_shell_with_env(size.cols, size.rows, env).await?,
+    };
     if !startup.is_empty() {
         // Typed like keystrokes; the shell reads them once its prompt is up.
         let _ = ch.data(startup).await;
@@ -271,6 +275,8 @@ pub struct SshTerminalSpec {
     pub startup: Vec<u8>,
     /// Environment variables sent with every new shell.
     pub env: Vec<(String, String)>,
+    /// Run this program on the PTY instead of the login shell (e.g. `docker exec -it`).
+    pub command: Option<String>,
 }
 
 /// A folder as a POSIX shell word: single-quoted, with a leading `~` or `~/` left
@@ -321,6 +327,7 @@ impl Terminals {
             mut size,
             startup,
             env,
+            command,
         } = spec;
         let (tx, mut rx) = mpsc::unbounded_channel::<TermInput>();
         let input: InputFn = Arc::new(move |msg| {
@@ -384,7 +391,17 @@ impl Terminals {
                         description: conn.description.clone(),
                     },
                 });
-                match run_shell(&conn, &mut size, &mut feeder, &mut rx, &startup, &env).await {
+                match run_shell(
+                    &conn,
+                    &mut size,
+                    &mut feeder,
+                    &mut rx,
+                    &startup,
+                    &env,
+                    command.as_deref(),
+                )
+                .await
+                {
                     Ok(ShellEnd::Exited(code)) => {
                         registry.remove(term);
                         events.emit(Event::TerminalExited {
