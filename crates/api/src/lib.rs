@@ -1,7 +1,7 @@
 //! The API workspace (a Postman-style client): collections, folders and saved requests,
 //! environments and variables, the request compiler, Postman / OpenAPI / HAR import and
-//! export, cookies, OAuth, snippets, response diffs, collection runs, native HTTP and the
-//! `pm.*` script sandbox.
+//! export, cookies, OAuth, snippets, response diffs, collection runs, load tests, local mock
+//! servers from saved examples, native HTTP and the `pm.*` script sandbox.
 //!
 //! Ported from AgentOps's API Workbench (MIT, same owner): `agentops-core::workbench`, plus
 //! the agent-service pieces it called over loopback HTTP (`native_routines` sending and
@@ -10,10 +10,12 @@
 //! core runtime sends them.
 
 mod compile;
+pub mod contract;
 mod cookie_jar;
 mod diff;
 pub mod http;
 mod import_export;
+pub mod mock;
 mod model;
 mod persistence_safety;
 pub mod protocol;

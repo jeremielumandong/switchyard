@@ -7,7 +7,7 @@
 <meta property="og:title" content="Switchyard">
 <meta property="og:image" content="screenshots/query.png">
 <link rel="icon" type="image/svg+xml" href="icon.svg">
-<script>window.__resources = {"shot_plan": "screenshots/plan.png", "shot_table_data": "screenshots/table-data.png", "shot_api_request": "screenshots/api-request.png", "shot_terminal": "screenshots/terminal.png", "shot_schema": "screenshots/schema.png", "shot_api_runner": "screenshots/api-runner.png", "shot_palette": "screenshots/palette.png", "shot_new_connection": "screenshots/new-connection.png", "shot_servers": "screenshots/servers.png", "shot_fleet": "screenshots/fleet.png", "shot_containers": "screenshots/containers.png", "shot_schema_compare": "screenshots/schema-compare.png", "shot_runbook": "screenshots/runbook.png", "shot_terraform": "screenshots/terraform.png", "shot_redis": "screenshots/redis.png", "https://unpkg.com/react@18.3.1/umd/react.production.min.js": "assets/react.production.min.js", "https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js": "assets/react-dom.production.min.js"};</script>
+<script>window.__resources = {"shot_plan": "screenshots/plan.png", "shot_table_data": "screenshots/table-data.png", "shot_api_request": "screenshots/api-request.png", "shot_terminal": "screenshots/terminal.png", "shot_schema": "screenshots/schema.png", "shot_api_runner": "screenshots/api-runner.png", "shot_api_load": "screenshots/api-load.png", "shot_api_mocks": "screenshots/api-mocks.png", "shot_api_contract": "screenshots/api-contract.png", "shot_palette": "screenshots/palette.png", "shot_new_connection": "screenshots/new-connection.png", "shot_servers": "screenshots/servers.png", "shot_fleet": "screenshots/fleet.png", "shot_containers": "screenshots/containers.png", "shot_schema_compare": "screenshots/schema-compare.png", "shot_runbook": "screenshots/runbook.png", "shot_terraform": "screenshots/terraform.png", "shot_redis": "screenshots/redis.png", "https://unpkg.com/react@18.3.1/umd/react.production.min.js": "assets/react.production.min.js", "https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js": "assets/react-dom.production.min.js"};</script>
 <script src="assets/dc-runtime.js"></script>
 </head>
 <body>
@@ -340,6 +340,7 @@ code{font-family:"Geist Mono",monospace}
       <a href="#demo" style="color:#b6b4ac">Demo</a>
       <a href="#tour" style="color:#b6b4ac">Tour</a>
       <a href="#features" style="color:#b6b4ac">Features</a>
+      <a href="#api" style="color:#b6b4ac">API</a>
       <a href="#databases" style="color:#b6b4ac">Databases</a>
       <a href="#agents" style="color:#b6b4ac">AI</a>
       <a href="#install" style="color:#b6b4ac">Install</a>
@@ -354,7 +355,7 @@ code{font-family:"Geist Mono",monospace}
     Native · Rust on GPUI · macOS / Windows / Linux
   </div>
   <h1 style="font-size:clamp(44px,7.4vw,96px);line-height:0.98;letter-spacing:-0.045em;font-weight:600;margin:22px 0 0;max-width:15ch;text-wrap:balance">Databases, terminals and tunnels on one track.</h1>
-  <p style="font-size:clamp(17px,1.6vw,20px);line-height:1.55;color:#a9a79f;max-width:62ch;margin:28px 0 0;text-wrap:pretty">A fast, native desktop app that puts database querying, SSH terminals, tunnels and file transfer behind one connection model. It visualizes query plans, finds optimization hotspots, and lets Claude Code, Codex or Gemini CLI optimize queries through a read-only MCP server. Server workspaces, fleet commands, Docker and Kubernetes, Terraform state, runbooks and an API workbench sit right beside it.</p>
+  <p style="font-size:clamp(17px,1.6vw,20px);line-height:1.55;color:#a9a79f;max-width:62ch;margin:28px 0 0;text-wrap:pretty">A fast, native desktop app that puts database querying, SSH terminals, tunnels and file transfer behind one connection model. It visualizes query plans, finds optimization hotspots, and lets Claude Code, Codex or Gemini CLI optimize queries through a read-only MCP server. Server workspaces, fleet commands, Docker and Kubernetes, Terraform state, runbooks and an API workbench with load tests, local mocks and contract checks sit right beside it.</p>
 
   <div id="install" style="margin-top:40px;max-width:720px;border:1px solid #2a2925;border-radius:12px;background:#141412;overflow:hidden">
     <div style="display:flex;border-bottom:1px solid #2a2925;padding:0 6px">
@@ -396,7 +397,7 @@ code{font-family:"Geist Mono",monospace}
   </div>
   <div style="display:flex;flex-wrap:wrap;gap:20px;margin-top:40px;align-items:flex-start">
     <div style="flex:1 1 260px;display:flex;flex-direction:column;gap:2px">
-      <sc-for list="{{ shots }}" as="s" hint-placeholder-count="15">
+      <sc-for list="{{ shots }}" as="s" hint-placeholder-count="18">
         <button sc-camel-on-click="{{ s.select }}" style="text-align:left;font-family:Geist,sans-serif;background:{{ s.bg }};border:1px solid {{ s.border }};border-radius:9px;padding:13px 16px;cursor:pointer;display:grid;grid-template-columns:28px 1fr;gap:4px 8px;color:#ecebe6">
           <span style="font-family:'Geist Mono',monospace;font-size:11px;color:{{ s.numColor }};padding-top:3px">{{ s.num }}</span>
           <span style="font-size:15px;font-weight:600;color:{{ s.titleColor }}">{{ s.title }}</span>
@@ -430,6 +431,37 @@ code{font-family:"Geist Mono",monospace}
         </ul>
       </div>
     </sc-for>
+  </div>
+</section>
+
+<section id="api" style="max-width:1200px;margin:0 auto;padding:140px 24px 0">
+  <div style="font-family:'Geist Mono',monospace;font-size:12px;color:oklch(0.82 0.14 75);text-transform:uppercase;letter-spacing:0.08em">API workbench</div>
+  <div style="display:flex;justify-content:space-between;align-items:end;gap:24px;flex-wrap:wrap;margin-top:14px">
+    <h2 style="font-size:clamp(32px,4.4vw,52px);letter-spacing:-0.035em;font-weight:600;margin:0;line-height:1.02;max-width:18ch;text-wrap:balance">Test the API, not just call it.</h2>
+    <p style="color:#9a988f;font-size:16px;max-width:46ch;margin:0;line-height:1.5;text-wrap:pretty">Load tests, mock servers and contract checks run on your machine, with no cloud quota, no account and nothing to upload.</p>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,340px),1fr));gap:20px;margin-top:48px">
+    <figure style="margin:0;display:flex;flex-direction:column;gap:16px">
+      <div style="border-radius:12px;border:1px solid #2c2b27;background:#151513;padding:5px"><a href="screenshots/api-load.png" style="display:block"><img src="screenshots/api-load.png" alt="Load test results: requests, throughput, errors, p50 to p99, a latency histogram and requests per second, with a PASS verdict" loading="lazy" style="display:block;width:100%;height:auto;aspect-ratio:16/10;object-fit:cover;object-position:top left;border-radius:8px"></a></div>
+      <figcaption>
+        <h3 style="font-size:18px;font-weight:600;letter-spacing:-0.015em;margin:0">Load tests</h3>
+        <p style="color:#a9a79f;font-size:14.5px;line-height:1.55;margin:8px 0 0;text-wrap:pretty">Send a request thousands of times from up to 64 workers. p50 to p99, throughput, status codes and errors update live, and a p95 and error budget gives a pass or fail.</p>
+      </figcaption>
+    </figure>
+    <figure style="margin:0;display:flex;flex-direction:column;gap:16px">
+      <div style="border-radius:12px;border:1px solid #2c2b27;background:#151513;padding:5px"><a href="screenshots/api-mocks.png" style="display:block"><img src="screenshots/api-mocks.png" alt="Mock server serving a collection's examples, with chaos settings, record mode and a call log" loading="lazy" style="display:block;width:100%;height:auto;aspect-ratio:16/10;object-fit:cover;object-position:top left;border-radius:8px"></a></div>
+      <figcaption>
+        <h3 style="font-size:18px;font-weight:600;letter-spacing:-0.015em;margin:0">Mock servers</h3>
+        <p style="color:#a9a79f;font-size:14.5px;line-height:1.55;margin:8px 0 0;text-wrap:pretty">Serve a collection's saved examples on localhost in one click. Chaos adds latency and injected 500s; record mode forwards misses to the real API and saves its answers as new examples.</p>
+      </figcaption>
+    </figure>
+    <figure style="margin:0;display:flex;flex-direction:column;gap:16px">
+      <div style="border-radius:12px;border:1px solid #2c2b27;background:#151513;padding:5px"><a href="screenshots/api-contract.png" style="display:block"><img src="screenshots/api-contract.png" alt="Contract tab flagging a type change, a removed field and a new field against earlier responses" loading="lazy" style="display:block;width:100%;height:auto;aspect-ratio:16/10;object-fit:cover;object-position:top left;border-radius:8px"></a></div>
+      <figcaption>
+        <h3 style="font-size:18px;font-weight:600;letter-spacing:-0.015em;margin:0">Contract drift</h3>
+        <p style="color:#a9a79f;font-size:14.5px;line-height:1.55;margin:8px 0 0;text-wrap:pretty">Every JSON response is checked against the shape learned from earlier ones. Removed fields and type changes show as breaking, with no schema to write; copy the shape as JSON Schema.</p>
+      </figcaption>
+    </figure>
   </div>
 </section>
 
@@ -564,6 +596,9 @@ const SHOTS = [
   ['palette', 'Open anything', 'Ctrl/⌘+P: connections, tools and commands in one list.'],
   ['api-request', 'API explorer', 'Collections, environments, scripts and tests, next to your databases.'],
   ['api-runner', 'Collection runs', 'Iteration data and AI-generated sample data.'],
+  ['api-load', 'Load tests', 'p50 / p95 / p99, throughput and errors, live, with a pass / fail budget.'],
+  ['api-mocks', 'Mock servers', 'Saved examples on localhost, with chaos and record mode.'],
+  ['api-contract', 'Contract drift', 'Breaking changes flagged against earlier responses, no schema to write.'],
   ['servers', 'Servers view', 'Every Host and remote desktop of a workspace, with OS, tags and live reachability.'],
   ['fleet', 'Fleet dashboard', 'Uptime, load, disk, memory and failed units across many Hosts.'],
   ['containers', 'Containers', 'Docker and Kubernetes: logs, shells, scale, restart and port forwards.'],
@@ -592,7 +627,7 @@ const FEATURES = [
   ['Runbooks', ['Note, SQL, HTTP, Shell and Confirm steps', 'Parameters quoted per dialect; secrets bound, never inlined', 'Run step by step, every step in history']],
   ['Schema compare', ['PostgreSQL, SQL Server, MySQL and SQLite', 'Per-column changes and a side-by-side DDL diff', 'Migration script opened for review, never run']],
   ['Cloud & secrets', ['S3, R2 and Azure Blob with paged listings', 'App Configuration history, label compare, flags; Key Vault', 'Secret vault: named secrets from the keychain, 1Password or cloud']],
-  ['API explorer', ['HTTP, WebSocket, Server-Sent Events and gRPC', 'Import OpenAPI, Postman, Insomnia, HAR or cURL', 'pm.* scripts and tests; collection runner']],
+  ['API explorer', ['HTTP, WebSocket, SSE and gRPC; import OpenAPI, Postman, Insomnia, HAR, cURL', 'pm.* scripts and tests; collection runner', 'Load tests, local mocks with chaos and record mode, contract drift']],
   ['Driver Manager', ['Detects, explains and installs native components', 'User-level installs, no admin rights', 'Signed manifests and SHA-256 verification']],
   ['Workspace', ['Open anything (⌘P) and a command palette for every action', 'Verified background updates, installed on restart', 'Dark and light themes, UI zoom 70–200 %']],
   ['Security', ['Secrets in the OS keychain or an argon2 + ChaCha20 vault', 'Never in logs, history or exports', 'TLS verification on by default; strict host keys']],

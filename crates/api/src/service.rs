@@ -174,6 +174,28 @@ impl Drop for ActiveWorkbenchRequest {
     }
 }
 
+/// At capacity, forget the oldest completed operations. Their tombstones only
+/// turn a late cancel into "completed"; a load test that finishes a thousand
+/// sends inside the TTL would otherwise lock every new operation out.
+fn make_room(active: &mut HashMap<String, ActiveWorkbenchEntry>) {
+    if active.len() < MAX_WORKBENCH_OPERATIONS {
+        return;
+    }
+    let mut completed: Vec<(Instant, String)> = active
+        .iter()
+        .filter(|(_, entry)| entry.completed && entry.abort_handle.is_none())
+        .map(|(id, entry)| (entry.touched_at, id.clone()))
+        .collect();
+    completed.sort_unstable();
+    let excess = active.len() + 1 - MAX_WORKBENCH_OPERATIONS;
+    for (_, id) in completed
+        .into_iter()
+        .take(excess.max(MAX_WORKBENCH_OPERATIONS / 4))
+    {
+        active.remove(&id);
+    }
+}
+
 fn register_workbench_phase(
     requests: &Arc<Mutex<HashMap<String, ActiveWorkbenchEntry>>>,
     operation_id: &str,
@@ -198,6 +220,7 @@ fn register_workbench_phase(
             entry.touched_at = now;
         }
         None if starts_operation => {
+            make_room(&mut active);
             if active.len() >= MAX_WORKBENCH_OPERATIONS {
                 return Err("too many Workbench operations are active");
             }
@@ -241,6 +264,7 @@ fn cancel_workbench_request(
             || now.saturating_duration_since(entry.touched_at) < WORKBENCH_OPERATION_TTL
     });
     if !requests.contains_key(operation_id) {
+        make_room(&mut requests);
         if requests.len() >= MAX_WORKBENCH_OPERATIONS {
             return CancelWorkbenchResult::CapacityExceeded;
         }
@@ -831,5 +855,39 @@ async fn oauth(body: &[u8]) -> Value {
     match crate::http::exchange_workbench_oauth_token(request).await {
         Ok(result) => serde_json::json!({"success": true, "version": 1, "token": result}),
         Err(e) => error(&e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(completed: bool) -> ActiveWorkbenchEntry {
+        ActiveWorkbenchEntry {
+            generation: 1,
+            abort_handle: None,
+            cancelled: !completed,
+            completed,
+            touched_at: Instant::now(),
+        }
+    }
+
+    #[test]
+    fn a_full_table_forgets_completed_operations_only() {
+        let mut active: HashMap<String, ActiveWorkbenchEntry> = (0..MAX_WORKBENCH_OPERATIONS)
+            .map(|index| (format!("done-{index}"), entry(true)))
+            .collect();
+        make_room(&mut active);
+        assert!(active.len() < MAX_WORKBENCH_OPERATIONS);
+
+        let mut cancelled: HashMap<String, ActiveWorkbenchEntry> = (0..MAX_WORKBENCH_OPERATIONS)
+            .map(|index| (format!("cancelled-{index}"), entry(false)))
+            .collect();
+        make_room(&mut cancelled);
+        assert_eq!(
+            cancelled.len(),
+            MAX_WORKBENCH_OPERATIONS,
+            "a cancel reservation must survive so the operation cannot start"
+        );
     }
 }

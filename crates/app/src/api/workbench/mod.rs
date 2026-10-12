@@ -8,6 +8,7 @@ mod ai_requests;
 mod assist;
 mod body_editor;
 mod collection_urls;
+mod contract_view;
 mod coordinator;
 mod draft;
 mod empty_state;
@@ -16,7 +17,9 @@ mod environment_label;
 mod globals;
 mod keys;
 mod layout;
+mod load_test;
 mod login;
+mod mocks;
 mod move_request;
 mod persistence;
 mod pretty;
@@ -79,7 +82,10 @@ use crate::api::compat::theme::tokens::{radius, space};
 use crate::api::compat::theme::{palette, text};
 use crate::api::compat::{AnyInput, TextValue};
 
-pub use keys::{FocusUrl, ShowCompose, ShowDiff, ShowEnvs, ShowHistory, ShowImport, ShowRunner};
+pub use keys::{
+    FocusUrl, ShowCompose, ShowDiff, ShowEnvs, ShowHistory, ShowImport, ShowLoadTest, ShowMocks,
+    ShowRunner,
+};
 
 /// Key scope for request-draft commands such as Save.
 pub const KEY_CONTEXT: &str = "Workbench";
@@ -106,16 +112,20 @@ enum Tab {
     Environments,
     History,
     Diff,
+    Load,
+    Mocks,
 }
 
 impl Tab {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 8] = [
         Self::Compose,
         Self::Import,
         Self::Data,
         Self::Environments,
         Self::History,
         Self::Diff,
+        Self::Load,
+        Self::Mocks,
     ];
 
     fn id(self) -> &'static str {
@@ -126,6 +136,8 @@ impl Tab {
             Self::Environments => "envs",
             Self::History => "history",
             Self::Diff => "diff",
+            Self::Load => "load",
+            Self::Mocks => "mocks",
         }
     }
 
@@ -137,6 +149,8 @@ impl Tab {
             Self::Environments => "Envs",
             Self::History => "History",
             Self::Diff => "Diff",
+            Self::Load => "Load test",
+            Self::Mocks => "Mocks",
         }
     }
 }
@@ -198,6 +212,7 @@ enum ResponseTab {
     Trace,
     Tests,
     Console,
+    Contract,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -224,13 +239,14 @@ const SNIPPET_LANGUAGES: [(SnippetLanguage, &str); 8] = [
 const REQUEST_EDITOR_INPUTS: usize = 11;
 
 impl ResponseTab {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::Pretty,
         Self::Raw,
         Self::Headers,
         Self::Trace,
         Self::Tests,
         Self::Console,
+        Self::Contract,
     ];
 
     fn label(self) -> &'static str {
@@ -241,6 +257,7 @@ impl ResponseTab {
             Self::Trace => "Trace",
             Self::Tests => "Tests",
             Self::Console => "Console",
+            Self::Contract => "Contract",
         }
     }
 }
@@ -538,6 +555,13 @@ pub struct WorkbenchPanel {
     _export_work: Option<gpui_kit::Task<()>>,
     assist_generation: u64,
     _assist_work: Option<gpui_kit::Task<()>>,
+    /// The Contract tab's analysis of the shown response.
+    contract: Option<contract_view::ContractView>,
+    _contract_work: Option<gpui_kit::Task<()>>,
+    /// The Load test tab.
+    load_test: load_test::LoadTestState,
+    /// The Mocks tab and its running servers.
+    mocks: mocks::MockState,
 }
 
 impl WorkbenchPanel {
@@ -574,6 +598,7 @@ impl WorkbenchPanel {
         self.response_body = prepared;
         self.sync_response_editors(cx);
         self.refresh_response_view(cx);
+        self.refresh_contract(cx);
         let Some(response) = response.filter(|_| self.response_body.is_none()) else {
             return;
         };
@@ -994,6 +1019,10 @@ impl WorkbenchPanel {
             _export_work: None,
             assist_generation: 0,
             _assist_work: None,
+            contract: None,
+            _contract_work: None,
+            load_test: load_test::LoadTestState::new(window, cx),
+            mocks: mocks::MockState::new(window, cx),
         };
         let environment = panel
             .workspace_data
@@ -6176,10 +6205,12 @@ mod tests {
     use switchyard_api::{HttpMethod, RequestSettings, RowId, SecretRef};
 
     #[test]
-    fn workbench_exposes_the_six_specified_tabs_in_order() {
+    fn workbench_exposes_its_tabs_in_order() {
         assert_eq!(
             Tab::ALL.map(Tab::id),
-            ["compose", "import", "data", "envs", "history", "diff"]
+            [
+                "compose", "import", "data", "envs", "history", "diff", "load", "mocks"
+            ]
         );
         assert_eq!(
             SNIPPET_LANGUAGES.map(|(_, label)| label),
