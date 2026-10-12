@@ -245,6 +245,18 @@ pub enum CommandId {
     GroupByPlace,
     /// Group the Explorer by type.
     GroupByType,
+    /// Group the Explorer's Hosts by tag (Fleet).
+    GroupByTag,
+    /// Fleet: run a command on many Hosts.
+    FleetRun,
+    /// Fleet: health dashboard of many Hosts.
+    FleetDashboard,
+    /// Fleet: push a file to many Hosts.
+    FleetPush,
+    /// Fleet: SSH keys on many Hosts.
+    FleetKeys,
+    /// Import Hosts from an Ansible inventory.
+    ImportAnsible,
     /// Close the tab in front.
     CloseTab,
     /// Next tab.
@@ -447,6 +459,27 @@ pub fn palette_commands() -> Vec<PaletteCommand> {
         c(ShowActivityPane, "Show Activity", "View", "".into()),
         c(GroupByPlace, "Group Explorer by Place", "View", "".into()),
         c(GroupByType, "Group Explorer by Type", "View", "".into()),
+        c(GroupByTag, "Group Explorer by Tag", "View", "".into()),
+        c(
+            FleetRun,
+            "Fleet: Run Command on Hosts…",
+            "Servers",
+            "".into(),
+        ),
+        c(FleetDashboard, "Fleet: Dashboard", "Servers", "".into()),
+        c(
+            FleetPush,
+            "Fleet: Push File to Hosts…",
+            "Servers",
+            "".into(),
+        ),
+        c(FleetKeys, "Fleet: Manage SSH Keys…", "Servers", "".into()),
+        c(
+            ImportAnsible,
+            "Import Hosts from Ansible Inventory…",
+            "Connections",
+            "".into(),
+        ),
         c(NextTab, "Next Tab", "View", "".into()),
         c(PrevTab, "Previous Tab", "View", "".into()),
         c(ShowWelcome, "Show Welcome", "View", "".into()),

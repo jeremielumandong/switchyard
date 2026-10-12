@@ -1,5 +1,6 @@
 //! Persistent state: the profile model, the SQLite profile store (profiles, buffers,
-//! history, schema cache, settings, snippets, favorites, terminal macros, runbooks) and secret storage (OS keychain or encrypted vault).
+//! history, schema cache, settings, snippets, favorites, terminal macros, runbooks, Host
+//! tags) and secret storage (OS keychain or encrypted vault).
 
 pub mod error;
 pub mod favorites;
@@ -12,6 +13,7 @@ pub mod runbooks;
 pub mod secrets;
 pub mod snippets;
 pub mod store;
+pub mod tags;
 
 pub use error::{Result, StoreError};
 pub use favorites::Favorite;

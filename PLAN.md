@@ -824,6 +824,51 @@ server or bundled Unix tools on Windows (Tier 3).
   secrets; per-step resolved text, status, duration, output, grid, Production confirm).
   Note: not exercised in a running window here (no display); agents / MCP not exposed.
 
+## Extra — Fleet (user request, 2026-10-12)
+
+- [x] FL-1 Host tags: free-form `Host::tags`, normalized (`store::tags`: lower case, inner
+  spaces to `-`, `key:value` kept, 64 chars), indexed in `host_tags` (schema version 7,
+  backfilled from the Host JSON; kept in step by `save_profile` and JSON import).
+  `HostPatch::add_tags` / `remove_tags` for bulk edit; a tags field in the Host editor.
+  Explorer: group by Tag ("SERVERS BY TAG", an Untagged group) and a `tag:<name>` filter
+  (`tag:role:` matches every `role:*`). Tests: store round trip, v6 → v7 migration, patch,
+  tag grouping and filter.
+- [x] FL-2 Run on many Hosts (`core::fleet::runner`, `service::fleet`): Hosts by folder, tag,
+  Ctrl/⌘-click selection or all; one command or a saved macro (its lines as one script);
+  bounded concurrency (setting `fleet.concurrency`, default 8), per-Host timeout (the job,
+  not the login), cancel-all; every Host on its shared SSH session with the usual prompter.
+  Output streams (batched every 120 ms, 1 MB per stream per Host). Fleet tab: grid of
+  Host / status / exit / duration / first line, an expandable virtualized output, filters
+  "failed only" and "differs from majority" (digest of exit status and output), copy all.
+  History tagged `fleet`, `ssh`. Tests: runner with a fake executor (concurrency, timeout,
+  cancel-all, outliers), output batching, `core --test fleet_ssh` (ignored, docker ssh).
+- [x] FL-3 Dashboard: one read-only POSIX probe per Host (`/proc/uptime` or `uptime`,
+  loadavg, `nproc`, `df -P`, `/proc/meminfo` or `free -b`, `systemctl --failed
+  --no-legend`, `/etc/os-release`, `uname -sr`); refresh every 30 / 60 / 300 s or paused;
+  flags disk > 90 %, memory > 90 %, failed units, unreachable; sortable columns; a row
+  click opens the Host's terminal. Pure parsers tested on recorded Ubuntu, Alpine/BusyBox
+  and RHEL output.
+- [x] FL-4 File push over SFTP (the files service's transfer code): a file or folder into a
+  remote folder on every Host, overwrite policy (replace / skip / keep both), optional
+  chmod (octal, recursive for folders), per-Host progress and result.
+- [x] FL-5 SSH key rollout (`core::fleet::keys`): audit lists keys by SHA-256 fingerprint
+  (has / lacks the key, the session's own key marked); add is idempotent; remove never
+  drops the key the session signed in with. Changes back up to
+  `~/.ssh/authorized_keys.switchyard-bak`, write a temp file and rename it (mode 600,
+  `restorecon` when present). Remove asks for confirmation in the tab.
+- [x] FL-6 Ansible inventory import (INI and YAML, `core::fleet::ansible`): ranges
+  (`web[01:03]`), children, `:vars`, host > group > all precedence; groups become tags;
+  `ansible_host` / `ansible_port` / `ansible_user` / `ansible_ssh_private_key_file`
+  (no key file: agent auth). Preview reuses the SSH config import overlay (now a
+  virtualized list showing tags). Tests on INI and YAML samples.
+- [x] FL-7 Entry points: Explorer context menu on a folder, a tag group or a multi-Host
+  selection (Run command…, Dashboard, Push file…, Manage keys…, bulk edit, open all), palette
+  commands (Fleet: Run Command / Dashboard / Push File / Manage Keys, Group Explorer by Tag,
+  Import Ansible Inventory…), Tools and File menu entries. Any change (run, push, key add /
+  remove) on a selection with a Production Host needs the word PRODUCTION typed; the probe
+  and the key audit are read-only and do not. Nothing is exposed to agents / MCP.
+  Note: not exercised in a running window here (no display).
+
 ## DBX — Database explorer and editors at DBeaver / SSMS level (user request)
 
 Gap analysis (2026-10-08): the explorer is a lazy, virtualized, single-connection tree
@@ -1183,3 +1228,10 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   "Open shell" on multi-container pods (today: the first container); remove the managed
   Rancher kubeconfig of a connection deleted while the app was closed; test Rancher against a
   real server (only unit-tested on recorded JSON).
+- Fleet (FL-1..7) leftovers: authorized_keys edits are read-modify-write without a
+  compare-and-swap (a concurrent edit on the Host between read and write is lost; the
+  backup keeps the previous file); SFTP pushes open their sessions one at a time (the files
+  service's SFTP lock); dashboard probes are not written to history; no per-Host cancel
+  (cancel-all only); macros with control keystrokes are refused (only plain lines run as a
+  script); sudo / become from Ansible vars is ignored; a saved Fleet selection (named
+  group) and run history per selection; UI tests.

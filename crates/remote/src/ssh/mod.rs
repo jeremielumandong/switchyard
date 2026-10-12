@@ -20,7 +20,7 @@ pub use russh::{Channel, ChannelMsg};
 use secrecy::{ExposeSecret, SecretString};
 use tracing::{debug, info, warn};
 
-pub use known_hosts::{HostKeyStatus, KnownHosts, fingerprint};
+pub use known_hosts::{HostKeyStatus, KnownHosts, blob_fingerprint, fingerprint, key_blob};
 use tunnel::RemoteRoutes;
 pub use tunnel::{ForwardKind, ForwardSpec, Tunnel, TunnelInfo, TunnelStatus};
 
@@ -388,6 +388,8 @@ pub struct SshConn {
     forward_agent: bool,
     /// X11 forwarding for shell and exec channels.
     x11: Option<Arc<x11::X11Forward>>,
+    /// The public key this session signed in with (key and agent sign-ins).
+    auth_key: Option<PublicKey>,
 }
 
 impl std::fmt::Debug for SshConn {
@@ -416,6 +418,17 @@ impl SshConn {
         self.handle
             .as_ref()
             .ok_or_else(|| SshError::Channel("session closed".into()))
+    }
+
+    /// The public key the session signed in with, when it used one (a key file or an
+    /// agent); `None` for passwords and keyboard-interactive.
+    pub fn auth_key(&self) -> Option<&PublicKey> {
+        self.auth_key.as_ref()
+    }
+
+    /// SHA-256 fingerprint of [`Self::auth_key`] (`SHA256:…`).
+    pub fn auth_key_fingerprint(&self) -> Option<String> {
+        self.auth_key.as_ref().map(fingerprint)
     }
 
     /// Whether the connection dropped.
@@ -651,6 +664,8 @@ pub struct CommandOutput {
     pub truncated: bool,
     /// The command was still running at the deadline; its channel was closed.
     pub timed_out: bool,
+    /// Stopped by the caller before it finished; its channel was closed.
+    pub cancelled: bool,
 }
 
 impl SshConn {
@@ -662,6 +677,30 @@ impl SshConn {
         cap: usize,
         timeout: Duration,
     ) -> Result<CommandOutput, SshError> {
+        self.run_command_io(
+            command,
+            None,
+            cap,
+            timeout,
+            std::future::pending(),
+            &mut |_, _| {},
+        )
+        .await
+    }
+
+    /// [`Self::run_command`] that first writes `input` to the command's standard input
+    /// (then closes it), hands each piece of output to `on_output` (`true` for standard
+    /// error) as it arrives, and stops early when `stop` completes: the channel is closed
+    /// and the result has `cancelled` set.
+    pub async fn run_command_io(
+        &self,
+        command: &str,
+        input: Option<&[u8]>,
+        cap: usize,
+        timeout: Duration,
+        stop: impl std::future::Future<Output = ()>,
+        on_output: &mut (dyn FnMut(bool, &[u8]) + Send),
+    ) -> Result<CommandOutput, SshError> {
         let mut ch = self
             .handle()?
             .channel_open_session()
@@ -670,6 +709,14 @@ impl SshConn {
         ch.exec(true, command)
             .await
             .map_err(|e| SshError::Channel(e.to_string()))?;
+        if let Some(input) = input {
+            ch.data(input)
+                .await
+                .map_err(|e| SshError::Channel(format!("stdin: {e}")))?;
+            ch.eof()
+                .await
+                .map_err(|e| SshError::Channel(format!("stdin: {e}")))?;
+        }
         let mut out = CommandOutput::default();
         let keep = |buf: &mut Vec<u8>, data: &[u8], truncated: &mut bool| {
             let room = cap.saturating_sub(buf.len());
@@ -679,12 +726,23 @@ impl SshConn {
             buf.extend_from_slice(&data[..data.len().min(room)]);
         };
         let deadline = tokio::time::Instant::now() + timeout;
+        let mut stop = std::pin::pin!(stop);
         loop {
-            match tokio::time::timeout_at(deadline, ch.wait()).await {
+            let msg = tokio::select! {
+                m = tokio::time::timeout_at(deadline, ch.wait()) => m,
+                () = &mut stop => {
+                    out.cancelled = true;
+                    let _ = ch.close().await;
+                    break;
+                }
+            };
+            match msg {
                 Ok(Some(ChannelMsg::Data { data })) => {
+                    on_output(false, &data);
                     keep(&mut out.stdout, &data, &mut out.truncated);
                 }
                 Ok(Some(ChannelMsg::ExtendedData { data, .. })) => {
+                    on_output(true, &data);
                     keep(&mut out.stderr, &data, &mut out.truncated);
                 }
                 Ok(Some(ChannelMsg::ExitStatus { exit_status })) => {
@@ -852,7 +910,7 @@ async fn connect_one(
             message: "timed out".into(),
         })??;
 
-    let method = authenticate(&mut handle, target, prompter, agent_socket).await?;
+    let (method, auth_key) = authenticate(&mut handle, target, prompter, agent_socket).await?;
     let description = match &via {
         Some(prev) => format!(
             "{}@{} · {method} · via {}",
@@ -871,6 +929,7 @@ async fn connect_one(
         forward_requests: tokio::sync::Mutex::new(()),
         forward_agent: target.forward_agent,
         x11,
+        auth_key,
     })
 }
 
@@ -881,13 +940,14 @@ fn auth_failed(target: &SshTarget, message: impl Into<String>) -> SshError {
     }
 }
 
-/// Authenticate; returns a short label of the method that worked.
+/// Authenticate; returns a short label of the method that worked and the public key it
+/// signed in with (none for passwords and keyboard-interactive).
 async fn authenticate(
     handle: &mut Handle<ClientHandler>,
     target: &SshTarget,
     prompter: &Arc<dyn SshPrompter>,
     agent_socket: Option<&std::path::Path>,
-) -> Result<String, SshError> {
+) -> Result<(String, Option<PublicKey>), SshError> {
     let user = target.user.clone();
     let err = |e: russh::Error| auth_failed(target, e.to_string());
     match &target.auth {
@@ -907,7 +967,7 @@ async fn authenticate(
                 .await
                 .map_err(err)?;
             if r.success() {
-                Ok("password".into())
+                Ok(("password".into(), None))
             } else {
                 Err(auth_failed(target, "the password was rejected"))
             }
@@ -943,6 +1003,7 @@ async fn authenticate(
                 }
             };
             let kind = key_kind(key.public_key());
+            let public = key.public_key().clone();
             let hash = handle
                 .best_supported_rsa_hash()
                 .await
@@ -953,7 +1014,7 @@ async fn authenticate(
                 .await
                 .map_err(err)?;
             if r.success() {
-                Ok(kind.into())
+                Ok((kind.into(), Some(public)))
             } else {
                 Err(auth_failed(
                     target,
@@ -969,7 +1030,7 @@ async fn authenticate(
             for _round in 0..10 {
                 match resp {
                     KeyboardInteractiveAuthResponse::Success => {
-                        return Ok("keyboard-interactive".into());
+                        return Ok(("keyboard-interactive".into(), None));
                     }
                     KeyboardInteractiveAuthResponse::Failure { .. } => {
                         return Err(auth_failed(target, "the answers were rejected"));
@@ -1235,7 +1296,7 @@ async fn sign_with_agent<S>(
     wanted: Option<&PublicKey>,
     hash: Option<russh::keys::HashAlg>,
     name: &str,
-) -> Result<String, String>
+) -> Result<(String, PublicKey), String>
 where
     S: russh::keys::agent::client::AgentStream + Send + Unpin + 'static,
 {
@@ -1262,13 +1323,14 @@ where
     tracing::info!(host = %target.label, agent = name, keys = keys.len(), "agent sign-in");
     for key in keys {
         let kind = key_kind(&key);
+        let public = key.clone();
         let ok = handle
             .authenticate_publickey_with(target.user.clone(), key, hash, &mut agent)
             .await
             .map(|r| r.success())
             .unwrap_or(false);
         if ok {
-            return Ok(format!("{name} · {kind}"));
+            return Ok((format!("{name} · {kind}"), public));
         }
     }
     Err("no key was accepted".into())
@@ -1279,7 +1341,7 @@ async fn agent_auth(
     target: &SshTarget,
     manager_socket: Option<&std::path::Path>,
     only_key: Option<&std::path::Path>,
-) -> Result<String, SshError> {
+) -> Result<(String, Option<PublicKey>), SshError> {
     let wanted = match only_key.map(|p| (p, std::fs::read_to_string(p))) {
         Some((p, Ok(text))) => Some(
             PublicKey::from_openssh(text.trim())
@@ -1328,7 +1390,7 @@ async fn agent_auth(
             AgentEndpoint::Pageant => Err("Pageant is only available on Windows".into()),
         };
         match result {
-            Ok(method) => return Ok(method),
+            Ok((method, key)) => return Ok((method, Some(key))),
             Err(e) => tried.push(format!("{} ({name}): {e}", endpoint.display())),
         }
     }

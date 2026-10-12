@@ -27,6 +27,7 @@ mod er_tab;
 mod explorer;
 mod explorer_tree;
 mod files_tab;
+mod fleet_tab;
 mod folds;
 mod forwards_editor;
 mod grid;
