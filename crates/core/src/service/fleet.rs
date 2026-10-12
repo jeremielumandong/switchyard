@@ -51,10 +51,13 @@ impl Drop for RunGuard<'_> {
     }
 }
 
-/// Output waiting to be sent, per Host: (stdout, stderr).
+/// A Host's output waiting to be sent: (stdout, stderr).
+type Pending = (Vec<u8>, Vec<u8>);
+
+/// Output waiting to be sent, per Host.
 #[derive(Default)]
 struct Batcher {
-    bufs: Mutex<HashMap<ProfileId, (Vec<u8>, Vec<u8>)>>,
+    bufs: Mutex<HashMap<ProfileId, Pending>>,
 }
 
 /// The longest valid UTF-8 prefix of `buf` (lossy for invalid bytes), keeping an

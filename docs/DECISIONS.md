@@ -1484,3 +1484,28 @@ Decisions:
 - HTTP steps allow private networks (on-call targets are often internal) and treat a
   4xx / 5xx answer as a failed step, which stops a run.
 
+## 2026-10-12 — Fleet (user request)
+
+- Host tags live in the Host JSON (source of truth, exported with it) and in a `host_tags`
+  index table (schema version 7, after runbooks' 6) for the tag filter and selections.
+  Tags are lower-cased and normalized on save so `Web` and `web` are one group.
+- Ansible YAML inventories reuse `serde_yaml`, already approved for the API workspace;
+  core now depends on it (and on `tokio-util` for `CancellationToken`). No new crates.
+- Production: a Fleet change (command, push, key add / remove) on any Production Host needs
+  the word PRODUCTION typed, checked again in core (`confirmed`), like bulk edits. The
+  dashboard probe and the key audit are read-only and skip it.
+- A per-Host timeout covers the job only, not opening the SSH session: a Host waiting on a
+  host-key or password prompt is not killed while the user answers.
+- "Differs from majority" compares a digest of exit status + stdout + stderr per Host; Hosts
+  still running are left out.
+- Ansible hosts without `ansible_ssh_private_key_file` import with SSH agent auth (what
+  Ansible itself falls back to), not password.
+- Keys are compared by their decoded blob (type + key), never the comment or options; the
+  key the session authenticated with (`SshConn::auth_key`, also through an agent) is never
+  removed. A password login has no session key, so removal relies on the confirmation.
+- `SshConn::run_command_io` (stdin, cancel, streamed output with caps) is separate from
+  runbooks' `run_command_streaming`; both landed the same day and merging them is a
+  follow-up refactor.
+- Fleet is not exposed to MCP / agents: `run_ssh_command`'s per-command approval stays the
+  only agent path to a Host.
+
