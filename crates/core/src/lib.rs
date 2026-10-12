@@ -16,6 +16,7 @@ pub mod infra;
 pub mod prompts;
 pub mod runbook;
 pub mod runtime;
+pub mod servers;
 pub mod service;
 pub mod ssh_import;
 pub mod term_settings;

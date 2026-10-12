@@ -59,6 +59,7 @@ pub(crate) use named_secrets::NamedSecrets;
 mod redis;
 mod runbook;
 mod schema_compare;
+mod servers;
 
 /// The SSH layer's description of a saved forward.
 fn forward_spec(f: &switchyard_store::PortForward) -> ForwardSpec {
@@ -246,6 +247,8 @@ pub struct Service {
     container_ops: Mutex<HashMap<RequestId, futures::future::AbortHandle>>,
     /// `kubectl port-forward`s by the UI's id.
     container_forwards: Mutex<HashMap<u64, containers::ForwardSlot>>,
+    /// Reachability checks and launched remote desktop clients.
+    servers_state: servers::ServersState,
 }
 
 /// Run one statement and drain its results (session settings such as `USE`).
@@ -378,6 +381,7 @@ impl Service {
             runbook_runs: Mutex::default(),
             container_ops: Mutex::default(),
             container_forwards: Mutex::default(),
+            servers_state: servers::ServersState::default(),
             package_runner: config
                 .package_runner
                 .clone()
@@ -735,11 +739,14 @@ impl Service {
             Command::OpenSession {
                 session,
                 connection,
-            } => match self.open_session(session, connection).await {
-                Ok(v) => self.emit(Event::SessionOpened {
-                    session,
-                    server_version: v,
-                }),
+            } => match self.open_session(session, connection.clone()).await {
+                Ok(v) => {
+                    self.emit(Event::SessionOpened {
+                        session,
+                        server_version: v,
+                    });
+                    self.touch_connected(connection).await;
+                }
                 Err(e) => self.emit(Event::SessionFailed {
                     session,
                     message: e.to_string(),
@@ -1382,6 +1389,7 @@ impl Service {
                 }
             }
             Command::Fleet(c) => self.fleet(c).await,
+            Command::Servers(c) => self.servers(c).await,
             Command::PreviewSshConfig => match self.preview_ssh_config().await {
                 Ok((path, hosts)) => self.emit(Event::SshConfigPreview { path, hosts }),
                 Err(e) => self.error("Read ssh config", e),
@@ -1951,6 +1959,10 @@ impl Service {
     }
 
     async fn open_terminal(&self, term: TermId, target: TermTarget, size: TermSize) {
+        let host_id = match &target {
+            TermTarget::Host(h) => Some(h.clone()),
+            _ => None,
+        };
         let result = match target {
             TermTarget::Local { profile } => {
                 let profile = match profile {
@@ -2023,11 +2035,16 @@ impl Service {
             }
         };
         match result {
-            Ok((terminal, description)) => self.emit(Event::TerminalOpened {
-                term,
-                terminal,
-                description,
-            }),
+            Ok((terminal, description)) => {
+                self.emit(Event::TerminalOpened {
+                    term,
+                    terminal,
+                    description,
+                });
+                if let Some(h) = host_id {
+                    self.touch_connected(h).await;
+                }
+            }
             Err(message) => self.emit(Event::TerminalFailed { term, message }),
         }
     }
@@ -2138,6 +2155,18 @@ impl Service {
                 c.name = format!("{} copy", c.name);
                 Profile::Containers(c)
             }
+            Profile::Desktop(mut d) => {
+                d.id = ProfileId::new();
+                d.name = format!("{} copy", d.name);
+                d.secret = None;
+                Profile::Desktop(d)
+            }
+            Profile::Credential(mut c) => {
+                c.id = ProfileId::new();
+                c.name = format!("{} copy", c.name);
+                c.secret = None;
+                Profile::Credential(c)
+            }
         };
         if let Some(old) = old_secret.clone().filter(|r| r.named_secret().is_some()) {
             // A named secret is a reference, not a value: the copy uses the same one.
@@ -2185,6 +2214,9 @@ impl Service {
     }
 
     async fn one_target(&self, h: &Host) -> Result<SshTarget> {
+        // A shared credential gives the user, method and secret.
+        let resolved = self.resolve_host_credential(h.clone()).await?;
+        let h = &resolved;
         let secret = self.secret_value(None, h.secret.clone()).await?;
         Ok(SshTarget {
             id: h.id.0.clone(),
@@ -2339,6 +2371,8 @@ impl Service {
     }
 
     async fn db_config(&self, c: &DbConnection, secret: Option<SecretString>) -> Result<DbConfig> {
+        let resolved = self.resolve_db_credential(c.clone()).await?;
+        let c = &resolved;
         let password = self.secret_value(secret, c.secret.clone()).await?;
         let mut cfg = DbConfig::new(c.engine, c.server.clone(), c.database.clone());
         cfg.port = c.port;

@@ -16,7 +16,7 @@ use crate::runbooks::Runbook;
 use crate::snippets::{Snippet, engine_from_key, engine_key};
 
 /// Ordered schema migrations. Never edit an applied migration; append a new one.
-const MIGRATIONS: &[&str] = &[
+pub(crate) const MIGRATIONS: &[&str] = &[
     // 1: initial schema
     "CREATE TABLE profiles (
         id TEXT PRIMARY KEY,
@@ -117,6 +117,23 @@ const MIGRATIONS: &[&str] = &[
         SELECT p.id, lower(trim(j.value))
         FROM profiles p, json_each(p.data, '$.tags') j
         WHERE p.kind = 'host' AND j.type = 'text' AND trim(j.value) <> '';",
+    // 8: workspaces of the Default side (servers and databases). "All" is created from
+    // the old `workspace` setting by `Store::ensure_all_workspace`; existing buffers
+    // belong to it. `server_facts` keeps what the Servers view shows beside a profile.
+    "CREATE TABLE workspaces (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        data TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+    );
+    ALTER TABLE buffers ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'all';
+    CREATE INDEX buffers_workspace_idx ON buffers (workspace_id, position);
+    CREATE TABLE server_facts (
+        profile_id TEXT PRIMARY KEY REFERENCES profiles(id) ON DELETE CASCADE,
+        os TEXT,
+        last_connected INTEGER
+    );",
 ];
 
 /// Replace the `host_tags` rows of `profile` (a Host) with its tags.
@@ -213,7 +230,7 @@ pub struct ProfileExport {
 
 /// The profile store.
 pub struct Store {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
 impl Store {
@@ -236,6 +253,7 @@ impl Store {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         let mut store = Self { conn };
         store.migrate()?;
+        store.ensure_all_workspace()?;
         Ok(store)
     }
 
@@ -466,24 +484,11 @@ impl Store {
 
     // ---- workspace buffers ----
 
-    /// Save (autosave) an editor buffer.
+    /// Save (autosave) an editor buffer. A new buffer joins the current workspace; an
+    /// existing one stays in its own.
     pub fn save_buffer(&mut self, b: &BufferState, position: i64) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO buffers (id, title, connection_id, text, cursor, position, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(id) DO UPDATE SET title = ?2, connection_id = ?3, text = ?4,
-                 cursor = ?5, position = ?6, updated_at = ?7",
-            params![
-                b.id,
-                b.title,
-                b.connection_id.as_ref().map(|c| c.0.clone()),
-                b.text,
-                b.cursor as i64,
-                position,
-                now_ms()
-            ],
-        )?;
-        Ok(())
+        let ws = self.current_workspace_id()?;
+        self.write_buffer(b, position, &ws)
     }
 
     /// Remove a closed buffer.
@@ -493,38 +498,16 @@ impl Store {
         Ok(())
     }
 
-    /// Buffers in tab order.
+    /// Buffers of the current workspace in tab order.
     pub fn buffers(&self) -> Result<Vec<BufferState>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, title, connection_id, text, cursor FROM buffers ORDER BY position, updated_at",
-        )?;
-        let rows = stmt.query_map([], |r| {
-            Ok(BufferState {
-                id: r.get(0)?,
-                title: r.get(1)?,
-                connection_id: r.get::<_, Option<String>>(2)?.map(ProfileId),
-                text: r.get(3)?,
-                cursor: r.get::<_, i64>(4)?.max(0) as usize,
-            })
-        })?;
-        Ok(rows.collect::<std::result::Result<_, _>>()?)
+        self.buffers_of(&self.current_workspace_id()?)
     }
 
-    /// Load the workspace layout (buffers come from [`Store::buffers`]).
+    /// The current workspace with its buffers.
     pub fn workspace(&self) -> Result<Workspace> {
-        let mut w: Workspace = self.setting("workspace")?.unwrap_or_default();
-        w.buffers = self.buffers()?;
-        if w.name.is_empty() {
-            w.name = "Default".into();
-        }
-        Ok(w)
-    }
-
-    /// Save the workspace layout (not its buffers).
-    pub fn save_workspace(&mut self, w: &Workspace) -> Result<()> {
-        let mut layout = w.clone();
-        layout.buffers.clear();
-        self.set_setting("workspace", &layout)
+        let id = self.current_workspace_id()?;
+        self.workspace_by_id(&id)?
+            .ok_or_else(|| StoreError::NotFound(format!("workspace {id}")))
     }
 
     // ---- settings ----
@@ -1175,13 +1158,15 @@ mod tests {
             )
             .unwrap();
             let mut w = s.workspace().unwrap();
+            // "All" keeps its name; the layout is saved.
             w.name = "acme-ops".into();
             w.active_buffer = Some("b1".into());
             s.save_workspace(&w).unwrap();
         }
         let s = Store::open(&path).unwrap();
         let w = s.workspace().unwrap();
-        assert_eq!(w.name, "acme-ops");
+        assert_eq!(w.name, "All");
+        assert_eq!(w.active_buffer.as_deref(), Some("b1"));
         assert_eq!(w.buffers.len(), 1);
         assert_eq!(w.buffers[0].text, "select 1;\nselect 2");
         assert_eq!(w.buffers[0].cursor, 7);

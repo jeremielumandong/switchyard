@@ -232,6 +232,100 @@
           ]
         }
       }
+    },
+    {
+      "id": "rdp-client",
+      "name": "Remote Desktop client",
+      "needed_for": "RDP servers (opened in the system's Remote Desktop client)",
+      "required_by": [
+        "desktop.rdp"
+      ],
+      "detect": {
+        "programs": [
+          "xfreerdp3",
+          "xfreerdp",
+          "wlfreerdp3",
+          "sdl-freerdp3",
+          "remmina",
+          "mstsc"
+        ],
+        "paths": [
+          "/Applications/Windows App.app",
+          "/Applications/Microsoft Remote Desktop.app",
+          "C:/Windows/System32/mstsc.exe"
+        ],
+        "min_version": "2.0.0",
+        "no_version_probe": [
+          "mstsc"
+        ]
+      },
+      "platforms": {
+        "windows": {
+          "strategy": "builtin"
+        },
+        "macos": {
+          "strategy": "manual",
+          "steps": [
+            "Install \"Windows App\" (formerly Microsoft Remote Desktop) from the Mac App Store.",
+            "Switchyard opens a generated .rdp file in it; type the password there (the app can remember it in its own keychain entry)."
+          ]
+        },
+        "linux": {
+          "strategy": "package",
+          "size": "6 MB",
+          "packages": {
+            "apt": "freerdp3-x11",
+            "dnf": "freerdp",
+            "pacman": "freerdp",
+            "zypper": "freerdp"
+          }
+        }
+      }
+    },
+    {
+      "id": "vnc-client",
+      "name": "VNC viewer",
+      "needed_for": "VNC servers (opened in TigerVNC, Remmina or Screen Sharing)",
+      "required_by": [
+        "desktop.vnc"
+      ],
+      "detect": {
+        "programs": [
+          "vncviewer",
+          "xtigervncviewer",
+          "remmina"
+        ],
+        "paths": [
+          "/System/Applications/Utilities/Screen Sharing.app",
+          "/System/Library/CoreServices/Applications/Screen Sharing.app",
+          "C:/Program Files/TigerVNC/vncviewer.exe"
+        ],
+        "no_version_probe": [
+          "vncviewer",
+          "xtigervncviewer"
+        ]
+      },
+      "platforms": {
+        "windows": {
+          "strategy": "manual",
+          "steps": [
+            "Install TigerVNC (tigervnc.org) and make sure vncviewer.exe is on PATH, or use \"Use existing path\"."
+          ]
+        },
+        "macos": {
+          "strategy": "builtin"
+        },
+        "linux": {
+          "strategy": "package",
+          "size": "2 MB",
+          "packages": {
+            "apt": "tigervnc-viewer",
+            "dnf": "tigervnc",
+            "pacman": "tigervnc",
+            "zypper": "tigervnc"
+          }
+        }
+      }
     }
   ]
 }

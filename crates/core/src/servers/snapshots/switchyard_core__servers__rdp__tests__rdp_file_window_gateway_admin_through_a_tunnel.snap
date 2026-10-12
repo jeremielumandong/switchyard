@@ -1,0 +1,21 @@
+---
+source: crates/core/src/servers/rdp.rs
+expression: "text.replace(\"\\r\\n\", \"\\n\")"
+---
+full address:s:127.0.0.1:50123
+username:s:CORP\admin
+screen mode id:i:1
+desktopwidth:i:1600
+desktopheight:i:900
+use multimon:i:1
+redirectclipboard:i:0
+drivestoredirect:s:*
+administrative session:i:1
+authentication level:i:2
+prompt for credentials:i:1
+gatewayhostname:s:gw.corp.example
+gatewayusagemethod:i:1
+gatewayprofileusagemethod:i:1
+gatewaycredentialssource:i:0
+promptcredentialonce:i:0
+gatewayusername:s:CORP\gwuser

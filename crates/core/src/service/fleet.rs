@@ -817,12 +817,19 @@ impl Service {
                 targets,
             },
         };
+        // Operating systems found, kept for the Servers view after the run.
+        let found_os: Mutex<Vec<(ProfileId, String)>> = Mutex::default();
         let report = |u: Update<'_, ProbeReport>| match u {
             Update::Done(r) => {
                 let result = match (r.output, r.status) {
                     (Some(p), HostStatus::Ok) => Ok(p),
                     (_, status) => Err(r.error.unwrap_or_else(|| status.label().to_owned())),
                 };
+                if let Ok(report) = &result
+                    && let Some(os) = report.os.clone()
+                {
+                    lock(&found_os).push((r.host.id.clone(), os));
+                }
                 self.emit(Event::Fleet(FleetEvent::Probed {
                     run,
                     host: r.host.id,
@@ -833,6 +840,10 @@ impl Service {
             u => self.emit_status(run, &u),
         };
         run_hosts(&exec, list, limits, token.clone(), &report).await;
+        let found = std::mem::take(&mut *lock(&found_os));
+        for (id, os) in found {
+            self.remember_os(id, os).await;
+        }
         self.emit(Event::Fleet(FleetEvent::Finished {
             run,
             cancelled: token.is_cancelled(),

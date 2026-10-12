@@ -9822,6 +9822,7 @@ version = "0.1.11"
 dependencies = [
  "chrono",
  "futures",
+ "insta",
  "reqwest",
  "rustls",
  "rustls-native-certs",
