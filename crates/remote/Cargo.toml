@@ -33,7 +33,7 @@ ironrdp-core = { workspace = true, optional = true }
 ironrdp-tokio = { workspace = true, optional = true }
 
 [features]
-default = ["rdp-embedded"]
+default = []
 # The in-app RDP client (`rdp` module). Off: only external RDP clients.
 rdp-embedded = [
     "dep:ironrdp-connector",
