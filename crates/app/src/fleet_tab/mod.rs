@@ -1508,10 +1508,16 @@ impl Workspace {
     /// The Hosts Fleet commands from the palette work on: the Explorer's selection,
     /// else every Host.
     pub(crate) fn fleet_palette_pick(&self) -> Pick {
-        if self.host_selection.is_empty() {
+        let hosts: Vec<ProfileId> = self
+            .host_selection
+            .iter()
+            .filter(|id| self.profiles.host(id).is_some())
+            .cloned()
+            .collect();
+        if hosts.is_empty() {
             Pick::All
         } else {
-            Pick::Hosts(self.host_selection.clone())
+            Pick::Hosts(hosts)
         }
     }
 

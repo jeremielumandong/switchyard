@@ -83,7 +83,8 @@ impl Profiles {
                 }
                 Profile::Terminal(t) => t.host_id.as_ref() == Some(host),
                 Profile::Containers(c) => c.host_id.as_ref() == Some(host),
-                Profile::Host(_) | Profile::Cloud(_) => false,
+                Profile::Desktop(d) => d.via_host.as_ref() == Some(host),
+                Profile::Host(_) | Profile::Cloud(_) | Profile::Credential(_) => false,
             })
             .collect()
     }
@@ -97,7 +98,11 @@ impl Profiles {
                 Profile::File(f) => matches!(f.protocol, FileProtocol::Ftp { .. }),
                 Profile::Terminal(t) => t.host_id.is_none(),
                 Profile::Containers(c) => c.host_id.is_none(),
-                Profile::Host(_) | Profile::Cloud(_) => false,
+                // Remote desktops have their own section; credentials are not listed.
+                Profile::Host(_)
+                | Profile::Cloud(_)
+                | Profile::Desktop(_)
+                | Profile::Credential(_) => false,
             })
             .collect()
     }
@@ -115,6 +120,8 @@ pub fn badge_of(p: &Profile) -> &'static str {
         Profile::Terminal(_) => "SH",
         Profile::Cloud(c) => c.service.badge(),
         Profile::Containers(c) => c.platform.badge(),
+        Profile::Desktop(d) => d.protocol.badge(),
+        Profile::Credential(_) => "KEY",
     }
 }
 
@@ -182,6 +189,15 @@ pub fn describe(p: &Profile, profiles: &Profiles) -> String {
             }
             s
         }
+        Profile::Desktop(d) => {
+            let mut s = format!("{} · {}", d.protocol.badge(), d.address);
+            if let Some(h) = &d.via_host {
+                s.push_str(" · via ");
+                s.push_str(profiles.host(h).map_or("host", |h| h.name.as_str()));
+            }
+            s
+        }
+        Profile::Credential(c) => format!("credential · {}", c.qualified_user()),
         Profile::Terminal(t) => {
             if t.shell.is_empty() {
                 "login shell".into()

@@ -79,6 +79,8 @@ pub enum Tab {
     Runbook(Entity<crate::runbook_tab::RunbookTab>),
     /// Docker or Kubernetes explorer of a container connection.
     Containers(Entity<crate::containers_tab::ContainersTab>),
+    /// Every Host and remote desktop of the current workspace (one per window).
+    Servers,
 }
 
 /// The root view.
@@ -95,7 +97,9 @@ pub struct Workspace {
     /// Default (databases, terminals, files) or API.
     pub(crate) mode: AppMode,
     /// The workspace menu in the title bar is open.
-    mode_menu: bool,
+    pub(crate) mode_menu: bool,
+    /// Server workspaces, the Servers view and remote desktop launches.
+    pub(crate) servers: crate::server_workspaces::ServersUi,
     /// The API workspace, created the first time it is shown.
     api: Option<Entity<crate::api::workbench::WorkbenchPanel>>,
     pub(crate) core: RuntimeHandle,
@@ -233,6 +237,12 @@ impl Workspace {
         core.send(Command::LoadSetting {
             key: switchyard_core::fleet::CONCURRENCY_KEY.into(),
         });
+        core.send(Command::LoadSetting {
+            key: switchyard_core::servers::REACH_SETTING.into(),
+        });
+        core.send(Command::Servers(
+            switchyard_core::servers::ServersCommand::Load,
+        ));
         core.send(Command::LoadMacros);
         core.send(Command::LoadRunbooks);
         core.send(Command::DetectComponents);
@@ -305,6 +315,7 @@ impl Workspace {
         Self {
             mode: AppMode::Default,
             mode_menu: false,
+            servers: Default::default(),
             api: None,
             core,
             profiles: Profiles::default(),
@@ -413,6 +424,11 @@ impl Workspace {
     fn on_event(&mut self, ev: Event, window: &mut Window, cx: &mut Context<Self>) {
         match ev {
             Event::Pong { .. } => {}
+            Event::Servers(ev) => self.on_servers_event(ev, window, cx),
+            Event::Setting { key, value } if key == switchyard_core::servers::REACH_SETTING => {
+                self.servers.reach_on = value.as_ref().and_then(|v| v.as_bool()).unwrap_or(true);
+                self.sync_reach();
+            }
             ev @ (Event::Runbooks(_)
             | Event::RunbookSaved { .. }
             | Event::ApiRequests { .. }
@@ -627,11 +643,17 @@ impl Workspace {
                         });
                     }
                 }
-                let hosts: Vec<ProfileId> = self.profiles.hosts().map(|h| h.id.clone()).collect();
-                self.host_selection.retain(|id| hosts.contains(id));
+                let ids: HashSet<ProfileId> =
+                    self.profiles.all.iter().map(|p| p.id().clone()).collect();
+                self.host_selection.retain(|id| ids.contains(id));
+                self.servers.view.selection.retain(|id| ids.contains(id));
+                self.refresh_scope();
+                self.reopen_saved_tabs(window, cx);
+                self.sync_reach();
             }
             Event::ProfileSaved { request, id } => {
                 self.reconnect_failed(&id, cx);
+                self.on_servers_profile_saved(request, &id, window, cx);
                 if let Some(Overlay::ContainerEditor(ed)) = &self.overlay
                     && ed.read(cx).request() == Some(request)
                 {
@@ -643,6 +665,10 @@ impl Workspace {
                     && ed.read(cx).request() == Some(request)
                 {
                     let connect = ed.read(cx).connect_after_save();
+                    let changes = ed.read(cx).membership_changes();
+                    if !changes.is_empty() {
+                        self.apply_membership(&id, changes);
+                    }
                     self.overlay = None;
                     self.toast("Saved · secrets stored in the secret store", cx);
                     if connect {
@@ -655,6 +681,7 @@ impl Workspace {
                 field,
                 message,
             } => {
+                self.on_servers_profile_error(request, &message, cx);
                 if let Some(Overlay::ConnEditor(ed)) = &self.overlay
                     && ed.read(cx).request() == Some(request)
                 {
@@ -707,7 +734,12 @@ impl Workspace {
                 cancelled,
             } => self.on_update_downloaded(info, result, cancelled, cx),
             Event::Setting { key, value } if key == crate::sidebar::EXPLORER_GROUP_KEY => {
-                if let Some(g) = value.as_ref().and_then(|v| v.as_str()) {
+                // A workspace's own grouping wins over the app-wide one.
+                let own = self
+                    .servers
+                    .current_ws()
+                    .is_some_and(|w| w.explorer_group.is_some());
+                if let Some(g) = value.as_ref().and_then(|v| v.as_str()).filter(|_| !own) {
                     self.explorer_group = crate::explorer_tree::ExplorerGroup::from_key(g);
                 }
             }
@@ -717,7 +749,11 @@ impl Workspace {
                 }
             }
             Event::Setting { key, value } if key == "sidebar.width" => {
-                if let Some(w) = value.as_ref().and_then(|v| v.as_f64()) {
+                let own = self
+                    .servers
+                    .current_ws()
+                    .is_some_and(|w| w.sidebar_width.is_some());
+                if let Some(w) = value.as_ref().and_then(|v| v.as_f64()).filter(|_| !own) {
                     self.sidebar_width = (w as f32).max(crate::sidebar::SIDEBAR_MIN);
                 }
             }
@@ -1115,10 +1151,36 @@ impl Workspace {
     }
 
     fn restore(&mut self, w: SavedWorkspace, window: &mut Window, cx: &mut Context<Self>) {
-        self.workspace_name = w.name.clone();
-        self.sidebar_open = !w.sidebar_collapsed;
+        if self.servers.layout_ready && w.id != self.servers.current {
+            // A late answer for a workspace the user already left: reload it next time.
+            self.servers.restored.remove(&w.id);
+            return;
+        }
+        self.servers.current = w.id.clone();
+        self.servers.restored.insert(w.id.clone());
+        self.servers.layout_ready = true;
+        self.apply_layout(&w);
+        if let Some(cached) = self.servers.workspaces.iter_mut().find(|x| x.id == w.id) {
+            let mut layout = w.clone();
+            layout.buffers.clear();
+            *cached = layout;
+        }
+        self.servers.pending_tabs = w.tabs.clone();
+        let open: HashSet<String> = self
+            .tabs
+            .iter()
+            .filter_map(|t| match t {
+                Tab::Sql(s) => Some(s.read(cx).buffer_id().to_owned()),
+                _ => None,
+            })
+            .collect();
         let mut active = None;
-        for (i, b) in w.buffers.into_iter().enumerate() {
+        for (i, b) in w
+            .buffers
+            .into_iter()
+            .filter(|b| !open.contains(&b.id))
+            .enumerate()
+        {
             let conn = b
                 .connection_id
                 .as_ref()
@@ -1135,11 +1197,20 @@ impl Workspace {
                 active = Some(self.tabs.len() - 1);
             }
         }
+        self.reopen_saved_tabs(window, cx);
         if let Some(a) = active {
             self.active = a;
-        } else if self.tabs.len() > 1 {
-            self.active = 1;
+        } else if !self.tab_visible(self.active)
+            || matches!(self.tabs.get(self.active), Some(Tab::Welcome))
+        {
+            self.active = self
+                .visible_tabs()
+                .into_iter()
+                .find(|i| !matches!(self.tabs[*i], Tab::Welcome))
+                .unwrap_or(0);
         }
+        self.refresh_scope();
+        self.sync_reach();
         self.sync_schema(cx);
     }
 
@@ -1309,6 +1380,10 @@ impl Workspace {
 
     pub(crate) fn activate(&mut self, ix: usize, cx: &mut Context<Self>) {
         if ix < self.tabs.len() {
+            // A tab of another workspace opened again from here joins this one.
+            if !self.tab_visible(ix) {
+                self.adopt_tab(ix);
+            }
             // A tab already showing in the other pane: focus that pane instead.
             if let Some(sp) = &mut self.split
                 && sp.other == ix
@@ -1390,6 +1465,7 @@ impl Workspace {
             Some(Tab::Compare(c)) => c.clone().into_any_element(),
             Some(Tab::Runbook(r)) => r.clone().into_any_element(),
             Some(Tab::Containers(c)) => c.clone().into_any_element(),
+            Some(Tab::Servers) => self.render_servers(p, cx),
             _ => self.render_welcome(p, cx),
         }
     }
@@ -1510,18 +1586,13 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn save_layout(&self, cx: &App) {
-        let active_buffer = match self.tabs.get(self.active) {
-            Some(Tab::Sql(t)) => Some(t.read(cx).buffer_id().to_owned()),
-            _ => None,
-        };
-        self.core.send(Command::SaveWorkspace(SavedWorkspace {
-            name: self.workspace_name.clone(),
-            buffers: Vec::new(),
-            pinned: Vec::new(),
-            sidebar_collapsed: !self.sidebar_open,
-            active_buffer,
-        }));
+    pub(crate) fn save_layout(&self, cx: &App) {
+        // Wait for the saved layout first, or this would overwrite it.
+        if !self.servers.layout_ready {
+            return;
+        }
+        self.core
+            .send(Command::SaveWorkspace(self.layout_snapshot(cx)));
     }
 
     /// Open (or focus) a SQL tab for a connection.
@@ -1644,6 +1715,11 @@ impl Workspace {
             "close_all" => (0..n).collect(),
             _ => return,
         };
+        // Only this workspace's tabs.
+        let doomed: Vec<usize> = doomed
+            .into_iter()
+            .filter(|i| self.tab_visible(*i))
+            .collect();
         // Highest first, so the remaining indices stay valid. Files with unsaved changes
         // wait for one Save / Discard / Cancel question.
         let mut dirty = Vec::new();
@@ -1804,7 +1880,24 @@ impl Workspace {
             }
         }
         self.active = self.active.min(self.tabs.len() - 1);
+        // The tab in front stays in this workspace.
+        if !self.tab_visible(self.active) {
+            let shown = self.visible_tabs();
+            if shown.is_empty() {
+                self.tabs.push(Tab::Welcome);
+                self.active = self.tabs.len() - 1;
+            } else {
+                self.active = shown
+                    .iter()
+                    .rev()
+                    .find(|i| **i <= self.active)
+                    .or_else(|| shown.first())
+                    .copied()
+                    .unwrap_or(0);
+            }
+        }
         self.fix_split();
+        self.sync_reach();
         self.save_layout(cx);
         self.sync_schema(cx);
         cx.notify();
@@ -2013,8 +2106,24 @@ impl Workspace {
             .iter()
             .map(|r| (r.id.clone(), r.name.clone()))
             .collect();
-        let view =
-            cx.new(|cx| PaletteView::new(mode, profiles, window, cx).with_runbooks(runbooks));
+        let recent: HashMap<ProfileId, i64> = self
+            .servers
+            .facts
+            .values()
+            .filter_map(|f| f.last_connected.map(|t| (f.id.clone(), t)))
+            .collect();
+        let current: HashSet<ProfileId> = self
+            .servers
+            .scoped
+            .all
+            .iter()
+            .map(|p| p.id().clone())
+            .collect();
+        let view = cx.new(|cx| {
+            PaletteView::new(mode, profiles, window, cx)
+                .with_runbooks(runbooks)
+                .with_connect(recent, current)
+        });
         let sub = cx.subscribe_in(&view, window, |this, _, ev: &PaletteEvent, window, cx| {
             this.overlay = None;
             match ev {
@@ -2064,6 +2173,8 @@ impl Workspace {
             }
             Some(Profile::Cloud(c)) => self.open_cloud(c, window, cx),
             Some(Profile::Containers(c)) => self.open_containers(c, window, cx),
+            Some(Profile::Desktop(d)) => self.launch_desktop(&d.id, cx),
+            Some(Profile::Credential(c)) => self.open_credentials(Some(c.id), window, cx),
             None => {}
         }
     }
@@ -2078,7 +2189,11 @@ impl Workspace {
         let core = self.core.clone();
         let profiles = self.profiles.clone();
         let comps = self.components.clone();
-        let ed = cx.new(|cx| ConnEditor::new(core, profiles, kind, existing, comps, window, cx));
+        let workspaces = self.workspace_choices(existing.as_ref());
+        let ed = cx.new(|cx| {
+            ConnEditor::new(core, profiles, kind, existing, comps, window, cx)
+                .with_workspaces(workspaces)
+        });
         let sub = cx.subscribe_in(
             &ed,
             window,
@@ -2376,7 +2491,39 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         use crate::conn_editor::ConnKind;
+        let current = self.servers.current.clone();
         match id {
+            CommandId::ConnectTo => self.open_palette(PaletteMode::ConnectTo, window, cx),
+            CommandId::ShowServers => {
+                self.set_mode(AppMode::Default, window, cx);
+                self.open_servers(cx)
+            }
+            CommandId::ManageCredentials => self.open_credentials(None, window, cx),
+            CommandId::NewDesktop(protocol) => self.open_desktop_editor(protocol, None, window, cx),
+            CommandId::AddToWorkspace => self.open_pick_workspace(window, cx),
+            CommandId::RemoveFromWorkspace => match self.palette_ws_target(cx) {
+                Some(t) => self.remove_from_workspace(&t, cx),
+                None => self.toast("Pick items or open one first", cx),
+            },
+            CommandId::NewWorkspace => self.open_new_workspace(None, window, cx),
+            CommandId::SwitchWorkspace => {
+                self.mode_menu = true;
+                cx.notify();
+            }
+            CommandId::WorkspaceSettings => self.open_workspace_settings(&current, window, cx),
+            CommandId::RenameWorkspace => self.open_name_dialog(
+                crate::workspace_dialogs::NameMode::Rename(current),
+                window,
+                cx,
+            ),
+            CommandId::DuplicateWorkspace => self.open_name_dialog(
+                crate::workspace_dialogs::NameMode::Duplicate(current),
+                window,
+                cx,
+            ),
+            CommandId::DeleteWorkspace => self.open_delete_workspace(&current, window, cx),
+            CommandId::ExportWorkspace => self.open_export_workspace(&current, window, cx),
+            CommandId::ImportWorkspace => self.import_workspace(cx),
             CommandId::NewConnection => self.open_conn_editor(
                 ConnKind::Db(switchyard_core::db::Engine::Postgres),
                 None,
@@ -2534,13 +2681,17 @@ impl Workspace {
             CommandId::ImportAnsible => self.import_ansible(cx),
             CommandId::CloseTab => self.close_tab(self.active, window, cx),
             CommandId::NextTab | CommandId::PrevTab if !self.tabs.is_empty() => {
-                let n = self.tabs.len();
+                let shown = self.visible_tabs();
+                let n = shown.len().max(1);
+                let at = shown.iter().position(|i| *i == self.active).unwrap_or(0);
                 let next = if id == CommandId::NextTab {
-                    (self.active + 1) % n
+                    (at + 1) % n
                 } else {
-                    (self.active + n - 1) % n
+                    (at + n - 1) % n
                 };
-                self.activate(next, cx);
+                if let Some(ix) = shown.get(next).copied() {
+                    self.activate(ix, cx);
+                }
             }
             CommandId::NextTab | CommandId::PrevTab => {}
             CommandId::SettingsKeybindings => {
@@ -2617,6 +2768,7 @@ impl Workspace {
 
     /// The title bar's workspace menu: Default or API.
     fn render_mode_menu(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        let workspaces = self.render_workspace_menu(p, cx);
         let item = |id: &'static str, mode: AppMode, title: &'static str, sub: &'static str| {
             let active = self.mode == mode;
             div()
@@ -2660,12 +2812,7 @@ impl Workspace {
                     this.mode_menu = false;
                     cx.notify();
                 }))
-                .child(item(
-                    "mode-default",
-                    AppMode::Default,
-                    "Default",
-                    "Databases, terminals, files and tunnels",
-                ))
+                .child(workspaces)
                 .child(item(
                     "mode-api",
                     AppMode::Api,
@@ -2891,6 +3038,7 @@ impl Workspace {
     ) -> (SharedString, SharedString, Option<EnvironmentLabel>, bool) {
         match tab {
             Tab::Welcome => ("SY".into(), "Welcome".into(), None, false),
+            Tab::Servers => ("SRV".into(), "Servers".into(), None, false),
             Tab::Sql(t) => {
                 let t = t.read(cx);
                 let badge = t.connection.as_ref().map_or("SQL", |c| c.engine.badge());
@@ -3104,128 +3252,134 @@ impl Workspace {
             .flex()
             .items_stretch()
             .overflow_x_scroll()
-            .children(self.tabs.iter().enumerate().map(|(i, tab)| {
-                let (badge, label, env, dirty) = self.tab_info(tab, cx);
-                let active = i == self.active;
-                // Visible in the other pane of a split.
-                let shown = shown_other == Some(i);
-                let db_color = color_of(tab, cx);
-                let production = env == Some(EnvironmentLabel::Production);
-                let edge: Hsla = match (db_color, env) {
-                    (Some(c), _) => {
-                        if active {
-                            c
-                        } else {
-                            c.opacity(0.55)
-                        }
-                    }
-                    (None, Some(e)) if e != EnvironmentLabel::Local || active => {
-                        let c = p.env(e);
-                        if active { c } else { c.opacity(0.45) }
-                    }
-                    _ => gpui_kit::transparent_black(),
-                };
-                div()
-                    .id(("tab", i))
-                    .relative()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(rpx(7.))
-                    .pl(rpx(12.))
-                    .pr(rpx(8.))
-                    .min_w_0()
-                    .max_w(rpx(230.))
-                    .border_r_1()
-                    .border_color(p.bd)
-                    .text_size(ts::UI)
-                    .bg(if active {
-                        p.surface
-                    } else if shown {
-                        p.surface.opacity(0.6)
-                    } else {
-                        gpui_kit::transparent_black()
-                    })
-                    .text_color(if active || shown { p.fg } else { p.fg2 })
-                    .when(active, |d| d.mb(rpx(-1.)))
-                    // A faint wash of the database color on the active tab.
-                    .when_some(db_color.filter(|_| active), |d, c| d.bg(c.opacity(0.08)))
-                    .on_click(cx.listener(move |this, _, _, cx| this.activate(i, cx)))
-                    .on_mouse_down(
-                        gpui_kit::MouseButton::Right,
-                        cx.listener(move |this, ev: &gpui_kit::MouseDownEvent, _, cx| {
-                            this.ctx = Some(crate::sidebar::CtxMenu::new(
-                                ev.position,
-                                crate::sidebar::CtxTarget::Tab(i),
-                            ));
-                            cx.notify();
-                        }),
-                    )
-                    .child(
+            .children(
+                self.tabs
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| self.tab_visible(*i))
+                    .map(|(i, tab)| {
+                        let (badge, label, env, dirty) = self.tab_info(tab, cx);
+                        let active = i == self.active;
+                        // Visible in the other pane of a split.
+                        let shown = shown_other == Some(i);
+                        let db_color = color_of(tab, cx);
+                        let production = env == Some(EnvironmentLabel::Production);
+                        let edge: Hsla = match (db_color, env) {
+                            (Some(c), _) => {
+                                if active {
+                                    c
+                                } else {
+                                    c.opacity(0.55)
+                                }
+                            }
+                            (None, Some(e)) if e != EnvironmentLabel::Local || active => {
+                                let c = p.env(e);
+                                if active { c } else { c.opacity(0.45) }
+                            }
+                            _ => gpui_kit::transparent_black(),
+                        };
                         div()
-                            .absolute()
-                            .left_0()
-                            .right_0()
-                            .top_0()
-                            .h(rpx(2.))
-                            .bg(edge),
-                    )
-                    .child(
-                        div()
+                            .id(("tab", i))
+                            .relative()
+                            .flex()
                             .flex_none()
-                            .px(rpx(4.))
-                            .rounded(px(3.))
-                            .border_1()
+                            .items_center()
+                            .gap(rpx(7.))
+                            .pl(rpx(12.))
+                            .pr(rpx(8.))
+                            .min_w_0()
+                            .max_w(rpx(230.))
+                            .border_r_1()
                             .border_color(p.bd)
-                            .text_color(p.fg2)
-                            .font_family(MONO)
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_size(ts::MICRO)
-                            .line_height(rpx(14.))
-                            .child(badge),
-                    )
-                    // Production keeps its red marker whatever the database color.
-                    .when(production, |d| {
-                        d.child(
-                            div()
-                                .flex_none()
-                                .px(rpx(3.))
-                                .rounded(px(3.))
-                                .bg(p.prod)
-                                .text_color(gpui_kit::white())
-                                .font_family(MONO)
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_size(ts::MICRO)
-                                .line_height(rpx(13.))
-                                .child("P"),
-                        )
-                    })
-                    .child(div().truncate().child(label))
-                    // Unsaved marker (editor files, SQL text not yet autosaved).
-                    .child(ui::dot(
-                        if dirty {
-                            p.stg
-                        } else {
-                            gpui_kit::transparent_black()
-                        },
-                        6.,
-                    ))
-                    .child(
-                        div()
-                            .id(("tab-close", i))
-                            .flex_none()
-                            .px(rpx(4.))
-                            .rounded(px(4.))
-                            .text_color(p.fg3)
-                            .text_size(ts::SMALL)
-                            .hover(|s| s.bg(p.hover).text_color(p.fg))
-                            .on_click(cx.listener(move |this, _: &ClickEvent, w, cx| {
-                                cx.stop_propagation();
-                                this.close_tab(i, w, cx);
-                            }))
-                            .child("×"),
-                    )
-            }))
+                            .text_size(ts::UI)
+                            .bg(if active {
+                                p.surface
+                            } else if shown {
+                                p.surface.opacity(0.6)
+                            } else {
+                                gpui_kit::transparent_black()
+                            })
+                            .text_color(if active || shown { p.fg } else { p.fg2 })
+                            .when(active, |d| d.mb(rpx(-1.)))
+                            // A faint wash of the database color on the active tab.
+                            .when_some(db_color.filter(|_| active), |d, c| d.bg(c.opacity(0.08)))
+                            .on_click(cx.listener(move |this, _, _, cx| this.activate(i, cx)))
+                            .on_mouse_down(
+                                gpui_kit::MouseButton::Right,
+                                cx.listener(move |this, ev: &gpui_kit::MouseDownEvent, _, cx| {
+                                    this.ctx = Some(crate::sidebar::CtxMenu::new(
+                                        ev.position,
+                                        crate::sidebar::CtxTarget::Tab(i),
+                                    ));
+                                    cx.notify();
+                                }),
+                            )
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .right_0()
+                                    .top_0()
+                                    .h(rpx(2.))
+                                    .bg(edge),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .px(rpx(4.))
+                                    .rounded(px(3.))
+                                    .border_1()
+                                    .border_color(p.bd)
+                                    .text_color(p.fg2)
+                                    .font_family(MONO)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_size(ts::MICRO)
+                                    .line_height(rpx(14.))
+                                    .child(badge),
+                            )
+                            // Production keeps its red marker whatever the database color.
+                            .when(production, |d| {
+                                d.child(
+                                    div()
+                                        .flex_none()
+                                        .px(rpx(3.))
+                                        .rounded(px(3.))
+                                        .bg(p.prod)
+                                        .text_color(gpui_kit::white())
+                                        .font_family(MONO)
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_size(ts::MICRO)
+                                        .line_height(rpx(13.))
+                                        .child("P"),
+                                )
+                            })
+                            .child(div().truncate().child(label))
+                            // Unsaved marker (editor files, SQL text not yet autosaved).
+                            .child(ui::dot(
+                                if dirty {
+                                    p.stg
+                                } else {
+                                    gpui_kit::transparent_black()
+                                },
+                                6.,
+                            ))
+                            .child(
+                                div()
+                                    .id(("tab-close", i))
+                                    .flex_none()
+                                    .px(rpx(4.))
+                                    .rounded(px(4.))
+                                    .text_color(p.fg3)
+                                    .text_size(ts::SMALL)
+                                    .hover(|s| s.bg(p.hover).text_color(p.fg))
+                                    .on_click(cx.listener(move |this, _: &ClickEvent, w, cx| {
+                                        cx.stop_propagation();
+                                        this.close_tab(i, w, cx);
+                                    }))
+                                    .child("×"),
+                            )
+                    }),
+            )
             .child(
                 div()
                     .id("tab-new")
@@ -3584,6 +3738,10 @@ fn shortcut_hint(label: &'static str, key: SharedString, p: &Palette) -> AnyElem
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = palette(cx);
+        if self.servers.view.search.is_none() && self.tabs.iter().any(|t| matches!(t, Tab::Servers))
+        {
+            self.servers_search(window, cx);
+        }
         if let Some((fs, path)) = self.pending_editor.take() {
             self.open_remote_file(fs, path, window, cx);
         }
@@ -3665,6 +3823,9 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &actions::QuickSwitch, w, cx| {
                 this.open_palette(PaletteMode::Anything, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::ConnectTo, w, cx| {
+                this.run_command(CommandId::ConnectTo, w, cx)
             }))
             .on_action(cx.listener(|this, _: &actions::RunStatement, w, cx| {
                 this.run_command(CommandId::RunStatement, w, cx)

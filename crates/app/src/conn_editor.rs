@@ -175,6 +175,8 @@ pub struct ConnEditor {
     forward_x11: bool,
     /// A Host shown in the sidebar's Favorites.
     favorite: bool,
+    /// Workspaces it belongs to: (id, name, at open, ticked now).
+    workspaces: Vec<(String, String, bool, bool)>,
 }
 
 impl EventEmitter<ConnEditorEvent> for ConnEditor {}
@@ -259,9 +261,44 @@ impl ConnEditor {
             forward_agent: matches!(&existing, Some(Profile::Host(h)) if h.forward_agent),
             forward_x11: matches!(&existing, Some(Profile::Host(h)) if h.forward_x11),
             favorite: matches!(&existing, Some(Profile::Host(h)) if h.favorite),
+            workspaces: Vec::new(),
         };
         this.build_fields(existing.as_ref(), window, cx);
         this
+    }
+
+    /// The workspaces to show as checkboxes: (id, name, member now).
+    pub fn with_workspaces(mut self, list: Vec<(String, String, bool)>) -> Self {
+        self.workspaces = list
+            .into_iter()
+            .map(|(id, name, on)| (id, name, on, on))
+            .collect();
+        self
+    }
+
+    /// The workspace checkboxes the user changed: (workspace, now a member).
+    pub fn membership_changes(&self) -> Vec<(String, bool)> {
+        self.workspaces
+            .iter()
+            .filter(|(_, _, before, now)| before != now)
+            .map(|(id, _, _, now)| (id.clone(), *now))
+            .collect()
+    }
+
+    /// The shared credentials to pick from: none, then each credential.
+    fn credential_options(&self) -> Vec<(String, String)> {
+        let mut v = vec![(
+            "None · sign in with the fields here".to_owned(),
+            String::new(),
+        )];
+        v.extend(self.profiles.all.iter().filter_map(|p| match p {
+            Profile::Credential(c) => Some((
+                format!("{} · {}", c.name, c.qualified_user()),
+                c.id.0.clone(),
+            )),
+            _ => None,
+        }));
+        v
     }
 
     /// The pending save request.
@@ -311,6 +348,11 @@ impl ConnEditor {
                     _ => form.new_profile(),
                 };
                 add(self, "name", &d.name, form.name_placeholder(), false);
+                let creds = self.credential_options();
+                self.selects.insert(
+                    "credential",
+                    sel(creds, d.credential.as_ref().map_or("", |c| c.0.as_str())),
+                );
                 form.init(
                     &d,
                     &mut FieldSet {
@@ -470,6 +512,11 @@ impl ConnEditor {
                 self.selects.insert(
                     "jump",
                     sel(jumps, h.jump_hosts.first().map_or("", |j| j.0.as_str())),
+                );
+                let creds = self.credential_options();
+                self.selects.insert(
+                    "credential",
+                    sel(creds, h.credential.as_ref().map_or("", |c| c.0.as_str())),
                 );
                 let mut macros = vec![("None".to_owned(), String::new())];
                 macros.extend(
@@ -710,6 +757,9 @@ impl ConnEditor {
                 d.history_enabled = self.history;
                 d.agent_access = self.agents && self.kind.agents_apply();
                 d.assistant_agent = Some(self.chosen("assistant")).filter(|a| !a.is_empty());
+                d.credential = Some(self.chosen("credential"))
+                    .filter(|c| !c.is_empty())
+                    .map(ProfileId);
                 Profile::Db(d)
             }
             ConnKind::Ssh => {
@@ -757,6 +807,9 @@ impl ConnEditor {
                 };
                 h.environment = self.env;
                 h.agent_access = self.agents;
+                h.credential = Some(self.chosen("credential"))
+                    .filter(|c| !c.is_empty())
+                    .map(ProfileId);
                 h.forwards = self
                     .forwards
                     .iter()
@@ -1301,6 +1354,17 @@ impl ConnEditor {
             ConnKind::Db(engine) => {
                 v.push(Field::new("name", "Name"));
                 v.extend(engines::form(engine).layout(&Values { editor: self, cx }));
+                if !engine.is_local_file()
+                    && self
+                        .selects
+                        .get("credential")
+                        .is_some_and(|s| s.options.len() > 1)
+                {
+                    v.push(
+                        Field::new("credential", "Shared credential")
+                            .hint("Its user and password replace the sign-in fields; rotate it once for every connection"),
+                    );
+                }
             }
             ConnKind::Ssh => {
                 v.push(Field::new("name", "Name"));
@@ -1308,6 +1372,16 @@ impl ConnEditor {
                 v.push(Field::new("port", "Port").span(2).mono());
                 v.push(Field::new("user", "User").span(3));
                 v.push(Field::new("auth", "Auth").span(3));
+                if self
+                    .selects
+                    .get("credential")
+                    .is_some_and(|s| s.options.len() > 1)
+                {
+                    v.push(
+                        Field::new("credential", "Shared credential")
+                            .hint("Its user and password or key replace the sign-in fields"),
+                    );
+                }
                 match self.chosen("auth").as_str() {
                     "agent" => {
                         v.push(
@@ -1786,6 +1860,32 @@ impl Render for ConnEditor {
                                 ))
                             })
                             .children(assistant_field)
+                            .when(!self.workspaces.is_empty(), |d| {
+                                d.child(
+                                    div()
+                                        .flex()
+                                        .flex_wrap()
+                                        .items_center()
+                                        .gap(rpx(12.))
+                                        .child(
+                                            div()
+                                                .text_size(ts::BODY)
+                                                .text_color(p.fg3)
+                                                .child("Workspaces"),
+                                        )
+                                        .children(self.workspaces.iter().enumerate().map(
+                                            |(i, (_, name, _, on))| {
+                                                ui::checkbox(("conn-ws", i), *on, name.clone(), &p)
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        if let Some(w) = this.workspaces.get_mut(i) {
+                                                            w.3 = !w.3;
+                                                        }
+                                                        cx.notify();
+                                                    }))
+                                            },
+                                        )),
+                                )
+                            })
                             .when(self.test == TestState::Missing, |d| {
                                 d.child(self.render_driver_card(&p, cx))
                             })

@@ -35,6 +35,12 @@ pub enum StoreError {
     /// Wrong master password or corrupted vault.
     #[error("wrong master password or damaged vault")]
     BadPassword,
+    /// A request the store refuses (a duplicate workspace name, a damaged file).
+    #[error("{0}")]
+    Invalid(String),
+    /// The passphrase of an exported workspace's secrets is wrong (or the file damaged).
+    #[error("wrong passphrase for the workspace file's secrets")]
+    WrongPassphrase,
     /// The store was created by a newer Switchyard.
     #[error("profile store version {0} is newer than this app supports")]
     TooNew(i64),

@@ -378,7 +378,9 @@ async fn driver_manager_commands_report_on_the_bus() {
             "x-server",
             "claude-code",
             "codex-cli",
-            "gemini-cli"
+            "gemini-cli",
+            "rdp-client",
+            "vnc-client"
         ]
     );
 
