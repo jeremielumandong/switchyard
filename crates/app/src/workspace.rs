@@ -71,6 +71,10 @@ pub enum Tab {
     Cloud(Entity<crate::cloud_tab::CloudTab>),
     /// Fleet: a command, dashboard, push or key tool on many Hosts.
     Fleet(Entity<crate::fleet_tab::FleetTab>),
+    /// Schema compare and migration script.
+    Compare(Entity<crate::compare_tab::CompareTab>),
+    /// A runbook (edit and run).
+    Runbook(Entity<crate::runbook_tab::RunbookTab>),
 }
 
 /// The root view.
@@ -140,6 +144,10 @@ pub struct Workspace {
     /// The sidebar Files panel per Host (kept while the app runs, so its folder is kept).
     pub(crate) remote_files: HashMap<String, Entity<RemoteFiles>>,
     pub(crate) history: Vec<HistoryEntry>,
+    /// The saved runbooks by name.
+    pub(crate) runbooks: Vec<switchyard_core::store::Runbook>,
+    /// The pending runbook import.
+    pub(crate) runbook_import: Option<switchyard_core::RequestId>,
     pub(crate) focus: FocusHandle,
     pub(crate) overlay_focus: FocusHandle,
     pub(crate) ctx: Option<crate::sidebar::CtxMenu>,
@@ -164,7 +172,7 @@ pub struct Workspace {
     _events: Task<()>,
     /// Re-reads the Omarchy theme so "Follow Omarchy" tracks theme switches.
     _omarchy: Option<Task<()>>,
-    _subs: Vec<Subscription>,
+    pub(crate) _subs: Vec<Subscription>,
 }
 
 impl Focusable for Workspace {
@@ -222,6 +230,7 @@ impl Workspace {
             key: switchyard_core::fleet::CONCURRENCY_KEY.into(),
         });
         core.send(Command::LoadMacros);
+        core.send(Command::LoadRunbooks);
         core.send(Command::DetectComponents);
         crate::updates::load_setting(&core);
         // Pins and the explorer's connection nodes (DBX-5e).
@@ -337,6 +346,8 @@ impl Workspace {
             drivers: Default::default(),
             remote_files: HashMap::new(),
             history: Vec::new(),
+            runbooks: Vec::new(),
+            runbook_import: None,
             focus,
             overlay_focus: cx.focus_handle(),
             ctx: None,
@@ -398,6 +409,12 @@ impl Workspace {
     fn on_event(&mut self, ev: Event, window: &mut Window, cx: &mut Context<Self>) {
         match ev {
             Event::Pong { .. } => {}
+            ev @ (Event::Runbooks(_)
+            | Event::RunbookSaved { .. }
+            | Event::ApiRequests { .. }
+            | Event::RunbookResolved { .. }
+            | Event::RunbookOutput { .. }
+            | Event::RunbookStepDone { .. }) => self.on_runbook_event(ev, window, cx),
             ev @ (Event::RedisOpened { .. }
             | Event::RedisKeys { .. }
             | Event::RedisKey { .. }
@@ -524,6 +541,12 @@ impl Workspace {
                 crate::named_secrets::on_profiles(&list, cx);
                 self.profiles = Profiles { all: list };
                 self.profiles_loaded = true;
+                for t in &self.tabs {
+                    if let Tab::Runbook(r) = t {
+                        let profiles = self.profiles.clone();
+                        r.update(cx, |r, cx| r.set_profiles(profiles, cx));
+                    }
+                }
                 // The schema explorer lists SQL databases; Redis opens its own browser.
                 let dbs: Vec<_> = self
                     .profiles
@@ -702,6 +725,9 @@ impl Workspace {
                 {
                     self.explorer.try_reveal();
                 }
+                if let Some(r) = self.runbook_tab_for_session(session, cx) {
+                    r.update(cx, |r, cx| r.on_session(session, Ok(()), cx));
+                }
                 if let Some(o) = self.object_tab_for_session(session, cx) {
                     let version = server_version.clone();
                     o.update(cx, |o, cx| o.on_session(SessionState::Open { version }, cx));
@@ -726,6 +752,10 @@ impl Workspace {
                     s.on_failed(message.clone());
                     self.explorer.try_reveal();
                 }
+                if let Some(r) = self.runbook_tab_for_session(session, cx) {
+                    let m = message.clone();
+                    r.update(cx, |r, cx| r.on_session(session, Err(m), cx));
+                }
                 if let Some(o) = self.object_tab_for_session(session, cx) {
                     let failed = SessionState::Failed(message.clone());
                     o.update(cx, |o, cx| o.on_session(failed, cx));
@@ -740,7 +770,9 @@ impl Workspace {
                 self.toast(format!("Connection failed: {message}"), cx);
             }
             Event::Query { query, event } => {
-                if let Some(o) = self.object_tab_for_query(query, cx) {
+                if let Some(r) = self.runbook_tab_for_query(query, cx) {
+                    r.update(cx, |r, cx| r.on_query(query, event, window, cx));
+                } else if let Some(o) = self.object_tab_for_query(query, cx) {
                     o.update(cx, |o, cx| o.on_query(event, window, cx));
                 } else {
                     for t in &self.tabs {
@@ -860,6 +892,25 @@ impl Workspace {
             }
             Event::Activity { request, result } => self.on_activity(request, result, window, cx),
             Event::SessionAction { request, result } => self.on_session_action(request, result, cx),
+            Event::CompareCatalog { request, result } => {
+                if let Some(tab) = self.compare_tab(request, cx) {
+                    tab.update(cx, |t, cx| t.on_catalog(request, result, cx));
+                }
+            }
+            Event::CompareProgress {
+                request,
+                done,
+                total,
+            } => {
+                if let Some(tab) = self.compare_tab(request, cx) {
+                    tab.update(cx, |t, cx| t.on_progress(request, done, total, cx));
+                }
+            }
+            Event::CompareSnapshot { request, result } => {
+                if let Some(tab) = self.compare_tab(request, cx) {
+                    tab.update(cx, |t, cx| t.on_snapshot(request, result, cx));
+                }
+            }
             Event::WhatIf { request, result } => {
                 if let Some(tab) = self.plan_tab(cx, |v| v.owns(request)) {
                     tab.update(cx, |t, cx| {
@@ -1277,6 +1328,8 @@ impl Workspace {
             Some(Tab::Redis(r)) => r.clone().into_any_element(),
             Some(Tab::Cloud(c)) => c.clone().into_any_element(),
             Some(Tab::Fleet(f)) => f.clone().into_any_element(),
+            Some(Tab::Compare(c)) => c.clone().into_any_element(),
+            Some(Tab::Runbook(r)) => r.clone().into_any_element(),
             _ => self.render_welcome(p, cx),
         }
     }
@@ -1646,6 +1699,12 @@ impl Workspace {
         if let Tab::Cloud(c) = &self.tabs[ix] {
             c.update(cx, |c, _| c.shutdown());
         }
+        if let Tab::Compare(c) = &self.tabs[ix] {
+            c.update(cx, |c, _| c.shutdown());
+        }
+        if let Tab::Runbook(r) = &self.tabs[ix] {
+            r.update(cx, |r, _| r.shutdown());
+        }
         if let Tab::Editor(e) = &self.tabs[ix] {
             e.update(cx, |e, cx| e.shutdown(cx));
         }
@@ -1883,12 +1942,19 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let profiles = self.profiles.clone();
-        let view = cx.new(|cx| PaletteView::new(mode, profiles, window, cx));
+        let runbooks = self
+            .runbooks
+            .iter()
+            .map(|r| (r.id.clone(), r.name.clone()))
+            .collect();
+        let view =
+            cx.new(|cx| PaletteView::new(mode, profiles, window, cx).with_runbooks(runbooks));
         let sub = cx.subscribe_in(&view, window, |this, _, ev: &PaletteEvent, window, cx| {
             this.overlay = None;
             match ev {
                 PaletteEvent::Run(id) => this.run_command(*id, window, cx),
                 PaletteEvent::Open(id) => this.open_profile(id, window, cx),
+                PaletteEvent::OpenRunbook(id) => this.open_runbook(Some(id.clone()), window, cx),
                 PaletteEvent::Dismiss => {}
             }
             cx.notify();
@@ -2293,6 +2359,9 @@ impl Workspace {
             CommandId::Settings => self.open_settings(SettingsPage::General, window, cx),
             CommandId::SettingsDrivers => self.open_settings(SettingsPage::Drivers, window, cx),
             CommandId::ManageSnippets => crate::snippets::open_manager(self.core.clone(), cx),
+            CommandId::NewRunbook => self.open_runbook(None, window, cx),
+            CommandId::OpenRunbook => self.open_palette(PaletteMode::Runbooks, window, cx),
+            CommandId::ImportRunbook => self.import_runbook(cx),
             CommandId::ManageSecrets => crate::named_secrets::open_manager(self.core.clone(), cx),
             CommandId::ToggleTheme => {
                 let next = if palette(cx).dark {
@@ -2352,6 +2421,7 @@ impl Workspace {
             CommandId::ShowWorkload => self.open_workload(cx),
             CommandId::ShowActivity => self.open_activity_palette(window, cx),
             CommandId::ErDiagram => self.open_er_for_current_schema(window, cx),
+            CommandId::CompareSchemas => self.open_compare_palette(window, cx),
             CommandId::SplitRight => self.split_view(crate::split::SplitDir::Right, window, cx),
             CommandId::SplitDown => self.split_view(crate::split::SplitDir::Down, window, cx),
             CommandId::Unsplit => self.split = None,
@@ -2834,6 +2904,19 @@ impl Workspace {
             Tab::Fleet(f) => {
                 let f = f.read(cx);
                 ("FL".into(), f.title().into(), f.environment(), false)
+            }
+            Tab::Compare(t) => {
+                let t = t.read(cx);
+                (
+                    "SC".into(),
+                    t.title.clone(),
+                    t.connection().map(|c| c.environment),
+                    false,
+                )
+            }
+            Tab::Runbook(r) => {
+                let r = r.read(cx);
+                ("RB".into(), r.title(), None, r.is_dirty())
             }
         }
     }

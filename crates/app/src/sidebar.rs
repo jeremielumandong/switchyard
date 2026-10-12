@@ -1560,13 +1560,24 @@ impl Workspace {
             })
             .collect();
         let filter = self.explorer_filter.read(cx).value().to_string();
-        explorer_rows(
+        let mut rows = explorer_rows(
             &self.profiles,
             &self.collapsed,
             &live,
             self.explorer_group,
             &filter,
-        )
+        );
+        let runbooks: Vec<(String, String)> = self
+            .runbooks
+            .iter()
+            .map(|r| (r.id.clone(), r.name.clone()))
+            .collect();
+        rows.extend(crate::explorer_tree::runbook_rows(
+            &runbooks,
+            &self.collapsed,
+            &filter,
+        ));
+        rows
     }
 
     /// Run a context-menu action on a schema object, on the object's own connection
@@ -2110,6 +2121,7 @@ impl Workspace {
                             this.open_profile(id, w, cx);
                         }
                     }
+                    ConnAction::Runbook(id) => this.open_runbook(id.clone(), w, cx),
                 }
                 cx.notify();
             }))

@@ -316,6 +316,31 @@ impl WorkbenchStore {
         })
     }
 
+    /// Delete `workspace` and everything stored under it: collections (with
+    /// their folders, requests and examples), environments, history, runs,
+    /// cookies, globals and the remembered tabs. Returns `false` when no
+    /// such workspace exists. Vault values the workspace referenced are not
+    /// touched here.
+    pub fn delete_workspace(&self, workspace: &WorkspaceId) -> StoreResult<bool> {
+        let mut connection = self.conn();
+        let transaction = connection.transaction()?;
+        let id = workspace.as_str();
+        for table in [
+            "workbench_collections",
+            "workbench_environments",
+            "workbench_history",
+            "workbench_runs",
+            "workbench_cookie_jars",
+            "workbench_globals",
+            "workbench_tab_sessions",
+        ] {
+            transaction.execute(&format!("DELETE FROM {table} WHERE workspace_id=?1"), [id])?;
+        }
+        let deleted = transaction.execute("DELETE FROM workbench_workspaces WHERE id=?1", [id])?;
+        transaction.commit()?;
+        Ok(deleted != 0)
+    }
+
     /// Record that `workspace` was opened, so the next launch reopens it.
     pub fn mark_workspace_opened(&self, workspace: &WorkspaceId) -> StoreResult<()> {
         self.conn().execute(
@@ -3412,6 +3437,27 @@ mod tests {
         let requests = hydrated.requests;
         assert_eq!(requests.len(), 2);
         assert!(requests.iter().all(|request| request.folder_id.is_none()));
+    }
+
+    #[test]
+    fn deleting_a_workspace_removes_only_its_data() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = WorkbenchStore::open(directory.path()).unwrap();
+        let doomed = store.create_workspace("Doomed").unwrap();
+        let kept = store.create_workspace("Kept").unwrap();
+        for workspace in [&doomed.id, &kept.id] {
+            store
+                .upsert_collection(&collection(workspace, "API"))
+                .unwrap();
+            store
+                .save_tab_session(workspace, &TabSession::default())
+                .unwrap();
+        }
+        assert!(store.delete_workspace(&doomed.id).unwrap());
+        assert!(!store.delete_workspace(&doomed.id).unwrap());
+        assert_eq!(store.list_workspaces().unwrap(), vec![kept.clone()]);
+        assert!(store.list_collections(&doomed.id).unwrap().is_empty());
+        assert_eq!(store.list_collections(&kept.id).unwrap().len(), 1);
     }
 
     #[test]

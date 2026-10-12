@@ -549,7 +549,10 @@ impl Workspace {
 
     fn render_ctx_menu(&self, ctx: &CtxMenu, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let mut items: Vec<(&'static str, &'static str, bool, SharedString)> = match &ctx.target {
-            CtxTarget::Schema(..) => vec![("er", "ER diagram…", false, "".into())],
+            CtxTarget::Schema(..) => vec![
+                ("er", "ER diagram…", false, "".into()),
+                ("compare", "Compare with…", false, "".into()),
+            ],
             CtxTarget::Object(o) if o.kind.is_relation() => vec![
                 ("open", "Open data", false, "↵".into()),
                 ("select", "Generate SELECT", false, "".into()),
@@ -588,6 +591,7 @@ impl Workspace {
                     ("explore", "Show in explorer", false, "".into()),
                     ("refresh_schema", "Refresh schema", false, "".into()),
                     ("activity", "Activity monitor", false, "".into()),
+                    ("compare", "Compare with…", false, "".into()),
                     ("disconnect", "Disconnect", false, "".into()),
                     ("-", "", false, "".into()),
                     ("delete", "Delete", true, "".into()),
@@ -938,6 +942,9 @@ impl Workspace {
             CtxTarget::Schema(..) | CtxTarget::Object(_) if matches!(action, "pin" | "unpin") => {
                 self.toggle_pin(target, cx)
             }
+            CtxTarget::Schema(c, s) if action == "compare" => {
+                self.open_compare(Some(c.clone()), Some(s.clone()), window, cx)
+            }
             CtxTarget::Schema(c, s) => self.open_er_diagram(c, s.clone(), None, window, cx),
             CtxTarget::Object(o) if action == "er" => {
                 self.open_er_diagram(&o.conn, o.schema.clone(), Some(o.name.clone()), window, cx)
@@ -1020,6 +1027,7 @@ impl Workspace {
                 "explorer_remove" => self.remove_from_explorer(id, cx),
                 "refresh_schema" => self.refresh_connection_schema(id, window, cx),
                 "activity" => self.open_activity_for(id, window, cx),
+                "compare" => self.open_compare(Some(id.clone()), None, window, cx),
                 "disconnect" => self.disconnect_connection(id, false, window, cx),
                 _ => {}
             },
@@ -1716,21 +1724,22 @@ impl Workspace {
                                     p,
                                 )
                                 .when(chosen == 0, |b| b.opacity(0.5))
-                                .on_click(cx.listener(move |this, _, w, cx| {
-                                    let Some(Overlay::SshImport(pr)) = &this.overlay else {
-                                        return;
-                                    };
-                                    if pr.chosen.is_empty() {
-                                        return;
-                                    }
-                                    // Keep the file's order.
-                                    let only: Vec<String> = pr
-                                        .hosts
-                                        .iter()
-                                        .filter(|h| pr.chosen.contains(&h.alias))
-                                        .map(|h| h.alias.clone())
-                                        .collect();
-                                    let cmd = match &pr.inventory {
+                                .on_click(cx.listener(
+                                    move |this, _, w, cx| {
+                                        let Some(Overlay::SshImport(pr)) = &this.overlay else {
+                                            return;
+                                        };
+                                        if pr.chosen.is_empty() {
+                                            return;
+                                        }
+                                        // Keep the file's order.
+                                        let only: Vec<String> = pr
+                                            .hosts
+                                            .iter()
+                                            .filter(|h| pr.chosen.contains(&h.alias))
+                                            .map(|h| h.alias.clone())
+                                            .collect();
+                                        let cmd = match &pr.inventory {
                                         Some(path) => switchyard_core::Command::Fleet(
                                             switchyard_core::fleet::FleetCommand::ImportInventory {
                                                 path: path.clone(),
@@ -1741,9 +1750,10 @@ impl Workspace {
                                             only: Some(only),
                                         },
                                     };
-                                    this.core.send(cmd);
-                                    this.dismiss(w, cx);
-                                })),
+                                        this.core.send(cmd);
+                                        this.dismiss(w, cx);
+                                    },
+                                )),
                             ),
                     ),
             )

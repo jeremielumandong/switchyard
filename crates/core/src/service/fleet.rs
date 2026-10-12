@@ -154,7 +154,7 @@ impl FleetExecutor for CommandExec<'_> {
         Box::pin(async move {
             let mut sink = |stderr: bool, b: &[u8]| output(stderr, b);
             let o = conn
-                .run_command_streaming(
+                .run_command_io(
                     &self.script,
                     None,
                     OUTPUT_CAP,
@@ -203,7 +203,7 @@ impl FleetExecutor for ProbeExec<'_> {
     ) -> BoxFuture<'a, Result<ProbeReport, String>> {
         Box::pin(async move {
             let o = conn
-                .run_command_streaming(
+                .run_command_io(
                     probe::PROBE_SCRIPT,
                     None,
                     256 * 1024,
@@ -234,7 +234,7 @@ struct KeysExec<'a> {
 /// Read `authorized_keys` ("" when missing).
 async fn read_keys(conn: &SshConn, stop: &CancellationToken) -> Result<String, String> {
     let o = conn
-        .run_command_streaming(
+        .run_command_io(
             keys::READ_COMMAND,
             None,
             OUTPUT_CAP,
@@ -259,7 +259,7 @@ async fn read_keys(conn: &SshConn, stop: &CancellationToken) -> Result<String, S
 /// Replace `authorized_keys` with `text` (backup first).
 async fn write_keys(conn: &SshConn, text: &str, stop: &CancellationToken) -> Result<(), String> {
     let o = conn
-        .run_command_streaming(
+        .run_command_io(
             keys::WRITE_COMMAND,
             Some(text.as_bytes()),
             64 * 1024,
@@ -463,7 +463,7 @@ impl FleetExecutor for PushExec<'_> {
                     shell_quote(&target)
                 );
                 let o = conn
-                    .run_command_streaming(
+                    .run_command_io(
                         &cmd,
                         None,
                         64 * 1024,

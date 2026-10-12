@@ -1,5 +1,5 @@
 //! SQLite profile store: profiles, workspace buffers, query history, schema cache, settings,
-//! snippets, favorites.
+//! snippets, favorites, terminal macros, runbooks.
 
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -12,6 +12,7 @@ use crate::error::{Result, StoreError};
 use crate::favorites::{Favorite, kind_from_key, kind_key};
 use crate::macros::Macro;
 use crate::model::{BufferState, Profile, ProfileId, Workspace};
+use crate::runbooks::Runbook;
 use crate::snippets::{Snippet, engine_from_key, engine_key};
 
 /// Ordered schema migrations. Never edit an applied migration; append a new one.
@@ -95,7 +96,15 @@ const MIGRATIONS: &[&str] = &[
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
     );",
-    // 6: Host tags (Fleet), indexed for the Explorer's tag filter and fleet selections.
+    // 6: runbooks (user request 2026-10-12); `data` is the `Runbook` JSON without secrets
+    "CREATE TABLE runbooks (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        data TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    );",
+    // 7: Host tags (Fleet), indexed for the Explorer's tag filter and fleet selections.
     // The Host's JSON keeps its tags too; `save_profile` keeps both in step. Existing
     // tags are copied over (lower case, trimmed; later saves normalize fully).
     "CREATE TABLE host_tags (
@@ -775,6 +784,83 @@ impl Store {
             > 0)
     }
 
+    // ---- runbooks ----
+
+    /// Runbooks by name.
+    pub fn runbooks(&self) -> Result<Vec<Runbook>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, data, created_at, updated_at FROM runbooks
+             ORDER BY name COLLATE NOCASE, id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, data, created_at, updated_at) = row?;
+            let mut rb: Runbook = serde_json::from_str(&data)?;
+            rb.id = id;
+            rb.created_at = created_at;
+            rb.updated_at = updated_at;
+            out.push(rb);
+        }
+        Ok(out)
+    }
+
+    /// The runbook with id `id`.
+    pub fn runbook(&self, id: &str) -> Result<Option<Runbook>> {
+        Ok(self.runbooks()?.into_iter().find(|r| r.id == id))
+    }
+
+    /// Insert (empty id) or update a runbook after validation; returns it as stored.
+    /// Secret parameters' defaults are never stored (see [`Runbook::sanitized`]).
+    pub fn save_runbook(&mut self, rb: &Runbook) -> Result<Runbook> {
+        rb.validate()?;
+        let mut rb = rb.sanitized();
+        rb.name = rb.name.trim().to_owned();
+        let now = now_ms();
+        if rb.id.is_empty() {
+            rb.id = crate::random::random_hex(12);
+            rb.created_at = now;
+        }
+        rb.updated_at = now;
+        let data = serde_json::to_string(&rb)?;
+        let created: i64 = self.conn.query_row(
+            "INSERT INTO runbooks (id, name, data, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET name = ?2, data = ?3, updated_at = ?5
+             RETURNING created_at",
+            params![
+                rb.id,
+                rb.name,
+                data,
+                if rb.created_at == 0 {
+                    now
+                } else {
+                    rb.created_at
+                },
+                rb.updated_at
+            ],
+            |r| r.get(0),
+        )?;
+        rb.created_at = created;
+        Ok(rb)
+    }
+
+    /// Delete a runbook. Returns it when it existed (its secrets are the caller's to
+    /// remove).
+    pub fn delete_runbook(&mut self, id: &str) -> Result<Option<Runbook>> {
+        let found = self.runbook(id)?;
+        self.conn
+            .execute("DELETE FROM runbooks WHERE id = ?1", [id])?;
+        Ok(found)
+    }
+
     // ---- favorites ----
 
     /// Pinned objects in their saved order. Pins of a kind this build does not know
@@ -1364,17 +1450,17 @@ mod tests {
     }
 
     #[test]
-    fn migrates_v5_store_tags_into_the_index() {
+    fn migrates_v6_store_tags_into_the_index() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("profiles.db");
         let mut h = Host::new("web", "10.0.0.1", "deploy");
         h.tags = vec!["Web".into(), " role:app ".into(), String::new()];
         {
             let conn = Connection::open(&path).unwrap();
-            for sql in &MIGRATIONS[..5] {
+            for sql in &MIGRATIONS[..6] {
                 conn.execute_batch(sql).unwrap();
             }
-            conn.pragma_update(None, "user_version", 5).unwrap();
+            conn.pragma_update(None, "user_version", 6).unwrap();
             conn.execute(
                 "INSERT INTO profiles (id, kind, name, sort_order, data, updated_at)
                  VALUES (?1, 'host', 'web', 0, ?2, 0)",
@@ -1418,5 +1504,81 @@ mod tests {
         assert_eq!(s.macros().unwrap()[1].name, "deploy 2");
         assert!(s.delete_macro(&saved.id).unwrap());
         assert_eq!(s.macros().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn runbooks_round_trip_without_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("profiles.db");
+        let mut s = Store::open(&path).unwrap();
+        let rb = crate::runbooks::tests::sample();
+        let saved = s.save_runbook(&rb).unwrap();
+        assert!(!saved.id.is_empty());
+        assert!(saved.created_at > 0);
+        assert_eq!(
+            saved.params[1].default, "",
+            "secret defaults are never stored"
+        );
+        assert!(s.save_runbook(&Runbook::new("")).is_err());
+        s.save_runbook(&Runbook::new("a first")).unwrap();
+        drop(s);
+        let mut s = Store::open(&path).unwrap();
+        let raw: String = s
+            .conn
+            .query_row(
+                "SELECT data FROM runbooks WHERE id = ?1",
+                [&saved.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!raw.contains("hunter2"));
+        let list = s.runbooks().unwrap();
+        assert_eq!(
+            list.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            ["a first", "Fail over replica"]
+        );
+        let back = &list[1];
+        assert_eq!(back.id, saved.id);
+        assert_eq!(back.steps, rb.steps);
+        assert_eq!(back.params[0], rb.params[0]);
+        let mut renamed = back.clone();
+        renamed.name = "Fail over 2".into();
+        renamed.steps.pop();
+        let again = s.save_runbook(&renamed).unwrap();
+        assert_eq!(again.created_at, back.created_at);
+        let got = s.runbook(&saved.id).unwrap().unwrap();
+        assert_eq!(got.name, "Fail over 2");
+        assert_eq!(got.steps.len(), 4);
+        assert_eq!(s.delete_runbook(&saved.id).unwrap().unwrap().id, saved.id);
+        assert!(s.delete_runbook(&saved.id).unwrap().is_none());
+        assert_eq!(s.runbooks().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn migrates_v5_store_to_runbooks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("profiles.db");
+        {
+            // A store as MX-5 left it: schema version 5, one macro.
+            let conn = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..5] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.pragma_update(None, "user_version", 5).unwrap();
+            conn.execute(
+                "INSERT INTO macros (id, name, input, created_at, updated_at)
+                 VALUES ('m1', 'n', 'x', 1, 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let mut s = Store::open(&path).unwrap();
+        assert_eq!(s.schema_version().unwrap(), MIGRATIONS.len() as i64);
+        assert_eq!(s.macros().unwrap().len(), 1);
+        assert!(s.runbooks().unwrap().is_empty());
+        s.save_runbook(&Runbook::new("rb")).unwrap();
+        drop(s);
+        let s = Store::open(&path).unwrap();
+        assert_eq!(s.runbooks().unwrap().len(), 1);
     }
 }

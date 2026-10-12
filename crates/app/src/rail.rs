@@ -406,6 +406,13 @@ pub fn tool_groups(profiles: &Profiles) -> Vec<ToolGroup> {
                 tag: "Open",
             },
             Tool {
+                badge: "RB",
+                name: "Runbooks",
+                desc: "Saved step-by-step procedures: SQL, HTTP, shell",
+                cmd: CommandId::OpenRunbook,
+                tag: "Open",
+            },
+            Tool {
                 badge: "SV",
                 name: "Secret vault",
                 desc: "Named secrets, local or from Key Vault",

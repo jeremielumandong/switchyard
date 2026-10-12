@@ -1185,7 +1185,7 @@ fn origin_of(url: &reqwest::Url) -> (String, String, Option<u16>) {
 
 /// Do not forward server-set cookies or arbitrary diagnostic headers through a
 /// local UI response. These are the stable response facts useful to inspection.
-fn response_headers(headers: &reqwest::header::HeaderMap) -> Vec<(String, String)> {
+pub(crate) fn response_headers(headers: &reqwest::header::HeaderMap) -> Vec<(String, String)> {
     headers
         .iter()
         // Set-Cookie has its own transient channel into the native cookie jar.
@@ -1472,7 +1472,7 @@ fn constant_time_bytes_equal(left: &[u8], right: &[u8]) -> bool {
     different == 0
 }
 
-fn validate_http_step_url(raw: &str, allow_private: bool) -> Result<(), String> {
+pub(crate) fn validate_http_step_url(raw: &str, allow_private: bool) -> Result<(), String> {
     let url =
         reqwest::Url::parse(raw).map_err(|error| format!("invalid HTTP step URL: {error}"))?;
     if !matches!(url.scheme(), "http" | "https") {
@@ -1510,7 +1510,7 @@ fn validate_http_step_url(raw: &str, allow_private: bool) -> Result<(), String> 
 /// that an outbound client is allowed to connect to. Callers at an SSRF
 /// boundary must pin this set into reqwest rather than permitting a second DNS
 /// lookup between policy validation and connection establishment.
-async fn resolve_http_step_addresses(
+pub(crate) async fn resolve_http_step_addresses(
     url: &reqwest::Url,
     allow_private: bool,
 ) -> Result<Vec<SocketAddr>, String> {
@@ -1569,6 +1569,32 @@ fn pinned_http_client(
     timeout: Duration,
     label: &str,
 ) -> Result<reqwest::Client, String> {
+    pinned_client_builder(url, validated_addresses, label)?
+        .timeout(timeout)
+        .build()
+        .map_err(|error| format!("build {label} client: {error}"))
+}
+
+/// A client pinned to `validated_addresses` for a long-lived response stream
+/// (Server-Sent Events): only connecting is bounded by `connect_timeout`; the
+/// body may stream for as long as the caller keeps reading it.
+pub(crate) fn pinned_streaming_client(
+    url: &reqwest::Url,
+    validated_addresses: &[SocketAddr],
+    connect_timeout: Duration,
+    label: &str,
+) -> Result<reqwest::Client, String> {
+    pinned_client_builder(url, validated_addresses, label)?
+        .connect_timeout(connect_timeout)
+        .build()
+        .map_err(|error| format!("build {label} client: {error}"))
+}
+
+fn pinned_client_builder(
+    url: &reqwest::Url,
+    validated_addresses: &[SocketAddr],
+    label: &str,
+) -> Result<reqwest::ClientBuilder, String> {
     let host = url
         .host_str()
         .ok_or_else(|| format!("{label} URL has no host"))?;
@@ -1579,7 +1605,6 @@ fn pinned_http_client(
     let mut builder = reqwest::Client::builder()
         .tls_backend_preconfigured(tls)
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(timeout)
         // Identify the client the way every other API tool does: ingress
         // gateways and WAF rule sets commonly refuse requests that carry no
         // User-Agent at all. A request-level header still takes precedence.
@@ -1591,9 +1616,7 @@ fn pinned_http_client(
     if host.parse::<IpAddr>().is_err() {
         builder = builder.resolve_to_addrs(host, validated_addresses);
     }
-    builder
-        .build()
-        .map_err(|error| format!("build {label} client: {error}"))
+    Ok(builder)
 }
 
 fn globally_routable_ip(ip: IpAddr) -> bool {

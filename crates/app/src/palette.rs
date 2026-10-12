@@ -26,6 +26,8 @@ pub enum PaletteMode {
     Connections,
     /// Connections, tools and commands together.
     Anything,
+    /// Saved runbooks.
+    Runbooks,
 }
 
 /// The palette's filter chips.
@@ -73,6 +75,8 @@ pub enum PaletteEvent {
     Run(CommandId),
     /// Open a profile.
     Open(ProfileId),
+    /// Open a runbook by id.
+    OpenRunbook(String),
     /// Closed without a choice.
     #[allow(dead_code)]
     Dismiss,
@@ -90,6 +94,7 @@ struct Item {
 enum Target {
     Command(CommandId),
     Profile(ProfileId),
+    Runbook(String),
 }
 
 /// The palette view.
@@ -98,6 +103,10 @@ pub struct PaletteView {
     input: Entity<InputState>,
     selected: usize,
     profiles: Profiles,
+    /// Runbooks (id, name), listed in Runbooks mode and with the tools.
+    runbooks: Vec<(String, String)>,
+    /// Runbooks mode: only runbooks.
+    runbooks_only: bool,
     _sub: Subscription,
 }
 
@@ -126,12 +135,21 @@ impl PaletteView {
                 PaletteMode::Commands => Chip::Commands,
                 PaletteMode::Connections => Chip::Connections,
                 PaletteMode::Anything => Chip::All,
+                PaletteMode::Runbooks => Chip::Tools,
             },
+            runbooks: Vec::new(),
+            runbooks_only: mode == PaletteMode::Runbooks,
             input,
             selected: 0,
             profiles,
             _sub: sub,
         }
+    }
+
+    /// The runbooks to offer (id, name).
+    pub fn with_runbooks(mut self, runbooks: Vec<(String, String)>) -> Self {
+        self.runbooks = runbooks;
+        self
     }
 
     /// Update the profile list while open.
@@ -145,6 +163,29 @@ impl PaletteView {
         let (chip, query) = effective(self.chip, query);
         let want = |c: Chip| chip == Chip::All || chip == c;
         let mut scored: Vec<(usize, Item)> = Vec::new();
+        if want(Chip::Tools) {
+            scored.extend(self.runbooks.iter().filter_map(|(id, name)| {
+                fuzzy_score(query, name).map(|s| {
+                    (
+                        s,
+                        Item {
+                            badge: "RB".into(),
+                            label: name.clone().into(),
+                            group: "Runbook".into(),
+                            key: "".into(),
+                            dot: None,
+                            target: Target::Runbook(id.clone()),
+                        },
+                    )
+                })
+            }));
+        }
+        if self.runbooks_only {
+            if !query.is_empty() {
+                scored.sort_by_key(|(s, _)| *s);
+            }
+            return scored.into_iter().map(|(_, i)| i).collect();
+        }
         if want(Chip::Connections) {
             scored.extend(
                 self.profiles
@@ -225,6 +266,7 @@ impl PaletteView {
             match item.target {
                 Target::Command(id) => cx.emit(PaletteEvent::Run(id)),
                 Target::Profile(id) => cx.emit(PaletteEvent::Open(id)),
+                Target::Runbook(id) => cx.emit(PaletteEvent::OpenRunbook(id)),
             }
         }
     }
@@ -244,6 +286,7 @@ fn placeholder(mode: PaletteMode) -> &'static str {
     match mode {
         PaletteMode::Commands => "Type a command…",
         PaletteMode::Anything => "Open anything…  type > for commands",
+        PaletteMode::Runbooks => "Open a runbook…",
         _ => "Switch to a connection…",
     }
 }
