@@ -1,0 +1,86 @@
+{
+  "totalRecords": 6,
+  "count": 6,
+  "resultTruncated": "false",
+  "facets": [],
+  "data": [
+    {
+      "id": "/subscriptions/sub-1/resourceGroups/rg-web/providers/Microsoft.Compute/virtualMachines/vm-web",
+      "name": "vm-web",
+      "type": "microsoft.compute/virtualmachines",
+      "location": "westeurope",
+      "resourceGroup": "rg-web",
+      "subscriptionId": "sub-1",
+      "tags": null,
+      "kind": "",
+      "properties": {
+        "hardwareProfile": {"vmSize": "Standard_B2s"},
+        "osProfile": {"adminUsername": "azureuser", "computerName": "vm-web"},
+        "storageProfile": {"osDisk": {"osType": "Linux"}},
+        "networkProfile": {"networkInterfaces": [{"id": "/subscriptions/sub-1/resourceGroups/rg-web/providers/Microsoft.Network/networkInterfaces/vm-web-nic"}]},
+        "extended": {"instanceView": {"powerState": {"code": "PowerState/running", "displayStatus": "VM running"}}},
+        "provisioningState": "Succeeded"
+      }
+    },
+    {
+      "id": "/subscriptions/sub-1/resourceGroups/rg-web/providers/Microsoft.Network/networkInterfaces/VM-WEB-NIC",
+      "name": "vm-web-nic",
+      "type": "microsoft.network/networkinterfaces",
+      "location": "westeurope",
+      "resourceGroup": "rg-web",
+      "subscriptionId": "sub-1",
+      "tags": {},
+      "kind": "",
+      "properties": {
+        "ipConfigurations": [{"name": "ipconfig1", "properties": {
+          "privateIPAddress": "10.1.0.4",
+          "publicIPAddress": {"id": "/subscriptions/sub-1/resourceGroups/rg-web/providers/Microsoft.Network/publicIPAddresses/vm-web-ip"}
+        }}]
+      }
+    },
+    {
+      "id": "/subscriptions/sub-1/resourceGroups/rg-web/providers/Microsoft.Network/publicIPAddresses/vm-web-ip",
+      "name": "vm-web-ip",
+      "type": "microsoft.network/publicipaddresses",
+      "location": "westeurope",
+      "resourceGroup": "rg-web",
+      "subscriptionId": "sub-1",
+      "tags": {},
+      "kind": "",
+      "properties": {"ipAddress": "20.1.2.3", "publicIPAllocationMethod": "Static"}
+    },
+    {
+      "id": "/subscriptions/sub-1/resourceGroups/rg-data/providers/Microsoft.DBforPostgreSQL/flexibleServers/pg-orders",
+      "name": "pg-orders",
+      "type": "microsoft.dbforpostgresql/flexibleservers",
+      "location": "westeurope",
+      "resourceGroup": "rg-data",
+      "subscriptionId": "sub-1",
+      "tags": {},
+      "kind": "",
+      "properties": {"fullyQualifiedDomainName": "pg-orders.postgres.database.azure.com", "administratorLogin": "pgadmin", "version": "16", "state": "Ready"}
+    },
+    {
+      "id": "/subscriptions/sub-1/resourceGroups/rg-k8s/providers/Microsoft.ContainerService/managedClusters/aks-main",
+      "name": "aks-main",
+      "type": "microsoft.containerservice/managedclusters",
+      "location": "westeurope",
+      "resourceGroup": "rg-k8s",
+      "subscriptionId": "sub-1",
+      "tags": {},
+      "kind": "",
+      "properties": {"kubernetesVersion": "1.30.3", "fqdn": "aks-main-abc.hcp.westeurope.azmk8s.io", "powerState": {"code": "Running"}}
+    },
+    {
+      "id": "/subscriptions/sub-1/resourceGroups/rg-data/providers/Microsoft.Storage/storageAccounts/stacme",
+      "name": "stacme",
+      "type": "microsoft.storage/storageaccounts",
+      "location": "westeurope",
+      "resourceGroup": "rg-data",
+      "subscriptionId": "sub-1",
+      "tags": {"env": "prod"},
+      "kind": "StorageV2",
+      "properties": {"primaryEndpoints": {"blob": "https://stacme.blob.core.windows.net/"}, "statusOfPrimary": "available"}
+    }
+  ]
+}

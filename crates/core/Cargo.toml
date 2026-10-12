@@ -17,7 +17,11 @@ switchyard-plan.workspace = true
 switchyard-api.workspace = true
 switchyard-agents.workspace = true
 switchyard-cloud.workspace = true
+switchyard-containers.workspace = true
 url.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+tokio-rustls.workspace = true
 tokio = { workspace = true, features = ["process"] }
 futures.workspace = true
 secrecy.workspace = true
@@ -25,6 +29,8 @@ sha2.workspace = true
 serde.workspace = true
 chrono.workspace = true
 serde_json.workspace = true
+serde_yaml.workspace = true
+tokio-util.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

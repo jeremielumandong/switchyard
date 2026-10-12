@@ -755,6 +755,120 @@ server or bundled Unix tools on Windows (Tier 3).
   Configuration compare and flags, Key Vault, CloudWatch tail), `~/.aws/config` and
   `~/.pgpass` imports, credential expiry in the status bar (see Follow-ups).
 
+## Extra — Schema compare (user request, 2026-10-12)
+
+- [x] SC-1 Diff model and catalog reads (`db::compare`): `load_snapshot` reads one schema
+  (tables, views, materialized views, functions, procedures the engine's explorer shows)
+  through the existing `Objects` / `Detail` / `RoutineDefinition` scopes; `TableModel`
+  normalizes the overlapping catalog lists into primary key, unique constraints, checks,
+  foreign keys and plain indexes; `compare` groups objects as Only in source / Only in
+  target / Different with per-part changes (columns: type, nullability, default,
+  identity). Constraints and indexes pair by name, then by shape (server-generated
+  names); the source's DDL is retargeted to the target schema before comparing.
+  `ColumnInfo::identity` added (PostgreSQL identity / generated, SQL Server
+  `IDENTITY(seed,incr)`, MySQL `AUTO_INCREMENT`). Fixed PostgreSQL index columns (the
+  first was the whole `CREATE INDEX`, the last was missing).
+- [x] SC-2 Migration scripts behind `Dialect::schema_scripter` (`SchemaScripter`) for
+  PostgreSQL, SQL Server, MySQL/MariaDB and local SQLite: foreign keys dropped first and
+  added last, views and routines after tables, `GO` after every SQL Server statement,
+  `DELIMITER` around MySQL routines, the SQLite table-rebuild pattern for anything
+  `ALTER TABLE` cannot do. DROP TABLE / DROP COLUMN (and a rebuild that leaves columns
+  behind) are commented out under a warning header. PostgreSQL views that read an
+  altered table are dropped and created again around the change. Other engines: "Schema
+  compare isn't supported for <engine> yet". Tests: insta snapshots per engine, diff-model
+  unit tests, `db --test compare_pg` (two schemas in the docker PostgreSQL: compare, run
+  the script, compare again; only the commented-out drops remain).
+- [x] SC-3 Compare tab (`app/src/compare_tab.rs`): source and target pickers (connection,
+  database, schema; two connections or two databases / schemas of one), progress and
+  Cancel, a virtualized grouped list with checkboxes (drops of target-only objects start
+  unticked), the selected object's changes and side-by-side DDL diff, and "Open migration
+  script" into a new SQL tab on the target (never run). Each side reads on its own
+  session (`Command::CompareCatalog` / `CompareSnapshot`). Entry points: palette "Compare
+  Schemas…", Explorer context menu "Compare with…" on a connection or schema. Note: the
+  tab was not exercised in a running app here (no display); data compare, triggers,
+  sequences and table options are deferred (Follow-ups).
+
+## Extra — Runbooks (user request, 2026-10-12)
+
+- [x] RB-1 Model and storage: `store::runbooks` (`Runbook`: title, Markdown description,
+  parameters with name / label / default / secret flag, ordered steps: Note, SQL, HTTP,
+  Shell, Confirm), schema version 6 (`runbooks` table, one JSON document per runbook),
+  JSON import/export (`RunbookExport` v1, no ids, no secrets). A secret parameter's value
+  lives in the keychain or vault (`runbook:<id>:<name>`); stored and exported JSON never
+  holds it. Tests: store round trip, v5 → v6 migration, export without secrets.
+- [x] RB-2 `{{param}}` substitution (`core::runbook::params`): plain text as is
+  (`{{x:quote}}` shell-quotes); SQL per dialect: in code a string literal from
+  `Dialect::literal` (`:raw`, `:ident` for unquoted / quoted identifier), escaped inside
+  string literals, quoted identifiers and comments; secrets are bound as statement
+  parameters (`Dialect::bind_params`), never inlined, so history holds a placeholder.
+  Resolved text (secrets masked) is shown before and while a step runs.
+- [x] RB-3 Run engine (`core::runbook::engine`): pure state machine (pending / waiting /
+  running / ok / failed / skipped); run one step, run from here, run all; stops on the
+  first failure; Confirm and Shell steps wait for the user (Run / Continue / Skip) unless
+  the user ran exactly that step. Tests with fake executors.
+- [x] RB-4 Execution in core (`service::runbook`, `Command::RunbookStep`): SQL through the
+  ordinary query path (Production destructive-statement confirm, streaming, cancel,
+  history), first 1,000 rows in a compact grid; HTTP inline or a saved API workspace request
+  (compiled with its collection, folders, active environment and globals; runbook
+  parameters as its local variables) through the workbench sender; Shell locally (own
+  process group, killed with the group) or on a Host over its shared SSH session
+  (`SshConn::run_command_streaming`). Output streams (capped at 256 KB, secrets masked);
+  `Command::Cancel` stops a step. Every executed step goes to history tagged `runbook`,
+  `runbook:<name>` (plus `http` / `shell`). Tests: local shell stream / cancel / timeout,
+  `core --test runbooks` (shell step with a stored secret; SQL step on docker PostgreSQL
+  with a bound secret, ignored).
+- [x] RB-5 UI: RUNBOOKS section in the Explorer (and "New runbook"), a Runbooks tool, palette
+  commands New Runbook / Open Runbook… / Import Runbook…, a Runbook tab with Edit
+  (title, description, parameters, steps added / reordered / removed, connection, Host
+  and saved-request pickers; Save, Export, Delete) and Run (values for this run, masked for
+  secrets; per-step resolved text, status, duration, output, grid, Production confirm).
+  Note: not exercised in a running window here (no display); agents / MCP not exposed.
+
+## Extra — Fleet (user request, 2026-10-12)
+
+- [x] FL-1 Host tags: free-form `Host::tags`, normalized (`store::tags`: lower case, inner
+  spaces to `-`, `key:value` kept, 64 chars), indexed in `host_tags` (schema version 7,
+  backfilled from the Host JSON; kept in step by `save_profile` and JSON import).
+  `HostPatch::add_tags` / `remove_tags` for bulk edit; a tags field in the Host editor.
+  Explorer: group by Tag ("SERVERS BY TAG", an Untagged group) and a `tag:<name>` filter
+  (`tag:role:` matches every `role:*`). Tests: store round trip, v6 → v7 migration, patch,
+  tag grouping and filter.
+- [x] FL-2 Run on many Hosts (`core::fleet::runner`, `service::fleet`): Hosts by folder, tag,
+  Ctrl/⌘-click selection or all; one command or a saved macro (its lines as one script);
+  bounded concurrency (setting `fleet.concurrency`, default 8), per-Host timeout (the job,
+  not the login), cancel-all; every Host on its shared SSH session with the usual prompter.
+  Output streams (batched every 120 ms, 1 MB per stream per Host). Fleet tab: grid of
+  Host / status / exit / duration / first line, an expandable virtualized output, filters
+  "failed only" and "differs from majority" (digest of exit status and output), copy all.
+  History tagged `fleet`, `ssh`. Tests: runner with a fake executor (concurrency, timeout,
+  cancel-all, outliers), output batching, `core --test fleet_ssh` (ignored, docker ssh).
+- [x] FL-3 Dashboard: one read-only POSIX probe per Host (`/proc/uptime` or `uptime`,
+  loadavg, `nproc`, `df -P`, `/proc/meminfo` or `free -b`, `systemctl --failed
+  --no-legend`, `/etc/os-release`, `uname -sr`); refresh every 30 / 60 / 300 s or paused;
+  flags disk > 90 %, memory > 90 %, failed units, unreachable; sortable columns; a row
+  click opens the Host's terminal. Pure parsers tested on recorded Ubuntu, Alpine/BusyBox
+  and RHEL output.
+- [x] FL-4 File push over SFTP (the files service's transfer code): a file or folder into a
+  remote folder on every Host, overwrite policy (replace / skip / keep both), optional
+  chmod (octal, recursive for folders), per-Host progress and result.
+- [x] FL-5 SSH key rollout (`core::fleet::keys`): audit lists keys by SHA-256 fingerprint
+  (has / lacks the key, the session's own key marked); add is idempotent; remove never
+  drops the key the session signed in with. Changes back up to
+  `~/.ssh/authorized_keys.switchyard-bak`, write a temp file and rename it (mode 600,
+  `restorecon` when present). Remove asks for confirmation in the tab.
+- [x] FL-6 Ansible inventory import (INI and YAML, `core::fleet::ansible`): ranges
+  (`web[01:03]`), children, `:vars`, host > group > all precedence; groups become tags;
+  `ansible_host` / `ansible_port` / `ansible_user` / `ansible_ssh_private_key_file`
+  (no key file: agent auth). Preview reuses the SSH config import overlay (now a
+  virtualized list showing tags). Tests on INI and YAML samples.
+- [x] FL-7 Entry points: Explorer context menu on a folder, a tag group or a multi-Host
+  selection (Run command…, Dashboard, Push file…, Manage keys…, bulk edit, open all), palette
+  commands (Fleet: Run Command / Dashboard / Push File / Manage Keys, Group Explorer by Tag,
+  Import Ansible Inventory…), Tools and File menu entries. Any change (run, push, key add /
+  remove) on a selection with a Production Host needs the word PRODUCTION typed; the probe
+  and the key audit are read-only and do not. Nothing is exposed to agents / MCP.
+  Note: not exercised in a running window here (no display).
+
 ## DBX — Database explorer and editors at DBeaver / SSMS level (user request)
 
 Gap analysis (2026-10-08): the explorer is a lazy, virtualized, single-connection tree
@@ -871,6 +985,116 @@ are shared hotspots: one owner at a time.
   connection, Ctrl/⌘+D, dimmed "missing"; nodes saved as `explorer.connections` and restored
   "not connected". Deferred: pin reordering UI, cross-connection search, restoring expansion.
 
+## Extra — Infra tools (user request, 2026-10-12)
+
+- [x] INF-1 Terraform / OpenTofu state viewer (read-only, `cloud::tfstate`, `cloud::tfcloud`):
+  state format 4 from a local file, an S3 or Azure Blob backend (saved connection; S3
+  object versions / blob versions listed and opened), or HCP Terraform / Terraform
+  Enterprise (state versions API; token in the keychain under `infra:tfc-token:<host>`).
+  Resource tree by module and type, instance attributes with sensitive values (from
+  `sensitive_attributes` and secret-looking names) masked until revealed, outputs,
+  dependencies and dependents, serial / lineage / version, search. Compare two states
+  (two stored versions or another file): added, removed and changed instances and
+  attributes, outputs. Nothing writes state. Tests: `tfstate` unit tests on recorded
+  states (`cloud/testdata/tfstate`), `cloud --test infra state_versions_in_a_versioned_bucket`
+  (moto).
+- [x] INF-2 Cloud resource inventory (`cloud::inventory`): AWS EC2, RDS, ELBv2, EKS and S3 over
+  SigV4 with saved connections or AWS CLI profiles (default, listed or `all` regions);
+  Azure Resource Graph (VMs with NIC / public IPs, SQL / PostgreSQL / MySQL / Cosmos /
+  Redis, load balancers, application gateways, AKS, storage) with Microsoft sign-in or
+  the Azure CLI; Cloudflare R2 and D1; Google Cloud (Compute, Cloud SQL, GKE, GCS) with
+  `gcloud auth print-access-token`. One filterable, virtualized table (provider, account,
+  region, type, name, state, IPs, tags); Add as SSH Host / Add as connection (prefilled,
+  no credentials), copy ID / address, import marked VMs as Hosts. Tests: parser unit
+  tests on recorded responses, `cloud --test infra ec2_and_rds_show_in_the_inventory` (moto).
+- [x] INF-3 Network checks (`core::infra::netcheck`): DNS (A/AAAA via the resolver; CNAME, MX,
+  TXT, NS via DNS-over-HTTPS), TLS (chain, issuer, SANs, expiry days, protocol; a failed
+  verification is reported, not fatal), TCP with latency, HTTP(S) with status, timing,
+  redirects and headers. Locally or from an SSH Host (getent / dig / host, `/dev/tcp`,
+  `openssl s_client`, `curl -w`). Saved named lists (`infra.check_lists` setting) with Run
+  all; certificates under 30 days are flagged. Tests: formatting and parser unit tests,
+  a fixture certificate.
+- [x] INF-4 Logs (`core::infra::logline`, `cloud::logs`): `tail -F` and `journalctl -f -o json`
+  on an SSH Host (streamed, `SshConn::stream_command`), CloudWatch Logs (groups,
+  FilterLogEvents polled every 5 s), Azure Log Analytics KQL (re-run every 15 s).
+  Streaming in batches, cancellable (Stop, closing the tab), virtualized and capped at
+  100,000 lines; filter, minimum level, highlighted terms, level colors, pause, follow,
+  copy and export. Tests: line / journal parsing unit tests, `cloud --test infra
+  cloudwatch_groups_and_events` (moto).
+- [x] INF-5 Entry points: `Command::Infra` / `InfraCancel`, `Event::Infra`, one `Tab::Infra`;
+  "Infra tools" group in the Tools pane, INFRA TOOLS links in the New chooser, an "Infra"
+  palette group. Note: the UI was checked with clippy and unit tests only, not on screen.
+  Agents and MCP do not see these tools.
+## Extra — API protocols (user request, 2026-10-12)
+
+- [x] PROTO-1 Workbench requests can be WebSocket or Server-Sent Events as well as HTTP:
+  `switchyard_api::protocol` (settings saved in the request's `extensions`, sessions on
+  core's runtime, events redacted), `protocol::sse` (spec parser, reconnect with optional
+  `Last-Event-ID`, `retry:`), `protocol::websocket` (tokio-tungstenite behind the
+  `websocket` feature: headers, subprotocols, text/JSON/hex/base64, ping, close code,
+  cancel). The rail's `+` menu adds them; the composer's first tab holds messages and
+  saved snippets or stream options; the response pane becomes a virtualized live log
+  with timestamps, sizes, filter, headers and the selected message in full.
+  Note: tests use in-process echo / SSE servers; no history entry for streams yet.
+- [x] PROTO-3 gRPC requests (`protocol::grpc`, tonic + prost-reflect behind the `grpc`
+  feature): services and methods from server reflection (v1, then v1alpha, dependencies
+  fetched by name) or imported `.proto` files (protox, no protoc); JSON request bodies as
+  `DynamicMessage`; unary, server, client and bidi streaming over one streaming call;
+  metadata from the Headers/Auth tabs (`-bin` keys base64), TLS from the URL or forced,
+  deadlines, headers, trailers and status code in the log. "Load services" fills a
+  method picker and a JSON template; gRPC to Production asks first like a POST.
+  Note: tested against an in-process tonic server with reflection.
+- [x] PROTO-2 Rename and delete projects (workspaces) in the Workbench header menu; delete
+  confirms and removes the project's collections, environments, history, runs, cookies,
+  globals and tabs (`WorkbenchStore::delete_workspace`).
+
+## Extra — Containers (user request, 2026-10-12)
+
+- [x] CT-1 `switchyard-containers` crate: build `docker` / `kubectl` / `az` / `gcloud` / `aws`
+  calls and parse their JSON (no `Command` spawning outside it and core).
+  Note: `docker ps|images|volume ls|network ls --format {{json .}}`, `kubectl get -o json`
+  (pod status like `kubectl get pods`), `kubectl config view -o json`; recorded fixtures in
+  `crates/containers/testdata/` (Docker 29.8 recorded here; kubectl, az, gcloud, aws and
+  Rancher hand-written from their docs). `local.rs` finds the CLI on `PATH` plus installer
+  folders, runs it with `kill_on_drop` and a timeout, streams lines in 500-line / 80 ms batches.
+- [x] CT-2 Store: `Profile::Containers(ContainerConnection)` (Docker or Kubernetes; Host,
+  context, kubeconfig, namespace, CLI override, read-only, provider, Rancher source + token ref).
+- [x] CT-3 Core: `Command::Containers{List,Inspect,Action,Logs,Cancel,Forward,StopForward,
+  ListForwards}`, `TestContainers`; each request abortable (kills the CLI). Runs on this
+  computer or on the connection's Host over its shared SSH session (`SshConn::exec_stream`,
+  PTY for followed logs so the remote CLI dies with the channel). Read-only and Production
+  checks are repeated in core (`NeedsConfirmation` unless the UI says the name was typed).
+  Missing CLI → `ContainersError::Missing` (a hint card, not an error).
+- [x] CT-4 App: `containers_tab.rs` (Docker: containers running/all, images, volumes, networks;
+  start / stop / restart / remove; Kubernetes: context and namespace pickers incl. All
+  namespaces, pods, deployments, services, port forwards; describe / YAML / inspect in a
+  read-only editor; logs streamed into a capped (20k lines), filtered, virtualized pane with
+  follow, tail and container picker; scale and rollout restart; typed-name confirmation on
+  Production). "Open shell" opens a terminal tab with `docker exec -it … sh -c 'bash || sh'`
+  / `kubectl exec -it … --` (`TermTarget::Container`, local PTY or SSH PTY).
+- [x] CT-5 Port forwards: `kubectl port-forward --address 127.0.0.1`, kept running in core,
+  listed in the tab (state from kubectl's "Forwarding from" line), Copy URL, Stop.
+  Note: on this computer only (see Follow-ups).
+- [x] CT-6 Add cluster (AKS, GKE, EKS, Rancher, Local, kubeconfig context) in
+  `container_editor.rs`; New chooser cards "Docker" and "Kubernetes cluster"; Tools →
+  Containers; palette "Add Kubernetes Cluster…" / "New Docker Connection…".
+  Note: AKS `az aks list` + `get-credentials [--admin]` (+ `kubelogin convert-kubeconfig -l
+  azurecli` for Entra clusters), GKE `gcloud container clusters list` + `get-credentials
+  --region|--zone --project`, EKS `aws eks list-clusters` / `describe-cluster` (region and
+  profile pickers, profiles read from `~/.aws/config` and `credentials`) + `update-kubeconfig`.
+  Rancher: `GET /v3/clusters`, `POST /v3/clusters/<id>?action=generateKubeconfig` with reqwest
+  (TLS on, optional per-connection PEM), token in the keychain / vault, kubeconfig written to
+  `<data dir>/kubeconfigs/<id>.yaml` (0600) and refreshed once on a sign-in error.
+- [x] CT-7 Provider labels and auth plugins: each context is labelled AKS / GKE / EKS /
+  Rancher / Local (kind, minikube, k3d, k3s, Docker Desktop, Rancher Desktop, …) / Other
+  from its server URL, names and `users[].exec.command`; a missing exec plugin (kubelogin,
+  gke-gcloud-auth-plugin, aws) shows an install hint; kubectl auth failures become a
+  "sign-in expired: run az login / gcloud auth login / aws sso login" card.
+  Verified: unit tests on recorded kubeconfigs and az / gcloud / aws / Rancher JSON; a stand-in
+  kubectl script through core (`core/tests/containers.rs`); Docker against a real daemon
+  (`containers/tests/docker.rs`, `core/tests/containers.rs::docker_through_core`, ignored).
+  Not verified against a real cluster, cloud account or Rancher server (none here).
+
 ## M6 — Packaging and beta
 
 Exit: every performance budget passes on all three platforms; signed builds published.
@@ -891,11 +1115,22 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   Partial: AppImage via `packaging/linux/build-appimage.sh` (appimagetool and runtime pinned by
   SHA-256); `release.yml` builds it on Ubuntu 22.04 and uploads to the draft release.
   `.deb`, `.rpm`, AUR pending.
-- [ ] **M6-4 Auto-update.** Signed updates on macOS and Windows; Linux defers to package managers.
-  Partial: `core::update` checks GitHub Releases (startup in release builds, Settings toggle,
-  "Check for Updates"), shows a status-bar notice linking the release; with a build-time
-  `SWITCHYARD_UPDATE_PUBKEY` it downloads the installer and keeps it only if its minisign
-  signature verifies. No key configured yet (notify only); no in-place replace.
+- [x] **M6-4 Auto-update.** Signed updates on macOS and Windows; Linux defers to package managers.
+  Note (2026-10-12, user request: "same implementation as Emulsion"): `core::update` detects
+  how this copy is installed (`Install`: AppImage via `$APPIMAGE`, Windows NSIS install via
+  `uninstall.exe` beside the exe, macOS `.app` bundle; dev builds, Flatpak and packaged or
+  unpacked copies are `Unmanaged` and only get the release page). The startup check (release
+  builds, Settings toggle) downloads the stable-named asset in the background with progress
+  and cancel, verifies its size and SHA-256 (GitHub's recorded `digest`, else the `.sha256`
+  file beside it) and, when `SWITCHYARD_UPDATE_PUBKEY` is set and a `.minisig` exists, its
+  signature. The AppImage is replaced in place; "Restart now" closes the window through the
+  unsaved-files dialog and `main` starts the new AppImage or the Windows installer after the
+  event loop returns; macOS opens the verified DMG. Settings → General: status line, "Check
+  for updates at startup", "Download and verify updates automatically", Check now /
+  Download / Cancel / Restart now / Release notes. Status bar: Download / Downloading n% /
+  Restart to update. Tests: `core::update` unit tests (asset checks, install detection,
+  AppImage replace, a local HTTP server for verified and rejected downloads). Not run on
+  a real Windows or macOS install from here.
 - [ ] **M6-5 Performance gates.** CI jobs that fail when a budget from CLAUDE.md is exceeded.
 - [ ] **M6-6 Crash reporting.** Opt-in, scrubbed of SQL text, hostnames and credentials;
   telemetry off by default.
@@ -909,13 +1144,22 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 
 - SQLite: a "New database file" save dialog in the connection editor (today a typed path is created on connect).
 
-- API Workbench: rename and delete workspaces (API-5 only adds and switches them).
+- API Workbench streams: record WebSocket / SSE / gRPC sessions in History, AWS SigV4
+  and per-connection pinned TLS exceptions for them, and deleting a project's vault
+  values with the project (delete leaves vault entries in place today).
 
 - Agent runs on systems with only the fallback vault: `swy mcp` cannot unlock it unless
   `SWITCHYARD_VAULT_PASSWORD` is in the app's environment. Option: let `swy mcp` borrow the
   running app's unlocked secrets over the loopback handoff, scoped by the session token.
 
 (Add items here instead of doing them mid-task.)
+- Schema compare (SC-1..3) leftovers: data compare (row diff and sync script); triggers,
+  sequences, user-defined types, PostgreSQL EXCLUDE constraints, comments and grants;
+  table options (MySQL engine / charset, SQL Server filegroups, PostgreSQL partitions and
+  storage); MySQL `ON UPDATE CURRENT_TIMESTAMP`; renames (today a drop and an add);
+  ordering views that read other views when PostgreSQL rebuilds them; SQL Server
+  identity changes (scripted as a note); Oracle, Snowflake and D1 scripters; saving a
+  compare (sides and ticks) to run again; a compare from the CLI / MCP (read-only diff).
 - UI v3 (UI3-1) leftovers from the design: an Edit menu (undo/redo/copy/paste routed to the
   focused view); a full-page Tools tab with one card per cloud and its sign-in state;
   cloud account entities (today an account is inferred from provider plus folder) with
@@ -1007,3 +1251,34 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 - Durable Objects (DO-1): pick the namespace and object from lists in the connection form
   (`GET …/durable_objects/namespaces`, `…/namespaces/{id}/objects`, which only lists objects
   that have stored data); open several objects of one namespace from the sidebar.
+- Infra tools: GCP with a service-account key (JWT signing; today only the gcloud CLI);
+  ELBv2 and RDS tags (extra Describe*Tags calls); S3 bucket regions in the inventory;
+  Cloudflare load balancers / Workers; Azure Monitor metrics; remember chosen inventory
+  accounts and log sources; Terraform state from GCS, Consul or pg backends and
+  OpenTofu client-side state encryption; DNS record types beyond A/AAAA/CNAME/MX/TXT/NS
+  and DNSSEC; an "Open in terminal" action on inventory VMs; on-screen check of the
+  four tabs.
+
+- Runbooks (RB-1..5): scheduled and unattended runs; agents / MCP access (read-only
+  listing, run with approval); per-step "continue on failure"; step outputs as
+  parameters of later steps (`{{steps.2.output}}`); a run log kept per runbook (today:
+  query history); Confirm steps are not recorded in history; secret values split across
+  two output chunks are not masked; multipart / file bodies of saved API requests;
+  Markdown links and inline styles in notes (plain text today); a Monaco-style SQL editor
+  in step editing (a text area today); drag-and-drop reordering; UI tests.
+
+- Containers: port forwards on a Host (run `kubectl port-forward` there and tunnel the port
+  over the shared SSH session); cloud cluster discovery (az / gcloud / aws) and Rancher on a
+  Host; container actions written to history; per-context subtree in the Explorer; MCP tools
+  (read-only listing / logs) once agent rules for clusters are decided; Docker
+  compose-project grouping, image pull / prune, `docker stats`; exec container picker before
+  "Open shell" on multi-container pods (today: the first container); remove the managed
+  Rancher kubeconfig of a connection deleted while the app was closed; test Rancher against a
+  real server (only unit-tested on recorded JSON).
+- Fleet (FL-1..7) leftovers: authorized_keys edits are read-modify-write without a
+  compare-and-swap (a concurrent edit on the Host between read and write is lost; the
+  backup keeps the previous file); SFTP pushes open their sessions one at a time (the files
+  service's SFTP lock); dashboard probes are not written to history; no per-Host cancel
+  (cancel-all only); macros with control keystrokes are refused (only plain lines run as a
+  script); sudo / become from Ansible vars is ignored; a saved Fleet selection (named
+  group) and run history per selection; UI tests.

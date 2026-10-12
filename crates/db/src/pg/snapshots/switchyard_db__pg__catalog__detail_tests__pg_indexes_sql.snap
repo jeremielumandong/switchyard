@@ -3,7 +3,7 @@ source: crates/db/src/pg/catalog.rs
 expression: INDEXES_SQL
 ---
 SELECT ic.relname::text, i.indisunique, i.indisprimary, pg_catalog.pg_get_indexdef(i.indexrelid),
-       ARRAY(SELECT pg_catalog.pg_get_indexdef(i.indexrelid, k, true)
+       ARRAY(SELECT pg_catalog.pg_get_indexdef(i.indexrelid, k + 1, true)
              FROM generate_subscripts(i.indkey, 1) AS k ORDER BY k)::text[],
        am.amname::text
 FROM pg_catalog.pg_index i

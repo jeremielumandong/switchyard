@@ -284,6 +284,7 @@ impl AwsJson {
         let writes = !(action.starts_with("Get")
             || action.starts_with("List")
             || action.starts_with("Describe")
+            || action.starts_with("Filter")
             || action.starts_with("BatchGet"));
         if self.read_only && writes {
             return Err(CloudError::ReadOnly);

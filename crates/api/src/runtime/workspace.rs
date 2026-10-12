@@ -76,6 +76,22 @@ pub fn rename_workspace(
         .map_err(|error| error.to_string())
 }
 
+/// Delete `workspace` and its data from `app_data`'s store; the workspaces
+/// left afterwards.
+pub fn delete_workspace(
+    app_data: &Path,
+    workspace: &WorkspaceId,
+) -> Result<Vec<WorkspaceEntry>, String> {
+    let store = WorkbenchStore::open(app_data).map_err(|error| error.to_string())?;
+    if !store
+        .delete_workspace(workspace)
+        .map_err(|error| error.to_string())?
+    {
+        return Err("That project no longer exists.".into());
+    }
+    store.list_workspaces().map_err(|error| error.to_string())
+}
+
 /// Remember `workspace` as the one to reopen on the next launch.
 pub fn mark_workspace_opened(app_data: &Path, workspace: &WorkspaceId) -> Result<(), String> {
     WorkbenchStore::open(app_data)

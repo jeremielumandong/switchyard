@@ -79,6 +79,7 @@ fn column_info(r: &Rows, row: &[Option<String>]) -> ColumnInfo {
             .unwrap_or_default(),
         is_primary_key: false,
         comment: r.get(row, "COMMENT").map(str::to_owned),
+        identity: None,
     }
 }
 

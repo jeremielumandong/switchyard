@@ -15,8 +15,11 @@ mod assistant_settings;
 mod bulk_edit;
 mod chat_markdown;
 mod cloud_tab;
+mod compare_tab;
 mod completion;
 mod conn_editor;
+mod container_editor;
+mod containers_tab;
 mod ddl_tab;
 mod drivers_page;
 mod editor_tab;
@@ -24,9 +27,11 @@ mod er_tab;
 mod explorer;
 mod explorer_tree;
 mod files_tab;
+mod fleet_tab;
 mod folds;
 mod forwards_editor;
 mod grid;
+mod infra;
 mod log_file;
 mod named_secrets;
 mod object_search;
@@ -40,6 +45,7 @@ mod redis_tab;
 mod remote_files;
 mod result_diff;
 mod rich_text;
+mod runbook_tab;
 mod sidebar;
 mod snippets;
 mod split;
@@ -194,5 +200,8 @@ fn main() -> Result<()> {
             }
             cx.activate(true);
         });
+    // "Restart now" on a staged update starts the new AppImage or the installer now that
+    // the window is closed and unsaved work was handled.
+    updates::run_after_exit();
     Ok(())
 }

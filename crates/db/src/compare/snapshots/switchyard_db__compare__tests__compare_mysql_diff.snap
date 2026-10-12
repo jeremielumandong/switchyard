@@ -1,0 +1,11 @@
+---
+source: crates/db/src/compare/tests.rs
+expression: summary(&d)
+---
+identical: 0
+[Only in source] View open_orders
+[Only in source] Procedure count_orders()
+[Different] Table orders
+    ~ column status: type varchar(10) → varchar(20), NULL → NOT NULL
+    + column created
+    + index orders_status

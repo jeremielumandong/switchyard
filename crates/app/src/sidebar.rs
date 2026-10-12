@@ -1214,6 +1214,10 @@ pub enum CtxTarget {
     Tab(usize),
     /// A session folder of Hosts in the sidebar (MX-6).
     Folder(String),
+    /// The Hosts carrying a tag (Fleet).
+    Tag(String),
+    /// Hosts picked with Ctrl/⌘-click in the Explorer (Fleet).
+    Hosts(Vec<ProfileId>),
     /// A schema (its row or one of its folders) on a connection.
     Schema(ProfileId, String),
 }
@@ -1501,6 +1505,15 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The Hosts carrying `tag`.
+    pub(crate) fn tag_hosts(&self, tag: &str) -> Vec<ProfileId> {
+        self.profiles
+            .hosts()
+            .filter(|h| switchyard_core::store::tags::has_tag(&h.tags, tag))
+            .map(|h| h.id.clone())
+            .collect()
+    }
+
     /// The Hosts in folder `name`.
     pub(crate) fn folder_hosts(&self, name: &str) -> Vec<ProfileId> {
         self.profiles
@@ -1547,13 +1560,24 @@ impl Workspace {
             })
             .collect();
         let filter = self.explorer_filter.read(cx).value().to_string();
-        explorer_rows(
+        let mut rows = explorer_rows(
             &self.profiles,
             &self.collapsed,
             &live,
             self.explorer_group,
             &filter,
-        )
+        );
+        let runbooks: Vec<(String, String)> = self
+            .runbooks
+            .iter()
+            .map(|r| (r.id.clone(), r.name.clone()))
+            .collect();
+        rows.extend(crate::explorer_tree::runbook_rows(
+            &runbooks,
+            &self.collapsed,
+            &filter,
+        ));
+        rows
     }
 
     /// Run a context-menu action on a schema object, on the object's own connection
@@ -1799,58 +1823,62 @@ impl Workspace {
         };
         let group = self.explorer_group;
         let explorer = side == SideTab::Explorer;
-        let header =
-            div()
-                .h(rpx(34.))
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap(rpx(8.))
-                .pl(rpx(12.))
-                .pr(rpx(8.))
-                .text_size(ts::SMALL)
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(p.fg3)
-                .child(div().flex_1().child(title))
-                .when(explorer, |d| {
-                    d.child(ui::segmented(
-                        "explorer-group",
-                        [ExplorerGroup::Place, ExplorerGroup::Type]
-                            .into_iter()
-                            .map(|g| {
-                                let label = match g {
-                                    ExplorerGroup::Place => "Place",
-                                    ExplorerGroup::Type => "Type",
-                                };
-                                (
-                                    SharedString::from(label),
-                                    group == g,
-                                    Box::new(cx.listener(move |this, _, _, cx| {
-                                        this.set_explorer_group(g, cx)
-                                    })) as ui::OnClick,
-                                )
-                            })
-                            .collect(),
-                        18.,
-                        p,
-                    ))
-                })
-                .child(
-                    div()
-                        .id("side-new")
-                        .px(rpx(5.))
-                        .rounded(px(4.))
-                        .text_size(ts::TITLE_PLUS)
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(p.fg2)
-                        .cursor_pointer()
-                        .hover(|s| s.bg(p.hover))
-                        .tooltip(|w, cx| {
-                            gpui_kit::component::tooltip::Tooltip::new("New…").build(w, cx)
-                        })
-                        .on_click(cx.listener(|this, _, w, cx| this.open_new_chooser(w, cx)))
-                        .child("+"),
-                );
+        let header = div()
+            .h(rpx(34.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(rpx(8.))
+            .pl(rpx(12.))
+            .pr(rpx(8.))
+            .text_size(ts::SMALL)
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(p.fg3)
+            .child(div().flex_1().child(title))
+            .when(explorer, |d| {
+                d.child(ui::segmented(
+                    "explorer-group",
+                    [
+                        ExplorerGroup::Place,
+                        ExplorerGroup::Type,
+                        ExplorerGroup::Tag,
+                    ]
+                    .into_iter()
+                    .map(|g| {
+                        let label = match g {
+                            ExplorerGroup::Place => "Place",
+                            ExplorerGroup::Type => "Type",
+                            ExplorerGroup::Tag => "Tag",
+                        };
+                        (
+                            SharedString::from(label),
+                            group == g,
+                            Box::new(
+                                cx.listener(move |this, _, _, cx| this.set_explorer_group(g, cx)),
+                            ) as ui::OnClick,
+                        )
+                    })
+                    .collect(),
+                    18.,
+                    p,
+                ))
+            })
+            .child(
+                div()
+                    .id("side-new")
+                    .px(rpx(5.))
+                    .rounded(px(4.))
+                    .text_size(ts::TITLE_PLUS)
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(p.fg2)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(p.hover))
+                    .tooltip(|w, cx| {
+                        gpui_kit::component::tooltip::Tooltip::new("New…").build(w, cx)
+                    })
+                    .on_click(cx.listener(|this, _, w, cx| this.open_new_chooser(w, cx)))
+                    .child("+"),
+            );
         let filter = explorer.then(|| {
             let count = if self.explorer_filter.read(cx).value().trim().is_empty() {
                 String::new()
@@ -1992,6 +2020,17 @@ impl Workspace {
         let collapsed = self.collapsed.contains(&r.key);
         let ctx_profile = r.profile.clone();
         let ctx_folder = r.folder.clone();
+        let ctx_tag = r.tag.clone();
+        // Ctrl/⌘-click picks Hosts for Fleet actions.
+        let host_row = r
+            .profile
+            .as_ref()
+            .filter(|id| self.profiles.host(id).is_some() && r.kind != RowKind::Head)
+            .filter(|_| matches!(r.action, ConnAction::Terminal(_) | ConnAction::Toggle))
+            .cloned();
+        let picked = host_row
+            .as_ref()
+            .is_some_and(|id| self.host_selection.contains(id));
         let drop_line = p.acc;
         let drag = r
             .drag_group
@@ -2046,8 +2085,20 @@ impl Workspace {
                     .text_size(ts::UI)
                     .hover(|s| s.bg(p.hover))
             })
-            .when(active, |d| d.bg(p.sel))
-            .on_click(cx.listener(move |this, _, w, cx| {
+            .when(active || picked, |d| d.bg(p.sel))
+            .on_click(cx.listener(move |this, ev: &gpui_kit::ClickEvent, w, cx| {
+                if ev.modifiers().secondary()
+                    && let Some(id) = &host_row
+                {
+                    match this.host_selection.iter().position(|x| x == id) {
+                        Some(at) => {
+                            this.host_selection.remove(at);
+                        }
+                        None => this.host_selection.push(id.clone()),
+                    }
+                    cx.notify();
+                    return;
+                }
                 match &action {
                     ConnAction::Toggle => {
                         if !this.collapsed.remove(&key) {
@@ -2070,14 +2121,25 @@ impl Workspace {
                             this.open_profile(id, w, cx);
                         }
                     }
+                    ConnAction::Runbook(id) => this.open_runbook(id.clone(), w, cx),
                 }
                 cx.notify();
             }))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
-                    if let Some(id) = &ctx_profile {
+                    if let Some(id) = &ctx_profile
+                        && this.host_selection.len() > 1
+                        && this.host_selection.contains(id)
+                    {
+                        let sel = this.host_selection.clone();
+                        this.ctx = Some(CtxMenu::new(ev.position, CtxTarget::Hosts(sel)));
+                        cx.notify();
+                    } else if let Some(id) = &ctx_profile {
                         this.ctx = Some(CtxMenu::new(ev.position, CtxTarget::Profile(id.clone())));
+                        cx.notify();
+                    } else if let Some(t) = &ctx_tag {
+                        this.ctx = Some(CtxMenu::new(ev.position, CtxTarget::Tag(t.clone())));
                         cx.notify();
                     } else if let Some(f) = &ctx_folder {
                         this.ctx = Some(CtxMenu::new(ev.position, CtxTarget::Folder(f.clone())));

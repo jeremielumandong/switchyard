@@ -86,6 +86,7 @@ fn column(row: &[Option<String>], pk: &[String]) -> ColumnInfo {
             .filter(|d| !d.is_empty()),
         ordinal: text(row, 6).parse().unwrap_or_default(),
         comment: None,
+        identity: None,
     }
 }
 

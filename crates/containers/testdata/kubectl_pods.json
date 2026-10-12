@@ -1,0 +1,100 @@
+{
+    "apiVersion": "v1",
+    "items": [
+        {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "creationTimestamp": "2026-10-10T09:00:00Z",
+                "labels": {"app": "web", "pod-template-hash": "7d9f8"},
+                "name": "web-7d9f8-abcde",
+                "namespace": "shop",
+                "ownerReferences": [{"apiVersion": "apps/v1", "kind": "ReplicaSet", "name": "web-7d9f8", "uid": "r1"}]
+            },
+            "spec": {
+                "containers": [
+                    {"image": "nginx:1.27", "name": "nginx", "ports": [{"containerPort": 80, "name": "http", "protocol": "TCP"}]},
+                    {"image": "envoyproxy/envoy:v1.31", "name": "envoy", "ports": [{"containerPort": 9901, "protocol": "TCP"}]}
+                ],
+                "nodeName": "kind-dev-worker"
+            },
+            "status": {
+                "conditions": [{"status": "True", "type": "Ready"}],
+                "containerStatuses": [
+                    {"name": "envoy", "ready": true, "restartCount": 1, "state": {"running": {"startedAt": "2026-10-10T09:00:05Z"}}},
+                    {"name": "nginx", "ready": true, "restartCount": 2, "state": {"running": {"startedAt": "2026-10-10T09:00:04Z"}}}
+                ],
+                "phase": "Running",
+                "podIP": "10.244.1.7",
+                "startTime": "2026-10-10T09:00:00Z"
+            }
+        },
+        {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"creationTimestamp": "2026-10-11T22:00:00Z", "name": "worker-5c6b-xyz12", "namespace": "shop"},
+            "spec": {"containers": [{"image": "acme/worker:2.3", "name": "worker"}], "nodeName": "kind-dev-worker2"},
+            "status": {
+                "containerStatuses": [
+                    {"name": "worker", "ready": false, "restartCount": 14,
+                     "lastState": {"terminated": {"exitCode": 1, "reason": "Error"}},
+                     "state": {"waiting": {"message": "back-off 5m0s restarting failed container", "reason": "CrashLoopBackOff"}}}
+                ],
+                "phase": "Running",
+                "podIP": "10.244.2.9"
+            }
+        },
+        {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"creationTimestamp": "2026-10-12T00:59:00Z", "name": "migrate-8k2j4", "namespace": "shop"},
+            "spec": {
+                "initContainers": [{"image": "busybox", "name": "wait-db"}, {"image": "acme/migrate", "name": "schema"}],
+                "containers": [{"image": "acme/api:1.0", "name": "api"}]
+            },
+            "status": {
+                "initContainerStatuses": [
+                    {"name": "wait-db", "ready": true, "restartCount": 0, "state": {"terminated": {"exitCode": 0, "reason": "Completed"}}},
+                    {"name": "schema", "ready": false, "restartCount": 0, "state": {"running": {"startedAt": "2026-10-12T00:59:30Z"}}}
+                ],
+                "containerStatuses": [
+                    {"name": "api", "ready": false, "restartCount": 0, "state": {"waiting": {"reason": "PodInitializing"}}}
+                ],
+                "phase": "Pending"
+            }
+        },
+        {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"creationTimestamp": "2026-10-09T03:00:00Z", "name": "backup-28812", "namespace": "ops"},
+            "spec": {"containers": [{"image": "acme/backup", "name": "backup"}], "nodeName": "kind-dev-worker"},
+            "status": {
+                "containerStatuses": [
+                    {"name": "backup", "ready": false, "restartCount": 0, "state": {"terminated": {"exitCode": 0, "reason": "Completed"}}}
+                ],
+                "phase": "Succeeded"
+            }
+        },
+        {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"creationTimestamp": "2026-10-11T10:00:00Z", "deletionTimestamp": "2026-10-12T01:00:00Z", "name": "web-old-1", "namespace": "shop"},
+            "spec": {"containers": [{"image": "nginx:1.25", "name": "nginx"}], "nodeName": "kind-dev-worker"},
+            "status": {
+                "containerStatuses": [
+                    {"name": "nginx", "ready": true, "restartCount": 0, "state": {"running": {"startedAt": "2026-10-11T10:00:02Z"}}}
+                ],
+                "phase": "Running"
+            }
+        },
+        {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"creationTimestamp": "2026-10-12T01:10:00Z", "name": "pending-q", "namespace": "shop"},
+            "spec": {"containers": [{"image": "acme/big", "name": "big"}]},
+            "status": {"conditions": [{"reason": "Unschedulable", "status": "False", "type": "PodScheduled"}], "phase": "Pending"}
+        }
+    ],
+    "kind": "List",
+    "metadata": {"resourceVersion": ""}
+}

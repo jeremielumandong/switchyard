@@ -64,7 +64,7 @@ fn url(s: &str, what: &str) -> Result<url::Url> {
 
 impl Service {
     /// The secret typed in the editor, else the stored one (either may be a named secret).
-    async fn cloud_secret(
+    pub(super) async fn cloud_secret(
         &self,
         c: &CloudConnection,
         typed: Option<SecretString>,
@@ -73,7 +73,7 @@ impl Service {
     }
 
     /// Bearer tokens for an Azure `scope`, per the connection's sign-in method.
-    fn azure_tokens(
+    pub(super) fn azure_tokens(
         &self,
         c: &CloudConnection,
         scope: &'static str,
@@ -97,7 +97,7 @@ impl Service {
     }
 
     /// AWS credentials and the region to use.
-    async fn aws_auth(
+    pub(super) async fn aws_auth(
         &self,
         c: &CloudConnection,
         secret: Option<SecretString>,
@@ -160,6 +160,22 @@ impl Service {
         typed: Option<SecretString>,
     ) -> Result<Arc<dyn RemoteFs>> {
         let secret = self.cloud_secret(c, typed).await?;
+        match c.service {
+            CloudService::S3 | CloudService::R2 => Ok(Arc::new(self.cloud_s3(c, secret).await?)),
+            CloudService::AzureBlob => Ok(Arc::new(self.cloud_blob(c, secret)?)),
+            other => Err(CoreError::Unsupported(format!(
+                "{} is not file storage",
+                other.display_name()
+            ))),
+        }
+    }
+
+    /// An S3 / R2 connection's storage, with its secret already read.
+    pub(super) async fn cloud_s3(
+        &self,
+        c: &CloudConnection,
+        secret: Option<SecretString>,
+    ) -> Result<s3::S3Fs> {
         let home = c.default_path.clone().filter(|p| !p.trim().is_empty());
         match c.service {
             CloudService::S3 | CloudService::R2 => {
@@ -181,8 +197,23 @@ impl Service {
                 };
                 cfg.home = home;
                 cfg.read_only = c.read_only;
-                Ok(Arc::new(s3::S3Fs::new(cfg, auth)?))
+                Ok(s3::S3Fs::new(cfg, auth)?)
             }
+            other => Err(CoreError::Unsupported(format!(
+                "{} is not S3 storage",
+                other.display_name()
+            ))),
+        }
+    }
+
+    /// An Azure Blob Storage connection's storage, with its secret already read.
+    pub(super) fn cloud_blob(
+        &self,
+        c: &CloudConnection,
+        secret: Option<SecretString>,
+    ) -> Result<blob::BlobFs> {
+        let home = c.default_path.clone().filter(|p| !p.trim().is_empty());
+        match c.service {
             CloudService::AzureBlob => {
                 let (endpoint, auth) = match c.auth {
                     CloudAuth::ConnectionString => {
@@ -212,7 +243,7 @@ impl Service {
                         AzureAuth::Bearer(self.azure_tokens(c, STORAGE_SCOPE, secret)?),
                     ),
                 };
-                Ok(Arc::new(blob::BlobFs::new(
+                Ok(blob::BlobFs::new(
                     blob::BlobConfig {
                         name: c.name.clone(),
                         endpoint,
@@ -220,10 +251,10 @@ impl Service {
                         read_only: c.read_only,
                     },
                     auth,
-                )?))
+                )?)
             }
             other => Err(CoreError::Unsupported(format!(
-                "{} is not file storage",
+                "{} is not Blob Storage",
                 other.display_name()
             ))),
         }
@@ -360,7 +391,7 @@ impl Service {
         ))
     }
 
-    async fn cloud_profile(&self, id: ProfileId) -> Result<CloudConnection> {
+    pub(super) async fn cloud_profile(&self, id: ProfileId) -> Result<CloudConnection> {
         match self.with_store(move |s| s.profile(&id)).await? {
             Some(Profile::Cloud(c)) => Ok(c),
             _ => Err(CoreError::NotFound("cloud connection".into())),

@@ -1,0 +1,28 @@
+[
+  {
+    "aadProfile": {"adminGroupObjectIDs": ["5a1f0c3e-0000-4000-8000-000000000001"], "enableAzureRbac": true, "managed": true, "tenantId": "72f988bf-0000-4000-8000-000000000002"},
+    "agentPoolProfiles": [{"count": 3, "name": "nodepool1", "vmSize": "Standard_D4s_v5"}],
+    "currentKubernetesVersion": "1.31.2",
+    "disableLocalAccounts": true,
+    "fqdn": "shop-aks-dns-1a2b3c4d.hcp.westeurope.azmk8s.io",
+    "id": "/subscriptions/0b1f6471-0000-4000-8000-000000000003/resourcegroups/shop-rg/providers/Microsoft.ContainerService/managedClusters/shop-aks",
+    "kubernetesVersion": "1.31",
+    "location": "westeurope",
+    "name": "shop-aks",
+    "powerState": {"code": "Running"},
+    "provisioningState": "Succeeded",
+    "resourceGroup": "shop-rg",
+    "type": "Microsoft.ContainerService/ManagedClusters"
+  },
+  {
+    "aadProfile": null,
+    "currentKubernetesVersion": "1.30.6",
+    "fqdn": "lab-dns-99.hcp.eastus.azmk8s.io",
+    "id": "/subscriptions/0b1f6471-0000-4000-8000-000000000003/resourcegroups/LAB/providers/Microsoft.ContainerService/managedClusters/lab",
+    "location": "eastus",
+    "name": "lab",
+    "powerState": {"code": "Stopped"},
+    "provisioningState": "Succeeded",
+    "resourceGroup": "LAB"
+  }
+]

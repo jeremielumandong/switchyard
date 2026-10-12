@@ -1,0 +1,35 @@
+{
+  "type": "collection",
+  "resourceType": "cluster",
+  "links": {"self": "https://rancher.example.com/v3/clusters"},
+  "data": [
+    {
+      "id": "local",
+      "type": "cluster",
+      "name": "local",
+      "state": "active",
+      "provider": "k3s",
+      "driver": "k3s",
+      "version": {"gitVersion": "v1.30.6+k3s1"},
+      "actions": {"generateKubeconfig": "https://rancher.example.com/v3/clusters/local?action=generateKubeconfig"}
+    },
+    {
+      "id": "c-m-x7k2p9qz",
+      "type": "cluster",
+      "name": "edge",
+      "state": "active",
+      "provider": "rke2",
+      "driver": "imported",
+      "version": {"gitVersion": "v1.31.3+rke2r1"},
+      "actions": {"generateKubeconfig": "https://rancher.example.com/v3/clusters/c-m-x7k2p9qz?action=generateKubeconfig"}
+    },
+    {
+      "id": "c-abc12",
+      "type": "cluster",
+      "name": "retired",
+      "state": "unavailable",
+      "driver": "AKS",
+      "actions": {}
+    }
+  ]
+}
