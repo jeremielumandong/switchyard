@@ -226,6 +226,10 @@ pub struct Service {
     files: Arc<crate::files::Files>,
     /// Named secrets read from cloud stores, with when they were read.
     named_cache: Mutex<HashMap<String, (Instant, SecretString)>>,
+    /// How this copy is installed (decides how it updates).
+    update_install: crate::update::Install,
+    /// Cancels the running update download; `Some` while one runs.
+    update_cancel: Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>,
 }
 
 /// Run one statement and drain its results (session settings such as `USE`).
@@ -351,6 +355,8 @@ impl Service {
             components,
             files: Arc::default(),
             named_cache: Mutex::default(),
+            update_install: crate::update::Install::detect(),
+            update_cancel: Mutex::default(),
             package_runner: config
                 .package_runner
                 .clone()
@@ -1236,9 +1242,26 @@ impl Service {
                 });
             }
             Command::DetectComponents => self.emit_components().await,
-            Command::CheckForUpdates { manual } => {
-                let status = crate::update::check(&self.data_dir.join("updates")).await;
+            Command::CheckForUpdates { manual, download } => {
+                let status = crate::update::check(&self.update_install).await;
+                let fetch = match &status {
+                    crate::update::UpdateStatus::Available(info)
+                        if download && info.asset.is_some() =>
+                    {
+                        Some(info.clone())
+                    }
+                    _ => None,
+                };
                 self.emit(Event::UpdateStatus { manual, status });
+                if let Some(info) = fetch {
+                    self.download_update(info).await;
+                }
+            }
+            Command::DownloadUpdate { info } => self.download_update(info).await,
+            Command::CancelUpdateDownload => {
+                if let Some(cancel) = lock(&self.update_cancel).as_ref() {
+                    cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
             }
             Command::InstallComponent { id, accept_license } => {
                 let r = crate::components::install(
@@ -1500,6 +1523,47 @@ impl Service {
             &progress,
         )
         .await
+    }
+
+    /// Download, verify and stage an update; one at a time.
+    async fn download_update(&self, info: crate::update::UpdateInfo) {
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let mut slot = lock(&self.update_cancel);
+            if slot.is_some() {
+                return;
+            }
+            *slot = Some(cancel.clone());
+        }
+        let events = self.events.clone();
+        let version = info.version.clone();
+        let progress = move |done: u64, total: u64| {
+            events.emit(Event::UpdateProgress {
+                version: version.clone(),
+                done,
+                total,
+            });
+        };
+        let result = crate::update::download(
+            &info,
+            &self.update_install,
+            &self.data_dir.join("updates"),
+            &progress,
+            &cancel,
+        )
+        .await;
+        *lock(&self.update_cancel) = None;
+        let cancelled = matches!(result, Err(crate::update::UpdateError::Cancelled));
+        if let Err(e) = &result
+            && !cancelled
+        {
+            warn!(error = %e, "update download failed");
+        }
+        self.emit(Event::UpdateDownloaded {
+            info,
+            result: result.map_err(|e| e.to_string()),
+            cancelled,
+        });
     }
 
     async fn emit_components(&self) {

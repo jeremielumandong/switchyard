@@ -1008,7 +1008,17 @@ pub enum Command {
     CheckForUpdates {
         /// The user asked (show "up to date" and failures, not only a newer version).
         manual: bool,
+        /// Download a newer release right away when this installation can update itself
+        /// ([`Event::UpdateProgress`], then [`Event::UpdateDownloaded`]).
+        download: bool,
     },
+    /// Download and verify a release found by [`Command::CheckForUpdates`].
+    DownloadUpdate {
+        /// The release.
+        info: crate::update::UpdateInfo,
+    },
+    /// Stop a running [`Command::DownloadUpdate`].
+    CancelUpdateDownload,
 }
 
 /// Events from a running query.
@@ -1073,6 +1083,24 @@ pub enum Event {
         manual: bool,
         /// What the check found.
         status: crate::update::UpdateStatus,
+    },
+    /// An update download moved on.
+    UpdateProgress {
+        /// The release being downloaded.
+        version: String,
+        /// Bytes so far.
+        done: u64,
+        /// Expected size (0 when unknown).
+        total: u64,
+    },
+    /// An update download finished.
+    UpdateDownloaded {
+        /// The release that was downloaded.
+        info: crate::update::UpdateInfo,
+        /// The staged update, or why it failed.
+        result: Result<crate::update::ReadyUpdate, String>,
+        /// The user cancelled it (`result` is an error).
+        cancelled: bool,
     },
     /// What importing `~/.ssh/config` would add (answer to `PreviewSshConfig`).
     SshConfigPreview {

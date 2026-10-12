@@ -194,5 +194,8 @@ fn main() -> Result<()> {
             }
             cx.activate(true);
         });
+    // "Restart now" on a staged update starts the new AppImage or the installer now that
+    // the window is closed and unsaved work was handled.
+    updates::run_after_exit();
     Ok(())
 }

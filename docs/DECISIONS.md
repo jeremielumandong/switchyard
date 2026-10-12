@@ -1399,3 +1399,19 @@ Decisions:
   signed in with an access key cannot resolve references.
 - Bulk edits run one by one (neither service has transactions) and report "X of N done"
   with each failure; restoring a revision and every bulk delete or copy always confirm.
+
+## 2026-10-12 — Auto-update the Emulsion way (user request)
+
+- Jeremie asked for in-app updates implemented like Emulsion's (`emulsion-io::update`,
+  `emulsion-ui::updater`). Integrity comes from the SHA-256 GitHub records for each release
+  asset (or the `.sha256` file the release workflows already publish), checked together
+  with the size before anything is replaced. The release workflows already sign the
+  Windows installer and notarize the macOS app, so the OS checks those again on install.
+- The optional minisign check stays: with a build-time `SWITCHYARD_UPDATE_PUBKEY` and a
+  `.minisig` on the release, the signature must also verify.
+- Only release-package installs update themselves (AppImage in place, Windows installer
+  after exit, macOS DMG opened for the user). Everything else is told about the release
+  and links to its page, as before.
+- The download goes through the core runtime (`reqwest`, the app's TLS settings) instead
+  of Emulsion's blocking `ureq`, so no new dependency.
+

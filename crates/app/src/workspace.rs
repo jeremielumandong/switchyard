@@ -602,10 +602,20 @@ impl Workspace {
                     theme::apply_fonts(Some(window), cx);
                 }
             }
-            Event::Setting { key, value } if key == switchyard_core::update::CHECK_SETTING => {
-                self.on_update_setting(value);
+            Event::Setting { key, value } if crate::updates::is_setting(&key) => {
+                self.on_update_setting(&key, value);
             }
             Event::UpdateStatus { manual, status } => self.on_update_status(manual, status, cx),
+            Event::UpdateProgress {
+                version,
+                done,
+                total,
+            } => self.on_update_progress(version, done, total, cx),
+            Event::UpdateDownloaded {
+                info,
+                result,
+                cancelled,
+            } => self.on_update_downloaded(info, result, cancelled, cx),
             Event::Setting { key, value } if key == crate::sidebar::EXPLORER_GROUP_KEY => {
                 if let Some(g) = value.as_ref().and_then(|v| v.as_str()) {
                     self.explorer_group = crate::explorer_tree::ExplorerGroup::from_key(g);
