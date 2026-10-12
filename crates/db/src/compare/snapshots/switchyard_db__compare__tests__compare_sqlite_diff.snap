@@ -1,0 +1,14 @@
+---
+source: crates/db/src/compare/tests.rs
+expression: summary(&d)
+---
+identical: 0
+[Only in source] Table notes
+[Only in source] View cheap
+[Different] Table items (destructive)
+    ~ column name: NULL → NOT NULL
+    + column price
+    − column old
+    + index items_name
+[Different] Table tags
+    + column label

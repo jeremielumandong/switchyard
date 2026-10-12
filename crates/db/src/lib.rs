@@ -7,6 +7,7 @@
 pub mod activity;
 pub mod batch;
 pub mod catalog;
+pub mod compare;
 pub mod complete;
 pub mod d1;
 pub mod diagnostics;

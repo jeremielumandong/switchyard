@@ -345,6 +345,11 @@ pub struct ColumnInfo {
     /// Column comment (`COMMENT ON COLUMN`, `MS_Description`), when the engine has one.
     #[serde(default)]
     pub comment: Option<String>,
+    /// Identity or generation clause in the engine's own words (`GENERATED ALWAYS AS
+    /// IDENTITY`, `IDENTITY(1,1)`, `AUTO_INCREMENT`), when the column has one and the
+    /// engine's catalog reports it. Schema compare diffs and scripts it.
+    #[serde(default)]
+    pub identity: Option<String>,
 }
 
 /// An index.

@@ -122,6 +122,10 @@ fn go_separator(line: &str) -> Option<u32> {
 }
 
 impl Dialect for TSqlDialect {
+    fn schema_scripter(&self) -> Option<&'static dyn crate::compare::SchemaScripter> {
+        Some(&crate::compare::TSqlScripter)
+    }
+
     fn plans(&self) -> super::PlanSupport {
         super::PlanSupport::BOTH
     }

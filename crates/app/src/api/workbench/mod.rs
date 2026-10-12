@@ -21,6 +21,8 @@ mod move_request;
 mod persistence;
 mod pretty;
 mod protocol_pane;
+// Schema compare's side-by-side DDL uses the same line diff.
+pub(crate) use pretty::{DiffLine, line_diff};
 mod rail_rename;
 mod rename_workspace;
 mod request_creation;
