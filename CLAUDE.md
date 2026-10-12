@@ -246,6 +246,8 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
 - PostgreSQL parallel plans: below a Gather, "Actual Total Time" is a per-process average and
   "Actual Loops" counts all processes, so time × loops overstates wall time; `plan::pg`
   divides by workers + leader.
+- GPUI: a `uniform_list` row sizes to its content, not the list's width, so a row with a
+  `flex_1` column must set `.w_full()` or its cells drift left of the header.
 - GPUI: an element's size is only known after a frame. Measure with a `canvas` prepaint into
   an `Rc<Cell<Bounds>>` and, when a layout depends on it (plan Fit), retry with
   `cx.on_next_frame`; reset the cell when the layout changes or it holds stale sizes.
