@@ -253,7 +253,7 @@ pub(super) fn new_request_definition(
         .max()
         .unwrap_or(-1)
         .saturating_add(1);
-    SavedRequest {
+    let mut request = SavedRequest {
         id: RequestId::new(),
         collection_id: collection,
         folder_id: folder,
@@ -269,5 +269,7 @@ pub(super) fn new_request_definition(
         settings: Default::default(),
         extensions: Default::default(),
         sort_key,
-    }
+    };
+    request.set_protocol_settings(seed.protocol.as_ref());
+    request
 }

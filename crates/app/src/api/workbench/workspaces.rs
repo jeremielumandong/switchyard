@@ -8,7 +8,7 @@
 
 use switchyard_api::WorkspaceEntry;
 use switchyard_api::runtime::workspace::{
-    WorkspaceList, create_workspace, list_workspaces, mark_workspace_opened,
+    WorkspaceList, create_workspace, delete_workspace, list_workspaces, mark_workspace_opened,
 };
 
 use super::*;
@@ -142,5 +142,118 @@ impl WorkbenchPanel {
     /// `true` while a workspace is being created.
     pub(super) fn adding_workspace(&self) -> bool {
         self._workspace_work.is_some() && self.workspaces.is_some()
+    }
+}
+
+impl WorkbenchPanel {
+    /// The header menu's "Delete project…": ask, then delete the open
+    /// workspace and everything in it.
+    pub(super) fn confirm_delete_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::api::compat::dialogs::{self, Dismiss};
+        let workspace = self.bound_workspace.clone();
+        if !self
+            .workspace_entries()
+            .iter()
+            .any(|entry| entry.id == workspace)
+            || self._workspace_work.is_some()
+        {
+            return;
+        }
+        let name = self.workspace_display_name();
+        let panel = cx.entity().downgrade();
+        let danger = cx.theme().colors.danger;
+        self.focus_handle.focus(window, cx);
+        dialogs::open(window, cx, Dismiss::Explicit, move |dialog, window, _| {
+            let panel = panel.clone();
+            let workspace = workspace.clone();
+            dialog
+                .title("Delete project?")
+                .w(dialogs::dialog_width(window, window.rem_size() * 30.))
+                .child(
+                    gpui_kit::div()
+                        .id("workbench-delete-workspace-confirm")
+                        .debug_selector(|| "workbench-delete-workspace-confirm".into())
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .pl_3()
+                        .border_l_2()
+                        .border_color(danger)
+                        .whitespace_normal()
+                        .child(format!("Delete “{name}”?"))
+                        .child(
+                            "Its collections, requests, environments, history and runs \
+                             are removed. This cannot be undone.",
+                        ),
+                )
+                .footer(dialogs::confirm_footer("Delete project"))
+                .on_ok(move |_, window, cx| {
+                    let workspace = workspace.clone();
+                    let _ = panel.update(cx, |panel, cx| {
+                        panel.delete_workspace(workspace, window, cx)
+                    });
+                    true
+                })
+        });
+        cx.notify();
+    }
+
+    fn delete_workspace(&mut self, id: WorkspaceId, window: &mut Window, cx: &mut Context<Self>) {
+        if self._workspace_work.is_some() {
+            return;
+        }
+        let data_dir = workbench_data_dir();
+        let target = id.clone();
+        self._workspace_work = Some(cx.spawn_in(window, async move |this, cx| {
+            let remaining = crate::api::compat::blocking(move || {
+                data_dir
+                    .ok_or_else(|| "Cannot resolve the Workbench data directory.".to_string())
+                    .and_then(|path| delete_workspace(&path, &target))
+            })
+            .await;
+            let _ = this.update_in(cx, |panel, window, cx| {
+                panel._workspace_work = None;
+                match remaining {
+                    Ok(remaining) => panel.apply_workspace_deletion(id, remaining, window, cx),
+                    Err(error) => {
+                        panel.storage_error = Some(error);
+                        cx.notify();
+                    }
+                }
+            });
+        }));
+        cx.notify();
+    }
+
+    /// Forget a deleted workspace; when it was open, open another one or
+    /// show the "Add project" page.
+    fn apply_workspace_deletion(
+        &mut self,
+        deleted: WorkspaceId,
+        remaining: Vec<WorkspaceEntry>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let next = remaining.first().map(|entry| entry.id.clone());
+        self.workspaces = Some(remaining);
+        if self.bound_workspace == deleted {
+            // Its tabs and drafts went with it.
+            self.request_tabs.clear();
+            self.protocol_panes.clear();
+            self.dirty = false;
+            self.persisted_tab_session = None;
+            match next {
+                Some(id) => self.open_workspace(id, window, cx),
+                None => {
+                    crate::api::compat::set_current_project(None);
+                    self.workspace_data = None;
+                    self.history.clear();
+                    self.clear_request_editor(window, cx);
+                    self.dirty = false;
+                }
+            }
+        }
+        self.navigation_notice = Some("Project deleted.".into());
+        cx.notify();
     }
 }

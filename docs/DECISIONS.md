@@ -1399,3 +1399,28 @@ Decisions:
   signed in with an access key cannot resolve references.
 - Bulk edits run one by one (neither service has transactions) and report "X of N done"
   with each failure; restoring a revision and every bulk delete or copy always confirm.
+
+## 2026-10-12 — API Workbench: WebSocket, Server-Sent Events and gRPC (user request)
+
+- tokio-tungstenite, tonic, prost-reflect approved for API workbench (approved by Jeremie on
+  2026-10-12), with the crates they need: `tokio-tungstenite` 0.30 (MIT, `handshake` feature
+  only), `tonic` / `tonic-prost` / `tonic-reflection` 0.14 (MIT), `prost` / `prost-types` 0.14
+  (Apache-2.0), `prost-reflect` 0.16 (MIT OR Apache-2.0) and `protox` 0.10 (MIT OR
+  Apache-2.0, pure-Rust `.proto` compiler, so no `protoc` is needed). No GPL code.
+- They sit behind `switchyard-api`'s cargo features `websocket` and `grpc`, on by default.
+  Turning one off removes its crates; starting that kind then fails with "… support is not
+  included in this build" and the app hides "Add gRPC request".
+- A streaming request is a `SavedRequest` like any other: URL, params, headers, auth and
+  variables stay in their usual fields, so the compiler resolves them (and runs the
+  pre-request script and sign-in) exactly as for HTTP. The kind's own options live in
+  `extensions["switchyard_protocol"]` (tagged JSON), which existing storage, import/export
+  and duplication already carry; requests saved before this stay HTTP.
+- The compiler only accepts `http(s)`, so `ws(s)://` and `grpc(s)://` are compiled as their
+  `http(s)` form and mapped back for the wire (`protocol::compile_url` / `wire_url`).
+- WebSocket TCP goes to the addresses the private-network policy validated, and `wss://`
+  uses the same rustls config (OS trust store, verification on) as HTTP sends; tungstenite
+  only does the handshake. SSE uses a pinned reqwest client without a total timeout
+  (connect timeout only). Resolved secrets are redacted from every log line and error.
+- Sessions run on core's tokio runtime; the UI receives `StreamEvent`s over a channel and
+  appends them to a virtualized log capped at 10,000 rows (64 KiB of text per row).
+- Streaming sessions are not recorded in History yet (see PLAN follow-ups).
