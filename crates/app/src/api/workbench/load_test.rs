@@ -131,7 +131,7 @@ pub(super) fn parse_config(
 }
 
 fn format_ms(ms: u64) -> String {
-    if ms >= 10_000 {
+    if ms >= 1_000 {
         format!("{:.1} s", ms as f64 / 1000.0)
     } else {
         format!("{ms} ms")
@@ -1036,6 +1036,7 @@ mod tests {
     #[test]
     fn durations_and_sizes_read_naturally() {
         assert_eq!(format_ms(42), "42 ms");
+        assert_eq!(format_ms(8_002), "8.0 s");
         assert_eq!(format_ms(12_300), "12.3 s");
         assert_eq!(format_bytes(512), "512 B");
         assert_eq!(format_bytes(2048), "2.0 KB");
