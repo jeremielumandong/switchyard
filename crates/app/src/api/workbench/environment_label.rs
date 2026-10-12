@@ -114,7 +114,11 @@ impl WorkbenchPanel {
         if !self.has_request_tab() {
             return;
         }
-        let method = self.current_method(cx);
+        // A gRPC call can change data: confirm it like a POST.
+        let method = match self.active_protocol(cx) {
+            switchyard_api::protocol::RequestProtocol::Grpc => "POST".to_string(),
+            _ => self.current_method(cx),
+        };
         let label = self.environment_label_in_force();
         if !send_needs_confirmation(&method, label) {
             self.send_now(window, cx);

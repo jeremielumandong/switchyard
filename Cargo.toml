@@ -149,6 +149,15 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 # `grpc` features (on by default). Approved by Jeremie on 2026-10-12, see DECISIONS.
 # WebSocket (MIT): handshake only; TLS is our tokio-rustls config.
 tokio-tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake"] }
+# gRPC (tonic MIT, prost Apache-2.0, prost-reflect / protox MIT OR Apache-2.0): a client
+# channel with rustls (ring) and the OS roots; dynamic messages; `.proto` files compiled in
+# process (no protoc). Tests add tonic's server and tonic-reflection's server.
+tonic = { version = "=0.14.6", default-features = false, features = ["channel", "codegen", "tls-ring", "tls-native-roots"] }
+tonic-reflection = { version = "=0.14.6", default-features = false }
+prost = "=0.14.4"
+prost-types = "=0.14.4"
+prost-reflect = { version = "=0.16.5", features = ["serde"] }
+protox = { version = "=0.10.0", default-features = false }
 
 # editor completion items (must match gpui-component)
 lsp-types = "0.97"

@@ -20,10 +20,10 @@ use gpui_kit::{
     AnyElement, Div, Hsla, Subscription, UniformListScrollHandle, div, prelude::*, uniform_list,
 };
 use switchyard_api::protocol::{
-    Direction, EntryKind, LogEntry, MAX_LOG_ENTRIES, MessageFormat, MessageSnippet,
-    ProtocolSettings, RequestProtocol, SessionCommand, SessionHandle, SessionState, SseSettings,
-    StreamEvent, StreamRequest, WebSocketSettings, compile_url, encode_message, start_session,
-    wire_url,
+    DescriptorSource, Direction, EntryKind, GrpcSettings, GrpcTransport, LogEntry, MAX_LOG_ENTRIES,
+    MessageFormat, MessageSnippet, OutgoingPayload, ProtocolSettings, RequestProtocol, ServiceInfo,
+    SessionCommand, SessionHandle, SessionState, SseSettings, StreamEvent, StreamRequest,
+    WebSocketSettings, compile_url, discover_grpc, encode_message, start_session, wire_url,
 };
 
 use super::view::{chip, code_box, heading, mono_field, outline_chip};
@@ -34,6 +34,8 @@ use crate::appearance::rpx;
 pub(super) enum ProtocolPaneEvent {
     /// The saved settings changed: the request is unsaved.
     Changed,
+    /// "Load services": the panel compiles the request and asks the server.
+    DiscoverRequested,
 }
 
 /// The per-tab state of a streaming request: its settings editors and its
@@ -49,6 +51,16 @@ pub(super) struct ProtocolPane {
     ping_payload: Entity<InputState>,
     retry_ms: Entity<InputState>,
     max_reconnects: Entity<InputState>,
+    grpc_service: Entity<InputState>,
+    grpc_method: Entity<InputState>,
+    /// `.proto` paths, one per line.
+    proto_files: Entity<TextareaState>,
+    /// Import roots, separated by `;`.
+    include_dirs: Entity<InputState>,
+    deadline_ms: Entity<InputState>,
+    /// Services found by the last "Load services".
+    services: Option<Vec<ServiceInfo>>,
+    discovering: bool,
     /// The live log, drawn in the response pane.
     pub log: Entity<ProtocolLog>,
     session: Option<SessionHandle>,
@@ -79,15 +91,39 @@ impl ProtocolPane {
         let ping_payload = line("Ping payload (optional)", window, cx);
         let retry_ms = line("3000", window, cx);
         let max_reconnects = line("10", window, cx);
+        let grpc_service = line("package.Service", window, cx);
+        let grpc_method = line("Method", window, cx);
+        let include_dirs = line("Import folders (separate with ;)", window, cx);
+        let deadline_ms = line("none", window, cx);
+        let proto_files = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .placeholder("/path/to/service.proto")
+                .auto_grow(2, 6)
+        });
         let log = cx.new(|cx| ProtocolLog::new(settings.protocol(), window, cx));
         let mut subscriptions = Vec::new();
-        for input in [&subprotocols, &retry_ms, &max_reconnects] {
+        for input in [
+            &subprotocols,
+            &retry_ms,
+            &max_reconnects,
+            &grpc_service,
+            &grpc_method,
+            &include_dirs,
+            &deadline_ms,
+        ] {
             subscriptions.push(cx.subscribe(input, |this, _, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.read_editors(cx);
                 }
             }));
         }
+        subscriptions.push(
+            cx.subscribe(&proto_files, |this, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.read_editors(cx);
+                }
+            }),
+        );
         subscriptions.push(cx.subscribe(&message, |this, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 this.notice = None;
@@ -104,6 +140,13 @@ impl ProtocolPane {
             ping_payload,
             retry_ms,
             max_reconnects,
+            grpc_service,
+            grpc_method,
+            proto_files,
+            include_dirs,
+            deadline_ms,
+            services: None,
+            discovering: false,
             log,
             session: None,
             preparing: false,
@@ -147,7 +190,27 @@ impl ProtocolPane {
                 self.max_reconnects
                     .set_text(sse.max_reconnects.to_string(), window, cx);
             }
-            ProtocolSettings::Grpc(_) => {}
+            ProtocolSettings::Grpc(grpc) => {
+                self.message.set_text(grpc.message.clone(), window, cx);
+                self.grpc_service.set_text(grpc.service.clone(), window, cx);
+                self.grpc_method.set_text(grpc.method.clone(), window, cx);
+                self.deadline_ms.set_text(
+                    grpc.deadline_ms
+                        .map(|ms| ms.to_string())
+                        .unwrap_or_default(),
+                    window,
+                    cx,
+                );
+                let (files, includes) = match &grpc.descriptors {
+                    DescriptorSource::ProtoFiles {
+                        files,
+                        include_dirs,
+                    } => (files.join("\n"), include_dirs.join("; ")),
+                    DescriptorSource::Reflection => (String::new(), String::new()),
+                };
+                self.proto_files.set_text(files, window, cx);
+                self.include_dirs.set_text(includes, window, cx);
+            }
         }
         cx.notify();
     }
@@ -176,7 +239,25 @@ impl ProtocolPane {
                     sse.max_reconnects = max;
                 }
             }
-            ProtocolSettings::Grpc(_) => {}
+            ProtocolSettings::Grpc(grpc) => {
+                grpc.message = self.message.read(cx).value().to_string();
+                grpc.service = self.grpc_service.read(cx).value().trim().to_owned();
+                grpc.method = self.grpc_method.read(cx).value().trim().to_owned();
+                let deadline = self.deadline_ms.read(cx).value().trim().to_owned();
+                if deadline.is_empty() {
+                    grpc.deadline_ms = None;
+                } else if let Ok(ms) = deadline.parse::<u64>() {
+                    grpc.deadline_ms = Some(ms);
+                }
+                if let DescriptorSource::ProtoFiles {
+                    files,
+                    include_dirs,
+                } = &mut grpc.descriptors
+                {
+                    *files = split_list(&self.proto_files.read(cx).value(), '\n');
+                    *include_dirs = split_list(&self.include_dirs.read(cx).value(), ';');
+                }
+            }
         }
         self.replace_settings(next, cx);
     }
@@ -199,6 +280,134 @@ impl ProtocolPane {
             edit(ws);
         }
         self.replace_settings(next, cx);
+    }
+
+    fn update_grpc(&mut self, cx: &mut Context<Self>, edit: impl FnOnce(&mut GrpcSettings)) {
+        let mut next = self.settings.clone();
+        if let ProtocolSettings::Grpc(grpc) = &mut next {
+            edit(grpc);
+        }
+        self.replace_settings(next, cx);
+    }
+
+    /// The settings the "Load services" call needs.
+    pub fn grpc_settings(&self) -> Option<GrpcSettings> {
+        match &self.settings {
+            ProtocolSettings::Grpc(grpc) => Some(grpc.clone()),
+            _ => None,
+        }
+    }
+
+    /// Discovery started.
+    pub fn begin_discovery(&mut self, cx: &mut Context<Self>) {
+        self.discovering = true;
+        self.notice = None;
+        cx.notify();
+    }
+
+    /// Discovery finished.
+    pub fn finish_discovery(
+        &mut self,
+        result: Result<Vec<ServiceInfo>, String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.discovering = false;
+        match result {
+            Ok(services) if services.is_empty() => {
+                self.services = Some(services);
+                self.notice = Some("The server lists no services.".into());
+            }
+            Ok(services) => self.services = Some(services),
+            Err(error) => self.notice = Some(error),
+        }
+        cx.notify();
+    }
+
+    /// Choose a discovered method; an empty message gets its JSON template.
+    fn pick_method(
+        &mut self,
+        service: String,
+        method: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let template = self
+            .services
+            .iter()
+            .flatten()
+            .filter(|found| found.name == service)
+            .flat_map(|found| found.methods.iter())
+            .find(|found| found.name == method)
+            .map(|found| found.template.clone());
+        self.grpc_service.set_text(service.clone(), window, cx);
+        self.grpc_method.set_text(method.clone(), window, cx);
+        let replace_message = self.message.read(cx).value().trim().is_empty();
+        if replace_message && let Some(template) = &template {
+            self.message.set_text(template.clone(), window, cx);
+        }
+        self.update_grpc(cx, |grpc| {
+            grpc.service = service;
+            grpc.method = method;
+            if replace_message && let Some(template) = template {
+                grpc.message = template;
+            }
+        });
+    }
+
+    fn add_proto_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let chosen = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Choose .proto files".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = chosen.await else {
+                return;
+            };
+            let _ = this.update_in(cx, |pane, window, cx| {
+                let mut current = split_list(&pane.proto_files.read(cx).value(), '\n');
+                for path in paths {
+                    let path = path.to_string_lossy().into_owned();
+                    if !current.contains(&path) {
+                        current.push(path);
+                    }
+                }
+                pane.proto_files.set_text(current.join("\n"), window, cx);
+                pane.read_editors(cx);
+            });
+        })
+        .detach();
+    }
+
+    /// The selected method streams from the client.
+    fn client_streaming(&self) -> bool {
+        let ProtocolSettings::Grpc(grpc) = &self.settings else {
+            return false;
+        };
+        self.services
+            .iter()
+            .flatten()
+            .filter(|found| found.name == grpc.service)
+            .flat_map(|found| found.methods.iter())
+            .any(|found| found.name == grpc.method && found.client_streaming)
+    }
+
+    fn grpc_send(&mut self, end: bool, cx: &mut Context<Self>) {
+        let command = if end {
+            SessionCommand::CloseSend
+        } else {
+            SessionCommand::Send(OutgoingPayload::Text(
+                self.message.read(cx).value().to_string(),
+            ))
+        };
+        self.notice = match &self.session {
+            Some(session) if self.is_open(cx) => {
+                session.send(command).err().map(|error| error.to_string())
+            }
+            _ => Some("Invoke the method first.".into()),
+        };
+        cx.notify();
     }
 
     fn update_sse(&mut self, cx: &mut Context<Self>, edit: impl FnOnce(&mut SseSettings)) {
@@ -436,10 +645,7 @@ impl Render for ProtocolPane {
         let body = match self.settings.clone() {
             ProtocolSettings::WebSocket(ws) => self.render_websocket(ws, window, cx),
             ProtocolSettings::Sse(sse) => self.render_sse(sse, window, cx),
-            ProtocolSettings::Grpc(_) => div()
-                .text_size(text::S11)
-                .child("gRPC is not available in this build.")
-                .into_any_element(),
+            ProtocolSettings::Grpc(grpc) => self.render_grpc(grpc, window, cx),
         };
         div()
             .id("workbench-protocol-composer")
@@ -650,6 +856,233 @@ impl ProtocolPane {
             ))
             .into_any_element()
     }
+}
+
+impl ProtocolPane {
+    fn render_grpc(
+        &mut self,
+        grpc: GrpcSettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let colors = cx.theme().colors;
+        let open = self.is_open(cx);
+        let from_files = matches!(grpc.descriptors, DescriptorSource::ProtoFiles { .. });
+        let services = self.services.clone().unwrap_or_default();
+        let source_chip =
+            |id: &'static str, label: &'static str, files: bool, cx: &mut Context<Self>| {
+                chip(id.into(), label, from_files == files, cx).on_click(cx.listener(
+                    move |this, _, _, cx| {
+                        this.update_grpc(cx, |grpc| {
+                            grpc.descriptors = if files {
+                                DescriptorSource::ProtoFiles {
+                                    files: Vec::new(),
+                                    include_dirs: Vec::new(),
+                                }
+                            } else {
+                                DescriptorSource::Reflection
+                            };
+                        });
+                        this.read_editors(cx);
+                    },
+                ))
+            };
+        let transport_chips = div().flex().items_center().gap(rpx(2.)).children(
+            [
+                (GrpcTransport::FromUrl, "From URL"),
+                (GrpcTransport::Plaintext, "Plaintext"),
+                (GrpcTransport::Tls, "TLS"),
+            ]
+            .into_iter()
+            .map(|(transport, label)| {
+                chip(
+                    format!("workbench-grpc-transport-{label}"),
+                    label,
+                    grpc.transport == transport,
+                    cx,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.update_grpc(cx, |grpc| grpc.transport = transport);
+                }))
+            }),
+        );
+        let method_list = services
+            .iter()
+            .flat_map(|service| {
+                service.methods.iter().map(move |method| {
+                    (
+                        service.name.clone(),
+                        method.name.clone(),
+                        method.kind_label(),
+                    )
+                })
+            })
+            .enumerate()
+            .map(|(index, (service, method, kind))| {
+                let selected = grpc.service == service && grpc.method == method;
+                let label = format!("{service} / {method} · {kind}");
+                chip(
+                    format!("workbench-grpc-method-{index}"),
+                    label,
+                    selected,
+                    cx,
+                )
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.pick_method(service.clone(), method.clone(), window, cx)
+                }))
+            })
+            .collect::<Vec<_>>();
+        let client_streaming = self.client_streaming();
+        div()
+            .flex()
+            .flex_col()
+            .gap(space::SP_3)
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(space::SP_2)
+                    .child(source_chip(
+                        "workbench-grpc-reflection",
+                        "Server reflection",
+                        false,
+                        cx,
+                    ))
+                    .child(source_chip("workbench-grpc-proto", ".proto files", true, cx))
+                    .child(div().flex_1())
+                    .child(
+                        outline_chip(
+                            "workbench-grpc-discover".into(),
+                            if self.discovering {
+                                "Loading…"
+                            } else {
+                                "Load services"
+                            },
+                            cx,
+                        )
+                        .disabled(self.discovering)
+                        .on_click(cx.listener(|_, _, _, cx| {
+                            cx.emit(ProtocolPaneEvent::DiscoverRequested);
+                        })),
+                    ),
+            )
+            .when(from_files, |el| {
+                el.child(
+                    div()
+                        .rounded(radius::sm())
+                        .border_1()
+                        .border_color(colors.input)
+                        .bg(colors.sidebar)
+                        .px(rpx(10.))
+                        .py(rpx(6.))
+                        .font_family(crate::api::compat::fonts::mono(cx))
+                        .text_size(text::S12)
+                        .child(field::bare(&self.proto_files).w_full()),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(space::SP_2)
+                        .child(mono_field(&self.include_dirs, window, cx).flex_1())
+                        .child(
+                            outline_chip(
+                                "workbench-grpc-add-proto".into(),
+                                "Add .proto file…",
+                                cx,
+                            )
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.add_proto_files(window, cx)
+                            })),
+                        ),
+                )
+            })
+            .when(!method_list.is_empty(), |el| {
+                el.child(heading("Methods", colors.muted_foreground)).child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap(rpx(2.))
+                        .children(method_list),
+                )
+            })
+            .child(labelled(
+                "Service",
+                mono_field(&self.grpc_service, window, cx).flex_1(),
+                cx,
+            ))
+            .child(labelled(
+                "Method",
+                mono_field(&self.grpc_method, window, cx).flex_1(),
+                cx,
+            ))
+            .child(labelled("Transport", transport_chips, cx))
+            .child(labelled(
+                "Deadline (ms)",
+                mono_field(&self.deadline_ms, window, cx).w(rpx(120.)),
+                cx,
+            ))
+            .child(heading("Message (JSON)", colors.muted_foreground))
+            .child(
+                div()
+                    .rounded(radius::sm())
+                    .border_1()
+                    .border_color(colors.input)
+                    .bg(colors.sidebar)
+                    .px(rpx(10.))
+                    .py(rpx(6.))
+                    .font_family(crate::api::compat::fonts::mono(cx))
+                    .text_size(text::S12)
+                    .child(field::bare(&self.message).w_full()),
+            )
+            .when(client_streaming, |el| {
+                el.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(space::SP_2)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(text::S11)
+                                .text_color(palette::text_secondary(cx))
+                                .child(
+                                    "Invoke sends this message first; send more, then end the stream.",
+                                ),
+                        )
+                        .child(
+                            outline_chip("workbench-grpc-send".into(), "Send message", cx)
+                                .disabled(!open)
+                                .on_click(cx.listener(|this, _, _, cx| this.grpc_send(false, cx))),
+                        )
+                        .child(
+                            outline_chip("workbench-grpc-end".into(), "End stream", cx)
+                                .disabled(!open)
+                                .on_click(cx.listener(|this, _, _, cx| this.grpc_send(true, cx))),
+                        ),
+                )
+            })
+            .child(
+                div()
+                    .text_size(text::S11)
+                    .text_color(palette::text_secondary(cx))
+                    .child(
+                        "Metadata rows and the Auth header go with the call; status and \
+                         trailers appear in the log and its Headers tab.",
+                    ),
+            )
+            .into_any_element()
+    }
+}
+
+/// Non-empty trimmed items of a `separator`-separated list.
+fn split_list(text: &str, separator: char) -> Vec<String> {
+    text.split(separator)
+        .map(|item| item.trim().to_owned())
+        .filter(|item| !item.is_empty())
+        .collect()
 }
 
 /// `label  field` on one row.
@@ -1171,6 +1604,7 @@ impl WorkbenchPanel {
                         this.dirty = true;
                         cx.notify();
                     }
+                    ProtocolPaneEvent::DiscoverRequested => this.discover_grpc_services(cx),
                 },
             ),
             cx.observe(&pane, |_, _, cx| cx.notify()),
@@ -1271,42 +1705,20 @@ impl WorkbenchPanel {
     /// Connect the open streaming request: compile it like an HTTP send
     /// (variables, auth, pre-request script, sign-in) on core's runtime,
     /// then start its session.
-    pub(super) fn send_protocol(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(pane) = self.active_protocol_pane() else {
-            return;
-        };
-        if pane.read(cx).is_live() {
-            return;
-        }
-        let protocol = pane.read(cx).protocol();
-        let (mut definition, secrets) = match self.draft_request(cx) {
-            Ok(request) => request,
-            Err(error) => {
-                pane.update(cx, |pane, cx| pane.fail_preparing(error, cx));
-                return;
-            }
-        };
+    /// Compile inputs for the open streaming request, exactly as an HTTP
+    /// send builds them; the URL is in its `http(s)` form and WebSocket and
+    /// gRPC requests carry no body.
+    fn protocol_send_input(
+        &mut self,
+        protocol: RequestProtocol,
+        cx: &mut Context<Self>,
+    ) -> Result<StandaloneSendInput, String> {
+        let (mut definition, mut secrets) = self.draft_request(cx)?;
         let Some(data) = self.workspace_data.as_ref() else {
-            self.storage_error = Some("Workbench storage is unavailable".into());
-            cx.notify();
-            return;
+            return Err("Workbench storage is unavailable".into());
         };
-        let environment = match self.environment_send_context(cx) {
-            Ok(environment) => environment,
-            Err(error) => {
-                pane.update(cx, |pane, cx| pane.fail_preparing(error, cx));
-                return;
-            }
-        };
-        let manual_cookies = match draft::parse_cookie_pairs(&self.cookies.read(cx).value()) {
-            Ok(cookies) => cookies,
-            Err(error) => {
-                pane.update(cx, |pane, cx| pane.fail_preparing(error, cx));
-                return;
-            }
-        };
-        // The compiler sends HTTP: give it the http(s) form of the URL and,
-        // for WebSocket and gRPC, no body.
+        let environment = self.environment_send_context(cx)?;
+        let manual_cookies = draft::parse_cookie_pairs(&self.cookies.read(cx).value())?;
         definition.url = compile_url(protocol, &definition.url);
         if protocol != RequestProtocol::Sse {
             definition.method = switchyard_api::HttpMethod::get();
@@ -1317,9 +1729,8 @@ impl WorkbenchPanel {
             .into_iter()
             .cloned()
             .collect();
-        let mut secrets = secrets;
         secrets.merge(environment.secrets);
-        let input = StandaloneSendInput {
+        Ok(StandaloneSendInput {
             operation_id: RequestId::new().as_str().to_string(),
             definition,
             collection,
@@ -1338,6 +1749,26 @@ impl WorkbenchPanel {
             manual_cookies,
             file_capabilities: self.file_capabilities.clone(),
             transport: self.transport.clone(),
+        })
+    }
+
+    /// Connect the open streaming request: compile it like an HTTP send
+    /// (variables, auth, pre-request script, sign-in) on core's runtime,
+    /// then start its session.
+    pub(super) fn send_protocol(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pane) = self.active_protocol_pane() else {
+            return;
+        };
+        if pane.read(cx).is_live() {
+            return;
+        }
+        let protocol = pane.read(cx).protocol();
+        let input = match self.protocol_send_input(protocol, cx) {
+            Ok(input) => input,
+            Err(error) => {
+                pane.update(cx, |pane, cx| pane.fail_preparing(error, cx));
+                return;
+            }
         };
         pane.update(cx, |pane, cx| pane.begin_preparing(cx));
         let settings = pane.read(cx).settings().clone();
@@ -1369,6 +1800,75 @@ impl WorkbenchPanel {
         .detach();
         cx.notify();
     }
+
+    /// "Load services": list the gRPC services from the `.proto` files, or
+    /// compile the request (URL, metadata, auth) and ask the server.
+    pub(super) fn discover_grpc_services(&mut self, cx: &mut Context<Self>) {
+        let Some(pane) = self.active_protocol_pane() else {
+            return;
+        };
+        let Some(settings) = pane.read(cx).grpc_settings() else {
+            return;
+        };
+        let Some(runtime) = crate::api::compat::tokio_handle() else {
+            pane.update(cx, |pane, cx| {
+                pane.finish_discovery(Err("The background runtime is not running.".into()), cx)
+            });
+            return;
+        };
+        let input = match settings.descriptors {
+            DescriptorSource::ProtoFiles { .. } => None,
+            DescriptorSource::Reflection => {
+                match self.protocol_send_input(RequestProtocol::Grpc, cx) {
+                    Ok(input) => Some(input),
+                    Err(error) => {
+                        pane.update(cx, |pane, cx| pane.finish_discovery(Err(error), cx));
+                        return;
+                    }
+                }
+            }
+        };
+        pane.update(cx, |pane, cx| pane.begin_discovery(cx));
+        let weak_pane = pane.downgrade();
+        cx.spawn(async move |_, cx| {
+            let prepared = match input {
+                Some(input) => {
+                    match crate::api::compat::blocking(move || prepare_standalone_send(input)).await
+                    {
+                        Ok(prepared) => Some(prepared.prepared),
+                        Err(error) => {
+                            let _ = weak_pane
+                                .update(cx, |pane, cx| pane.finish_discovery(Err(error), cx));
+                            return;
+                        }
+                    }
+                }
+                None => None,
+            };
+            let redactions = prepared
+                .as_ref()
+                .map(|prepared| prepared.redactions.clone())
+                .unwrap_or_default();
+            let found = runtime
+                .spawn(discover_grpc(prepared, settings))
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|result| result.map_err(|error| error.to_string()))
+                .map_err(|error| redact(&error, &redactions));
+            let _ = weak_pane.update(cx, |pane, cx| pane.finish_discovery(found, cx));
+        })
+        .detach();
+    }
+}
+
+/// `text` with resolved secrets replaced.
+fn redact(text: &str, redactions: &[String]) -> String {
+    redactions
+        .iter()
+        .filter(|value| value.len() >= 4)
+        .fold(text.to_owned(), |text, value| {
+            text.replace(value.as_str(), "<redacted>")
+        })
 }
 
 /// Keep `HashMap` in the panel's field type readable.

@@ -310,6 +310,44 @@ pub struct GrpcSettings {
     pub deadline_ms: Option<u64>,
 }
 
+/// One method of a service, as the method picker shows it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MethodInfo {
+    /// The method name.
+    pub name: String,
+    /// The client sends a stream of messages.
+    pub client_streaming: bool,
+    /// The server answers with a stream of messages.
+    pub server_streaming: bool,
+    /// Fully-qualified request message type.
+    pub input_type: String,
+    /// Fully-qualified response message type.
+    pub output_type: String,
+    /// A JSON skeleton of the request message (every field at its default).
+    pub template: String,
+}
+
+impl MethodInfo {
+    /// `unary`, `server streaming`, `client streaming` or `bidi streaming`.
+    pub fn kind_label(&self) -> &'static str {
+        match (self.client_streaming, self.server_streaming) {
+            (false, false) => "unary",
+            (false, true) => "server streaming",
+            (true, false) => "client streaming",
+            (true, true) => "bidi streaming",
+        }
+    }
+}
+
+/// A service and its methods.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ServiceInfo {
+    /// Fully-qualified name (`package.Service`).
+    pub name: String,
+    /// Its methods, in declaration order.
+    pub methods: Vec<MethodInfo>,
+}
+
 /// The per-kind options of a streaming request.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -665,6 +703,7 @@ impl Drop for SessionHandle {
 /// The session side of a [`SessionHandle`]: where commands arrive, the
 /// cancel signal, and the event sender (which redacts secrets from text).
 pub(crate) struct SessionIo {
+    #[cfg_attr(not(any(feature = "websocket", feature = "grpc")), allow(dead_code))]
     pub commands: mpsc::UnboundedReceiver<SessionCommand>,
     pub cancel: CancellationToken,
     events: mpsc::UnboundedSender<StreamEvent>,
@@ -813,6 +852,44 @@ pub fn start_session(
         other => return Err(ProtocolError::Disabled(other.protocol().name())),
     }
     Ok((handle, events))
+}
+
+/// The gRPC services and methods `settings` can call: compiled from its
+/// `.proto` files, or asked of the server by reflection (which needs the
+/// compiled request for its URL and metadata).
+pub async fn discover_grpc(
+    prepared: Option<PreparedRequest>,
+    settings: GrpcSettings,
+) -> Result<Vec<ServiceInfo>, ProtocolError> {
+    #[cfg(feature = "grpc")]
+    {
+        match (&settings.descriptors, prepared) {
+            (DescriptorSource::ProtoFiles { .. }, prepared) => {
+                let prepared = prepared.unwrap_or_else(|| PreparedRequest {
+                    request_id: crate::RequestId::new(),
+                    method: crate::HttpMethod::get(),
+                    url: String::new(),
+                    headers: Vec::new(),
+                    body: crate::PreparedBody::None,
+                    settings: Default::default(),
+                    aws_sigv4: None,
+                    redactions: Vec::new(),
+                });
+                grpc::discover(&prepared, &settings).await
+            }
+            (DescriptorSource::Reflection, Some(prepared)) => {
+                grpc::discover(&prepared, &settings).await
+            }
+            (DescriptorSource::Reflection, None) => Err(ProtocolError::Invalid(
+                "Server reflection needs the request's URL.".into(),
+            )),
+        }
+    }
+    #[cfg(not(feature = "grpc"))]
+    {
+        let _ = (prepared, settings);
+        Err(ProtocolError::Disabled("gRPC"))
+    }
 }
 
 /// How long connecting (DNS, TCP, TLS, handshake) may take.
