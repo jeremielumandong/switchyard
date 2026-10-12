@@ -156,6 +156,8 @@ pub enum PromptAnswer {
     Interactive(Option<Vec<SecretString>>),
     /// Stop waiting (a Microsoft Entra sign-in dialog was cancelled).
     Cancel,
+    /// An RDP server certificate.
+    RdpCert(switchyard_remote::rdp::CertDecision),
 }
 
 /// Session logging state of a terminal (MX-3).
@@ -981,6 +983,8 @@ pub enum Command {
     Fleet(crate::fleet::FleetCommand),
     /// Workspaces, workspace files, reachability, credentials and remote desktops.
     Servers(crate::servers::ServersCommand),
+    /// The in-app RDP tab: connect, input, disconnect ([`Event::Rdp`]).
+    Rdp(crate::servers::embedded::RdpCommand),
     /// Read `~/.ssh/config` and answer with [`Event::SshConfigPreview`]; nothing is saved.
     PreviewSshConfig,
     /// Import Hosts from `~/.ssh/config`: the entries named in `only`, or every new one.
@@ -1367,6 +1371,8 @@ pub enum Event {
     Fleet(crate::fleet::FleetEvent),
     /// Answers to [`Command::Servers`] (and reachability results).
     Servers(crate::servers::ServersEvent),
+    /// In-app RDP sessions: state and desktop image updates ([`Command::Rdp`]).
+    Rdp(crate::servers::embedded::RdpEvent),
     /// What importing `~/.ssh/config` would add (answer to `PreviewSshConfig`).
     SshConfigPreview {
         /// The file read.
@@ -1867,6 +1873,14 @@ pub enum Event {
         received: String,
         /// Where the stored key is (`file:line`).
         location: String,
+    },
+    /// An RDP server's TLS certificate is not trusted: trust once, pin, or cancel?
+    /// Answer with [`PromptAnswer::RdpCert`].
+    RdpCertPrompt {
+        /// Answer with this id.
+        request: RequestId,
+        /// The certificate and server.
+        cert: switchyard_remote::rdp::CertRequest,
     },
     /// Unknown host key: trust it?
     HostKeyPrompt {

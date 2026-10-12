@@ -74,6 +74,23 @@ impl BusPrompter {
     }
 }
 
+#[cfg(feature = "rdp-embedded")]
+impl switchyard_remote::rdp::CertPrompter for BusPrompter {
+    fn ask(
+        &self,
+        req: switchyard_remote::rdp::CertRequest,
+    ) -> BoxFuture<'static, switchyard_remote::rdp::CertDecision> {
+        use switchyard_remote::rdp::CertDecision;
+        let (_, rx) = self.ask_with_id(|request| Event::RdpCertPrompt { request, cert: req });
+        Box::pin(async move {
+            match rx.await {
+                Ok(PromptAnswer::RdpCert(d)) => d,
+                _ => CertDecision::Reject,
+            }
+        })
+    }
+}
+
 impl SshPrompter for BusPrompter {
     fn host_key(&self, req: HostKeyRequest) -> BoxFuture<'static, HostKeyDecision> {
         let rx = self.ask(|request| Event::HostKeyPrompt { request, key: req });

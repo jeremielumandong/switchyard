@@ -34,6 +34,12 @@ tokio-util.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+[features]
+default = ["rdp-embedded"]
+# The in-app RDP tab's session (IronRDP, through switchyard-remote). Off: RDP opens with
+# the system client only, and the tab reports that the build has no in-app client.
+rdp-embedded = ["switchyard-remote/rdp-embedded"]
+
 [dev-dependencies]
 insta.workspace = true
 tempfile.workspace = true

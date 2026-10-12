@@ -1,10 +1,12 @@
 //! Servers and workspaces of the Default side: named workspaces (scope and layout),
 //! sharing them as files, the Servers view's reachability checks, shared credentials,
-//! and remote desktops (RDP and VNC) opened with the system's client (MX-12).
+//! and remote desktops (RDP and VNC) opened with the system's client (MX-12) or, for
+//! RDP, in an app tab ([`embedded`]).
 //!
 //! None of this is reachable from the MCP server or `swy`: agents never see workspaces,
 //! credentials or remote desktops, and never launch a client.
 
+pub mod embedded;
 pub mod launch;
 pub mod rdp;
 pub mod reach;

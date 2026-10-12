@@ -522,7 +522,10 @@ impl Service {
         }
     }
 
-    async fn desktop_login(&self, d: &DesktopServer) -> Result<(Login, Option<GatewayLogin>)> {
+    pub(super) async fn desktop_login(
+        &self,
+        d: &DesktopServer,
+    ) -> Result<(Login, Option<GatewayLogin>)> {
         let login = match &d.credential {
             Some(c) => {
                 let cred = self.credential(c).await?;
