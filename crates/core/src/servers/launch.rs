@@ -42,6 +42,7 @@ impl PrivateDir {
             switchyard_store::random::random_hex(8)
         );
         let path = std::env::temp_dir().join(name);
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut b = std::fs::DirBuilder::new();
         #[cfg(unix)]
         {
