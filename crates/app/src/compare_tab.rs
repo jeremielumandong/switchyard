@@ -704,6 +704,7 @@ impl CompareTab {
                                 .all(|(i, _)| included.get(i).copied().unwrap_or(false));
                             div()
                                 .id(("cmp-group", r))
+                                .w_full()
                                 .h(rpx(ROW_H))
                                 .flex()
                                 .items_center()
@@ -732,6 +733,7 @@ impl CompareTab {
                             let on = included.get(ix).copied().unwrap_or(false);
                             div()
                                 .id(("cmp-row", r))
+                                .w_full()
                                 .h(rpx(ROW_H))
                                 .flex()
                                 .items_center()

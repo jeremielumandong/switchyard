@@ -424,6 +424,7 @@ impl Workspace {
         };
         div()
             .id(("srv-row", i))
+            .w_full()
             .h(rpx(34.))
             .flex()
             .items_center()
@@ -827,6 +828,7 @@ impl Workspace {
                         .map(|i| {
                             let line = &lines[i];
                             let mut d = div()
+                                .w_full()
                                 .h(rpx(130.))
                                 .flex()
                                 .gap(rpx(10.))
@@ -872,6 +874,7 @@ impl Workspace {
                     range
                         .map(|i| match &rows[i] {
                             ServerRow::Group(label, count) => div()
+                                .w_full()
                                 .h(rpx(34.))
                                 .flex()
                                 .items_end()
