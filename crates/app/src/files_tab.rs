@@ -6,6 +6,13 @@
 //! and a "Load more" footer fetches the next page; other file systems answer in one page.
 //! Search filters the loaded rows as you type; Enter also searches the server by name
 //! prefix when the folder has more pages than are loaded.
+//!
+//! The keyboard drives it like a file manager (arrows, Enter, Backspace, F2, Delete, F5,
+//! Tab between panes, Ctrl/Cmd+A, Ctrl/Cmd+Shift+C copies paths). A folder in a git
+//! repository on this computer shows its branch and what changed (badges per row, a
+//! "Changes" filter) and refreshes while the tab is on screen, so a coding CLI's edits
+//! show up as they happen. "Terminal" and "Code" start a shell or a coding CLI in the
+//! folder (on this computer or the Host), optionally in a new git worktree.
 
 use std::path::{Path, PathBuf};
 
@@ -17,12 +24,14 @@ use gpui_kit::{
     Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
     deferred, div, px, uniform_list,
 };
+use switchyard_core::git::{ChangeKind, GitStatus};
 use switchyard_core::remote::{EntryKind, FileEntry};
 use switchyard_core::store::ProfileId;
 use switchyard_core::{Command, Event, FsOp, FsRef, OnConflict, RequestId, RuntimeHandle};
 
 use crate::app_state::next_id;
 use crate::appearance::{rpx, ts};
+use crate::coding_clis::CliChoice;
 use crate::remote_files::human;
 use crate::theme::{MONO, Palette, palette};
 use crate::transfers::Transfers;
@@ -30,6 +39,8 @@ use crate::ui::{self, Kind};
 
 /// Entries per page on file systems that page (object storage).
 const PAGE: u32 = 100;
+/// How often a folder on this computer is re-read while the tab is on screen.
+const LIVE_EVERY: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// What the tab asks the workspace to do.
 pub enum FilesTabEvent {
@@ -40,6 +51,30 @@ pub enum FilesTabEvent {
         /// File.
         path: PathBuf,
     },
+    /// Start a shell, or a coding CLI, in a folder.
+    RunHere {
+        /// The Host, or `None` for this computer.
+        host: Option<ProfileId>,
+        /// The folder.
+        dir: PathBuf,
+        /// The coding CLI; `None` for a plain shell.
+        cli: Option<CliChoice>,
+        /// The git branch of a worktree made for the run.
+        worktree: Option<String>,
+    },
+    /// Something to say in a toast.
+    Toast(String),
+}
+
+/// How the tab is laid out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layout {
+    /// Two panes side by side, for copying between computers.
+    Dual,
+    /// One pane, for browsing.
+    Single,
+    /// One narrow pane beside a coding terminal: names and git badges only.
+    Sidebar,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,6 +130,13 @@ struct Pane {
     show_hidden: bool,
     selected: Vec<String>,
     last_click: Option<(String, std::time::Instant)>,
+    /// The folder's git status (this computer only).
+    git: Option<GitStatus>,
+    git_request: Option<RequestId>,
+    /// Show only changed entries.
+    changes_only: bool,
+    /// The pending listing is a background refresh: no loading bar.
+    quiet: bool,
 }
 
 impl Pane {
@@ -114,7 +156,22 @@ impl Pane {
             show_hidden: false,
             selected: Vec::new(),
             last_click: None,
+            git: None,
+            git_request: None,
+            changes_only: false,
+            quiet: false,
         }
+    }
+
+    /// The git change at entry `name` of the current folder.
+    fn change(&self, name: &str) -> Option<ChangeKind> {
+        let (git, dir) = (self.git.as_ref()?, self.path.as_ref()?);
+        git.change_at(&dir.join(name))
+    }
+
+    /// Whether the folder can run a shell (this computer or an SSH Host).
+    fn has_shell(&self) -> bool {
+        matches!(self.fs, FsRef::Local | FsRef::Host(_))
     }
 
     fn posix(&self) -> bool {
@@ -143,6 +200,7 @@ impl Pane {
             .iter()
             .filter(|e| self.show_hidden || !e.is_hidden())
             .filter(|e| needle.is_empty() || e.name.to_lowercase().contains(&needle))
+            .filter(|e| !self.changes_only || self.change(&e.name).is_some())
             .map(|e| match by {
                 SortBy::Name => (e.name.to_lowercase(), e),
                 _ => (String::new(), e),
@@ -212,6 +270,19 @@ pub struct FilesTab {
     op: Option<RequestId>,
     error: Option<String>,
     focus: FocusHandle,
+    /// Coding CLIs the "Code" menu offers.
+    clis: Vec<CliChoice>,
+    /// Pane whose "Code" menu is open.
+    code_menu: Option<usize>,
+    /// Make a new git worktree for the next coding CLI run.
+    use_worktree: bool,
+    /// A worktree being made for a run: (request, CLI).
+    pending_worktree: Option<(RequestId, CliChoice)>,
+    /// Rendered since the last live refresh: the tab is on screen.
+    seen: bool,
+    scroll: [gpui_kit::UniformListScrollHandle; 2],
+    layout: Layout,
+    _live: gpui_kit::Task<()>,
 }
 
 impl EventEmitter<FilesTabEvent> for FilesTab {}
@@ -228,6 +299,15 @@ fn source_name(sources: &[Source], fs: &FsRef) -> String {
             .find(|(s, _, _)| s == fs)
             .map(|(_, n, _)| n.clone())
             .unwrap_or_default(),
+    }
+}
+
+/// Text color for a git change badge.
+fn change_color(c: ChangeKind, p: &Palette) -> gpui_kit::Hsla {
+    match c {
+        ChangeKind::Modified | ChangeKind::Renamed => p.stg,
+        ChangeKind::Added | ChangeKind::Untracked => p.dev,
+        ChangeKind::Deleted | ChangeKind::Conflicted => p.prod,
     }
 }
 
@@ -248,6 +328,14 @@ impl FilesTab {
         cx: &mut Context<Self>,
     ) -> Self {
         let right_pane = Pane::new(right.clone(), source_name(&sources, &right));
+        let live = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(LIVE_EVERY).await;
+                if this.update(cx, |t, cx| t.live_tick(cx)).is_err() {
+                    break;
+                }
+            }
+        });
         let mut this = Self {
             core,
             transfers,
@@ -262,9 +350,36 @@ impl FilesTab {
             op: None,
             error: None,
             focus: cx.focus_handle(),
+            clis: Vec::new(),
+            code_menu: None,
+            use_worktree: false,
+            pending_worktree: None,
+            seen: true,
+            scroll: Default::default(),
+            layout: Layout::Dual,
+            _live: live,
         };
         this.list(0, None, cx);
         this.list(1, None, cx);
+        this
+    }
+
+    /// One narrow pane showing `dir` on `fs` (this computer or a Host), for the side of a
+    /// coding terminal.
+    pub fn sidebar(
+        core: RuntimeHandle,
+        transfers: Entity<Transfers>,
+        fs: FsRef,
+        dir: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut this = Self::new(core, transfers, Vec::new(), FsRef::Local, cx);
+        this.layout = Layout::Sidebar;
+        // `new` listed home in both panes; the right pane is unused here.
+        this.panes[1].request = None;
+        let label = crate::coding_clis::folder_name(&dir);
+        this.panes[0] = Pane::new(fs, label);
+        this.list(0, Some(dir), cx);
         this
     }
 
@@ -299,6 +414,47 @@ impl FilesTab {
         }
         self.sources = sources;
         cx.notify();
+    }
+
+    /// The coding CLIs for the "Code" menu.
+    pub fn set_clis(&mut self, clis: Vec<CliChoice>, cx: &mut Context<Self>) {
+        self.clis = clis;
+        cx.notify();
+    }
+
+    /// Re-read local folders (and their git status) while the tab is on screen: a render
+    /// since the last tick means it is.
+    fn live_tick(&mut self, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.seen) {
+            for ix in 0..2 {
+                let pane = &self.panes[ix];
+                let busy = pane.request.is_some()
+                    || pane.git_request.is_some()
+                    || pane.paged()
+                    || self.edit.as_ref().is_some_and(|(i, ..)| *i == ix);
+                if pane.fs == FsRef::Local && pane.path.is_some() && pane.error.is_none() && !busy {
+                    self.refresh(ix, cx);
+                    self.panes[ix].quiet = true;
+                }
+            }
+        }
+        // Renders only when on screen; the next tick reads `seen`.
+        cx.notify();
+    }
+
+    /// Ask for the git status of pane `ix`'s folder (this computer only).
+    fn fetch_git(&mut self, ix: usize) {
+        let pane = &mut self.panes[ix];
+        let (FsRef::Local, Some(dir)) = (&pane.fs, &pane.path) else {
+            pane.git = None;
+            return;
+        };
+        let request = next_id();
+        pane.git_request = Some(request);
+        self.core.send(Command::GitStatus {
+            request,
+            dir: dir.clone(),
+        });
     }
 
     /// Open a folder: its first page, without a search.
@@ -339,6 +495,7 @@ impl FilesTab {
         let pane = &mut self.panes[ix];
         pane.request = Some(request);
         pane.appending = cursor.is_some();
+        pane.quiet = false;
         self.core.send(Command::ListDirPage {
             request,
             fs: pane.fs.clone(),
@@ -417,6 +574,7 @@ impl FilesTab {
                 };
                 let pane = &mut self.panes[ix];
                 pane.request = None;
+                pane.quiet = false;
                 let appending = std::mem::take(&mut pane.appending);
                 match result {
                     Ok(entries) if appending => {
@@ -426,11 +584,18 @@ impl FilesTab {
                     Ok(entries) => {
                         if pane.path.as_ref() != Some(path) {
                             pane.selected.clear();
+                            pane.git = None;
+                            pane.changes_only = false;
                         }
                         pane.path = Some(path.clone());
                         pane.entries = entries.clone();
                         pane.next = next.clone();
                         pane.error = None;
+                        // Drop selected names that are gone.
+                        let names: std::collections::HashSet<&str> =
+                            entries.iter().map(|e| e.name.as_str()).collect();
+                        pane.selected.retain(|n| names.contains(n.as_str()));
+                        self.fetch_git(ix);
                     }
                     Err(e) if appending => {
                         self.error = Some(format!("Can't load more: {e}"));
@@ -440,6 +605,44 @@ impl FilesTab {
                         self.error = Some(format!("Can't open {}: {e}", path.to_string_lossy()));
                     }
                     Err(e) => pane.error = Some(e.clone()),
+                }
+            }
+            Event::GitStatus {
+                request,
+                dir,
+                result,
+            } => {
+                let Some(ix) = self
+                    .panes
+                    .iter()
+                    .position(|p| p.git_request == Some(*request))
+                else {
+                    return;
+                };
+                let pane = &mut self.panes[ix];
+                pane.git_request = None;
+                if pane.path.as_ref() == Some(dir) {
+                    // A failing `git` (a broken repository) just shows no status.
+                    pane.git = result.clone().ok().flatten();
+                    if pane.git.is_none() {
+                        pane.changes_only = false;
+                    }
+                }
+            }
+            Event::GitWorktree { request, result }
+                if self.pending_worktree.as_ref().map(|(r, _)| *r) == Some(*request) =>
+            {
+                let Some((_, cli)) = self.pending_worktree.take() else {
+                    return;
+                };
+                match result {
+                    Ok((dir, branch)) => cx.emit(FilesTabEvent::RunHere {
+                        host: None,
+                        dir: dir.clone(),
+                        cli: Some(cli),
+                        worktree: Some(branch.clone()),
+                    }),
+                    Err(e) => self.error = Some(format!("Can't make a worktree: {e}")),
                 }
             }
             Event::FsOpDone {
@@ -681,13 +884,217 @@ impl FilesTab {
         cx.notify();
     }
 
+    /// The folder "Terminal" and "Code" use: the one selected folder, else the current one.
+    fn run_dir(&self, ix: usize) -> Option<PathBuf> {
+        let pane = &self.panes[ix];
+        let dir = pane.path.as_ref()?;
+        if let [name] = pane.selected.as_slice()
+            && pane.entries.iter().any(|e| e.name == *name && e.is_dir())
+        {
+            return Some(pane.join(dir, name));
+        }
+        Some(dir.clone())
+    }
+
+    fn pane_host(&self, ix: usize) -> Option<ProfileId> {
+        match &self.panes[ix].fs {
+            FsRef::Host(h) => Some(h.clone()),
+            FsRef::Local | FsRef::Conn(_) => None,
+        }
+    }
+
+    /// Start a shell (`cli` `None`) or a coding CLI in pane `ix`'s folder; with the
+    /// worktree option on (a repository on this computer), in a new worktree first.
+    fn run_here(&mut self, ix: usize, cli: Option<CliChoice>, cx: &mut Context<Self>) {
+        self.code_menu = None;
+        let Some(dir) = self.run_dir(ix) else {
+            return;
+        };
+        let host = self.pane_host(ix);
+        if let Some(cli) = &cli
+            && self.use_worktree
+            && host.is_none()
+            && self.panes[ix].git.is_some()
+        {
+            let request = next_id();
+            self.pending_worktree = Some((request, cli.clone()));
+            self.core.send(Command::GitWorktree {
+                request,
+                dir,
+                label: cli.name.clone(),
+            });
+            cx.emit(FilesTabEvent::Toast(format!(
+                "Making a worktree for {}…",
+                cli.name
+            )));
+            cx.notify();
+            return;
+        }
+        cx.emit(FilesTabEvent::RunHere {
+            host,
+            dir,
+            cli,
+            worktree: None,
+        });
+        cx.notify();
+    }
+
+    /// Copy the selected paths (or the folder's) to the clipboard, one per line.
+    fn copy_paths(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let mut paths = self.selected_paths(ix);
+        if paths.is_empty() {
+            paths.extend(self.panes[ix].path.clone());
+        }
+        if paths.is_empty() {
+            return;
+        }
+        let text = paths
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("\n");
+        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
+        let n = paths.len();
+        cx.emit(FilesTabEvent::Toast(if n == 1 {
+            "Path copied".into()
+        } else {
+            format!("{n} paths copied")
+        }));
+    }
+
+    /// Open the selection on this computer with its default app.
+    fn open_with_system(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if self.panes[ix].fs != FsRef::Local {
+            return;
+        }
+        for p in self.selected_paths(ix) {
+            cx.open_with_system(&p);
+        }
+    }
+
+    /// Show the selection (or the folder) in the system file manager.
+    fn reveal_in_os(&mut self, ix: usize, cx: &mut Context<Self>) {
+        if self.panes[ix].fs != FsRef::Local {
+            return;
+        }
+        match self.selected_paths(ix).first() {
+            Some(p) => cx.reveal_path(p),
+            None => {
+                if let Some(d) = &self.panes[ix].path {
+                    cx.open_with_system(d);
+                }
+            }
+        }
+    }
+
+    /// Move the selection by `delta` rows (keyboard), keeping it in view.
+    fn move_selection(&mut self, delta: isize, extend: bool, cx: &mut Context<Self>) {
+        let ix = self.active;
+        let rows = self.panes[ix].visible();
+        if rows.is_empty() {
+            return;
+        }
+        let pane = &mut self.panes[ix];
+        let cur = pane
+            .selected
+            .last()
+            .and_then(|n| rows.iter().position(|e| e.name == *n));
+        let next = match cur {
+            None if delta < 0 => rows.len() - 1,
+            None => 0,
+            Some(c) => (c as isize + delta).clamp(0, rows.len() as isize - 1) as usize,
+        };
+        let name = rows[next].name.clone();
+        if extend {
+            pane.selected.retain(|n| *n != name);
+            pane.selected.push(name);
+        } else {
+            pane.selected = vec![name];
+        }
+        self.confirm_delete = None;
+        self.scroll[ix].scroll_to_item(next, gpui_kit::ScrollStrategy::Nearest);
+        cx.notify();
+    }
+
+    /// Enter: open the selected folder or file.
+    fn open_selected(&mut self, cx: &mut Context<Self>) {
+        let ix = self.active;
+        let pane = &self.panes[ix];
+        let (Some(dir), Some(name)) = (pane.path.clone(), pane.selected.last().cloned()) else {
+            return;
+        };
+        let Some(entry) = pane.entries.iter().find(|e| e.name == name) else {
+            return;
+        };
+        let full = pane.join(&dir, &name);
+        if entry.is_dir() {
+            self.list(ix, Some(full), cx);
+        } else {
+            let fs = pane.fs.clone();
+            cx.emit(FilesTabEvent::Open { fs, path: full });
+        }
+    }
+
+    /// Keys while the tab itself (not one of its inputs) has focus. `true` when handled.
+    fn on_nav_key(
+        &mut self,
+        ev: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let ix = self.active;
+        let m = &ev.keystroke.modifiers;
+        let key = ev.keystroke.key.as_str();
+        match key {
+            "down" => self.move_selection(1, m.shift, cx),
+            "up" if m.alt => self.up(ix, cx),
+            "up" => self.move_selection(-1, m.shift, cx),
+            "pagedown" => self.move_selection(20, m.shift, cx),
+            "pageup" => self.move_selection(-20, m.shift, cx),
+            "home" => self.move_selection(isize::MIN / 2, false, cx),
+            "end" => self.move_selection(isize::MAX / 2, false, cx),
+            "enter" => self.open_selected(cx),
+            "backspace" => self.up(ix, cx),
+            "f2" => self.start_edit(ix, true, window, cx),
+            "f5" => self.refresh(ix, cx),
+            "delete" => self.delete(ix, cx),
+            "tab" if self.layout == Layout::Dual => {
+                self.active = 1 - ix;
+                cx.notify();
+            }
+            "escape" => {
+                self.panes[ix].selected.clear();
+                self.code_menu = None;
+                self.confirm_delete = None;
+                cx.notify();
+            }
+            "a" if m.secondary() => {
+                let names = self.panes[ix]
+                    .visible()
+                    .into_iter()
+                    .map(|e| e.name)
+                    .collect();
+                self.panes[ix].selected = names;
+                cx.notify();
+            }
+            "c" if m.secondary() && m.shift => self.copy_paths(ix, cx),
+            "`" if m.secondary() && self.panes[ix].has_shell() => self.run_here(ix, None, cx),
+            "f" if m.secondary() => self.open_search(ix, window, cx),
+            "l" if m.secondary() => self.open_goto(ix, window, cx),
+            _ => return false,
+        }
+        true
+    }
+
     fn render_pane(&mut self, ix: usize, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
         let pane = &self.panes[ix];
         let rows = pane.visible();
         let count = rows.len();
-        let loading = pane.request.is_some();
+        // A background refresh (live folders) shows no loading state.
+        let loading = pane.request.is_some() && !pane.quiet;
         let active = self.active == ix;
         let n_sel = pane.selected.len();
+        let full = self.layout != Layout::Sidebar;
         let tool = |id: String, label: &'static str| {
             div()
                 .id(SharedString::from(id))
@@ -730,86 +1137,146 @@ impl FilesTab {
                 .child(div().text_color(p.fg3).text_size(ts::TINY).child("▾"))
                 .into_any_element()
         };
-        let toolbar = div()
-            .h(rpx(32.))
-            .flex_none()
-            .px(rpx(8.))
-            .flex()
-            .items_center()
-            .gap(rpx(2.))
-            .border_b_1()
-            .border_color(p.bd)
-            .bg(p.panel)
-            .child(source)
-            .child(div().flex_1())
-            .child(
-                tool(format!("f{ix}-up"), "↑")
-                    .on_click(cx.listener(move |this, _, _, cx| this.up(ix, cx))),
-            )
-            .child(
-                tool(format!("f{ix}-refresh"), "⟳")
-                    .on_click(cx.listener(move |this, _, _, cx| this.refresh(ix, cx))),
-            )
-            .child(
-                tool(
-                    format!("f{ix}-search"),
-                    if pane.filter.is_empty() {
-                        "Search"
-                    } else {
-                        "Search ●"
-                    },
-                )
-                .on_click(cx.listener(move |this, _, w, cx| this.open_search(ix, w, cx))),
-            )
-            .child(
-                tool(
-                    format!("f{ix}-hidden"),
-                    if pane.show_hidden {
-                        "Hidden ●"
-                    } else {
-                        "Hidden ○"
-                    },
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.panes[ix].show_hidden = !this.panes[ix].show_hidden;
-                    cx.notify();
-                })),
-            )
-            .child(
-                tool(format!("f{ix}-mkdir"), "New folder")
-                    .on_click(cx.listener(move |this, _, w, cx| this.start_edit(ix, false, w, cx))),
-            )
-            .when(n_sel == 1, |d| {
-                d.child(
-                    tool(format!("f{ix}-rename"), "Rename").on_click(
-                        cx.listener(move |this, _, w, cx| this.start_edit(ix, true, w, cx)),
-                    ),
-                )
-            })
-            .when(n_sel > 0, |d| {
-                let confirming = self.confirm_delete == Some(ix);
-                d.child(
-                    tool(
-                        format!("f{ix}-delete"),
-                        if confirming { "Delete?" } else { "Delete" },
-                    )
-                    .when(confirming, |t| t.text_color(p.prod))
-                    .on_click(cx.listener(move |this, _, _, cx| this.delete(ix, cx))),
+        let toolbar =
+            div()
+                .h(rpx(32.))
+                .flex_none()
+                .px(rpx(8.))
+                .flex()
+                .items_center()
+                .gap(rpx(2.))
+                .border_b_1()
+                .border_color(p.bd)
+                .bg(p.panel)
+                .child(source)
+                .when(full && pane.has_shell() && pane.path.is_some(), |d| {
+                    d.child(div().w(rpx(6.)))
+                        .child(
+                            tool(format!("f{ix}-term"), ">_ Terminal")
+                                .tooltip(|window, cx| {
+                                    gpui_kit::component::tooltip::Tooltip::new(
+                                        "A terminal in this folder (or the selected one), \
+                                         files beside it · Ctrl/Cmd+`",
+                                    )
+                                    .build(window, cx)
+                                })
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| this.run_here(ix, None, cx)),
+                                ),
+                        )
+                        .child(
+                            tool(format!("f{ix}-code"), "Code ▾")
+                                .text_color(p.acc)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.code_menu = if this.code_menu == Some(ix) {
+                                        None
+                                    } else {
+                                        Some(ix)
+                                    };
+                                    cx.notify();
+                                })),
+                        )
+                })
+                .child(div().flex_1())
+                .child(
+                    tool(format!("f{ix}-up"), "↑")
+                        .on_click(cx.listener(move |this, _, _, cx| this.up(ix, cx))),
                 )
                 .child(
-                    ui::button(
-                        SharedString::from(format!("f{ix}-copy")),
-                        arrow,
-                        Kind::Primary,
-                        p,
-                    )
-                    .h(rpx(22.))
-                    .text_size(ts::LABEL)
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.copy_selection_across(ix, cx)),
-                    ),
+                    tool(format!("f{ix}-refresh"), "⟳")
+                        .on_click(cx.listener(move |this, _, _, cx| this.refresh(ix, cx))),
                 )
-            });
+                .when(ix == 0 && full, |d| {
+                    let single = self.layout == Layout::Single;
+                    d.child(
+                        tool(
+                            format!("f{ix}-layout"),
+                            if single { "2 panes" } else { "1 pane" },
+                        )
+                        .tooltip(move |window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new(if single {
+                                "Two panes (copy between computers)"
+                            } else {
+                                "One pane"
+                            })
+                            .build(window, cx)
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.layout = if this.layout == Layout::Single {
+                                Layout::Dual
+                            } else {
+                                Layout::Single
+                            };
+                            this.active = 0;
+                            cx.notify();
+                        })),
+                    )
+                })
+                .child(
+                    tool(
+                        format!("f{ix}-search"),
+                        if pane.filter.is_empty() {
+                            "Search"
+                        } else {
+                            "Search ●"
+                        },
+                    )
+                    .on_click(cx.listener(move |this, _, w, cx| this.open_search(ix, w, cx))),
+                )
+                .when(full, |d| {
+                    d.child(
+                        tool(
+                            format!("f{ix}-hidden"),
+                            if pane.show_hidden {
+                                "Hidden ●"
+                            } else {
+                                "Hidden ○"
+                            },
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.panes[ix].show_hidden = !this.panes[ix].show_hidden;
+                            cx.notify();
+                        })),
+                    )
+                })
+                .when(full, |d| {
+                    d.child(tool(format!("f{ix}-mkdir"), "New folder").on_click(
+                        cx.listener(move |this, _, w, cx| this.start_edit(ix, false, w, cx)),
+                    ))
+                })
+                .when(full && n_sel == 1, |d| {
+                    d.child(tool(format!("f{ix}-rename"), "Rename").on_click(
+                        cx.listener(move |this, _, w, cx| this.start_edit(ix, true, w, cx)),
+                    ))
+                })
+                .when(full && n_sel > 0, |d| {
+                    let confirming = self.confirm_delete == Some(ix);
+                    d.child(
+                        tool(
+                            format!("f{ix}-delete"),
+                            if confirming { "Delete?" } else { "Delete" },
+                        )
+                        .when(confirming, |t| t.text_color(p.prod))
+                        .on_click(cx.listener(move |this, _, _, cx| this.delete(ix, cx))),
+                    )
+                    .when(self.layout == Layout::Dual, |d| {
+                        d.child(
+                            ui::button(
+                                SharedString::from(format!("f{ix}-copy")),
+                                arrow,
+                                Kind::Primary,
+                                p,
+                            )
+                            .h(rpx(22.))
+                            .text_size(ts::LABEL)
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| {
+                                    this.copy_selection_across(ix, cx)
+                                }),
+                            ),
+                        )
+                    })
+                });
         let crumbs = pane.crumbs();
         let goto = self
             .goto
@@ -920,17 +1387,19 @@ impl FilesTab {
                     .pl(rpx(18.))
                     .child(head("sort-name", "Name", SortBy::Name)),
             )
-            .child(div().w(rpx(72.)).flex().justify_end().child(head(
-                "sort-size",
-                "Size",
-                SortBy::Size,
-            )))
-            .child(
-                div()
-                    .w(rpx(118.))
-                    .child(head("sort-mod", "Modified", SortBy::Modified)),
-            )
-            .child(div().w(rpx(76.)).child("Mode"));
+            .when(full, |d| {
+                d.child(div().w(rpx(72.)).flex().justify_end().child(head(
+                    "sort-size",
+                    "Size",
+                    SortBy::Size,
+                )))
+                .child(
+                    div()
+                        .w(rpx(118.))
+                        .child(head("sort-mod", "Modified", SortBy::Modified)),
+                )
+                .child(div().w(rpx(76.)).child("Mode"))
+            });
 
         let search_row: Option<AnyElement> = self.search[ix].as_ref().map(|(input, _)| {
             let filter = pane.filter.trim();
@@ -1013,8 +1482,50 @@ impl FilesTab {
                 .border_color(p.bd)
                 .text_size(ts::SMALL)
                 .text_color(p.fg3)
-                .child(status)
+                .overflow_hidden()
+                // Beside a terminal the footer has room for git only (or loading).
+                .when(full || loading, |d| d.child(status))
+                .when(full && n_sel > 0, |d| {
+                    let local = pane.fs == FsRef::Local;
+                    d.child(div().text_color(p.fg3).child(format!("· {n_sel} selected")))
+                        .child(
+                            tool(format!("f{ix}-copypath"), "Copy path").on_click(
+                                cx.listener(move |this, _, _, cx| this.copy_paths(ix, cx)),
+                            ),
+                        )
+                        .when(local, |d| {
+                            d.child(tool(format!("f{ix}-sysopen"), "Open ↗").on_click(
+                                cx.listener(move |this, _, _, cx| this.open_with_system(ix, cx)),
+                            ))
+                            .child(
+                                tool(format!("f{ix}-reveal"), "Reveal").on_click(
+                                    cx.listener(move |this, _, _, cx| this.reveal_in_os(ix, cx)),
+                                ),
+                            )
+                        })
+                })
                 .child(div().flex_1())
+                .when_some(pane.git.as_ref().map(GitStatus::summary), |d, summary| {
+                    let on = pane.changes_only;
+                    d.child(
+                        div()
+                            .font_family(MONO)
+                            .text_color(p.fg2)
+                            .child(format!("⎇ {summary}")),
+                    )
+                    .child(
+                        tool(
+                            format!("f{ix}-changes"),
+                            if on { "Changes ●" } else { "Changes ○" },
+                        )
+                        .when(on, |t| t.text_color(p.acc))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let pane = &mut this.panes[ix];
+                            pane.changes_only = !pane.changes_only;
+                            cx.notify();
+                        })),
+                    )
+                })
                 .when(pane.next.is_some() && !loading, |d| {
                     d.child(
                         ui::button(
@@ -1141,14 +1652,20 @@ impl FilesTab {
             let fs = pane.fs.clone();
             let dir = pane.path.clone().unwrap_or_default();
             let posix = pane.posix();
+            let changes: Vec<Option<ChangeKind>> = if pane.git.is_some() {
+                rows.iter().map(|e| pane.change(&e.name)).collect()
+            } else {
+                Vec::new()
+            };
             uniform_list(
                 SharedString::from(format!("f{ix}-list")),
                 count,
                 cx.processor(move |_this, range: std::ops::Range<usize>, _w, cx| {
                     let p = palette(cx);
                     range
-                        .filter_map(|i| rows.get(i).cloned())
-                        .map(|e| {
+                        .filter_map(|i| rows.get(i).cloned().map(|e| (i, e)))
+                        .map(|(i, e)| {
+                            let change = changes.get(i).copied().flatten();
                             let is_sel = selected.contains(&e.name);
                             let (icon, color) = match &e.kind {
                                 EntryKind::Dir => ("▸", p.acc),
@@ -1195,7 +1712,10 @@ impl FilesTab {
                                 .when(is_sel, |d| d.bg(p.sel))
                                 .when(!is_sel, |d| d.hover(|s| s.bg(p.hover)))
                                 .on_click(cx.listener(
-                                    move |this, ev: &gpui_kit::ClickEvent, _, cx| {
+                                    move |this, ev: &gpui_kit::ClickEvent, window, cx| {
+                                        // Arrow keys and Enter work after a click.
+                                        let focus = this.focus.clone();
+                                        window.focus(&focus, cx);
                                         let toggle = ev.modifiers().secondary();
                                         this.click(ix, &entry, toggle, cx)
                                     },
@@ -1205,44 +1725,146 @@ impl FilesTab {
                                     cx.new(|_| DragPreview(label))
                                 })
                                 .child(div().w(rpx(10.)).text_color(color).child(icon))
-                                .child(div().flex_1().min_w_0().truncate().child(e.name.clone()))
                                 .child(
                                     div()
-                                        .w(rpx(72.))
-                                        .flex()
-                                        .justify_end()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .when_some(change, |d, c| d.text_color(change_color(c, &p)))
+                                        .child(e.name.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .w(rpx(12.))
+                                        .flex_none()
                                         .font_family(MONO)
                                         .text_size(ts::SMALL)
-                                        .text_color(p.fg2)
-                                        .child(if e.is_dir() {
-                                            String::new()
-                                        } else {
-                                            human(e.size)
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .when_some(change, |d, c| {
+                                            d.text_color(change_color(c, &p)).child(c.badge())
                                         }),
                                 )
-                                .child(
-                                    div()
-                                        .w(rpx(118.))
-                                        .font_family(MONO)
-                                        .text_size(ts::SMALL)
-                                        .text_color(p.fg3)
-                                        .child(e.modified_ms.map(fmt_time).unwrap_or_default()),
-                                )
-                                .child(
-                                    div()
-                                        .w(rpx(76.))
-                                        .font_family(MONO)
-                                        .text_size(ts::CAPTION_PLUS)
-                                        .text_color(p.fg3)
-                                        .child(e.mode_string()),
-                                )
+                                .when(full, |d| {
+                                    d.child(
+                                        div()
+                                            .w(rpx(72.))
+                                            .flex()
+                                            .justify_end()
+                                            .font_family(MONO)
+                                            .text_size(ts::SMALL)
+                                            .text_color(p.fg2)
+                                            .child(if e.is_dir() {
+                                                String::new()
+                                            } else {
+                                                human(e.size)
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .w(rpx(118.))
+                                            .font_family(MONO)
+                                            .text_size(ts::SMALL)
+                                            .text_color(p.fg3)
+                                            .child(e.modified_ms.map(fmt_time).unwrap_or_default()),
+                                    )
+                                    .child(
+                                        div()
+                                            .w(rpx(76.))
+                                            .font_family(MONO)
+                                            .text_size(ts::CAPTION_PLUS)
+                                            .text_color(p.fg3)
+                                            .child(e.mode_string()),
+                                    )
+                                })
                         })
                         .collect::<Vec<_>>()
                 }),
             )
+            .track_scroll(&self.scroll[ix])
             .flex_1()
             .into_any_element()
         };
+
+        let code_menu: Option<AnyElement> = (self.code_menu == Some(ix)).then(|| {
+            let repo = pane.fs == FsRef::Local && pane.git.is_some();
+            let worktree = self.use_worktree && repo;
+            let target = self
+                .run_dir(ix)
+                .map(|d| crate::coding_clis::folder_name(&d))
+                .unwrap_or_default();
+            deferred(
+                div()
+                    .id(SharedString::from(format!("f{ix}-code-menu")))
+                    .absolute()
+                    .top(rpx(30.))
+                    .left(rpx(8.))
+                    .w(rpx(280.))
+                    .py(rpx(4.))
+                    .bg(p.elev)
+                    .border_1()
+                    .border_color(p.bd2)
+                    .rounded(px(6.))
+                    .shadow(ui::shadow(p))
+                    .occlude()
+                    .child(
+                        div()
+                            .px(rpx(10.))
+                            .py(rpx(4.))
+                            .text_size(ts::SMALL)
+                            .text_color(p.fg3)
+                            .child(format!("Run a coding CLI in {target}")),
+                    )
+                    .children(self.clis.iter().cloned().enumerate().map(|(i, c)| {
+                        let status = c.status.clone();
+                        let missing = c.missing;
+                        div()
+                            .id(SharedString::from(format!("f{ix}-cli-{i}")))
+                            .px(rpx(10.))
+                            .h(rpx(26.))
+                            .flex()
+                            .items_center()
+                            .gap(rpx(8.))
+                            .text_size(ts::BODY)
+                            .hover(|s| s.bg(p.hover))
+                            .child(div().flex_1().child(c.name.clone()))
+                            .children(status.map(|s| {
+                                div()
+                                    .text_size(ts::SMALL)
+                                    .text_color(if missing { p.stg } else { p.fg3 })
+                                    .child(s)
+                            }))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.run_here(ix, Some(c.clone()), cx)
+                            }))
+                    }))
+                    .when(repo, |d| {
+                        d.child(div().my(rpx(4.)).h(px(1.)).bg(p.bd)).child(
+                            div()
+                                .id(SharedString::from(format!("f{ix}-worktree")))
+                                .px(rpx(10.))
+                                .py(rpx(4.))
+                                .flex()
+                                .flex_col()
+                                .gap(rpx(2.))
+                                .hover(|s| s.bg(p.hover))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.use_worktree = !this.use_worktree;
+                                    cx.notify();
+                                }))
+                                .child(div().text_size(ts::BODY).child(if worktree {
+                                    "● In a new git worktree"
+                                } else {
+                                    "○ In a new git worktree"
+                                }))
+                                .child(div().text_size(ts::SMALL).text_color(p.fg3).child(
+                                    "Its own branch and folder, so several CLIs \
+                                                 can work on this repository at once",
+                                )),
+                        )
+                    }),
+            )
+            .into_any_element()
+        });
 
         let picker: Option<AnyElement> = (ix == 1 && self.picker_open).then(|| {
             let mut items: Vec<Source> = vec![(FsRef::Local, "This computer".into(), "FS")];
@@ -1291,8 +1913,10 @@ impl FilesTab {
             .min_w_0()
             .flex()
             .flex_col()
-            .when(ix == 0, |d| d.border_r_1().border_color(p.bd))
-            .when(active, |d| d.bg(p.surface))
+            .when(ix == 0 && self.layout == Layout::Dual, |d| {
+                d.border_r_1().border_color(p.bd)
+            })
+            .when(active && self.layout == Layout::Dual, |d| d.bg(p.surface))
             .on_mouse_down(
                 gpui_kit::MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
@@ -1323,6 +1947,7 @@ impl FilesTab {
             .child(body)
             .children(footer)
             .children(picker)
+            .children(code_menu)
             .into_any_element()
     }
 }
@@ -1335,15 +1960,24 @@ impl Focusable for FilesTab {
 
 impl Render for FilesTab {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.seen = true;
         let p = palette(cx);
         let left = self.render_pane(0, &p, cx);
-        let right = self.render_pane(1, &p, cx);
-        let drawer = self.transfers.update(cx, |t, cx| t.render_drawer(&p, cx));
+        let right = (self.layout == Layout::Dual).then(|| self.render_pane(1, &p, cx));
+        let drawer = (self.layout != Layout::Sidebar)
+            .then(|| self.transfers.update(cx, |t, cx| t.render_drawer(&p, cx)));
         div()
             .key_context("FilesTab")
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                 let ix = this.active;
+                if this.edit.is_none()
+                    && this.focus.is_focused(window)
+                    && this.on_nav_key(ev, window, cx)
+                {
+                    cx.stop_propagation();
+                    return;
+                }
                 if this.edit.is_none() && this.search[ix].is_some() && ev.keystroke.key == "escape"
                 {
                     this.close_search(ix, cx);
@@ -1374,8 +2008,8 @@ impl Render for FilesTab {
                         .child(e),
                 )
             })
-            .child(div().flex_1().min_h_0().flex().child(left).child(right))
-            .child(drawer)
+            .child(div().flex_1().min_h_0().flex().child(left).children(right))
+            .children(drawer)
     }
 }
 

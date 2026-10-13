@@ -780,7 +780,26 @@ impl Workspace {
     fn activity_rows(&self, p: &Palette, cx: &Context<Self>) -> Vec<(&'static str, Vec<ActRow>)> {
         let mut sessions = Vec::new();
         let mut running = Vec::new();
+        let mut agents = Vec::new();
         for (i, t) in self.tabs.iter().enumerate() {
+            if let Tab::Terminal(term) = t
+                && let Some(state) = term.read(cx).agent_state()
+            {
+                use crate::terminal_tab::AgentState;
+                agents.push(ActRow {
+                    badge: "AI",
+                    label: term.read(cx).title.clone(),
+                    sub: state.label().into(),
+                    color: match state {
+                        AgentState::Working => p.acc,
+                        AgentState::Waiting => p.stg,
+                        AgentState::Exited => p.fg3,
+                    },
+                    tab: Some(i),
+                    files: false,
+                    tunnels: false,
+                });
+            }
             let (badge, title, _, _) = self.tab_info(t, cx);
             let badge: &'static str = match badge.as_ref() {
                 "SSH" => "SSH",
@@ -916,6 +935,7 @@ impl Workspace {
             })
             .collect();
         vec![
+            ("AGENTS", agents),
             ("SESSIONS", sessions),
             ("RUNNING", running),
             ("TUNNELS", tunnels),
@@ -982,6 +1002,7 @@ impl Workspace {
                         .text_size(ts::BODY)
                         .text_color(p.fg3)
                         .child(match title {
+                            "AGENTS" => "No coding CLIs running",
                             "SESSIONS" => "Nothing connected",
                             "RUNNING" => "No queries running",
                             "TUNNELS" => "No tunnels",
@@ -1054,8 +1075,25 @@ impl Workspace {
             .iter()
             .filter(|i| i.state == crate::transfers::State::Running)
             .count();
+        let (mut agents, mut waiting) = (0, 0);
+        for t in &self.tabs {
+            if let Tab::Terminal(t) = t
+                && let Some(state) = t.read(cx).agent_state()
+            {
+                agents += 1;
+                waiting += usize::from(state == crate::terminal_tab::AgentState::Waiting);
+            }
+        }
+        let agents = match (agents, waiting) {
+            (0, _) => String::new(),
+            (n, 0) => format!("{n} agent{} · ", if n == 1 { "" } else { "s" }),
+            (n, w) => format!(
+                "{n} agent{} ({w} waiting) · ",
+                if n == 1 { "" } else { "s" }
+            ),
+        };
         format!(
-            "{tunnels} tunnel{} · {running} running · {moving} transferring",
+            "{agents}{tunnels} tunnel{} · {running} running · {moving} transferring",
             if tunnels == 1 { "" } else { "s" }
         )
     }
