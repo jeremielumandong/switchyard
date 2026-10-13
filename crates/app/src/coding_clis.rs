@@ -122,7 +122,9 @@ pub fn choices(settings: &AssistantSettings, components: &[Component]) -> Vec<Cl
         })
         .collect();
     let custom = &settings.custom;
-    if !custom.program.trim().is_empty() {
+    // The settings page starts from an example; only a CLI the user set up is offered.
+    let example = switchyard_core::agents::custom::CustomCli::example().program;
+    if !custom.program.trim().is_empty() && custom.program.trim() != example {
         out.push(CliChoice {
             name: if custom.name.trim().is_empty() {
                 "Custom CLI".into()
@@ -204,6 +206,11 @@ mod tests {
         );
         assert_eq!(c.last().map(|c| c.command.as_str()), Some("goose"));
         assert!(c.iter().all(|c| !c.missing && c.status.is_none()));
+        // The untouched example isn't offered.
+        assert_eq!(
+            choices(&AssistantSettings::default(), &[]).len(),
+            CLIS.len()
+        );
     }
 
     #[test]

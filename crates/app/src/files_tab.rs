@@ -1118,104 +1118,112 @@ impl FilesTab {
                 .child(div().text_color(p.fg3).text_size(ts::TINY).child("▾"))
                 .into_any_element()
         };
-        let toolbar =
-            div()
-                .h(rpx(32.))
-                .flex_none()
-                .px(rpx(8.))
-                .flex()
-                .items_center()
-                .gap(rpx(2.))
-                .border_b_1()
-                .border_color(p.bd)
-                .bg(p.panel)
-                .child(source)
-                .when(pane.has_shell() && pane.path.is_some(), |d| {
-                    d.child(div().w(rpx(6.)))
-                        .child(tool(format!("f{ix}-term"), "Terminal").on_click(
-                            cx.listener(move |this, _, _, cx| this.run_here(ix, None, cx)),
-                        ))
-                        .child(
-                            tool(format!("f{ix}-code"), "Code ▾")
-                                .text_color(p.acc)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.code_menu = if this.code_menu == Some(ix) {
-                                        None
-                                    } else {
-                                        Some(ix)
-                                    };
-                                    cx.notify();
-                                })),
-                        )
-                })
-                .child(div().flex_1())
-                .child(
-                    tool(format!("f{ix}-up"), "↑")
-                        .on_click(cx.listener(move |this, _, _, cx| this.up(ix, cx))),
-                )
-                .child(
-                    tool(format!("f{ix}-refresh"), "⟳")
-                        .on_click(cx.listener(move |this, _, _, cx| this.refresh(ix, cx))),
-                )
-                .child(
-                    tool(
-                        format!("f{ix}-search"),
-                        if pane.filter.is_empty() {
-                            "Search"
-                        } else {
-                            "Search ●"
-                        },
-                    )
-                    .on_click(cx.listener(move |this, _, w, cx| this.open_search(ix, w, cx))),
-                )
-                .child(
-                    tool(
-                        format!("f{ix}-hidden"),
-                        if pane.show_hidden {
-                            "Hidden ●"
-                        } else {
-                            "Hidden ○"
-                        },
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.panes[ix].show_hidden = !this.panes[ix].show_hidden;
-                        cx.notify();
-                    })),
-                )
-                .child(
-                    tool(format!("f{ix}-mkdir"), "New folder").on_click(
-                        cx.listener(move |this, _, w, cx| this.start_edit(ix, false, w, cx)),
-                    ),
-                )
-                .when(n_sel == 1, |d| {
-                    d.child(tool(format!("f{ix}-rename"), "Rename").on_click(
-                        cx.listener(move |this, _, w, cx| this.start_edit(ix, true, w, cx)),
-                    ))
-                })
-                .when(n_sel > 0, |d| {
-                    let confirming = self.confirm_delete == Some(ix);
-                    d.child(
-                        tool(
-                            format!("f{ix}-delete"),
-                            if confirming { "Delete?" } else { "Delete" },
-                        )
-                        .when(confirming, |t| t.text_color(p.prod))
-                        .on_click(cx.listener(move |this, _, _, cx| this.delete(ix, cx))),
+        let toolbar = div()
+            .h(rpx(32.))
+            .flex_none()
+            .px(rpx(8.))
+            .flex()
+            .items_center()
+            .gap(rpx(2.))
+            .border_b_1()
+            .border_color(p.bd)
+            .bg(p.panel)
+            .child(source)
+            .when(pane.has_shell() && pane.path.is_some(), |d| {
+                d.child(div().w(rpx(6.)))
+                    .child(
+                        tool(format!("f{ix}-term"), ">_")
+                            .font_family(MONO)
+                            .tooltip(|window, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new("Terminal here")
+                                    .build(window, cx)
+                            })
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| this.run_here(ix, None, cx)),
+                            ),
                     )
                     .child(
-                        ui::button(
-                            SharedString::from(format!("f{ix}-copy")),
-                            arrow,
-                            Kind::Primary,
-                            p,
-                        )
-                        .h(rpx(22.))
-                        .text_size(ts::LABEL)
-                        .on_click(
-                            cx.listener(move |this, _, _, cx| this.copy_selection_across(ix, cx)),
-                        ),
+                        tool(format!("f{ix}-code"), "Code ▾")
+                            .text_color(p.acc)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.code_menu = if this.code_menu == Some(ix) {
+                                    None
+                                } else {
+                                    Some(ix)
+                                };
+                                cx.notify();
+                            })),
                     )
-                });
+            })
+            .child(div().flex_1())
+            .child(
+                tool(format!("f{ix}-up"), "↑")
+                    .on_click(cx.listener(move |this, _, _, cx| this.up(ix, cx))),
+            )
+            .child(
+                tool(format!("f{ix}-refresh"), "⟳")
+                    .on_click(cx.listener(move |this, _, _, cx| this.refresh(ix, cx))),
+            )
+            .child(
+                tool(
+                    format!("f{ix}-search"),
+                    if pane.filter.is_empty() {
+                        "Search"
+                    } else {
+                        "Search ●"
+                    },
+                )
+                .on_click(cx.listener(move |this, _, w, cx| this.open_search(ix, w, cx))),
+            )
+            .child(
+                tool(
+                    format!("f{ix}-hidden"),
+                    if pane.show_hidden {
+                        "Hidden ●"
+                    } else {
+                        "Hidden ○"
+                    },
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.panes[ix].show_hidden = !this.panes[ix].show_hidden;
+                    cx.notify();
+                })),
+            )
+            .child(
+                tool(format!("f{ix}-mkdir"), "New folder")
+                    .on_click(cx.listener(move |this, _, w, cx| this.start_edit(ix, false, w, cx))),
+            )
+            .when(n_sel == 1, |d| {
+                d.child(
+                    tool(format!("f{ix}-rename"), "Rename").on_click(
+                        cx.listener(move |this, _, w, cx| this.start_edit(ix, true, w, cx)),
+                    ),
+                )
+            })
+            .when(n_sel > 0, |d| {
+                let confirming = self.confirm_delete == Some(ix);
+                d.child(
+                    tool(
+                        format!("f{ix}-delete"),
+                        if confirming { "Delete?" } else { "Delete" },
+                    )
+                    .when(confirming, |t| t.text_color(p.prod))
+                    .on_click(cx.listener(move |this, _, _, cx| this.delete(ix, cx))),
+                )
+                .child(
+                    ui::button(
+                        SharedString::from(format!("f{ix}-copy")),
+                        arrow,
+                        Kind::Primary,
+                        p,
+                    )
+                    .h(rpx(22.))
+                    .text_size(ts::LABEL)
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.copy_selection_across(ix, cx)),
+                    ),
+                )
+            });
         let crumbs = pane.crumbs();
         let goto = self
             .goto
