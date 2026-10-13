@@ -609,10 +609,17 @@ const SHOTS = [
 ];
 const INSTALL = {
   linux: { label: 'Linux x86_64', cmd: 'curl -fsSL https://raw.githubusercontent.com/jeremielumandong/switchyard/main/install.sh | sh', note: 'Downloads the latest release, verifies its SHA-256 checksum, installs a desktop launcher and the swy CLI. No Rust or sudo needed.' },
-  macos: { label: 'macOS', cmd: 'Switchyard-macos-universal.dmg', href: 'https://github.com/jeremielumandong/switchyard/releases/latest/download/Switchyard-macos-universal.dmg', button: 'Download .dmg', note: 'Universal app for Apple Silicon and Intel, macOS 11 or later. Open the disk image and drag Switchyard to Applications.' },
+  macos: { label: 'macOS', cmd: 'Switchyard-macos-universal.dmg', href: 'https://github.com/jeremielumandong/switchyard/releases/latest/download/Switchyard-macos-universal.dmg', button: 'Download .dmg', note: 'Universal app for Apple Silicon and Intel, macOS 11 or later. Open the disk image and drag Switchyard to Applications; the swy CLI is in Switchyard.app/Contents/MacOS.' },
   windows: { label: 'Windows x64', cmd: 'Switchyard-windows-x64-setup.exe', href: 'https://github.com/jeremielumandong/switchyard/releases/latest/download/Switchyard-windows-x64-setup.exe', button: 'Download .exe', note: 'Installs for your user only — no administrator rights needed.' },
   source: { label: 'From source', cmd: 'cargo run -p switchyard-app', note: 'Package your own build with ./packaging/package.sh (macOS .dmg / .pkg, Linux AppImage).' },
 };
+// Open the install tab for the visitor's platform; Linux when it can't tell.
+function visitorTab() {
+  const ua = typeof navigator === 'undefined' ? '' : navigator.userAgent;
+  if (/Mac OS X|Macintosh/.test(ua) && !/iPhone|iPad/.test(ua)) return 'macos';
+  if (/Windows/.test(ua)) return 'windows';
+  return 'linux';
+}
 const FEATURES = [
   ['SQL editor', ['Tree-sitter highlighting, multi-cursor, folding, format', 'Schema-aware completion with aliases resolved from FROM / JOIN', 'Parse errors underlined as you type; buffers autosave']],
   ['Results grid', ['Streams and virtualizes: 1M rows × 10 columns under 150 MB', 'Inline edits staged and committed in one transaction', 'Foreign-key navigation, pin and compare result tabs']],
@@ -656,7 +663,7 @@ const SHORTCUTS = [
 const AMBER = 'oklch(0.82 0.14 75)';
 
 class Component extends DCLogic {
-  state = { tab: 'linux', shot: 0, os: null, copied: false };
+  state = { tab: visitorTab(), shot: 0, os: null, copied: false };
   componentDidMount() { this.tick(); }
   componentDidUpdate() { this.tick(); }
   componentWillUnmount() { clearInterval(this.timer); }

@@ -139,6 +139,14 @@ Measured on the Linux build container (release profile, criterion):
 The grid frame-time harness is still missing (see PLAN Follow-ups); the numbers above cover
 decode and the per-frame formatting work only.
 
+2026-10-10, grid filter: `BatchList::rows_containing` walks column by column, skips rows
+already matched, and skips a non-text column when the needle has a character its display
+text can never contain (`display_alphabet`). A needle without letters uses `str::contains`.
+Time fractions are written without a per-cell `String`. On 100k rows × 8 mixed columns
+(`grid_mixed` bench): filter for a word 52 → 3.9 ms, for a number 47 → 36 ms. Benchmarks
+whose code did not change moved +10–19 % in the same run (load average 12), so that is the
+noise level.
+
 ## 2026-10-06 — Cloudflare D1 as a third engine (user request)
 
 The user asked for a client for Cloudflare D1 through the REST `raw` endpoint
