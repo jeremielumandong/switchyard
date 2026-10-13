@@ -24,9 +24,9 @@ use gpui_kit::{
     Render, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
     deferred, div, px, uniform_list,
 };
+use switchyard_core::git::{ChangeKind, GitStatus};
 use switchyard_core::remote::{EntryKind, FileEntry};
 use switchyard_core::store::ProfileId;
-use switchyard_core::git::{ChangeKind, GitStatus};
 use switchyard_core::{Command, Event, FsOp, FsRef, OnConflict, RequestId, RuntimeHandle};
 
 use crate::app_state::next_id;
@@ -415,8 +415,7 @@ impl FilesTab {
                     || pane.git_request.is_some()
                     || pane.paged()
                     || self.edit.as_ref().is_some_and(|(i, ..)| *i == ix);
-                if pane.fs == FsRef::Local && pane.path.is_some() && pane.error.is_none() && !busy
-                {
+                if pane.fs == FsRef::Local && pane.path.is_some() && pane.error.is_none() && !busy {
                     self.refresh(ix, cx);
                     self.panes[ix].quiet = true;
                 }
@@ -1020,7 +1019,12 @@ impl FilesTab {
     }
 
     /// Keys while the tab itself (not one of its inputs) has focus. `true` when handled.
-    fn on_nav_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    fn on_nav_key(
+        &mut self,
+        ev: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let ix = self.active;
         let m = &ev.keystroke.modifiers;
         let key = ev.keystroke.key.as_str();
@@ -1048,7 +1052,11 @@ impl FilesTab {
                 cx.notify();
             }
             "a" if m.secondary() => {
-                let names = self.panes[ix].visible().into_iter().map(|e| e.name).collect();
+                let names = self.panes[ix]
+                    .visible()
+                    .into_iter()
+                    .map(|e| e.name)
+                    .collect();
                 self.panes[ix].selected = names;
                 cx.notify();
             }
@@ -1110,106 +1118,104 @@ impl FilesTab {
                 .child(div().text_color(p.fg3).text_size(ts::TINY).child("▾"))
                 .into_any_element()
         };
-        let toolbar = div()
-            .h(rpx(32.))
-            .flex_none()
-            .px(rpx(8.))
-            .flex()
-            .items_center()
-            .gap(rpx(2.))
-            .border_b_1()
-            .border_color(p.bd)
-            .bg(p.panel)
-            .child(source)
-            .when(pane.has_shell() && pane.path.is_some(), |d| {
-                d.child(div().w(rpx(6.)))
-                    .child(
-                        tool(format!("f{ix}-term"), "Terminal").on_click(
+        let toolbar =
+            div()
+                .h(rpx(32.))
+                .flex_none()
+                .px(rpx(8.))
+                .flex()
+                .items_center()
+                .gap(rpx(2.))
+                .border_b_1()
+                .border_color(p.bd)
+                .bg(p.panel)
+                .child(source)
+                .when(pane.has_shell() && pane.path.is_some(), |d| {
+                    d.child(div().w(rpx(6.)))
+                        .child(tool(format!("f{ix}-term"), "Terminal").on_click(
                             cx.listener(move |this, _, _, cx| this.run_here(ix, None, cx)),
-                        ),
-                    )
-                    .child(
-                        tool(format!("f{ix}-code"), "Code ▾")
-                            .text_color(p.acc)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.code_menu = if this.code_menu == Some(ix) {
-                                    None
-                                } else {
-                                    Some(ix)
-                                };
-                                cx.notify();
-                            })),
-                    )
-            })
-            .child(div().flex_1())
-            .child(
-                tool(format!("f{ix}-up"), "↑")
-                    .on_click(cx.listener(move |this, _, _, cx| this.up(ix, cx))),
-            )
-            .child(
-                tool(format!("f{ix}-refresh"), "⟳")
-                    .on_click(cx.listener(move |this, _, _, cx| this.refresh(ix, cx))),
-            )
-            .child(
-                tool(
-                    format!("f{ix}-search"),
-                    if pane.filter.is_empty() {
-                        "Search"
-                    } else {
-                        "Search ●"
-                    },
-                )
-                .on_click(cx.listener(move |this, _, w, cx| this.open_search(ix, w, cx))),
-            )
-            .child(
-                tool(
-                    format!("f{ix}-hidden"),
-                    if pane.show_hidden {
-                        "Hidden ●"
-                    } else {
-                        "Hidden ○"
-                    },
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.panes[ix].show_hidden = !this.panes[ix].show_hidden;
-                    cx.notify();
-                })),
-            )
-            .child(
-                tool(format!("f{ix}-mkdir"), "New folder")
-                    .on_click(cx.listener(move |this, _, w, cx| this.start_edit(ix, false, w, cx))),
-            )
-            .when(n_sel == 1, |d| {
-                d.child(
-                    tool(format!("f{ix}-rename"), "Rename").on_click(
-                        cx.listener(move |this, _, w, cx| this.start_edit(ix, true, w, cx)),
-                    ),
-                )
-            })
-            .when(n_sel > 0, |d| {
-                let confirming = self.confirm_delete == Some(ix);
-                d.child(
-                    tool(
-                        format!("f{ix}-delete"),
-                        if confirming { "Delete?" } else { "Delete" },
-                    )
-                    .when(confirming, |t| t.text_color(p.prod))
-                    .on_click(cx.listener(move |this, _, _, cx| this.delete(ix, cx))),
+                        ))
+                        .child(
+                            tool(format!("f{ix}-code"), "Code ▾")
+                                .text_color(p.acc)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.code_menu = if this.code_menu == Some(ix) {
+                                        None
+                                    } else {
+                                        Some(ix)
+                                    };
+                                    cx.notify();
+                                })),
+                        )
+                })
+                .child(div().flex_1())
+                .child(
+                    tool(format!("f{ix}-up"), "↑")
+                        .on_click(cx.listener(move |this, _, _, cx| this.up(ix, cx))),
                 )
                 .child(
-                    ui::button(
-                        SharedString::from(format!("f{ix}-copy")),
-                        arrow,
-                        Kind::Primary,
-                        p,
+                    tool(format!("f{ix}-refresh"), "⟳")
+                        .on_click(cx.listener(move |this, _, _, cx| this.refresh(ix, cx))),
+                )
+                .child(
+                    tool(
+                        format!("f{ix}-search"),
+                        if pane.filter.is_empty() {
+                            "Search"
+                        } else {
+                            "Search ●"
+                        },
                     )
-                    .h(rpx(22.))
-                    .text_size(ts::LABEL)
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.copy_selection_across(ix, cx)),
+                    .on_click(cx.listener(move |this, _, w, cx| this.open_search(ix, w, cx))),
+                )
+                .child(
+                    tool(
+                        format!("f{ix}-hidden"),
+                        if pane.show_hidden {
+                            "Hidden ●"
+                        } else {
+                            "Hidden ○"
+                        },
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.panes[ix].show_hidden = !this.panes[ix].show_hidden;
+                        cx.notify();
+                    })),
+                )
+                .child(
+                    tool(format!("f{ix}-mkdir"), "New folder").on_click(
+                        cx.listener(move |this, _, w, cx| this.start_edit(ix, false, w, cx)),
                     ),
                 )
-            });
+                .when(n_sel == 1, |d| {
+                    d.child(tool(format!("f{ix}-rename"), "Rename").on_click(
+                        cx.listener(move |this, _, w, cx| this.start_edit(ix, true, w, cx)),
+                    ))
+                })
+                .when(n_sel > 0, |d| {
+                    let confirming = self.confirm_delete == Some(ix);
+                    d.child(
+                        tool(
+                            format!("f{ix}-delete"),
+                            if confirming { "Delete?" } else { "Delete" },
+                        )
+                        .when(confirming, |t| t.text_color(p.prod))
+                        .on_click(cx.listener(move |this, _, _, cx| this.delete(ix, cx))),
+                    )
+                    .child(
+                        ui::button(
+                            SharedString::from(format!("f{ix}-copy")),
+                            arrow,
+                            Kind::Primary,
+                            p,
+                        )
+                        .h(rpx(22.))
+                        .text_size(ts::LABEL)
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.copy_selection_across(ix, cx)),
+                        ),
+                    )
+                });
         let crumbs = pane.crumbs();
         let goto = self
             .goto
@@ -1426,9 +1432,11 @@ impl FilesTab {
                             d.child(tool(format!("f{ix}-sysopen"), "Open ↗").on_click(
                                 cx.listener(move |this, _, _, cx| this.open_with_system(ix, cx)),
                             ))
-                            .child(tool(format!("f{ix}-reveal"), "Reveal").on_click(
-                                cx.listener(move |this, _, _, cx| this.reveal_in_os(ix, cx)),
-                            ))
+                            .child(
+                                tool(format!("f{ix}-reveal"), "Reveal").on_click(
+                                    cx.listener(move |this, _, _, cx| this.reveal_in_os(ix, cx)),
+                                ),
+                            )
                         })
                 })
                 .child(div().flex_1())
@@ -1641,7 +1649,8 @@ impl FilesTab {
                                 .on_click(cx.listener(
                                     move |this, ev: &gpui_kit::ClickEvent, window, cx| {
                                         // Arrow keys and Enter work after a click.
-                                        window.focus(&this.focus);
+                                        let focus = this.focus.clone();
+                                        window.focus(&focus, cx);
                                         let toggle = ev.modifiers().secondary();
                                         this.click(ix, &entry, toggle, cx)
                                     },
@@ -1704,7 +1713,7 @@ impl FilesTab {
                         .collect::<Vec<_>>()
                 }),
             )
-            .track_scroll(self.scroll[ix].clone())
+            .track_scroll(&self.scroll[ix])
             .flex_1()
             .into_any_element()
         };
@@ -1762,39 +1771,29 @@ impl FilesTab {
                             }))
                     }))
                     .when(repo, |d| {
-                        d.child(div().my(rpx(4.)).h(px(1.)).bg(p.bd))
-                            .child(
-                                div()
-                                    .id(SharedString::from(format!("f{ix}-worktree")))
-                                    .px(rpx(10.))
-                                    .py(rpx(4.))
-                                    .flex()
-                                    .flex_col()
-                                    .gap(rpx(2.))
-                                    .hover(|s| s.bg(p.hover))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.use_worktree = !this.use_worktree;
-                                        cx.notify();
-                                    }))
-                                    .child(
-                                        div()
-                                            .text_size(ts::BODY)
-                                            .child(if worktree {
-                                                "● In a new git worktree"
-                                            } else {
-                                                "○ In a new git worktree"
-                                            }),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(ts::SMALL)
-                                            .text_color(p.fg3)
-                                            .child(
-                                                "Its own branch and folder, so several CLIs \
+                        d.child(div().my(rpx(4.)).h(px(1.)).bg(p.bd)).child(
+                            div()
+                                .id(SharedString::from(format!("f{ix}-worktree")))
+                                .px(rpx(10.))
+                                .py(rpx(4.))
+                                .flex()
+                                .flex_col()
+                                .gap(rpx(2.))
+                                .hover(|s| s.bg(p.hover))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.use_worktree = !this.use_worktree;
+                                    cx.notify();
+                                }))
+                                .child(div().text_size(ts::BODY).child(if worktree {
+                                    "● In a new git worktree"
+                                } else {
+                                    "○ In a new git worktree"
+                                }))
+                                .child(div().text_size(ts::SMALL).text_color(p.fg3).child(
+                                    "Its own branch and folder, so several CLIs \
                                                  can work on this repository at once",
-                                            ),
-                                    ),
-                            )
+                                )),
+                        )
                     }),
             )
             .into_any_element()
