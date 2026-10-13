@@ -228,6 +228,8 @@ FETCH FIRST, script splitting and catalog queries are engine-aware everywhere.
 
 ### AI assistant (coding CLIs)
 
+![Claude Code in a project folder with the folder's files and git badges beside it](docs/screenshots/coding-layout.png)
+
 - Use the CLI you already have and are logged in to: **Claude Code**, **Codex CLI**,
   **Gemini CLI**, or a **custom** CLI defined by a command template.
 - Works on every data source: SQL databases, MongoDB, Redis (read-only commands) and SSH
