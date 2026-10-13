@@ -1078,6 +1078,7 @@ impl FilesTab {
                 cx.notify();
             }
             "c" if m.secondary() && m.shift => self.copy_paths(ix, cx),
+            "`" if m.secondary() && self.panes[ix].has_shell() => self.run_here(ix, None, cx),
             "f" if m.secondary() => self.open_search(ix, window, cx),
             "l" if m.secondary() => self.open_goto(ix, window, cx),
             _ => return false,
@@ -1151,11 +1152,14 @@ impl FilesTab {
                 .when(full && pane.has_shell() && pane.path.is_some(), |d| {
                     d.child(div().w(rpx(6.)))
                         .child(
-                            tool(format!("f{ix}-term"), ">_")
+                            tool(format!("f{ix}-term"), ">_ Terminal")
                                 .font_family(MONO)
                                 .tooltip(|window, cx| {
-                                    gpui_kit::component::tooltip::Tooltip::new("Terminal here")
-                                        .build(window, cx)
+                                    gpui_kit::component::tooltip::Tooltip::new(
+                                        "A terminal in this folder (or the selected one), \
+                                         files beside it · Ctrl/Cmd+`",
+                                    )
+                                    .build(window, cx)
                                 })
                                 .on_click(
                                     cx.listener(move |this, _, _, cx| this.run_here(ix, None, cx)),
