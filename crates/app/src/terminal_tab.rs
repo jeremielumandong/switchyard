@@ -650,7 +650,8 @@ impl TerminalTab {
         if let Some(p) = self.panes.last() {
             // A Host shell starts in the home folder: take it to the project's.
             if let Some(cd) = self.project_cd() {
-                self.pane_startup.push((p.id, format!("{cd} && clear\r").into_bytes()));
+                self.pane_startup
+                    .push((p.id, format!("{cd} && clear\r").into_bytes()));
             }
             p.focus.focus(window, cx);
         }

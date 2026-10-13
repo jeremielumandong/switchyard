@@ -2004,8 +2004,9 @@ impl Workspace {
                 None => t,
             }
         });
-        let sub = cx.subscribe(&t, |this, _, ev: &crate::terminal_tab::TerminalTabEvent, cx| {
-            match ev {
+        let sub = cx.subscribe(
+            &t,
+            |this, _, ev: &crate::terminal_tab::TerminalTabEvent, cx| match ev {
                 crate::terminal_tab::TerminalTabEvent::ShowFolder { host, dir } => {
                     this.open_files_on(None, cx);
                     if let Some(Tab::Files(f)) = this.tabs.get(this.active) {
@@ -2013,8 +2014,8 @@ impl Workspace {
                         f.update(cx, |f, cx| f.reveal(host, dir, cx));
                     }
                 }
-            }
-        });
+            },
+        );
         self._subs.push(sub);
         self.tabs.push(Tab::Terminal(t));
         self.active = self.tabs.len() - 1;

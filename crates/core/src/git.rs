@@ -201,7 +201,13 @@ pub async fn status(dir: &Path) -> Result<Option<GitStatus>, String> {
     };
     let out = git(
         &root,
-        &["status", "--porcelain=v1", "-z", "--branch", "--untracked-files=normal"],
+        &[
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--branch",
+            "--untracked-files=normal",
+        ],
     )
     .await?;
     let mut st = parse_porcelain(&out);
@@ -339,7 +345,11 @@ mod tests {
 
     #[tokio::test]
     async fn status_and_worktree_in_a_real_repo() {
-        if std::process::Command::new("git").arg("--version").output().is_err() {
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
