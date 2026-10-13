@@ -1235,7 +1235,7 @@ are shared hotspots: one owner at a time.
 
 - [x] FX-1 Files tab as a file manager: keyboard (arrows, Shift to extend, Enter, Backspace /
   Alt+Up, F2, Delete, F5, Tab between panes, Ctrl/Cmd+A, Ctrl/Cmd+F, Ctrl/Cmd+L,
-  Ctrl/Cmd+Shift+C copies paths); selection actions Copy path, Open with the default app,
+  Ctrl/Cmd+Shift+C copies paths, Ctrl/Cmd+` opens a terminal in the folder); selection actions Copy path, Open with the default app,
   Reveal in the OS file manager. Folders on this computer refresh while the tab is on screen.
 - [x] FX-2 Git in the Files tab (this computer): branch, ahead / behind and change count in
   the footer, a badge and color per changed file or folder, a "Changes" filter

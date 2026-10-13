@@ -333,7 +333,8 @@ your own Claude Code, Codex or Gemini session access, see
   toggle, multi-select, new folder, rename, delete, drag and drop between panes and from the OS.
 - **Keyboard file manager**: arrows (Shift extends), Enter opens, Backspace or Alt+Up goes up,
   F2 renames, Delete deletes, F5 refreshes, Tab switches panes, Ctrl/⌘+A, Ctrl/⌘+F searches,
-  Ctrl/⌘+L types a path, Ctrl/⌘+Shift+C copies paths. Copy path, Open with the default app and
+  Ctrl/⌘+L types a path, Ctrl/⌘+Shift+C copies paths, Ctrl/⌘+` opens a terminal in the
+  folder (with its files beside it). Copy path, Open with the default app and
   Reveal in the OS file manager for the selection.
 - **One pane or two**: two panes for copying between computers, one pane for browsing.
 - **Git-aware and live**: folders on this computer refresh while the tab is on screen; in a
