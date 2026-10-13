@@ -27,6 +27,7 @@ mod editor_tab;
 mod er_tab;
 mod explorer;
 mod explorer_tree;
+mod coding_clis;
 mod files_tab;
 mod fleet_tab;
 mod folds;

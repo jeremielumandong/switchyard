@@ -128,7 +128,33 @@ pub struct TerminalTab {
         Option<switchyard_core::agents::AgentKind>,
         Option<ProfileId>,
     )>,
+    /// The project folder a "Terminal here" / coding CLI tab works in.
+    project: Option<Project>,
+    /// Typed into a pane other than the first once its shell is up (a "Changes" pane).
+    pane_startup: Vec<(TermId, Vec<u8>)>,
 }
+
+/// A terminal started in a project folder (Files tab "Terminal here" / "Code here").
+#[derive(Clone, Debug)]
+pub struct Project {
+    /// The Host it runs on; `None` for this computer.
+    pub host: Option<ProfileId>,
+    /// The folder.
+    pub dir: std::path::PathBuf,
+}
+
+/// What a project terminal asks the workspace to do.
+pub enum TerminalTabEvent {
+    /// Show the project folder in the Files tab.
+    ShowFolder {
+        /// The Host, or `None` for this computer.
+        host: Option<ProfileId>,
+        /// The folder.
+        dir: std::path::PathBuf,
+    },
+}
+
+impl gpui_kit::EventEmitter<TerminalTabEvent> for TerminalTab {}
 
 impl TerminalTab {
     /// The Host this terminal is on (`None` for a local shell).
@@ -149,9 +175,24 @@ impl TerminalTab {
     ) -> Self {
         let target = match host {
             Some(h) => TermTarget::Host(h),
-            None => TermTarget::Local { profile: None },
+            None => TermTarget::Local {
+                profile: None,
+                cwd: None,
+            },
         };
-        let mut this = Self {
+        let mut this = Self::unopened(core, title, env, target);
+        this.add_pane(cx);
+        this
+    }
+
+    /// The tab before its first pane opens.
+    fn unopened(
+        core: RuntimeHandle,
+        title: String,
+        env: EnvironmentLabel,
+        target: TermTarget,
+    ) -> Self {
+        Self {
             title: title.into(),
             env,
             core,
@@ -169,9 +210,9 @@ impl TerminalTab {
             macro_menu: false,
             colors: (None, None),
             agent: None,
-        };
-        this.add_pane(cx);
-        this
+            project: None,
+            pane_startup: Vec::new(),
+        }
     }
 
     /// A coding CLI running interactively with Switchyard's tools attached; `agent` `None`
@@ -188,7 +229,10 @@ impl TerminalTab {
             title: title.into(),
             env: EnvironmentLabel::Local,
             core,
-            target: TermTarget::Local { profile: None },
+            target: TermTarget::Local {
+                profile: None,
+                cwd: None,
+            },
             panes: Vec::new(),
             active: 0,
             broadcast: false,
@@ -202,6 +246,8 @@ impl TerminalTab {
             macro_menu: false,
             colors: (None, None),
             agent: Some((agent, connection)),
+            project: None,
+            pane_startup: Vec::new(),
         };
         this.add_pane(cx);
         this
@@ -239,9 +285,58 @@ impl TerminalTab {
             macro_menu: false,
             colors: (None, None),
             agent: None,
+            project: None,
+            pane_startup: Vec::new(),
         };
         this.add_pane(cx);
         this
+    }
+
+    /// A shell in `project.dir`, on its Host or this computer; a coding CLI in it is
+    /// typed in with [`with_startup`](Self::with_startup) (the shell stays when it exits).
+    pub fn new_project(
+        core: RuntimeHandle,
+        title: String,
+        env: EnvironmentLabel,
+        project: Project,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let target = match &project.host {
+            Some(h) => TermTarget::Host(h.clone()),
+            None => TermTarget::Local {
+                profile: None,
+                cwd: Some(project.dir.clone()),
+            },
+        };
+        let mut this = Self::unopened(core, title, env, target);
+        this.project = Some(project);
+        this.add_pane(cx);
+        this
+    }
+
+    /// `cd` into the project folder, for shells on a Host (local shells start there).
+    fn project_cd(&self) -> Option<String> {
+        let p = self.project.as_ref()?;
+        p.host.as_ref()?;
+        Some(crate::coding_clis::posix_cd(&p.dir.to_string_lossy()))
+    }
+
+    /// A new pane in the project folder showing what changed (`git status`, diff stat).
+    fn show_changes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.panes.len() >= MAX_PANES {
+            return;
+        }
+        let mut input = self
+            .project_cd()
+            .map(|cd| format!("{cd} && "))
+            .unwrap_or_default();
+        input.push_str("git --no-pager status --short --branch && git --no-pager diff --stat\r");
+        self.add_pane(cx);
+        if let Some(p) = self.panes.last() {
+            self.pane_startup.push((p.id, input.into_bytes()));
+            p.focus.focus(window, cx);
+        }
+        cx.notify();
     }
 
     /// Draw with a Host's own terminal colors.
@@ -268,7 +363,10 @@ impl TerminalTab {
     }
 
     fn run_startup(&mut self, term: TermId) {
-        if self.panes.first().map(|p| p.id) == Some(term)
+        if let Some(i) = self.pane_startup.iter().position(|(t, _)| *t == term) {
+            let (_, bytes) = self.pane_startup.remove(i);
+            self.core.send(Command::TerminalInput { term, bytes });
+        } else if self.panes.first().map(|p| p.id) == Some(term)
             && let Some(bytes) = self.startup.take()
         {
             self.core.send(Command::TerminalInput { term, bytes });
@@ -288,7 +386,10 @@ impl TerminalTab {
     pub fn saved_target(&self) -> Option<Option<ProfileId>> {
         match &self.target {
             TermTarget::Host(h) => Some(Some(h.clone())),
-            TermTarget::Local { profile: None } if self.agent.is_none() => Some(None),
+            TermTarget::Local {
+                profile: None,
+                cwd: None,
+            } if self.agent.is_none() => Some(None),
             _ => None,
         }
     }
@@ -547,6 +648,10 @@ impl TerminalTab {
         }
         self.add_pane(cx);
         if let Some(p) = self.panes.last() {
+            // A Host shell starts in the home folder: take it to the project's.
+            if let Some(cd) = self.project_cd() {
+                self.pane_startup.push((p.id, format!("{cd} && clear\r").into_bytes()));
+            }
             p.focus.focus(window, cx);
         }
         cx.notify();
@@ -2094,6 +2199,36 @@ impl Render for TerminalTab {
                             .child(label),
                     )
                     .child(ui::vdivider(&p, 16.))
+                    .when_some(self.project.clone(), |d, project| {
+                        d.child(
+                            ui::button("t-files", "Files", Kind::Ghost, &p)
+                                .h(rpx(24.))
+                                .tooltip(|window, cx| {
+                                    gpui_kit::component::tooltip::Tooltip::new(
+                                        "Show this folder in the Files tab",
+                                    )
+                                    .build(window, cx)
+                                })
+                                .on_click(cx.listener(move |_, _, _, cx| {
+                                    cx.emit(TerminalTabEvent::ShowFolder {
+                                        host: project.host.clone(),
+                                        dir: project.dir.clone(),
+                                    })
+                                })),
+                        )
+                        .child(
+                            ui::button("t-changes", "Changes", Kind::Ghost, &p)
+                                .h(rpx(24.))
+                                .when(!can_split, |b| b.opacity(0.4))
+                                .tooltip(|window, cx| {
+                                    gpui_kit::component::tooltip::Tooltip::new(
+                                        "git status and diff stat in a new pane",
+                                    )
+                                    .build(window, cx)
+                                })
+                                .on_click(cx.listener(|this, _, w, cx| this.show_changes(w, cx))),
+                        )
+                    })
                     .child(
                         ui::button("t-split", "Split", Kind::Ghost, &p)
                             .h(rpx(24.))

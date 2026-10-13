@@ -243,6 +243,13 @@ FETCH FIRST, script splitting and catalog queries are engine-aware everywhere.
 - **Suggestion cards** for each SQL block: index → compare a hypothetical plan, statistics →
   re-plan and compare, rewrite → compare plans; every card can open in the editor.
 - **Open in terminal** starts the selected CLI interactively with the MCP server attached.
+- **Code here**: the Files tab's *Code* menu (and the palette's "Claude Code in Folder…" and
+  friends) starts Claude Code, Codex CLI, Gemini CLI, Aider, OpenCode or your custom CLI in a
+  folder on this computer or a Host, in your own shell and login. The tab gets *Files* (show
+  the folder) and *Changes* (git status and diff stat in a split pane). *In a new git
+  worktree* gives each run its own branch and folder, so several CLIs can work on one
+  repository at once. These are your own sessions in your own project: no Switchyard tools
+  or token are attached.
 - Installed CLIs are detected with their versions and install hints; default CLI in
   Settings → Assistant, overridable per connection.
 - **Safety lives in the server**: agent access is off by default and enabled per connection;
@@ -320,6 +327,13 @@ your own Claude Code, Codex or Gemini session access, see
   implicit TLS, passive or active).
 - Dual-pane Files tab (this computer and any Host): breadcrumbs, sortable columns, hidden-file
   toggle, multi-select, new folder, rename, delete, drag and drop between panes and from the OS.
+- **Keyboard file manager**: arrows (Shift extends), Enter opens, Backspace or Alt+Up goes up,
+  F2 renames, Delete deletes, F5 refreshes, Tab switches panes, Ctrl/⌘+A, Ctrl/⌘+F searches,
+  Ctrl/⌘+L types a path, Ctrl/⌘+Shift+C copies paths. Copy path, Open with the default app and
+  Reveal in the OS file manager for the selection.
+- **Git-aware and live**: folders on this computer refresh while the tab is on screen; in a
+  git repository the footer shows the branch, ahead / behind and the number of changes, each
+  changed file or folder gets a badge (M, A, D, R, ?, !), and *Changes* lists only what changed.
 - **Transfer queue**: 4 parallel transfers, pause, resume, retry, cancel; progress, speed and
   ETA per file and overall. Interrupted transfers resume from the last byte, even after the
   app was killed.

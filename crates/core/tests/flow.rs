@@ -317,7 +317,10 @@ async fn local_terminal_round_trip() {
     let h = core.handle();
     h.send(Command::OpenTerminal {
         term: 5,
-        target: TermTarget::Local { profile: None },
+        target: TermTarget::Local {
+            profile: None,
+            cwd: None,
+        },
         size: TermSize { cols: 60, rows: 10 },
     });
     let terminal = next_matching(&mut rx, |e| match e {

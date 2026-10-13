@@ -1324,6 +1324,22 @@ impl Service {
             }
             Command::CancelTransfer { id } => self.files.cancel(id),
             Command::PauseTransfer { id } => self.files.pause(id),
+            Command::GitStatus { request, dir } => {
+                let result = crate::git::status(&dir).await;
+                self.emit(Event::GitStatus {
+                    request,
+                    dir,
+                    result,
+                });
+            }
+            Command::GitWorktree {
+                request,
+                dir,
+                label,
+            } => {
+                let result = crate::git::add_worktree(&dir, &label).await;
+                self.emit(Event::GitWorktree { request, result });
+            }
             Command::FsOp { request, fs, op } => {
                 let result = match self.file_system(&fs).await {
                     Ok((f, posix)) => match &op {
@@ -1978,7 +1994,7 @@ impl Service {
             _ => None,
         };
         let result = match target {
-            TermTarget::Local { profile } => {
+            TermTarget::Local { profile, cwd } => {
                 let profile = match profile {
                     Some(id) => match self.with_store(move |s| s.profile(&id)).await {
                         Ok(Some(Profile::Terminal(t))) => Some(t),
@@ -1992,6 +2008,7 @@ impl Service {
                         .map(|t| t.shell.trim().to_owned())
                         .filter(|s| !s.is_empty()),
                     env: profile.as_ref().map(|t| t.env.clone()).unwrap_or_default(),
+                    cwd,
                     ..LocalShell::default()
                 };
                 let description = shell

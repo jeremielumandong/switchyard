@@ -1705,3 +1705,26 @@ Decisions:
 - Mock chaos applies to matched calls only; forwarded (recorded) calls pass through as the
   upstream answered, so a recording never stores an injected failure. Recorded calls carry
   no cookies or dates, and the upstream is reached with the app's TLS settings.
+
+## 2026-10-13 — Files as a project explorer, coding CLIs in a folder (user request)
+
+- "Code here" (Files tab) and "<CLI> in Folder…" (palette) start Claude Code, Codex CLI,
+  Gemini CLI, Aider, OpenCode or the custom CLI in the user's own project folder. These are
+  the user's own interactive sessions, not agent runs: no `swy mcp` server, no session
+  token, no Switchyard tools, so the agent safety rules (private temp directory, scoped
+  token) do not apply to them. The assistant's "Open in terminal" stays the only run with
+  Switchyard's tools, and it keeps its private temp directory.
+- The CLI is typed into the user's login shell started in the folder (not spawned
+  directly): it then finds the shell's PATH (desktop-launched apps often have a short one,
+  see Gotchas), and the shell stays open when the CLI exits. On a Host the shell `cd`s to
+  the folder first; the CLI must be installed there.
+- Git status comes from the user's `git` (`status --porcelain=v1 -z --branch`), not a git
+  library: no new dependency, and it matches what the user sees in their terminal. A
+  folder outside a repository, or no `git`, shows no status rather than an error.
+- Folders on this computer refresh every 3 s while the Files tab is on screen (no file
+  watcher crate; listing one folder is cheap). The tab knows it is on screen because it
+  rendered since the last tick; hidden tabs don't poll.
+- "In a new git worktree" makes `<parent>/<repo>.worktrees/<cli>-<n>` on branch
+  `switchyard/<cli>-<n>` from `HEAD`, so several CLIs can work on one repository without
+  touching each other's files. Switchyard never removes worktrees or branches; the user
+  merges or deletes them with git.

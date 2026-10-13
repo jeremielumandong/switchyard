@@ -11,6 +11,7 @@ pub mod env;
 pub mod error;
 pub mod files;
 pub mod fleet;
+pub mod git;
 pub mod handoff;
 pub mod infra;
 pub mod prompts;

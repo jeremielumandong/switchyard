@@ -791,6 +791,7 @@ impl Workspace {
                     self.assistant = s.clone();
                     self.assistant_panel
                         .update(cx, |p, cx| p.set_settings(s, cx));
+                    self.sync_clis(cx);
                 }
             }
             Event::Setting { key, value } => {
@@ -1100,7 +1101,17 @@ impl Workspace {
             Event::Components(_)
             | Event::ComponentProgress { .. }
             | Event::ComponentInstalled { .. }
-            | Event::ComponentFailed { .. } => self.on_component_event(ev, cx),
+            | Event::ComponentFailed { .. } => {
+                self.on_component_event(ev, cx);
+                self.sync_clis(cx);
+            }
+            Event::GitStatus { .. } | Event::GitWorktree { .. } => {
+                for t in &self.tabs {
+                    if let Tab::Files(f) = t {
+                        f.update(cx, |f, cx| f.on_event(&ev, cx));
+                    }
+                }
+            }
             Event::EditsApplied {
                 request,
                 result,
@@ -1947,6 +1958,94 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The coding CLIs the Files tab's "Code" menu offers, after settings or install
+    /// status change.
+    fn sync_clis(&self, cx: &mut Context<Self>) {
+        let clis = crate::coding_clis::choices(&self.assistant, &self.components);
+        for t in &self.tabs {
+            if let Tab::Files(f) = t {
+                f.update(cx, |f, cx| f.set_clis(clis.clone(), cx));
+            }
+        }
+    }
+
+    /// A shell in `dir` (on `host`, or this computer) with `cli` typed in when given.
+    pub(crate) fn open_project_terminal(
+        &mut self,
+        host: Option<ProfileId>,
+        dir: PathBuf,
+        cli: Option<crate::coding_clis::CliChoice>,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::coding_clis::{folder_name, launch_line, posix_cd};
+        let h = host.as_ref().and_then(|h| self.profiles.host(h));
+        let env = h.map(|h| h.environment).unwrap_or_default();
+        let colors = h.and_then(|h| h.terminal_colors.clone());
+        let title = format!(
+            "{} · {}",
+            cli.as_ref().map(|c| c.name.as_str()).unwrap_or("Terminal"),
+            folder_name(&dir)
+        );
+        // Local shells start in the folder; a Host's shell is taken there first.
+        let remote = host.is_some();
+        let cd = remote.then(|| dir.to_string_lossy().into_owned());
+        let startup = match (&cli, &cd) {
+            (Some(c), cd) => Some(launch_line(&c.command, cd.as_deref(), remote || cfg!(unix))),
+            (None, Some(d)) => Some(format!("{} && clear\r", posix_cd(d))),
+            (None, None) => None,
+        };
+        let project = crate::terminal_tab::Project { host, dir };
+        let core = self.core.clone();
+        let t = cx.new(|cx| {
+            let t = TerminalTab::new_project(core, title, env, project, cx)
+                .with_colors(colors.as_ref());
+            match startup {
+                Some(s) => t.with_startup(s),
+                None => t,
+            }
+        });
+        let sub = cx.subscribe(&t, |this, _, ev: &crate::terminal_tab::TerminalTabEvent, cx| {
+            match ev {
+                crate::terminal_tab::TerminalTabEvent::ShowFolder { host, dir } => {
+                    this.open_files_on(None, cx);
+                    if let Some(Tab::Files(f)) = this.tabs.get(this.active) {
+                        let (host, dir) = (host.clone(), dir.clone());
+                        f.update(cx, |f, cx| f.reveal(host, dir, cx));
+                    }
+                }
+            }
+        });
+        self._subs.push(sub);
+        self.tabs.push(Tab::Terminal(t));
+        self.active = self.tabs.len() - 1;
+        cx.notify();
+    }
+
+    /// Pick a folder on this computer, then start a coding CLI (index into
+    /// [`crate::coding_clis::CLIS`]) or a shell in it.
+    fn run_in_folder(&mut self, cli: Option<usize>, cx: &mut Context<Self>) {
+        let choice = cli.and_then(|i| {
+            let name = crate::coding_clis::CLIS.get(i)?.name;
+            crate::coding_clis::choices(&self.assistant, &self.components)
+                .into_iter()
+                .find(|c| c.name == name)
+        });
+        let rx = cx.prompt_for_paths(gpui_kit::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Open here".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(mut paths))) = rx.await
+                && let Some(dir) = paths.pop()
+            {
+                let _ = this.update(cx, |w, cx| w.open_project_terminal(None, dir, choice, cx));
+            }
+        })
+        .detach();
+    }
+
     /// The Host of the active SSH terminal or remote file: the sidebar then shows its files.
     pub(crate) fn active_ssh_host(&self, cx: &App) -> Option<ProfileId> {
         match self.tabs.get(self.active) {
@@ -2075,12 +2174,32 @@ impl Workspace {
         let transfers = self.transfers.clone();
         let sources = self.file_sources();
         let right = right.unwrap_or(FsRef::Local);
-        let f = cx.new(|cx| FilesTab::new(core, transfers, sources, right, cx));
+        let clis = crate::coding_clis::choices(&self.assistant, &self.components);
+        let f = cx.new(|cx| {
+            let mut f = FilesTab::new(core, transfers, sources, right, cx);
+            f.set_clis(clis, cx);
+            f
+        });
         let sub = cx.subscribe(&f, |this, _, ev: &FilesTabEvent, cx| match ev {
             FilesTabEvent::Open { fs, path } => {
                 this.pending_editor = Some((fs.clone(), path.clone()));
                 cx.notify();
             }
+            FilesTabEvent::RunHere {
+                host,
+                dir,
+                cli,
+                worktree,
+            } => {
+                if let (Some(cli), Some(branch)) = (cli, worktree) {
+                    this.toast(
+                        format!("{} works in a new worktree on branch {branch}", cli.name),
+                        cx,
+                    );
+                }
+                this.open_project_terminal(host.clone(), dir.clone(), cli.clone(), cx);
+            }
+            FilesTabEvent::Toast(t) => this.toast(t.clone(), cx),
         });
         self._subs.push(sub);
         self.tabs.push(Tab::Files(f));
@@ -2591,6 +2710,7 @@ impl Workspace {
                 }
             }
             CommandId::OpenFiles => self.open_files(window, cx),
+            CommandId::RunInFolder(cli) => self.run_in_folder(cli, cx),
             CommandId::Settings => self.open_settings(SettingsPage::General, window, cx),
             CommandId::SettingsDrivers => self.open_settings(SettingsPage::Drivers, window, cx),
             CommandId::ManageSnippets => crate::snippets::open_manager(self.core.clone(), cx),

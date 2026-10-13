@@ -1231,6 +1231,24 @@ are shared hotspots: one owner at a time.
   Fix: `DOMAIN\user` with the Domain field also set failed CredSSP with "invalid username";
   `rdp::session::sign_in_name` splits `DOMAIN\user` / `user@domain` before sspi sees them.
 
+## Extra — File explorer and coding CLI runner (user request, 2026-10-13)
+
+- [x] FX-1 Files tab as a file manager: keyboard (arrows, Shift to extend, Enter, Backspace /
+  Alt+Up, F2, Delete, F5, Tab between panes, Ctrl/Cmd+A, Ctrl/Cmd+F, Ctrl/Cmd+L,
+  Ctrl/Cmd+Shift+C copies paths); selection actions Copy path, Open with the default app,
+  Reveal in the OS file manager. Folders on this computer refresh while the tab is on screen.
+- [x] FX-2 Git in the Files tab (this computer): branch, ahead / behind and change count in
+  the footer, a badge and color per changed file or folder, a "Changes" filter
+  (`core::git`, unit tests on porcelain parsing plus a real repository).
+- [x] FX-3 Coding CLIs in a folder: "Terminal" and "Code ▾" on a local or Host folder start a
+  shell or Claude Code / Codex CLI / Gemini CLI / Aider / OpenCode / the custom CLI there
+  (install status from the Driver Manager); palette "<CLI> in Folder…". Project terminal
+  tabs get "Files" (show the folder) and "Changes" (git status and diff stat in a new pane).
+- [x] FX-4 "In a new git worktree": each run can get its own worktree and branch so several
+  CLIs work on one repository side by side.
+- Deferred: git status for Host folders (over SSH), a built-in diff viewer, file watching
+  instead of polling, removing a run's worktree from the app.
+
 ## M6 — Packaging and beta
 
 Exit: every performance budget passes on all three platforms; signed builds published.

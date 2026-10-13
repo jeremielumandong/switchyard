@@ -306,6 +306,9 @@ pub enum CommandId {
     ExportWorkspace,
     /// Read a workspace file.
     ImportWorkspace,
+    /// Pick a folder on this computer and start a coding CLI in it (index into
+    /// [`crate::coding_clis::CLIS`]), or a plain shell for `None`.
+    RunInFolder(Option<usize>),
 }
 
 /// A palette entry.
@@ -479,6 +482,12 @@ pub fn palette_commands() -> Vec<PaletteCommand> {
             k("⌘T", "Ctrl+Shift+T"),
         ),
         c(OpenFiles, "Open Files (local)", "Files", "".into()),
+        c(
+            RunInFolder(None),
+            "Terminal in Folder…",
+            "Terminal",
+            "".into(),
+        ),
         c(Settings, "Settings", "Preferences", k("⌘,", "Ctrl+,")),
         c(
             SettingsDrivers,
@@ -561,6 +570,12 @@ pub fn palette_commands() -> Vec<PaletteCommand> {
         c(OpenLogFolder, "Open Log Folder", "Help", "".into()),
     ]
     .into_iter()
+    .chain(
+        crate::coding_clis::CLIS
+            .iter()
+            .enumerate()
+            .map(|(i, cli)| c(RunInFolder(Some(i)), &format!("{} in Folder…", cli.name), "Coding CLIs", "".into())),
+    )
     .chain(
         crate::infra::InfraTool::ALL
             .into_iter()
