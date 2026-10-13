@@ -245,8 +245,10 @@ FETCH FIRST, script splitting and catalog queries are engine-aware everywhere.
 - **Open in terminal** starts the selected CLI interactively with the MCP server attached.
 - **Code here**: the Files tab's *Code* menu (and the palette's "Claude Code in Folder…" and
   friends) starts Claude Code, Codex CLI, Gemini CLI, Aider, OpenCode or your custom CLI in a
-  folder on this computer or a Host, in your own shell and login. The tab gets *Files* (show
-  the folder) and *Changes* (git status and diff stat in a split pane). *In a new git
+  folder on this computer or a Host, in your own shell and login. The tab is a coding layout:
+  the folder's files on the left (git badges, live refresh, click to open in the editor;
+  *Files* hides them) beside the CLI, and *Changes* shows git status and diff stat in a split
+  pane. *In a new git
   worktree* gives each run its own branch and folder, so several CLIs can work on one
   repository at once. These are your own sessions in your own project: no Switchyard tools
   or token are attached.
@@ -331,6 +333,7 @@ your own Claude Code, Codex or Gemini session access, see
   F2 renames, Delete deletes, F5 refreshes, Tab switches panes, Ctrl/⌘+A, Ctrl/⌘+F searches,
   Ctrl/⌘+L types a path, Ctrl/⌘+Shift+C copies paths. Copy path, Open with the default app and
   Reveal in the OS file manager for the selection.
+- **One pane or two**: two panes for copying between computers, one pane for browsing.
 - **Git-aware and live**: folders on this computer refresh while the tab is on screen; in a
   git repository the footer shows the branch, ahead / behind and the number of changes, each
   changed file or folder gets a badge (M, A, D, R, ?, !), and *Changes* lists only what changed.

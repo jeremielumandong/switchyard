@@ -66,6 +66,17 @@ pub enum FilesTabEvent {
     Toast(String),
 }
 
+/// How the tab is laid out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layout {
+    /// Two panes side by side, for copying between computers.
+    Dual,
+    /// One pane, for browsing.
+    Single,
+    /// One narrow pane beside a coding terminal: names and git badges only.
+    Sidebar,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SortBy {
     Name,
@@ -270,6 +281,7 @@ pub struct FilesTab {
     /// Rendered since the last live refresh: the tab is on screen.
     seen: bool,
     scroll: [gpui_kit::UniformListScrollHandle; 2],
+    layout: Layout,
     _live: gpui_kit::Task<()>,
 }
 
@@ -344,10 +356,30 @@ impl FilesTab {
             pending_worktree: None,
             seen: true,
             scroll: Default::default(),
+            layout: Layout::Dual,
             _live: live,
         };
         this.list(0, None, cx);
         this.list(1, None, cx);
+        this
+    }
+
+    /// One narrow pane showing `dir` on `fs` (this computer or a Host), for the side of a
+    /// coding terminal.
+    pub fn sidebar(
+        core: RuntimeHandle,
+        transfers: Entity<Transfers>,
+        fs: FsRef,
+        dir: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut this = Self::new(core, transfers, Vec::new(), FsRef::Local, cx);
+        this.layout = Layout::Sidebar;
+        // `new` listed home in both panes; the right pane is unused here.
+        this.panes[1].request = None;
+        let label = crate::coding_clis::folder_name(&dir);
+        this.panes[0] = Pane::new(fs, label);
+        this.list(0, Some(dir), cx);
         this
     }
 
@@ -388,21 +420,6 @@ impl FilesTab {
     pub fn set_clis(&mut self, clis: Vec<CliChoice>, cx: &mut Context<Self>) {
         self.clis = clis;
         cx.notify();
-    }
-
-    /// Show `dir` on this computer (left pane) or a Host (right pane).
-    pub fn reveal(&mut self, host: Option<ProfileId>, dir: PathBuf, cx: &mut Context<Self>) {
-        let ix = match host {
-            None => 0,
-            Some(h) => {
-                if self.panes[1].fs != FsRef::Host(h.clone()) {
-                    self.show(FsRef::Host(h), cx);
-                }
-                1
-            }
-        };
-        self.active = ix;
-        self.list(ix, Some(dir), cx);
     }
 
     /// Re-read local folders (and their git status) while the tab is on screen: a render
@@ -1041,7 +1058,7 @@ impl FilesTab {
             "f2" => self.start_edit(ix, true, window, cx),
             "f5" => self.refresh(ix, cx),
             "delete" => self.delete(ix, cx),
-            "tab" => {
+            "tab" if self.layout == Layout::Dual => {
                 self.active = 1 - ix;
                 cx.notify();
             }
@@ -1076,6 +1093,7 @@ impl FilesTab {
         let loading = pane.request.is_some() && !pane.quiet;
         let active = self.active == ix;
         let n_sel = pane.selected.len();
+        let full = self.layout != Layout::Sidebar;
         let tool = |id: String, label: &'static str| {
             div()
                 .id(SharedString::from(id))
@@ -1118,112 +1136,141 @@ impl FilesTab {
                 .child(div().text_color(p.fg3).text_size(ts::TINY).child("▾"))
                 .into_any_element()
         };
-        let toolbar = div()
-            .h(rpx(32.))
-            .flex_none()
-            .px(rpx(8.))
-            .flex()
-            .items_center()
-            .gap(rpx(2.))
-            .border_b_1()
-            .border_color(p.bd)
-            .bg(p.panel)
-            .child(source)
-            .when(pane.has_shell() && pane.path.is_some(), |d| {
-                d.child(div().w(rpx(6.)))
-                    .child(
-                        tool(format!("f{ix}-term"), ">_")
-                            .font_family(MONO)
-                            .tooltip(|window, cx| {
-                                gpui_kit::component::tooltip::Tooltip::new("Terminal here")
-                                    .build(window, cx)
-                            })
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| this.run_here(ix, None, cx)),
-                            ),
-                    )
-                    .child(
-                        tool(format!("f{ix}-code"), "Code ▾")
-                            .text_color(p.acc)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.code_menu = if this.code_menu == Some(ix) {
-                                    None
+        let toolbar =
+            div()
+                .h(rpx(32.))
+                .flex_none()
+                .px(rpx(8.))
+                .flex()
+                .items_center()
+                .gap(rpx(2.))
+                .border_b_1()
+                .border_color(p.bd)
+                .bg(p.panel)
+                .child(source)
+                .when(full && pane.has_shell() && pane.path.is_some(), |d| {
+                    d.child(div().w(rpx(6.)))
+                        .child(
+                            tool(format!("f{ix}-term"), ">_")
+                                .font_family(MONO)
+                                .tooltip(|window, cx| {
+                                    gpui_kit::component::tooltip::Tooltip::new("Terminal here")
+                                        .build(window, cx)
+                                })
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| this.run_here(ix, None, cx)),
+                                ),
+                        )
+                        .child(
+                            tool(format!("f{ix}-code"), "Code ▾")
+                                .text_color(p.acc)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.code_menu = if this.code_menu == Some(ix) {
+                                        None
+                                    } else {
+                                        Some(ix)
+                                    };
+                                    cx.notify();
+                                })),
+                        )
+                })
+                .child(div().flex_1())
+                .child(
+                    tool(format!("f{ix}-up"), "↑")
+                        .on_click(cx.listener(move |this, _, _, cx| this.up(ix, cx))),
+                )
+                .child(
+                    tool(format!("f{ix}-refresh"), "⟳")
+                        .on_click(cx.listener(move |this, _, _, cx| this.refresh(ix, cx))),
+                )
+                .when(ix == 0 && full, |d| {
+                    let single = self.layout == Layout::Single;
+                    d.child(
+                        tool(format!("f{ix}-layout"), if single { "◫" } else { "▯" })
+                            .tooltip(move |window, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(if single {
+                                    "Two panes (copy between computers)"
                                 } else {
-                                    Some(ix)
+                                    "One pane"
+                                })
+                                .build(window, cx)
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.layout = if this.layout == Layout::Single {
+                                    Layout::Dual
+                                } else {
+                                    Layout::Single
                                 };
+                                this.active = 0;
                                 cx.notify();
                             })),
                     )
-            })
-            .child(div().flex_1())
-            .child(
-                tool(format!("f{ix}-up"), "↑")
-                    .on_click(cx.listener(move |this, _, _, cx| this.up(ix, cx))),
-            )
-            .child(
-                tool(format!("f{ix}-refresh"), "⟳")
-                    .on_click(cx.listener(move |this, _, _, cx| this.refresh(ix, cx))),
-            )
-            .child(
-                tool(
-                    format!("f{ix}-search"),
-                    if pane.filter.is_empty() {
-                        "Search"
-                    } else {
-                        "Search ●"
-                    },
-                )
-                .on_click(cx.listener(move |this, _, w, cx| this.open_search(ix, w, cx))),
-            )
-            .child(
-                tool(
-                    format!("f{ix}-hidden"),
-                    if pane.show_hidden {
-                        "Hidden ●"
-                    } else {
-                        "Hidden ○"
-                    },
-                )
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.panes[ix].show_hidden = !this.panes[ix].show_hidden;
-                    cx.notify();
-                })),
-            )
-            .child(
-                tool(format!("f{ix}-mkdir"), "New folder")
-                    .on_click(cx.listener(move |this, _, w, cx| this.start_edit(ix, false, w, cx))),
-            )
-            .when(n_sel == 1, |d| {
-                d.child(
-                    tool(format!("f{ix}-rename"), "Rename").on_click(
-                        cx.listener(move |this, _, w, cx| this.start_edit(ix, true, w, cx)),
-                    ),
-                )
-            })
-            .when(n_sel > 0, |d| {
-                let confirming = self.confirm_delete == Some(ix);
-                d.child(
-                    tool(
-                        format!("f{ix}-delete"),
-                        if confirming { "Delete?" } else { "Delete" },
-                    )
-                    .when(confirming, |t| t.text_color(p.prod))
-                    .on_click(cx.listener(move |this, _, _, cx| this.delete(ix, cx))),
-                )
+                })
                 .child(
-                    ui::button(
-                        SharedString::from(format!("f{ix}-copy")),
-                        arrow,
-                        Kind::Primary,
-                        p,
+                    tool(
+                        format!("f{ix}-search"),
+                        if pane.filter.is_empty() {
+                            "Search"
+                        } else {
+                            "Search ●"
+                        },
                     )
-                    .h(rpx(22.))
-                    .text_size(ts::LABEL)
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.copy_selection_across(ix, cx)),
-                    ),
+                    .on_click(cx.listener(move |this, _, w, cx| this.open_search(ix, w, cx))),
                 )
-            });
+                .when(full, |d| {
+                    d.child(
+                        tool(
+                            format!("f{ix}-hidden"),
+                            if pane.show_hidden {
+                                "Hidden ●"
+                            } else {
+                                "Hidden ○"
+                            },
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.panes[ix].show_hidden = !this.panes[ix].show_hidden;
+                            cx.notify();
+                        })),
+                    )
+                })
+                .when(full, |d| {
+                    d.child(tool(format!("f{ix}-mkdir"), "New folder").on_click(
+                        cx.listener(move |this, _, w, cx| this.start_edit(ix, false, w, cx)),
+                    ))
+                })
+                .when(full && n_sel == 1, |d| {
+                    d.child(tool(format!("f{ix}-rename"), "Rename").on_click(
+                        cx.listener(move |this, _, w, cx| this.start_edit(ix, true, w, cx)),
+                    ))
+                })
+                .when(full && n_sel > 0, |d| {
+                    let confirming = self.confirm_delete == Some(ix);
+                    d.child(
+                        tool(
+                            format!("f{ix}-delete"),
+                            if confirming { "Delete?" } else { "Delete" },
+                        )
+                        .when(confirming, |t| t.text_color(p.prod))
+                        .on_click(cx.listener(move |this, _, _, cx| this.delete(ix, cx))),
+                    )
+                    .when(self.layout == Layout::Dual, |d| {
+                        d.child(
+                            ui::button(
+                                SharedString::from(format!("f{ix}-copy")),
+                                arrow,
+                                Kind::Primary,
+                                p,
+                            )
+                            .h(rpx(22.))
+                            .text_size(ts::LABEL)
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| {
+                                    this.copy_selection_across(ix, cx)
+                                }),
+                            ),
+                        )
+                    })
+                });
         let crumbs = pane.crumbs();
         let goto = self
             .goto
@@ -1334,17 +1381,19 @@ impl FilesTab {
                     .pl(rpx(18.))
                     .child(head("sort-name", "Name", SortBy::Name)),
             )
-            .child(div().w(rpx(72.)).flex().justify_end().child(head(
-                "sort-size",
-                "Size",
-                SortBy::Size,
-            )))
-            .child(
-                div()
-                    .w(rpx(118.))
-                    .child(head("sort-mod", "Modified", SortBy::Modified)),
-            )
-            .child(div().w(rpx(76.)).child("Mode"));
+            .when(full, |d| {
+                d.child(div().w(rpx(72.)).flex().justify_end().child(head(
+                    "sort-size",
+                    "Size",
+                    SortBy::Size,
+                )))
+                .child(
+                    div()
+                        .w(rpx(118.))
+                        .child(head("sort-mod", "Modified", SortBy::Modified)),
+                )
+                .child(div().w(rpx(76.)).child("Mode"))
+            });
 
         let search_row: Option<AnyElement> = self.search[ix].as_ref().map(|(input, _)| {
             let filter = pane.filter.trim();
@@ -1427,8 +1476,10 @@ impl FilesTab {
                 .border_color(p.bd)
                 .text_size(ts::SMALL)
                 .text_color(p.fg3)
-                .child(status)
-                .when(n_sel > 0, |d| {
+                .overflow_hidden()
+                // Beside a terminal the footer has room for git only (or loading).
+                .when(full || loading, |d| d.child(status))
+                .when(full && n_sel > 0, |d| {
                     let local = pane.fs == FsRef::Local;
                     d.child(div().text_color(p.fg3).child(format!("· {n_sel} selected")))
                         .child(
@@ -1687,36 +1738,38 @@ impl FilesTab {
                                             d.text_color(change_color(c, &p)).child(c.badge())
                                         }),
                                 )
-                                .child(
-                                    div()
-                                        .w(rpx(72.))
-                                        .flex()
-                                        .justify_end()
-                                        .font_family(MONO)
-                                        .text_size(ts::SMALL)
-                                        .text_color(p.fg2)
-                                        .child(if e.is_dir() {
-                                            String::new()
-                                        } else {
-                                            human(e.size)
-                                        }),
-                                )
-                                .child(
-                                    div()
-                                        .w(rpx(118.))
-                                        .font_family(MONO)
-                                        .text_size(ts::SMALL)
-                                        .text_color(p.fg3)
-                                        .child(e.modified_ms.map(fmt_time).unwrap_or_default()),
-                                )
-                                .child(
-                                    div()
-                                        .w(rpx(76.))
-                                        .font_family(MONO)
-                                        .text_size(ts::CAPTION_PLUS)
-                                        .text_color(p.fg3)
-                                        .child(e.mode_string()),
-                                )
+                                .when(full, |d| {
+                                    d.child(
+                                        div()
+                                            .w(rpx(72.))
+                                            .flex()
+                                            .justify_end()
+                                            .font_family(MONO)
+                                            .text_size(ts::SMALL)
+                                            .text_color(p.fg2)
+                                            .child(if e.is_dir() {
+                                                String::new()
+                                            } else {
+                                                human(e.size)
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .w(rpx(118.))
+                                            .font_family(MONO)
+                                            .text_size(ts::SMALL)
+                                            .text_color(p.fg3)
+                                            .child(e.modified_ms.map(fmt_time).unwrap_or_default()),
+                                    )
+                                    .child(
+                                        div()
+                                            .w(rpx(76.))
+                                            .font_family(MONO)
+                                            .text_size(ts::CAPTION_PLUS)
+                                            .text_color(p.fg3)
+                                            .child(e.mode_string()),
+                                    )
+                                })
                         })
                         .collect::<Vec<_>>()
                 }),
@@ -1854,8 +1907,10 @@ impl FilesTab {
             .min_w_0()
             .flex()
             .flex_col()
-            .when(ix == 0, |d| d.border_r_1().border_color(p.bd))
-            .when(active, |d| d.bg(p.surface))
+            .when(ix == 0 && self.layout == Layout::Dual, |d| {
+                d.border_r_1().border_color(p.bd)
+            })
+            .when(active && self.layout == Layout::Dual, |d| d.bg(p.surface))
             .on_mouse_down(
                 gpui_kit::MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
@@ -1902,8 +1957,9 @@ impl Render for FilesTab {
         self.seen = true;
         let p = palette(cx);
         let left = self.render_pane(0, &p, cx);
-        let right = self.render_pane(1, &p, cx);
-        let drawer = self.transfers.update(cx, |t, cx| t.render_drawer(&p, cx));
+        let right = (self.layout == Layout::Dual).then(|| self.render_pane(1, &p, cx));
+        let drawer = (self.layout != Layout::Sidebar)
+            .then(|| self.transfers.update(cx, |t, cx| t.render_drawer(&p, cx)));
         div()
             .key_context("FilesTab")
             .track_focus(&self.focus)
@@ -1946,8 +2002,8 @@ impl Render for FilesTab {
                         .child(e),
                 )
             })
-            .child(div().flex_1().min_h_0().flex().child(left).child(right))
-            .child(drawer)
+            .child(div().flex_1().min_h_0().flex().child(left).children(right))
+            .children(drawer)
     }
 }
 
