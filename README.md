@@ -73,7 +73,16 @@ and drag Switchyard to Applications.
 [Download the latest Switchyard release for Windows](https://github.com/jeremielumandong/switchyard/releases/latest/download/Switchyard-windows-x64-setup.exe)
 
 Run the downloaded setup program. It installs for your user only, so it needs no
-administrator rights.
+administrator rights. See [Install (Windows)](#install-windows) for the `swy` CLI, updates
+and uninstalling.
+
+## Download (macOS)
+
+[Download the latest Switchyard release for macOS](https://github.com/jeremielumandong/switchyard/releases/latest/download/Switchyard-macos-universal.dmg)
+
+Open the disk image and drag **Switchyard** to **Applications**. One universal build runs
+on Apple Silicon and Intel Macs with macOS 11 or later; it is signed and notarized.
+See [Install (macOS)](#install-macos) for the `swy` CLI, updates and uninstalling.
 
 ## Features
 
@@ -257,6 +266,10 @@ swy mcp                                          # MCP server on stdio
 MCP tools: `list_connections`, `list_tables`, `describe_table`, `run_query`, `explain`
 (estimated plans), `workload`, `what_if`, `redis_command` (read-only commands) and
 `run_ssh_command` (approved in the app, one command at a time).
+
+Every option, output format and tool limit is in the [`swy` reference](docs/cli.md). To give
+your own Claude Code, Codex or Gemini session access, see
+[Use Switchyard from your coding CLI](docs/agents.md).
 
 ### SSH and terminals
 
@@ -473,6 +486,9 @@ then the Driver Manager detects it, explains why, installs it and retries the co
   Manager, Secret Service), or an encrypted vault (argon2 + ChaCha20-Poly1305) with a master
   password when no keychain exists. Secrets never reach logs, history or exports.
 - TLS verification on by default (rustls); strict SSH host keys; private keys read in place.
+- If there is no keychain, see
+  [Secrets and the vault](docs/troubleshooting.md#secrets-and-the-vault); if a server's
+  certificate is refused, see [Certificates and TLS](docs/troubleshooting.md#certificates-and-tls).
 
 ## Keyboard shortcuts
 
@@ -493,19 +509,38 @@ then the Driver Manager detects it, explains why, installs it and retries the co
 | Toggle sidebar / assistant | ⌘B / ⌘J | Ctrl+B / Ctrl+J |
 | Settings | ⌘, | Ctrl+, |
 | Peek table | F12 | F12 |
+| Close tab | ⌘W | Ctrl+W |
+| Save (file editor, API request) | ⌘S | Ctrl+S |
+| Terminal copy / paste / find | ⌘C / ⌘V / ⌘F | Ctrl+Shift+C / Ctrl+Shift+V / Ctrl+Shift+F |
+| Zoom in / out / reset | ⌘= / ⌘- / ⌘0 | Ctrl+= / Ctrl+- / Ctrl+0 |
 
 ## Status
 
-Switchyard is pre-beta (v0.1.13). Not finished yet (see [`PLAN.md`](PLAN.md)):
+Switchyard is pre-beta; the current version is on the
+[Releases page](https://github.com/jeremielumandong/switchyard/releases). Not finished yet
+(see [`PLAN.md`](PLAN.md)):
 
 - Corporate CA import and per-connection certificate pinning.
-- Query plans and workload stats for Oracle and Snowflake; workload stats for MySQL; in-app
-  approval for agent actual plans.
+- Query plans and workload stats for Oracle and Snowflake; workload stats for MySQL.
 - Terminal extras: SSH key generator, PuTTY / MobaXterm session import, Telnet, SCP, a
   shell picker, the SFTP pane following the shell's folder, Mosh.
 - Schema compare of data, triggers and sequences; Kubernetes port forwards through a Host.
-- Packaging: MSI/winget, `.deb`/`.rpm`/AUR, Homebrew cask, portable mode, performance gates
-  in CI.
+- Packaging: MSI/winget, `.deb`/`.rpm`/AUR, Homebrew cask, performance gates in CI.
+- Updates: the app checks for new releases and shows a notice, but doesn't install them
+  itself yet.
+- Portable mode works with a marker file ([Configuration](docs/configuration.md#moving-the-files))
+  but no portable package is published.
+
+## Documentation
+
+- [Configuration and file locations](docs/configuration.md): where your data lives,
+  portable mode, environment variables.
+- [Troubleshooting](docs/troubleshooting.md): common start-up, SSH, TLS and driver problems.
+- [`swy` reference](docs/cli.md): commands, options and MCP tools.
+- [Use Switchyard from your coding CLI](docs/agents.md): register `swy mcp` with Claude Code,
+  Codex or Gemini.
+- [Architecture](docs/ARCHITECTURE.md) and [decisions](docs/DECISIONS.md), for contributors.
+- [License](LICENSE): Apache-2.0.
 
 <a id="install-linux"></a>
 ## Install (Linux)
@@ -545,20 +580,85 @@ installer warns if it is not.
 - **Install somewhere else:** set `SWITCHYARD_APPIMAGE=/absolute/path/Switchyard.AppImage`.
 - **Uninstall:** `curl -fsSL …/install.sh | sh -s -- --uninstall`, or
   `./install.sh --uninstall` from a checkout. Your connections, history and settings in
-  `~/.local/share/switchyard` are kept (delete that folder yourself to remove them);
-  passwords stay in your keychain or the Switchyard vault.
+  `~/.config/switchyard`, and API projects, drivers and logs in `~/.local/share/switchyard`,
+  are kept (delete those folders yourself to remove them; see
+  [file locations](docs/configuration.md#file-locations)); passwords stay in your keychain
+  or the Switchyard vault.
 
 To build and install from a source checkout instead (needs Rust and the build packages
 under [Quick start](#quick-start)):
 
 ```sh
 ./install.sh --build                         # build the AppImage, then install it
-./install.sh dist/Switchyard-0.1.13-x86_64.AppImage   # install an AppImage you already have
+./install.sh dist/Switchyard-<version>-x86_64.AppImage   # install an AppImage you already have
 ./install.sh --uninstall
 ```
 
 `packaging/linux/build-appimage.sh` only builds, into `dist/`. Other architectures than
 x86_64 have no release AppImage; use `--build` there.
+
+<a id="install-macos"></a>
+## Install (macOS)
+
+1. [Download `Switchyard-macos-universal.dmg`](https://github.com/jeremielumandong/switchyard/releases/latest/download/Switchyard-macos-universal.dmg)
+   from the latest release. Its SHA-256 checksum is in `Switchyard-macos-universal.dmg.sha256`
+   next to it; check it with `shasum -a 256 -c Switchyard-macos-universal.dmg.sha256`.
+2. Open the disk image and drag **Switchyard** onto the **Applications** folder.
+3. Start Switchyard from Launchpad, Spotlight or the Applications folder.
+
+The app is a universal binary (Apple Silicon and Intel) for macOS 11 Big Sur or newer.
+It is signed with a Developer ID and notarized by Apple, so Gatekeeper opens it without
+warnings.
+
+The `swy` CLI ships inside the app bundle. To put it on your `PATH`:
+
+```sh
+sudo mkdir -p /usr/local/bin
+sudo ln -sf /Applications/Switchyard.app/Contents/MacOS/swy /usr/local/bin/swy
+swy --version
+```
+
+- **Update:** quit Switchyard, download the latest DMG and drag the app to Applications
+  again, replacing the old copy. The `swy` link keeps working.
+- **Pick a release:** download `Switchyard-<version>-macos-universal.dmg` from that
+  release on the [Releases page](https://github.com/jeremielumandong/switchyard/releases).
+- **Uninstall:** quit Switchyard, move `/Applications/Switchyard.app` to the Trash and
+  run `sudo rm -f /usr/local/bin/swy` if you added the link. Your connections, history and
+  settings in `~/Library/Application Support/dev.Switchyard.Switchyard` are kept (delete
+  that folder yourself to remove them); passwords stay in your Keychain or the Switchyard
+  vault.
+
+To build from a source checkout instead (needs Rust and Xcode's command line tools),
+run `./packaging/package.sh`; it writes a universal `.dmg` and `.pkg` to `dist/`. The
+`.pkg` installs to `/Applications` and links `swy` into `/usr/local/bin` for you.
+
+<a id="install-windows"></a>
+## Install (Windows)
+
+1. [Download `Switchyard-windows-x64-setup.exe`](https://github.com/jeremielumandong/switchyard/releases/latest/download/Switchyard-windows-x64-setup.exe)
+   from the latest release. Its SHA-256 checksum is in `Switchyard-windows-x64-setup.exe.sha256`
+   next to it; compare it with `Get-FileHash .\Switchyard-windows-x64-setup.exe` in PowerShell.
+2. Run it. It installs for your user only, into `%LOCALAPPDATA%\Programs\Switchyard`, and
+   needs no administrator rights.
+3. Choose the components: the app and `swy` (always), a desktop shortcut, and
+   *Add swy CLI to PATH*, which puts `swy` on your user `PATH`. Open a new terminal
+   afterwards so it sees the change.
+
+Switchyard then starts from the Start menu.
+
+- **Update:** run the setup program of the newer release. Quit Switchyard first: the
+  installer force-closes a running copy to replace its files, which ends open
+  transactions and can lose unsaved edits.
+- **Pick a release:** download `Switchyard-<version>-windows-x64-setup.exe` from that
+  release on the [Releases page](https://github.com/jeremielumandong/switchyard/releases).
+- **Uninstall:** use *Uninstall Switchyard* in the Start menu, or Settings → Apps. It removes
+  `swy` from your `PATH` if the installer added it. Your connections, history and settings
+  in `%APPDATA%\Switchyard\Switchyard` are kept (delete that folder yourself to remove
+  them; see [file locations](docs/configuration.md#file-locations)); passwords stay in
+  Windows Credential Manager or the Switchyard vault.
+
+To build the installer from a source checkout instead (needs Rust and NSIS 3), run
+`pwsh packaging/windows/build-windows.ps1`; it writes `dist/*-setup.exe`.
 
 ## Quick start
 

@@ -104,5 +104,62 @@ fn grid_sort(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, decode_rows, grid_lookup, grid_sort);
+/// 100k rows × 8 columns typical of a table scan: ids, names, amounts, timestamps.
+fn mixed_list() -> BatchList {
+    let cols = [
+        ColumnMeta::new("id", "int8", DataType::Int64),
+        ColumnMeta::new("account_id", "int4", DataType::Int32),
+        ColumnMeta::new("email", "text", DataType::Text),
+        ColumnMeta::new("status", "text", DataType::Text),
+        ColumnMeta::new("amount", "float8", DataType::Float64),
+        ColumnMeta::new("created_at", "timestamptz", DataType::TimestampTz),
+        ColumnMeta::new("updated_at", "timestamp", DataType::Timestamp),
+        ColumnMeta::new("active", "bool", DataType::Bool),
+    ];
+    let mut list = BatchList::default();
+    let mut s = String::new();
+    for b in 0..100i64 {
+        let mut builder = RowBatchBuilder::for_columns(&cols, 1000);
+        for r in 0..1000i64 {
+            let n = b * 1000 + r;
+            builder.push_i64(n);
+            builder.push_i64(n % 997);
+            s.clear();
+            s.push_str(&format!("user{n}@example.com"));
+            builder.push_str(&s);
+            builder.push_str(if n % 3 == 0 { "open" } else { "closed" });
+            builder.push_f64(n as f64 * 1.25);
+            builder.push_i64(1_700_000_000_000_000 + n * 1_234_567);
+            builder.push_i64(1_700_000_000_000_000 + n * 7_654_321);
+            builder.push_bool(n % 2 == 0);
+        }
+        list.push(builder.finish());
+    }
+    list
+}
+
+fn grid_mixed(c: &mut Criterion) {
+    let list = mixed_list();
+    c.bench_function("format one screen (40 rows x 8 mixed cols)", |b| {
+        let mut s = String::new();
+        b.iter(|| {
+            for r in 50_000..50_040 {
+                for c in 0..8 {
+                    s.clear();
+                    if let Some(cell) = list.cell(r, c) {
+                        cell.write_display(&mut s, 120);
+                    }
+                }
+            }
+        })
+    });
+    c.bench_function("filter 100k mixed rows (word)", |b| {
+        b.iter(|| list.rows_containing("user4242"))
+    });
+    c.bench_function("filter 100k mixed rows (number)", |b| {
+        b.iter(|| list.rows_containing("4242"))
+    });
+}
+
+criterion_group!(benches, decode_rows, grid_lookup, grid_sort, grid_mixed);
 criterion_main!(benches);

@@ -139,6 +139,14 @@ Measured on the Linux build container (release profile, criterion):
 The grid frame-time harness is still missing (see PLAN Follow-ups); the numbers above cover
 decode and the per-frame formatting work only.
 
+2026-10-10, grid filter: `BatchList::rows_containing` walks column by column, skips rows
+already matched, and skips a non-text column when the needle has a character its display
+text can never contain (`display_alphabet`). A needle without letters uses `str::contains`.
+Time fractions are written without a per-cell `String`. On 100k rows × 8 mixed columns
+(`grid_mixed` bench): filter for a word 52 → 3.9 ms, for a number 47 → 36 ms. Benchmarks
+whose code did not change moved +10–19 % in the same run (load average 12), so that is the
+noise level.
+
 ## 2026-10-06 — Cloudflare D1 as a third engine (user request)
 
 The user asked for a client for Cloudflare D1 through the REST `raw` endpoint
@@ -1387,6 +1395,12 @@ Decisions:
   contrast floors of the built-in themes. The terminal uses the theme's own 16 colors.
 - Live updates poll the directory every 2 s on the core runtime (no file-watcher crate is
   approved; Omarchy swaps a symlink, which watchers handle poorly anyway).
+- 2026-10-12, Omarchy 4: `omarchy-theme-set` now replaces the directory
+  `~/.local/state/omarchy/current/theme` (name in `theme.name` beside it), and its
+  `colors.toml` uses named colors (`red`..`bright_magenta`, often no black/white) and
+  `mode = "light"|"dark"`. The reader tries that path first, then Omarchy 3's; `colorN`
+  wins over a named key; missing black / white / bright black / bright white fall back to
+  `lighter_background`, `dark_foreground`, `muted`, `bright_foreground`.
 
 ## 2026-10-11 — App Configuration and Key Vault UI pass (user request)
 

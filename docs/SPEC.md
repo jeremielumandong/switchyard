@@ -2,6 +2,12 @@
 
 Oct 5, 2026 · @Jeremie
 
+> **Historical v1 spec.** The product has grown well past this document (MySQL, SQLite,
+> MongoDB, Redis, ER diagrams, the API workspace, cloud storage and more). For what
+> Switchyard does today, see the [README](../README.md); for how it is built, see
+> [ARCHITECTURE.md](ARCHITECTURE.md). This file is kept for the original design intent and
+> the UI design brief.
+
 ## Overview
 
 Switchyard is a fast, native, cross-platform desktop app that puts database querying (PostgreSQL, SQL Server), SSH terminals and file transfer (SFTP, FTP, FTPS) behind one connection model. It is written in Rust on GPUI and gpui-component.

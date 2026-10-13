@@ -343,12 +343,18 @@ pub fn write_time(out: &mut String, micros: i64) {
 
 fn write_fraction(out: &mut String, frac: i64) {
     if frac != 0 {
-        let mut s = format!("{frac:06}");
-        while s.ends_with('0') {
-            s.pop();
+        // Six digits without trailing zeros, written in place (no per-cell allocation).
+        let mut digits = frac;
+        let mut len = 6;
+        while digits % 10 == 0 {
+            digits /= 10;
+            len -= 1;
         }
         out.push('.');
-        out.push_str(&s);
+        for i in (0..len).rev() {
+            let d = (digits / 10i64.pow(i)) % 10;
+            out.push((b'0' + d as u8) as char);
+        }
     }
 }
 
@@ -387,6 +393,10 @@ mod tests {
     fn display_formats() {
         assert_eq!(Value::Date(20_366).to_display(), "2025-10-05");
         assert_eq!(Value::Time(3_723_500_000).to_display(), "01:02:03.5");
+        assert_eq!(Value::Time(3_723_000_123).to_display(), "01:02:03.000123");
+        assert_eq!(Value::Time(3_723_999_999).to_display(), "01:02:03.999999");
+        assert_eq!(Value::Time(3_723_040_100).to_display(), "01:02:03.0401");
+        assert_eq!(Value::Time(3_723_000_000).to_display(), "01:02:03");
         assert_eq!(
             Value::TimestampTz(1_759_651_200_000_000).to_display(),
             "2025-10-05 08:00:00+00"

@@ -449,11 +449,34 @@ fn text_number(cell: &CellRef<'_>) -> Option<f64> {
     }
 }
 
+/// Every character (lowercased) that the untruncated display text of a non-NULL value
+/// in `data` can contain, or `None` for text, where anything goes. Floats never print an
+/// exponent; dates may end in `BC`; `infinity` and `NaN` are spelled out.
+fn display_alphabet(data: &ColumnData) -> Option<&'static str> {
+    match data {
+        ColumnData::Text(_) => None,
+        ColumnData::Bool(_) => Some("truefals"),
+        ColumnData::Int16(_) | ColumnData::Int32(_) | ColumnData::Int64(_) => Some("0123456789-"),
+        ColumnData::Float32(_) | ColumnData::Float64(_) => Some("0123456789-.nainfty"),
+        ColumnData::Date(_)
+        | ColumnData::Time(_)
+        | ColumnData::Timestamp(_)
+        | ColumnData::TimestampTz(_) => Some("0123456789-:. +bcinfty"),
+        ColumnData::Uuid(_) => Some("0123456789abcdef-"),
+        ColumnData::Bytes(_) => Some("\\x0123456789abcdef"),
+    }
+}
+
 /// Whether `hay` contains `lower_needle` (already lowercase), ignoring case. ASCII text
 /// is compared in place; anything else is lowercased first.
 fn contains_ignore_case(hay: &str, lower_needle: &str) -> bool {
     if lower_needle.is_empty() {
         return true;
+    }
+    // Lowercasing never yields an ASCII non-letter, so a needle without letters matches
+    // the text as it is; std's substring search is much faster than the loop below.
+    if lower_needle.is_ascii() && !lower_needle.bytes().any(|b| b.is_ascii_alphabetic()) {
+        return hay.contains(lower_needle);
     }
     if hay.is_ascii() && lower_needle.is_ascii() {
         let n = lower_needle.as_bytes();
@@ -782,25 +805,49 @@ impl BatchList {
         cancelled: &dyn Fn() -> bool,
     ) -> Option<Vec<u32>> {
         let needle = needle.to_lowercase();
+        let null_hit = contains_ignore_case("NULL", &needle);
         let mut keep = Vec::new();
+        let mut hit = Vec::new();
         let mut buf = String::new();
         for (batch, &start) in self.batches.iter().zip(&self.starts) {
             if cancelled() {
                 return None;
             }
-            for r in 0..batch.len() {
-                let hit = (0..batch.column_count()).any(|c| match batch.cell(r, c) {
-                    CellRef::Text(s) => contains_ignore_case(s, &needle),
-                    cell => {
-                        buf.clear();
-                        cell.write_display(&mut buf, 0);
-                        contains_ignore_case(&buf, &needle)
+            // Column by column: each buffer is read in order, and a row already
+            // matched is not tested again.
+            hit.clear();
+            hit.resize(batch.len(), false);
+            for c in 0..batch.column_count() {
+                let column = batch.column(c);
+                // A needle with a character the column's display text never has can
+                // only match its NULLs: skip formatting every value.
+                let values_can_hit = display_alphabet(column.data())
+                    .is_none_or(|a| needle.chars().all(|ch| a.contains(ch)));
+                if !values_can_hit && !null_hit {
+                    continue;
+                }
+                for (r, h) in hit.iter_mut().enumerate() {
+                    if *h {
+                        continue;
                     }
-                });
-                if hit {
-                    keep.push((start + r) as u32);
+                    *h = match column.get(r) {
+                        CellRef::Null => null_hit,
+                        _ if !values_can_hit => false,
+                        CellRef::Text(s) => contains_ignore_case(s, &needle),
+                        cell => {
+                            buf.clear();
+                            cell.write_display(&mut buf, 0);
+                            contains_ignore_case(&buf, &needle)
+                        }
+                    };
                 }
             }
+            keep.extend(
+                hit.iter()
+                    .enumerate()
+                    .filter(|(_, h)| **h)
+                    .map(|(r, _)| (start + r) as u32),
+            );
         }
         Some(keep)
     }
@@ -997,6 +1044,40 @@ mod tests {
         };
         assert_eq!(list.rows_containing_until("b", &second), None);
         assert_eq!(list.rows_containing_until("b", &|| false), Some(vec![3]));
+    }
+
+    #[test]
+    fn rows_containing_reads_typed_columns() {
+        let cols = [
+            ColumnMeta::new("a", "int4", DataType::Int32),
+            ColumnMeta::new("b", "float8", DataType::Float64),
+            ColumnMeta::new("c", "timestamptz", DataType::TimestampTz),
+            ColumnMeta::new("d", "date", DataType::Date),
+        ];
+        let mut b = RowBatchBuilder::for_columns(&cols, 3);
+        b.push_i64(-42);
+        b.push_f64(1.5);
+        b.push_i64(1_759_651_200_000_000); // 2025-10-05 08:00:00+00
+        b.push_i64(-800_000); // a BC date
+        b.push_null();
+        b.push_f64(f64::NAN);
+        b.push_i64(i64::MAX); // infinity
+        b.push_i64(0); // 1970-01-01
+        b.push_i64(7);
+        b.push_f64(-7.25);
+        b.push_null();
+        b.push_null();
+        let mut list = BatchList::default();
+        list.push(b.finish());
+        assert_eq!(list.rows_containing("-4"), [0]);
+        assert_eq!(list.rows_containing("-7"), [2]);
+        assert_eq!(list.rows_containing(".2"), [2]);
+        assert_eq!(list.rows_containing("NUL"), [1, 2]);
+        assert_eq!(list.rows_containing("nan"), [1]);
+        assert_eq!(list.rows_containing("INFIN"), [1]);
+        assert_eq!(list.rows_containing("08:00:00+"), [0]);
+        assert_eq!(list.rows_containing(" bc"), [0]);
+        assert!(list.rows_containing("x").is_empty());
     }
 
     #[test]
