@@ -254,6 +254,9 @@ FETCH FIRST, script splitting and catalog queries are engine-aware everywhere.
   worktree* gives each run its own branch and folder, so several CLIs can work on one
   repository at once. These are your own sessions in your own project: no Switchyard tools
   or token are attached.
+- **Agents** in the Activity pane: every running coding CLI with its state (working, waiting,
+  exited), judged from its output; a toast when one behind other tabs stops to wait for you,
+  and the count in the status bar.
 - Installed CLIs are detected with their versions and install hints; default CLI in
   Settings → Assistant, overridable per connection.
 - **Safety lives in the server**: agent access is off by default and enabled per connection;

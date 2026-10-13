@@ -1248,8 +1248,12 @@ are shared hotspots: one owner at a time.
   pane). The Files tab gets a one-pane / two-pane toggle.
 - [x] FX-4 "In a new git worktree": each run can get its own worktree and branch so several
   CLIs work on one repository side by side.
+- [x] FX-5 Agents: an AGENTS section in the Activity pane lists coding CLI tabs as working /
+  waiting / exited (output in the last 3 s means working); a toast when one in a background
+  tab starts waiting; "N agents (M waiting)" in the status bar.
 - Deferred: git status for Host folders (over SSH), a built-in diff viewer, file watching
-  instead of polling, removing a run's worktree from the app.
+  instead of polling, removing a run's worktree from the app, keeping agent sessions alive after the app
+  quits (needs a background daemon; tmux covers it on Hosts).
 
 ## M6 — Packaging and beta
 

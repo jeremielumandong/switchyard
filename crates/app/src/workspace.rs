@@ -2025,7 +2025,11 @@ impl Workspace {
             FilesTabEvent::Toast(t) => this.toast(t.clone(), cx),
         });
         self._subs.push(sub);
-        let project = crate::terminal_tab::Project { host, dir };
+        let project = crate::terminal_tab::Project {
+            host,
+            dir,
+            cli: cli.as_ref().map(|c| c.name.clone()),
+        };
         let core = self.core.clone();
         let t = cx.new(|cx| {
             let t = TerminalTab::new_project(core, title, env, project, cx)
@@ -2036,6 +2040,19 @@ impl Workspace {
                 None => t,
             }
         });
+        let sub = cx.subscribe(
+            &t,
+            |this, t, ev: &crate::terminal_tab::AgentStateChanged, cx| {
+                // An agent in a tab behind others stopped to wait: say so.
+                let front = matches!(this.tabs.get(this.active), Some(Tab::Terminal(a)) if *a == t);
+                if ev.0 == crate::terminal_tab::AgentState::Waiting && !front {
+                    let title = t.read(cx).title.clone();
+                    this.toast(format!("{title} is waiting for you"), cx);
+                }
+                cx.notify();
+            },
+        );
+        self._subs.push(sub);
         self.tabs.push(Tab::Terminal(t));
         self.active = self.tabs.len() - 1;
         cx.notify();
