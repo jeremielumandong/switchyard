@@ -1395,6 +1395,12 @@ Decisions:
   contrast floors of the built-in themes. The terminal uses the theme's own 16 colors.
 - Live updates poll the directory every 2 s on the core runtime (no file-watcher crate is
   approved; Omarchy swaps a symlink, which watchers handle poorly anyway).
+- 2026-10-12, Omarchy 4: `omarchy-theme-set` now replaces the directory
+  `~/.local/state/omarchy/current/theme` (name in `theme.name` beside it), and its
+  `colors.toml` uses named colors (`red`..`bright_magenta`, often no black/white) and
+  `mode = "light"|"dark"`. The reader tries that path first, then Omarchy 3's; `colorN`
+  wins over a named key; missing black / white / bright black / bright white fall back to
+  `lighter_background`, `dark_foreground`, `muted`, `bright_foreground`.
 
 ## 2026-10-11 — App Configuration and Key Vault UI pass (user request)
 
