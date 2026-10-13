@@ -197,7 +197,12 @@ mod tests {
         assert_eq!(c.len(), CLIS.len() + 1);
         assert_eq!(c[0].command, "claude");
         assert_eq!(c[1].command, "/usr/local/bin/codex");
-        assert_eq!(c.last().map(|c| c.name.as_str()), Some("Custom CLI"));
+        s.custom.name = String::new();
+        assert_eq!(
+            choices(&s, &[]).last().map(|c| c.name.clone()),
+            Some("Custom CLI".to_owned())
+        );
+        assert_eq!(c.last().map(|c| c.command.as_str()), Some("goose"));
         assert!(c.iter().all(|c| !c.missing && c.status.is_none()));
     }
 
