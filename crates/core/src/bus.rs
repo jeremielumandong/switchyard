@@ -199,6 +199,8 @@ pub enum TermTarget {
     Local {
         /// Terminal profile (shell, environment), or the login shell.
         profile: Option<ProfileId>,
+        /// Folder the shell starts in; the home folder when `None`.
+        cwd: Option<PathBuf>,
     },
     /// A shell on a saved Host over SSH.
     Host(ProfileId),
@@ -895,6 +897,24 @@ pub enum Command {
     PauseTransfer {
         /// Transfer id.
         id: u64,
+    },
+    /// The git status of the repository holding a folder on this computer
+    /// ([`Event::GitStatus`]).
+    GitStatus {
+        /// Request id.
+        request: RequestId,
+        /// Folder.
+        dir: PathBuf,
+    },
+    /// A new git worktree of the repository holding a folder on this computer, on a new
+    /// branch from `HEAD`, for a coding CLI run named `label` ([`Event::GitWorktree`]).
+    GitWorktree {
+        /// Request id.
+        request: RequestId,
+        /// A folder in the repository.
+        dir: PathBuf,
+        /// Names the folder and branch (`claude-code-…`).
+        label: String,
     },
     /// Create, rename or delete ([`Event::FsOpDone`]).
     FsOp {
@@ -1778,6 +1798,22 @@ pub enum Event {
         id: u64,
         /// Where it went, or why not.
         result: Result<PathBuf, TransferError>,
+    },
+    /// Answer to [`Command::GitStatus`]: `None` outside a repository or without `git`.
+    GitStatus {
+        /// Request id.
+        request: RequestId,
+        /// The folder asked about.
+        dir: PathBuf,
+        /// Status or error.
+        result: Result<Option<crate::git::GitStatus>, String>,
+    },
+    /// Answer to [`Command::GitWorktree`]: the new worktree's folder and branch.
+    GitWorktree {
+        /// Request id.
+        request: RequestId,
+        /// Folder and branch, or error.
+        result: Result<(PathBuf, String), String>,
     },
     /// Result of [`Command::FsOp`].
     FsOpDone {
