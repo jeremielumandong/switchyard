@@ -134,6 +134,9 @@ pub struct TerminalTab {
     pane_startup: Vec<(TermId, Vec<u8>)>,
     /// The project folder's file list beside the panes, and whether it shows.
     sidebar: Option<(Entity<crate::files_tab::FilesTab>, bool)>,
+    /// When the first pane last printed (coding CLI tabs), and the state last reported.
+    agent_seen: Option<(Option<std::time::Instant>, AgentState)>,
+    _agent_tick: Option<gpui_kit::Task<()>>,
 }
 
 /// A terminal started in a project folder (Files tab "Terminal here" / "Code here").
@@ -143,7 +146,55 @@ pub struct Project {
     pub host: Option<ProfileId>,
     /// The folder.
     pub dir: std::path::PathBuf,
+    /// The coding CLI started in it (display name), if any.
+    pub cli: Option<String>,
 }
+
+/// What a coding CLI in a project tab is doing, judged from its output: a CLI prints
+/// (spinner, streamed text) while it works and goes quiet when it waits for the user.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentState {
+    /// Output in the last few seconds.
+    Working,
+    /// Quiet: most likely waiting for an answer or the next prompt.
+    Waiting,
+    /// The shell (and so the CLI) has exited.
+    Exited,
+}
+
+/// Output this recent means the CLI is working.
+const AGENT_QUIET: Duration = Duration::from_secs(3);
+
+impl AgentState {
+    /// "working", "waiting", "exited".
+    pub fn label(self) -> &'static str {
+        match self {
+            AgentState::Working => "working",
+            AgentState::Waiting => "waiting",
+            AgentState::Exited => "exited",
+        }
+    }
+
+    /// From the main pane's state and when it last printed.
+    fn judge(
+        exited: bool,
+        last_output: Option<std::time::Instant>,
+        now: std::time::Instant,
+    ) -> Self {
+        if exited {
+            AgentState::Exited
+        } else if last_output.is_some_and(|t| now.duration_since(t) < AGENT_QUIET) {
+            AgentState::Working
+        } else {
+            AgentState::Waiting
+        }
+    }
+}
+
+/// A coding CLI tab's state changed.
+pub struct AgentStateChanged(pub AgentState);
+
+impl gpui_kit::EventEmitter<AgentStateChanged> for TerminalTab {}
 
 impl TerminalTab {
     /// The Host this terminal is on (`None` for a local shell).
@@ -202,6 +253,8 @@ impl TerminalTab {
             project: None,
             pane_startup: Vec::new(),
             sidebar: None,
+            agent_seen: None,
+            _agent_tick: None,
         }
     }
 
@@ -239,6 +292,8 @@ impl TerminalTab {
             project: None,
             pane_startup: Vec::new(),
             sidebar: None,
+            agent_seen: None,
+            _agent_tick: None,
         };
         this.add_pane(cx);
         this
@@ -279,6 +334,8 @@ impl TerminalTab {
             project: None,
             pane_startup: Vec::new(),
             sidebar: None,
+            agent_seen: None,
+            _agent_tick: None,
         };
         this.add_pane(cx);
         this
@@ -301,9 +358,42 @@ impl TerminalTab {
             },
         };
         let mut this = Self::unopened(core, title, env, target);
+        if project.cli.is_some() {
+            this.agent_seen = Some((None, AgentState::Waiting));
+            this._agent_tick = Some(cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(Duration::from_secs(1)).await;
+                    if this.update(cx, |t, cx| t.check_agent(cx)).is_err() {
+                        break;
+                    }
+                }
+            }));
+        }
         this.project = Some(project);
         this.add_pane(cx);
         this
+    }
+
+    /// What the coding CLI in this tab is doing; `None` for other terminals.
+    pub fn agent_state(&self) -> Option<AgentState> {
+        self.agent_seen.map(|(_, s)| s)
+    }
+
+    /// Re-judge the CLI's state; report a change.
+    fn check_agent(&mut self, cx: &mut Context<Self>) {
+        let Some((last, old)) = self.agent_seen else {
+            return;
+        };
+        let exited = self
+            .panes
+            .first()
+            .is_none_or(|p| matches!(p.state, PaneState::Exited(_) | PaneState::Failed(_)));
+        let new = AgentState::judge(exited, last, std::time::Instant::now());
+        if new != old {
+            self.agent_seen = Some((last, new));
+            cx.emit(AgentStateChanged(new));
+            cx.notify();
+        }
     }
 
     /// Show the project folder's files beside the terminal.
@@ -581,6 +671,12 @@ impl TerminalTab {
     /// New output.
     pub fn on_wake(&mut self, term: TermId, cx: &mut Context<Self>) {
         if self.owns(term) {
+            if self.panes.first().map(|p| p.id) == Some(term)
+                && let Some((last, _)) = &mut self.agent_seen
+            {
+                *last = Some(std::time::Instant::now());
+                self.check_agent(cx);
+            }
             cx.notify();
         }
     }
@@ -615,6 +711,7 @@ impl TerminalTab {
                 p.snapshot = Rc::new(t.snapshot());
             }
         }
+        self.check_agent(cx);
         cx.notify();
     }
 
@@ -2375,5 +2472,20 @@ impl Render for TerminalTab {
             )
             .when_some(macro_menu, |d, e| d.child(e))
             .when_some(paste_prompt, |d, e| d.child(e))
+    }
+}
+
+#[cfg(test)]
+mod agent_tests {
+    use super::*;
+
+    #[test]
+    fn agent_state_from_output() {
+        let now = std::time::Instant::now();
+        let ago = |s| now.checked_sub(Duration::from_secs(s));
+        assert_eq!(AgentState::judge(false, ago(1), now), AgentState::Working);
+        assert_eq!(AgentState::judge(false, ago(10), now), AgentState::Waiting);
+        assert_eq!(AgentState::judge(false, None, now), AgentState::Waiting);
+        assert_eq!(AgentState::judge(true, ago(1), now), AgentState::Exited);
     }
 }

@@ -1153,7 +1153,6 @@ impl FilesTab {
                     d.child(div().w(rpx(6.)))
                         .child(
                             tool(format!("f{ix}-term"), ">_ Terminal")
-                                .font_family(MONO)
                                 .tooltip(|window, cx| {
                                     gpui_kit::component::tooltip::Tooltip::new(
                                         "A terminal in this folder (or the selected one), \
@@ -1190,24 +1189,27 @@ impl FilesTab {
                 .when(ix == 0 && full, |d| {
                     let single = self.layout == Layout::Single;
                     d.child(
-                        tool(format!("f{ix}-layout"), if single { "◫" } else { "▯" })
-                            .tooltip(move |window, cx| {
-                                gpui_kit::component::tooltip::Tooltip::new(if single {
-                                    "Two panes (copy between computers)"
-                                } else {
-                                    "One pane"
-                                })
-                                .build(window, cx)
+                        tool(
+                            format!("f{ix}-layout"),
+                            if single { "2 panes" } else { "1 pane" },
+                        )
+                        .tooltip(move |window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new(if single {
+                                "Two panes (copy between computers)"
+                            } else {
+                                "One pane"
                             })
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.layout = if this.layout == Layout::Single {
-                                    Layout::Dual
-                                } else {
-                                    Layout::Single
-                                };
-                                this.active = 0;
-                                cx.notify();
-                            })),
+                            .build(window, cx)
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.layout = if this.layout == Layout::Single {
+                                Layout::Dual
+                            } else {
+                                Layout::Single
+                            };
+                            this.active = 0;
+                            cx.notify();
+                        })),
                     )
                 })
                 .child(

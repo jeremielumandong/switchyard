@@ -1728,3 +1728,8 @@ Decisions:
   `switchyard/<cli>-<n>` from `HEAD`, so several CLIs can work on one repository without
   touching each other's files. Switchyard never removes worktrees or branches; the user
   merges or deletes them with git.
+- Agent state (Activity → Agents) is judged from output, not from each CLI's own protocol:
+  output in the last 3 s is "working", quiet is "waiting", a closed shell is "exited". It
+  needs no per-CLI code and works for any CLI; a CLI that thinks silently for long reads as
+  waiting. Inspired by herdr; no herdr code is used (its license is reported as AGPL), and
+  sessions do not outlive the app (that needs a daemon).
