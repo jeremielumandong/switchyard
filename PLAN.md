@@ -1243,7 +1243,9 @@ are shared hotspots: one owner at a time.
 - [x] FX-3 Coding CLIs in a folder: "Terminal" and "Code ▾" on a local or Host folder start a
   shell or Claude Code / Codex CLI / Gemini CLI / Aider / OpenCode / the custom CLI there
   (install status from the Driver Manager); palette "<CLI> in Folder…". Project terminal
-  tabs get "Files" (show the folder) and "Changes" (git status and diff stat in a new pane).
+  tabs are a coding layout: the folder's files beside the panes (a narrow Files pane with
+  names and git badges, toggled by "Files") and "Changes" (git status and diff stat in a new
+  pane). The Files tab gets a one-pane / two-pane toggle.
 - [x] FX-4 "In a new git worktree": each run can get its own worktree and branch so several
   CLIs work on one repository side by side.
 - Deferred: git status for Host folders (over SSH), a built-in diff viewer, file watching

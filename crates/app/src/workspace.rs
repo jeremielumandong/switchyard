@@ -1053,6 +1053,9 @@ impl Workspace {
                 for panel in self.remote_files.values() {
                     panel.update(cx, |p, cx| p.on_event(&ev, cx));
                 }
+                for f in self.coding_sidebars(cx) {
+                    f.update(cx, |f, cx| f.on_event(&ev, cx));
+                }
                 for t in &self.tabs {
                     match t {
                         Tab::Files(f) => f.update(cx, |f, cx| f.on_event(&ev, cx)),
@@ -1106,6 +1109,9 @@ impl Workspace {
                 self.sync_clis(cx);
             }
             Event::GitStatus { .. } | Event::GitWorktree { .. } => {
+                for f in self.coding_sidebars(cx) {
+                    f.update(cx, |f, cx| f.on_event(&ev, cx));
+                }
                 for t in &self.tabs {
                     if let Tab::Files(f) = t {
                         f.update(cx, |f, cx| f.on_event(&ev, cx));
@@ -1969,6 +1975,17 @@ impl Workspace {
         }
     }
 
+    /// The file lists beside coding terminals.
+    fn coding_sidebars(&self, cx: &App) -> Vec<Entity<FilesTab>> {
+        self.tabs
+            .iter()
+            .filter_map(|t| match t {
+                Tab::Terminal(t) => t.read(cx).sidebar().cloned(),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// A shell in `dir` (on `host`, or this computer) with `cli` typed in when given.
     pub(crate) fn open_project_terminal(
         &mut self,
@@ -1994,29 +2011,31 @@ impl Workspace {
             (None, Some(d)) => Some(format!("{} && clear\r", posix_cd(d))),
             (None, None) => None,
         };
+        let fs = host.clone().map(FsRef::Host).unwrap_or(FsRef::Local);
+        let files = {
+            let (core, transfers, dir) = (self.core.clone(), self.transfers.clone(), dir.clone());
+            cx.new(|cx| FilesTab::sidebar(core, transfers, fs, dir, cx))
+        };
+        let sub = cx.subscribe(&files, |this, _, ev: &FilesTabEvent, cx| match ev {
+            FilesTabEvent::Open { fs, path } => {
+                this.pending_editor = Some((fs.clone(), path.clone()));
+                cx.notify();
+            }
+            FilesTabEvent::RunHere { .. } => {}
+            FilesTabEvent::Toast(t) => this.toast(t.clone(), cx),
+        });
+        self._subs.push(sub);
         let project = crate::terminal_tab::Project { host, dir };
         let core = self.core.clone();
         let t = cx.new(|cx| {
             let t = TerminalTab::new_project(core, title, env, project, cx)
-                .with_colors(colors.as_ref());
+                .with_colors(colors.as_ref())
+                .with_sidebar(files);
             match startup {
                 Some(s) => t.with_startup(s),
                 None => t,
             }
         });
-        let sub = cx.subscribe(
-            &t,
-            |this, _, ev: &crate::terminal_tab::TerminalTabEvent, cx| match ev {
-                crate::terminal_tab::TerminalTabEvent::ShowFolder { host, dir } => {
-                    this.open_files_on(None, cx);
-                    if let Some(Tab::Files(f)) = this.tabs.get(this.active) {
-                        let (host, dir) = (host.clone(), dir.clone());
-                        f.update(cx, |f, cx| f.reveal(host, dir, cx));
-                    }
-                }
-            },
-        );
-        self._subs.push(sub);
         self.tabs.push(Tab::Terminal(t));
         self.active = self.tabs.len() - 1;
         cx.notify();

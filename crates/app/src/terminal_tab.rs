@@ -132,6 +132,8 @@ pub struct TerminalTab {
     project: Option<Project>,
     /// Typed into a pane other than the first once its shell is up (a "Changes" pane).
     pane_startup: Vec<(TermId, Vec<u8>)>,
+    /// The project folder's file list beside the panes, and whether it shows.
+    sidebar: Option<(Entity<crate::files_tab::FilesTab>, bool)>,
 }
 
 /// A terminal started in a project folder (Files tab "Terminal here" / "Code here").
@@ -142,19 +144,6 @@ pub struct Project {
     /// The folder.
     pub dir: std::path::PathBuf,
 }
-
-/// What a project terminal asks the workspace to do.
-pub enum TerminalTabEvent {
-    /// Show the project folder in the Files tab.
-    ShowFolder {
-        /// The Host, or `None` for this computer.
-        host: Option<ProfileId>,
-        /// The folder.
-        dir: std::path::PathBuf,
-    },
-}
-
-impl gpui_kit::EventEmitter<TerminalTabEvent> for TerminalTab {}
 
 impl TerminalTab {
     /// The Host this terminal is on (`None` for a local shell).
@@ -212,6 +201,7 @@ impl TerminalTab {
             agent: None,
             project: None,
             pane_startup: Vec::new(),
+            sidebar: None,
         }
     }
 
@@ -248,6 +238,7 @@ impl TerminalTab {
             agent: Some((agent, connection)),
             project: None,
             pane_startup: Vec::new(),
+            sidebar: None,
         };
         this.add_pane(cx);
         this
@@ -287,6 +278,7 @@ impl TerminalTab {
             agent: None,
             project: None,
             pane_startup: Vec::new(),
+            sidebar: None,
         };
         this.add_pane(cx);
         this
@@ -312,6 +304,17 @@ impl TerminalTab {
         this.project = Some(project);
         this.add_pane(cx);
         this
+    }
+
+    /// Show the project folder's files beside the terminal.
+    pub fn with_sidebar(mut self, files: Entity<crate::files_tab::FilesTab>) -> Self {
+        self.sidebar = Some((files, true));
+        self
+    }
+
+    /// The project folder's file list, if this tab has one.
+    pub fn sidebar(&self) -> Option<&Entity<crate::files_tab::FilesTab>> {
+        self.sidebar.as_ref().map(|(f, _)| f)
     }
 
     /// `cd` into the project folder, for shells on a Host (local shells start there).
@@ -2200,23 +2203,34 @@ impl Render for TerminalTab {
                             .child(label),
                     )
                     .child(ui::vdivider(&p, 16.))
-                    .when_some(self.project.clone(), |d, project| {
-                        d.child(
-                            ui::button("t-files", "Files", Kind::Ghost, &p)
+                    .when(self.project.is_some(), |d| {
+                        let shown = self.sidebar.as_ref().is_some_and(|(_, on)| *on);
+                        d.when(self.sidebar.is_some(), |d| {
+                            d.child(
+                                ui::button(
+                                    "t-files",
+                                    if shown { "● Files" } else { "Files" },
+                                    Kind::Ghost,
+                                    &p,
+                                )
                                 .h(rpx(24.))
                                 .tooltip(|window, cx| {
                                     gpui_kit::component::tooltip::Tooltip::new(
-                                        "Show this folder in the Files tab",
+                                        "Show or hide this folder's files",
                                     )
                                     .build(window, cx)
                                 })
-                                .on_click(cx.listener(move |_, _, _, cx| {
-                                    cx.emit(TerminalTabEvent::ShowFolder {
-                                        host: project.host.clone(),
-                                        dir: project.dir.clone(),
-                                    })
-                                })),
-                        )
+                                .on_click(cx.listener(
+                                    |this, _, w, cx| {
+                                        if let Some((_, on)) = &mut this.sidebar {
+                                            *on = !*on;
+                                        }
+                                        this.refocus(w, cx);
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                        })
                         .child(
                             ui::button("t-changes", "Changes", Kind::Ghost, &p)
                                 .h(rpx(24.))
@@ -2341,6 +2355,22 @@ impl Render for TerminalTab {
                     .flex()
                     .gap(rpx(1.))
                     .bg(p.bd)
+                    .when_some(
+                        self.sidebar
+                            .as_ref()
+                            .filter(|(_, on)| *on)
+                            .map(|(f, _)| f.clone()),
+                        |d, files| {
+                            d.child(
+                                div()
+                                    .w(rpx(260.))
+                                    .flex_none()
+                                    .h_full()
+                                    .bg(p.bg)
+                                    .child(files),
+                            )
+                        },
+                    )
                     .children(panes),
             )
             .when_some(macro_menu, |d, e| d.child(e))
