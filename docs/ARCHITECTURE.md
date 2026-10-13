@@ -50,7 +50,7 @@ flowchart TD
     app --> api
     cli[switchyard-cli<br/>swy + MCP] --> core
 
-    core[switchyard-core<br/>runtime · bus · services] --> store & db & remote & term & drivers & plan & api & agents
+    core[switchyard-core<br/>runtime · bus · services] --> store & db & remote & term & drivers & plan & api & agents & cloud
 
     store[switchyard-store<br/>profiles · history · secrets] --> db
     plan[switchyard-plan<br/>PlanNode · findings] --> db
@@ -61,6 +61,7 @@ flowchart TD
     drivers[switchyard-drivers<br/>Driver Manager]
     api[switchyard-api<br/>HTTP workspace]
     agents[switchyard-agents<br/>AgentAdapter · runner]
+    cloud[switchyard-cloud<br/>S3 · R2 · Blob · KV services] --> remote
 ```
 
 | Crate | Owns | Must not |
@@ -69,12 +70,13 @@ flowchart TD
 | `core` | Tokio runtime, `Command`/`Event` bus, `Service` (sessions, tunnels, terminals, transfers, agent runs, history) | Contain UI code |
 | `store` | Domain model (`Profile`, `Host`, `DbConnection`, `FileConnection`), SQLite store, `SecretStore` impls | Know about sessions or the runtime |
 | `db` | `Driver`/`DbSession`/`Dialect` traits, `Value`, `RowBatch`, `ResultEvent`, guard, one module per engine | Depend on `remote`. Tunnels arrive as `TunnelEndpoint`. |
-| `remote` | `SshManager` (one session per Host), tunnels, known hosts, X11/agent forwarding, `RemoteFs` (local, SFTP) | Know about databases |
+| `remote` | `SshManager` (one session per Host), tunnels, known hosts, X11/agent forwarding, `RemoteFs` (local, SFTP, FTP/FTPS) | Know about databases |
 | `term` | `Terminal` over `alacritty_terminal`, `Feeder`, `Snapshot`, input encoding, local PTY | Render anything |
 | `drivers` | Component manifests, detection, signed install, `libloading`, GSSAPI FFI, Oracle loader path | Be required at startup |
-| `plan` | `Plan`/`PlanNode`, PG JSON and showplan XML parsers, capture, findings, compare, access stats, what-if | Expose engine plan formats past its parsers |
+| `plan` | `Plan`/`PlanNode`, parsers for PostgreSQL JSON, showplan XML, MySQL, SQLite and MongoDB plans, capture, findings, compare, access stats, what-if | Expose engine plan formats past its parsers |
 | `agents` | `AgentAdapter` per coding CLI, runner (temp dir, process group, cancel), `AgentEvent` | Leak CLI-specific types to the UI |
 | `api` | Collections, environments, request compiler, import/export, cookies, OAuth, `pm.*` script sandbox | Use GPUI |
+| `cloud` | S3, R2 and Azure Blob as `RemoteFs`; App Configuration, Key Vault, Secrets Manager, Parameter Store, Workers KV; request signing | Use cloud SDKs |
 | `cli` | `swy` commands, MCP server and tools, output scrubbing | Duplicate connection or query logic |
 
 Notes on the graph as built:
@@ -231,8 +233,8 @@ flowchart TD
   connection until the user explicitly accepts it (`AcceptChangedHostKey`).
 - **Agents.** `SSH_AUTH_SOCK`, 1Password's socket, the Windows OpenSSH pipe and Pageant.
   Agent and X11 forwarding are opt-in per Host.
-- **Files.** `RemoteFs` is implemented by `LocalFs` and `SftpFs`. FTP/FTPS (`suppaftp`) is
-  planned behind the same trait but not built yet.
+- **Files.** `RemoteFs` is implemented by `LocalFs`, `SftpFs` and `FtpFs` (FTP/FTPS over
+  `suppaftp`) here, and by `S3Fs` and `BlobFs` in `switchyard-cloud`.
   `core::files` runs the transfer queue: parallel transfers, pause, resume from offset,
   conflict policy (`OnConflict`), and remote edit with a modification-time conflict check.
 - **Terminals.** `term::Terminal` wraps `alacritty_terminal::Term` behind its `FairMutex`.
@@ -247,7 +249,10 @@ flowchart TD
 flowchart LR
     pgjson[PG EXPLAIN JSON] --> pgp[plan::pg]
     xml[SQL Server showplan XML] --> msp[plan::mssql]
-    pgp & msp --> model[Plan / PlanNode]
+    my[MySQL EXPLAIN JSON / ANALYZE] --> myp[plan::mysql]
+    lite[SQLite EXPLAIN QUERY PLAN] --> litep[plan::sqlite]
+    mongo[MongoDB explain] --> mongop[plan::mongo]
+    pgp & msp & myp & litep & mongop --> model[Plan / PlanNode]
     model --> findings[findings::analyze<br/>ranked Findings]
     model --> compare[compare]
     model --> ui[plan_view in app]
@@ -256,8 +261,9 @@ flowchart LR
     whatif[whatif: HypoPG / hypothetical indexes] --> model
 ```
 
-- **One plan model.** Engine output is parsed once, in `plan::pg` or `plan::mssql`. Findings,
-  compare, the UI and MCP see only `PlanNode`.
+- **One plan model.** Engine output is parsed once, in `plan::pg`, `plan::mssql`,
+  `plan::mysql`, `plan::sqlite` or `plan::mongo`. Findings, compare, the UI and MCP see only
+  `PlanNode`.
 - **`capture`** runs `EXPLAIN` or showplan on a session. Actual plans (`ANALYZE`,
   `STATISTICS XML`) execute the statement, so DML runs inside a transaction that is always
   rolled back. A rollback failure is its own error (`PlanError::Rollback`), because the
@@ -295,10 +301,15 @@ sequenceDiagram
   parse its output into `AgentEvent`. The runner owns the temp directory, process group,
   cancel (SIGTERM to the group, then SIGKILL after 2 s; `taskkill /T` on Windows) and cleanup.
 - **The MCP server is the safety boundary.** Its tools are `list_connections`, `list_tables`,
-  `describe_table`, `run_query`, `explain`, `workload` and `what_if`, and all are read-only:
+  `describe_table`, `run_query`, `explain`, `workload`, `what_if`, `redis_command` and
+  `run_ssh_command` (user-facing table: [cli.md](cli.md#mcp-tools)), and all are read-only:
   - visible connections: those with `agent_access` on, narrowed by the run's token;
+    SSH Hosts only in runs the app started;
   - `run_query`: a single SELECT/WITH (`sqlparser`), run in a read-only transaction or one that is always rolled back, 200-row default cap (1,000 max), 30 s default timeout (120 s max) with a server-side cancel;
-  - estimated plans only. Actual plans need approval in the app, and no tool runs DDL;
+  - estimated plans only, unless the user approves an actual plan of that exact statement in
+    the app (app-started runs, never Production). No tool runs DDL;
+  - `redis_command`: one read-only command, no `KEYS`; `run_ssh_command`: one command, run
+    by the app after the user approves it;
   - every result and error is scrubbed of hosts, ports, users and database names;
   - every call goes to history tagged `agent` and `agent:<cli>`.
 - CLI permissions are locked down where the CLI supports it (for Claude Code: no built-in
