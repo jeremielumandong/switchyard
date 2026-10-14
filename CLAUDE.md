@@ -125,7 +125,10 @@ Dependency direction: `app → core → {store, db, remote, term, drivers, plan,
   Before the first commit in a fresh clone run
   `git config user.name "Jeremie Lumandong"` and
   `git config user.email "jeremie.lumandong@outlook.com"` (the container's default identity
-  is Claude's). Keep the `Co-Authored-By: Claude ...` trailer in the message.
+  is Claude's). Jeremie is the only author: no `Co-Authored-By: Claude ...` or
+  `Claude-Session:` trailers in commit messages, and no "Generated with Claude Code" footer
+  or session link in PR descriptions (the attribution header comment at the top of a PR body
+  stays).
 
 ## Coding conventions
 
