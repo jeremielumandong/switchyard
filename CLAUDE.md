@@ -263,6 +263,9 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
 - GPUI on Windows: the title bar row is a `WindowControlArea::Drag` (`HTCAPTION`), and GPUI
   reports it under every hitbox inside it. Every clickable title-bar control needs
   `.occlude()`, or Windows takes the click as a window drag. Linux/Xvfb does not show this.
+- For GPUI Kit 0.7.3, `gpui-base` and gpui-fast's `gpui` / `gpui_linux` are vendored
+  (`vendor/gpui-base`, `vendor/gpui-fast`), copied from AgentOpsChat's patched stack; re-copy
+  from there rather than editing or bumping them here (see `docs/DECISIONS.md`).
 - gpui-component 0.7 splits inputs: `InputState` (one line), `TextareaState` (multi-line),
   `EditorState` (code). Code ported from 0.5 (AgentOps) must pick the right one per field.
   `open_window` from gpui-kit already wraps the view in `Root`.

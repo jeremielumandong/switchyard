@@ -1733,3 +1733,20 @@ Decisions:
   needs no per-CLI code and works for any CLI; a CLI that thinks silently for long reads as
   waiting. Inspired by herdr; no herdr code is used (its license is reported as AGPL), and
   sessions do not outlive the app (that needs a daemon).
+
+## 2026-10-14 — GPUI Kit 0.7.3 on the application-patched GPUI Fast stack
+
+At the user's request Switchyard moved from GPUI Kit 0.7.1 on upstream gpui-fast `598306f`
+to GPUI Kit 0.7.3 on the same patched GPUI Fast stack as AgentOpsChat. Kit 0.7.3 pins
+`gpui-pre =0.3.9`, which gpui-fast has no compat crates for, so the stack is vendored:
+
+- `vendor/gpui-fast`: gpui-fast's `gpui` and `gpui_linux` at `598306f` with AgentOpsChat's
+  patches (native list viewport ranges, native physical key metadata, Linux integration),
+  plus `compat/gpui-pre*` facades that re-export that core under the 0.3.9 names. See
+  `vendor/gpui-fast/PARITY-PATCH.md` and `compat/README.md`.
+- `vendor/gpui-base`: published `gpui-base` 0.7.3 with AgentOpsChat's input, selection,
+  retained text layout and accessibility patches merged on top (`PARITY-PATCH.md`).
+- Copied byte for byte from AgentOpsChat (`9299117`); all Apache-2.0. Other gpui-fast
+  crates stay pinned to `598306f` from git. There is still one GPUI core in the graph.
+- Update these by re-copying from AgentOpsChat, not by editing them here, so the two apps
+  keep one stack.
