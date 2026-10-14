@@ -1,7 +1,13 @@
 [workspace]
 resolver = "3"
 # Vendored dependencies are patched in below, not workspace members.
-exclude = ["vendor/tiberius", "vendor/ssh-key", "vendor/ironrdp-connector"]
+exclude = [
+    "vendor/tiberius",
+    "vendor/ssh-key",
+    "vendor/ironrdp-connector",
+    "vendor/gpui-base",
+    "vendor/gpui-fast",
+]
 members = [
     "crates/app",
     "crates/core",
@@ -56,8 +62,8 @@ switchyard-api = { path = "crates/api" }
 switchyard-cloud = { path = "crates/cloud" }
 switchyard-containers = { path = "crates/containers" }
 
-# UI: gpui-kit is the facade over gpui (gpui-pre =0.3.8) + gpui-component 0.7.1, kept in lockstep.
-gpui-kit = { version = "=0.7.1", features = ["tree-sitter-sql"] }
+# UI: gpui-kit is the facade over gpui (gpui-pre =0.3.9) + gpui-component 0.7.3, kept in lockstep.
+gpui-kit = { version = "=0.7.3", features = ["tree-sitter-sql"] }
 
 # async
 tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
@@ -211,14 +217,20 @@ opt-level = 2
 lto = "thin"
 codegen-units = 1
 
-# gpui-fast (Retained Mode rendering) in place of GPUI Kit's upstream `gpui-pre`
-# snapshots: same names, version and API. See docs/DECISIONS.md.
+# GPUI Kit 0.7.3 on the application-patched GPUI Fast stack (shared with AgentOpsChat).
+# Local snapshot facades keep Kit, Component and Base on the same native core; see
+# vendor/gpui-fast/compat/README.md and docs/DECISIONS.md.
 [patch.crates-io]
 tiberius = { path = "vendor/tiberius" }
 ssh-key = { path = "vendor/ssh-key" }
 ironrdp-connector = { path = "vendor/ironrdp-connector" }
-gpui-pre = { git = "https://github.com/longbridge/gpui-fast", rev = "598306fcbf77bff0f764b5a178a447344e72e132" }
-gpui-pre-platform = { git = "https://github.com/longbridge/gpui-fast", rev = "598306fcbf77bff0f764b5a178a447344e72e132" }
-gpui-pre-macros = { git = "https://github.com/longbridge/gpui-fast", rev = "598306fcbf77bff0f764b5a178a447344e72e132" }
-gpui-pre-sum-tree = { git = "https://github.com/longbridge/gpui-fast", rev = "598306fcbf77bff0f764b5a178a447344e72e132" }
-gpui-pre-web = { git = "https://github.com/longbridge/gpui-fast", rev = "598306fcbf77bff0f764b5a178a447344e72e132" }
+gpui-base = { path = "vendor/gpui-base" }
+gpui-pre = { path = "vendor/gpui-fast/compat/gpui-pre" }
+gpui-pre-platform = { path = "vendor/gpui-fast/compat/gpui-pre-platform" }
+gpui-pre-macros = { path = "vendor/gpui-fast/compat/gpui-pre-macros" }
+gpui-pre-sum-tree = { path = "vendor/gpui-fast/compat/gpui-pre-sum-tree" }
+gpui-pre-web = { path = "vendor/gpui-fast/compat/gpui-pre-web" }
+
+[patch."https://github.com/longbridge/gpui-fast"]
+gpui = { path = "vendor/gpui-fast/crates/gpui" }
+gpui_linux = { path = "vendor/gpui-fast/crates/gpui_linux" }
