@@ -347,7 +347,6 @@ textarea::placeholder,input::placeholder{color:var(--t8)}
       <a href="#databases" style="color:var(--t2)">Databases</a>
       <a href="#agents" style="color:var(--t2)">AI</a>
       <a href="#install" style="color:var(--t2)">Install</a>
-      <a href="https://github.com/jeremielumandong/switchyard" style="color:var(--fg);font-weight:500">GitHub ↗</a>
     </nav>
     <button onClick="{{ openPicker }}" title="Change theme" style="display:flex;align-items:center;gap:9px;font-family:Geist,sans-serif;font-size:13px;font-weight:500;color:var(--fg);background:var(--p2);border:1px solid var(--b3);border-radius:999px;padding:6px 12px 6px 10px;cursor:pointer;white-space:nowrap;flex:none" style-hover="border-color:var(--b7)">
       <span style="display:flex;gap:3px"><span style="width:8px;height:8px;border-radius:50%;background:var(--acc)"></span><span style="width:8px;height:8px;border-radius:50%;background:var(--a-prod)"></span><span style="width:8px;height:8px;border-radius:50%;background:var(--a-dev)"></span><span style="width:8px;height:8px;border-radius:50%;background:var(--a-stg)"></span></span>
@@ -367,7 +366,7 @@ textarea::placeholder,input::placeholder{color:var(--t8)}
 
   <div id="install" style="margin-top:40px;max-width:720px;border:1px solid var(--b2);border-radius:12px;background:var(--p2);overflow:hidden">
     <div style="display:flex;border-bottom:1px solid var(--b2);padding:0 6px">
-      <sc-for list="{{ installTabs }}" as="t" hint-placeholder-count="4">
+      <sc-for list="{{ installTabs }}" as="t" hint-placeholder-count="3">
         <button onClick="{{ t.select }}" style="font-family:Geist,sans-serif;font-size:13px;font-weight:500;padding:12px 14px;background:transparent;border:0;border-bottom:2px solid {{ t.border }};color:{{ t.color }};cursor:pointer;margin-bottom:-1px">{{ t.label }}</button>
       </sc-for>
     </div>
@@ -698,7 +697,7 @@ textarea::placeholder,input::placeholder{color:var(--t8)}
     <div>
       <div style="font-family:'Geist Mono',monospace;font-size:12px;color:var(--acc);text-transform:uppercase;letter-spacing:0.08em">Status</div>
       <h2 style="font-size:clamp(30px,3.8vw,44px);letter-spacing:-0.035em;font-weight:600;margin:14px 0 0;line-height:1.04">Pre-beta, v0.1.15.</h2>
-      <p style="color:var(--t3);font-size:16px;line-height:1.6;margin:18px 0 0;max-width:44ch">Still on the line, tracked in <a href="https://github.com/jeremielumandong/switchyard/blob/main/PLAN.md" style="color:var(--fg);border-bottom:1px solid var(--t10)">PLAN.md</a>.</p>
+      <p style="color:var(--t3);font-size:16px;line-height:1.6;margin:18px 0 0;max-width:44ch">Still on the line. Here is what comes next.</p>
     </div>
     <div style="display:flex;flex-direction:column">
       <sc-for list="{{ roadmap }}" as="r" hint-placeholder-count="5">
@@ -711,32 +710,14 @@ textarea::placeholder,input::placeholder{color:var(--t8)}
   </div>
 </section>
 
-<section style="max-width:1200px;margin:0 auto;padding:140px 24px 0">
-  <h2 style="font-size:clamp(28px,3.4vw,40px);letter-spacing:-0.035em;font-weight:600;margin:0">Build from source.</h2>
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));gap:16px;margin-top:28px">
-    <sc-for list="{{ buildBlocks }}" as="b" hint-placeholder-count="3">
-      <div style="border:1px solid var(--b2);border-radius:12px;background:var(--p1);overflow:hidden;min-width:0">
-        <div style="padding:12px 16px;border-bottom:1px solid var(--b0);font-size:13px;font-weight:600">{{ b.title }}</div>
-        <div style="padding:14px 16px 16px;font-family:'Geist Mono',monospace;font-size:12.5px;line-height:1.85;overflow-x:auto">
-          <sc-for list="{{ b.lines }}" as="l" hint-placeholder-count="3">
-            <div style="white-space:pre;color:var(--t1)"><span style="color:var(--t9)">$ </span>{{ l }}</div>
-          </sc-for>
-        </div>
-      </div>
-    </sc-for>
-  </div>
-</section>
-
 <footer style="max-width:1200px;margin:0 auto;padding:140px 24px 56px">
   <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:end;gap:32px;border-top:1px solid var(--b1);padding-top:40px">
     <div>
       <div style="font-size:clamp(36px,5vw,64px);font-weight:600;letter-spacing:-0.045em;line-height:1">switchyard</div>
-      <div style="margin-top:12px;font-size:14px;color:var(--t7)">Written in Rust on GPUI and gpui-component · Apache-2.0</div>
+      <div style="margin-top:12px;font-size:14px;color:var(--t7)">Written in Rust on GPUI and gpui-component</div>
     </div>
     <div style="display:flex;gap:24px;font-size:14px;flex-wrap:wrap">
-      <a href="https://github.com/jeremielumandong/switchyard" style="color:var(--t2)">GitHub</a>
-      <a href="https://github.com/jeremielumandong/switchyard/releases/latest" style="color:var(--t2)">Releases</a>
-      <a href="https://github.com/jeremielumandong/switchyard/blob/main/PLAN.md" style="color:var(--t2)">Plan</a>
+      <a href="#install" style="color:var(--t2)">Download</a>
       <a href="https://www.gpui.rs/" style="color:var(--t2)">GPUI</a>
     </div>
   </div>
@@ -818,7 +799,6 @@ const INSTALL = {
   linux: { label: 'Linux x86_64', cmd: 'curl -fsSL https://raw.githubusercontent.com/jeremielumandong/switchyard/main/install.sh | sh', note: 'Downloads the latest release, verifies its SHA-256 checksum, installs a desktop launcher and the swy CLI. No Rust or sudo needed.' },
   macos: { label: 'macOS', cmd: 'Switchyard-macos-universal.dmg', href: 'https://github.com/jeremielumandong/switchyard/releases/latest/download/Switchyard-macos-universal.dmg', button: 'Download .dmg', note: 'Universal app for Apple Silicon and Intel, macOS 11 or later. Open the disk image and drag Switchyard to Applications; the swy CLI is in Switchyard.app/Contents/MacOS.' },
   windows: { label: 'Windows x64', cmd: 'Switchyard-windows-x64-setup.exe', href: 'https://github.com/jeremielumandong/switchyard/releases/latest/download/Switchyard-windows-x64-setup.exe', button: 'Download .exe', note: 'Installs for your user only — no administrator rights needed.' },
-  source: { label: 'From source', cmd: 'cargo run -p switchyard-app', note: 'Package your own build with ./packaging/package.sh (macOS .dmg / .pkg, Linux AppImage).' },
 };
 // Open the install tab for the visitor's platform; Linux when it can't tell.
 function visitorTab() {
@@ -1039,11 +1019,6 @@ class Component extends DCLogic {
         { area: 'Terminal', text: 'SSH key generator, PuTTY / MobaXterm import, Telnet, SCP, shell picker, Mosh.' },
         { area: 'Compare', text: 'Data compare; triggers and sequences in schema compare.' },
         { area: 'Packaging', text: 'MSI / winget, .deb / .rpm / AUR, Homebrew cask, portable mode.' },
-      ],
-      buildBlocks: [
-        { title: 'Run', lines: ['cargo run -p switchyard-app', 'cargo run -p switchyard-cli -- --help', 'cargo test --workspace'] },
-        { title: 'Package', lines: ['./packaging/package.sh', 'pwsh packaging/windows/build-windows.ps1'] },
-        { title: 'Integration tests', lines: ['docker compose -f docker/compose.yml up -d', 'cargo test --workspace -- --ignored'] },
       ],
     };
   }
