@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/gpui", "crates/gpui_linux", "compat/gpui-pre", "compat/gpui-pre-platform", "compat/gpui-pre-macros", "compat/gpui-pre-sum-tree", "compat/gpui-pre-web"]
+members = ["crates/gpui", "crates/gpui_linux", "crates/gpui_windows", "compat/gpui-pre", "compat/gpui-pre-platform", "compat/gpui-pre-macros", "compat/gpui-pre-sum-tree", "compat/gpui-pre-web"]
 
 [workspace.package]
 publish = false

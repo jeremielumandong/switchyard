@@ -3876,7 +3876,6 @@ dependencies = [
 [[package]]
 name = "gpui_windows"
 version = "0.1.0"
-source = "git+https://github.com/longbridge/gpui-fast?rev=598306fcbf77bff0f764b5a178a447344e72e132#598306fcbf77bff0f764b5a178a447344e72e132"
 dependencies = [
  "accesskit",
  "accesskit_windows",

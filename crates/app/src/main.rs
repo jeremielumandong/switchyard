@@ -46,6 +46,7 @@ mod rail;
 mod rdp_tab;
 mod redis_tab;
 mod remote_files;
+mod rendering;
 mod result_diff;
 mod rich_text;
 mod runbook_tab;
@@ -197,6 +198,7 @@ fn main() -> Result<()> {
                 ..TitleBar::window_options()
             };
             let opened = gpui_kit::open_window(options, cx, |window, cx| {
+                rendering::init(window.gpu_specs().as_ref());
                 cx.new(|cx| workspace::Workspace::new(handle, events, window, cx))
             });
             if let Err(e) = opened {

@@ -1255,6 +1255,19 @@ are shared hotspots: one owner at a time.
   instead of polling, removing a run's worktree from the app, keeping agent sessions alive after the app
   quits (needs a background daemon; tmux covers it on Hosts).
 
+## Extra — Software rendering on VMs (user request, 2026-10-16)
+
+- [x] SR-1 Port the CPU-relevant parts of AgentOps' DirectX software-rendering fixes to the
+  vendored gpui-fast stack (`gpui_windows` is now vendored): Windows stops re-presenting
+  unchanged scenes; on a software adapter or over RDP, frames are paced at 30 Hz with
+  recovery time after slow frames, window moves reuse the scene, and blurred shadows are
+  left out; WARP draws solid quad batches with a specialized shader and large opaque
+  rectangles with `ClearView`; path batches rasterize into a bounded texture and unchanged
+  ones are reused (all adapters). `app/src/rendering.rs` picks the policy at startup.
+  WARP pixel tests compare each path against upstream's drawing.
+- Deferred (see Follow-ups): AgentOps' hover-move coalescing, native fills of rounded
+  panel interiors, the modal underlay cache; a CPU measurement on the affected VM.
+
 ## M6 — Packaging and beta
 
 Exit: every performance budget passes on all three platforms; signed builds published.
@@ -1317,6 +1330,11 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   running app's unlocked secrets over the loopback handoff, scoped by the session token.
 
 (Add items here instead of doing them mid-task.)
+- Software rendering (SR-1) leftovers from AgentOps' GPUI patch: coalesce mouse moves in
+  low-power mode (`hover_input.rs`, with live caption hit tests); fill the interior of large
+  rounded or bordered panels with `ClearView` (needs the edge quads uploaded with the
+  scene's quads); the modal underlay cache (overlaps gpui-fast's layer tiles). Upstream the
+  `gpui_windows` patch to AgentOpsChat so the two apps share one stack again.
 - In-app RDP (SW-9..10) leftovers: RD Gateway (`ironrdp-mstsgu`), Kerberos (needs a KDC
   network client for CredSSP), clipboard (`ironrdp-cliprdr`), audio, drive redirection,
   dynamic resize when the tab resizes (display control channel), the admin / console

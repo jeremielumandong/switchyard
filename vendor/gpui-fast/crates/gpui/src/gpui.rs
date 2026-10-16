@@ -51,6 +51,7 @@ pub mod queue;
 /// A seeded, mutable element tree for benchmarks and tests of GPUI rendering.
 #[cfg(any(test, feature = "bench-support"))]
 pub mod randomized_element_tree;
+mod rendering_policy;
 mod scene;
 #[cfg(any(test, feature = "test-support", feature = "bench-support"))]
 mod seeds;
@@ -210,6 +211,10 @@ pub use profiler::*;
 #[cfg(any(target_os = "windows", target_os = "linux", target_family = "wasm"))]
 pub use queue::{PriorityQueueReceiver, PriorityQueueSender};
 pub use refineable::*;
+pub use rendering_policy::{
+    low_power_frame_interval, low_power_rendering, set_low_power_rendering,
+    set_software_rendering_effects,
+};
 pub use scene::*;
 pub use shared_uri::*;
 use std::{any::Any, future::Future};

@@ -1750,3 +1750,34 @@ to GPUI Kit 0.7.3 on the same patched GPUI Fast stack as AgentOpsChat. Kit 0.7.3
   crates stay pinned to `598306f` from git. There is still one GPUI core in the graph.
 - Update these by re-copying from AgentOpsChat, not by editing them here, so the two apps
   keep one stack.
+
+## 2026-10-16 — Software rendering fixes patched into the vendored GPUI stack
+
+Switchyard used very high CPU on a VM without a GPU, where Direct3D runs on WARP (every
+pixel is CPU work). AgentOps had fixed this in its own GPUI copy (Zed's `gpui` 0.2.2), which
+does not merge onto gpui-fast (28 conflicts in the DirectX renderer alone), so at the user's
+request only the CPU-relevant parts were ported, here rather than in AgentOpsChat first. This
+departs from "update by re-copying from AgentOpsChat" (2026-10-14); the patch is listed in
+`vendor/gpui-fast/PARITY-PATCH.md` so it can be upstreamed there.
+
+- `gpui_windows` is vendored too (`vendor/gpui-fast/crates/gpui_windows`, gpui-fast
+  `598306f`, Apache-2.0) and patched like `gpui` and `gpui_linux`.
+- Windows never re-presents an unchanged scene (presenting renders the whole scene again);
+  other platforms keep the high-rate input keepalive (ProMotion).
+- Policy (`app/src/rendering.rs`), decided from the main window's GPU before its first
+  frame: a software adapter turns on "software effects" (no blurred shadows; zero-blur
+  rings stay) and low-power pacing; Remote Desktop (`SESSIONNAME` = `RDP-…`) turns on
+  pacing only. `SWITCHYARD_LOW_POWER_RENDERING=0|1` overrides pacing. Low-power pacing: the
+  Windows frame thread sleeps 33 ms instead of `DwmFlush`, a scheduled frame waits the last
+  frame's cost (≤ 100 ms), and moving the window without resizing it reuses the scene.
+  The RDP check reads an environment variable because the app crate forbids `unsafe`.
+- The renderer follows the adapter by itself: on WARP, solid quad batches use a shader
+  that takes their colors and geometry from vertex outputs, and large opaque rectangles are
+  filled with `ClearView`. On all adapters, path batches rasterize into a texture sized to
+  them (64-px steps, ≤ 1 MPx) instead of a window-sized 4× MSAA one, and an unchanged batch
+  is not rasterized again. Hardware quads are drawn as before.
+- Left out: hover-move coalescing, `ClearView` for rounded panel interiors, the modal
+  underlay cache (gpui-fast's layer tiles cover part of it), AgentOps' input-free scheduler
+  changes for modal move/resize loops. See Follow-ups.
+- `GPUI_RENDER_DIAGNOSTICS=1` logs frame rate and frame cost every 5 s (`switchyard.log`), to
+  compare before and after on the VM.

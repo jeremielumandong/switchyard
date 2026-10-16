@@ -234,3 +234,4 @@ gpui-pre-web = { path = "vendor/gpui-fast/compat/gpui-pre-web" }
 [patch."https://github.com/longbridge/gpui-fast"]
 gpui = { path = "vendor/gpui-fast/crates/gpui" }
 gpui_linux = { path = "vendor/gpui-fast/crates/gpui_linux" }
+gpui_windows = { path = "vendor/gpui-fast/crates/gpui_windows" }

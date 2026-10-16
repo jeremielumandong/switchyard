@@ -1542,6 +1542,14 @@ pub(crate) struct ElementStateBox {
     pub(crate) type_name: &'static str,
 }
 
+/// Blurred (elevation, glow) shadows are decorative and costly on software
+/// adapters, so they are left out when software rendering effects are on.
+/// Zero-blur shadows (focus, selection and validation rings) are kept.
+fn blurred_shadow_filter() -> impl Fn(&BoxShadow) -> bool {
+    let software_effects = crate::rendering_policy::software_rendering_effects();
+    move |shadow| software_effects && shadow.blur_radius > px(0.)
+}
+
 fn default_bounds(display_id: Option<DisplayId>, cx: &mut App) -> WindowBounds {
     // TODO, BUG: if you open a window with the currently active window
     // on the stack, this will erroneously fallback to `None`
@@ -1802,6 +1810,8 @@ impl Window {
             let next_frame_callbacks = next_frame_callbacks.clone();
             let input_rate_tracker = input_rate_tracker.clone();
             let mut deferred_force_render = false;
+            let mut frame_pacer = crate::rendering_policy::FramePacer::default();
+            let mut frame_diagnostics = crate::rendering_policy::FrameDiagnostics::default();
             move |request_frame_options| {
                 #[cfg(feature = "profiler")]
                 let (_foreground_turn, window_id) = {
@@ -1913,12 +1923,24 @@ impl Window {
 
                 // Keep presenting if input was recently arriving at a high rate (>= 60fps).
                 // Once high-rate input is detected, we sustain presentation for 1 second
-                // to prevent display underclocking during active input.
-                let needs_present = request_frame_options.require_presentation
-                    || needs_present.get()
-                    || input_rate_tracker.borrow_mut().is_high_rate();
+                // to prevent display underclocking during active input. Windows
+                // skips this keepalive (see `rendering_policy`).
+                let needs_present = crate::rendering_policy::requires_presentation(
+                    request_frame_options.require_presentation,
+                    needs_present.get(),
+                    input_rate_tracker.borrow_mut().is_high_rate(),
+                );
 
-                let should_draw = invalidator.is_dirty() || force_render;
+                // In low-power mode an expensive frame delays the next scheduled
+                // one. A skipped draw leaves the window dirty, so a later frame
+                // request draws the latest scene.
+                let low_power = crate::rendering_policy::low_power_rendering();
+                let frame_started = std::time::Instant::now();
+                let render_ready =
+                    frame_pacer.ready(low_power, force_render || needs_present, frame_started);
+                let dirty = invalidator.is_dirty() || force_render;
+                let should_draw = dirty && render_ready;
+                let mut frame_cost = None;
                 if should_draw {
                     measure("frame duration", || {
                         handle
@@ -1933,12 +1955,18 @@ impl Window {
                                 arena_clear_needed.clear(cx);
                             })
                             .log_err();
-                    })
+                    });
+                    frame_cost = Some(frame_started.elapsed());
                 } else if needs_present {
                     handle
                         .update(&mut cx, |_, window, _| window.present())
                         .log_err();
+                    frame_cost = Some(frame_started.elapsed());
                 }
+                if let Some(cost) = frame_cost {
+                    frame_pacer.presented(std::time::Instant::now(), cost);
+                }
+                frame_diagnostics.record(low_power, frame_cost, dirty && !render_ready);
 
                 handle
                     .update(&mut cx, |_, window, _| {
@@ -1997,7 +2025,7 @@ impl Window {
             let mut cx = cx.to_async();
             move || {
                 handle
-                    .update(&mut cx, |_, window, cx| window.bounds_changed(cx))
+                    .update(&mut cx, |_, window, cx| window.moved(cx))
                     .log_err();
             }
         }));
@@ -2832,12 +2860,32 @@ impl Window {
     /// the platform window, then notifies observers. Normally called automatically
     /// by the platform's resize callback, but exposed publicly for test infrastructure.
     pub fn bounds_changed(&mut self, cx: &mut App) {
-        self.scale_factor = self.platform_window.scale_factor();
-        self.viewport_size = self.platform_window.content_size();
-        self.display_id = self.platform_window.display().map(|display| display.id());
+        self.update_bounds(true, cx);
+    }
+
+    /// The platform's move callback. In low-power mode a move that keeps the
+    /// size, scale and display reuses the current scene: the compositor moves
+    /// the existing swap chain, and redrawing on every `WM_MOVE` costs a full
+    /// software frame. Bounds observers always run.
+    fn moved(&mut self, cx: &mut App) {
+        self.update_bounds(!crate::rendering_policy::low_power_rendering(), cx);
+    }
+
+    fn update_bounds(&mut self, force_refresh: bool, cx: &mut App) {
+        let scale_factor = self.platform_window.scale_factor();
+        let viewport_size = self.platform_window.content_size();
+        let display_id = self.platform_window.display().map(|display| display.id());
+        let content_changed = self.scale_factor != scale_factor
+            || self.viewport_size != viewport_size
+            || self.display_id != display_id;
+        self.scale_factor = scale_factor;
+        self.viewport_size = viewport_size;
+        self.display_id = display_id;
         self.mouse_position = self.platform_window.mouse_position();
 
-        self.refresh();
+        if force_refresh || content_changed {
+            self.refresh();
+        }
 
         self.bounds_observers
             .clone()
@@ -4561,8 +4609,9 @@ impl Window {
         let opacity = self.element_opacity();
         let element_bounds = self.cover_bounds(bounds);
         let element_corner_radii = corner_radii.scale(scale_factor);
+        let skip_blurred = blurred_shadow_filter();
         for shadow in shadows {
-            if shadow.inset {
+            if shadow.inset || skip_blurred(shadow) {
                 continue;
             }
             let shadow_bounds = (bounds + shadow.offset).dilate(shadow.spread_radius);
@@ -4597,8 +4646,9 @@ impl Window {
         let opacity = self.element_opacity();
         let element_bounds = self.cover_bounds(bounds);
         let element_corner_radii = corner_radii.scale(scale_factor);
+        let skip_blurred = blurred_shadow_filter();
         for shadow in shadows {
-            if !shadow.inset {
+            if !shadow.inset || skip_blurred(shadow) {
                 continue;
             }
             let hole = (bounds + shadow.offset).dilate(-shadow.spread_radius);

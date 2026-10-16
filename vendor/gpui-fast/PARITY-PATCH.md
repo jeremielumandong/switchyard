@@ -101,3 +101,32 @@ The actual desktop Kit/GPUI test failed before repair (disabled() None rather
 than Some(true)) and passes disable/click, re-enable/click, disable-again/click
 with exactly one activation. Headless AccessKit/input evidence is distinct
 from supported-platform assistive technology and installed acceptance.
+
+## Windows software rendering (Switchyard, 2026-10-16)
+
+Patched in Switchyard (not yet in AgentOpsChat); ported from AgentOps' patch of Zed's
+`gpui` 0.2.2 (`src-gpui/vendor/gpui/PATCHES.md` there), keeping only what cuts CPU on a
+software adapter (WARP). `crates/gpui_windows` is copied unchanged from gpui-fast
+`598306f` and then patched; Cargo patches its git source like `gpui` and `gpui_linux`.
+
+- `gpui/src/rendering_policy.rs` (new), `gpui.rs`: `set_low_power_rendering`,
+  `set_software_rendering_effects`, and the readers the platform crate needs
+  (`low_power_rendering`, `low_power_frame_interval`, hidden from docs).
+- `gpui/src/window.rs`: on Windows the frame loop no longer re-presents unchanged scenes
+  during high-rate input; in low-power mode a scheduled draw waits the previous frame's
+  cost (capped at 100 ms) and the platform move callback reuses the scene unless size,
+  scale or display changed (`moved`; public `bounds_changed` still refreshes). Blurred
+  drop and inset shadows are skipped while software effects are on.
+- `gpui_windows/src/vsync.rs`: low-power mode sleeps 33 ms instead of `DwmFlush`.
+- `gpui_windows/src/software_rendering.rs` (new): on a software adapter, a solid quad
+  batch uses `solid_quad_*` shaders (`shaders.hlsl`, shared math in `quad_shading.hlsl`,
+  compiled by `build.rs`), and large opaque whole-pixel quads on the window target are
+  filled with `ClearView`.
+- `gpui_windows/src/path_targets.rs` (new): path batches rasterize into a texture sized
+  to them, placed with an even whole-pixel viewport translation (`screen_origin` /
+  `texture_origin` in the path shaders), and an unchanged batch reuses its resolved
+  texture. `fast/frame.rs` and `fast/draw_state.rs` route quads and paths through these;
+  `directx_renderer.rs` creates them and releases them on resize and device loss.
+- Tests: `software_rendering_tests.rs` draws on WARP into a composition swap chain and
+  compares each path with upstream's drawing (one 8-bit step allowed); unit tests cover
+  quad eligibility, crop plans and vertex reuse; `rendering_policy` tests cover pacing.

@@ -266,9 +266,16 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
 - GPUI on Windows: the title bar row is a `WindowControlArea::Drag` (`HTCAPTION`), and GPUI
   reports it under every hitbox inside it. Every clickable title-bar control needs
   `.occlude()`, or Windows takes the click as a window drag. Linux/Xvfb does not show this.
-- For GPUI Kit 0.7.3, `gpui-base` and gpui-fast's `gpui` / `gpui_linux` are vendored
-  (`vendor/gpui-base`, `vendor/gpui-fast`), copied from AgentOpsChat's patched stack; re-copy
-  from there rather than editing or bumping them here (see `docs/DECISIONS.md`).
+- For GPUI Kit 0.7.3, `gpui-base` and gpui-fast's `gpui` / `gpui_linux` / `gpui_windows` are
+  vendored (`vendor/gpui-base`, `vendor/gpui-fast`), copied from AgentOpsChat's patched stack;
+  re-copy from there rather than editing or bumping them here (see `docs/DECISIONS.md`). The
+  one exception is the Windows software-rendering patch (2026-10-16, listed at the end of
+  `vendor/gpui-fast/PARITY-PATCH.md`): carry it over when re-copying.
+- The vendored crates are not root workspace members. Test them from `vendor/gpui-fast`
+  with `--config 'patch."https://github.com/longbridge/gpui-fast".gpui.path="crates/gpui"'`
+  (or they build against git's unpatched `gpui`) and `CARGO_TARGET_DIR=../../target/vendor-tests`,
+  then delete the `Cargo.lock` that run leaves there. `gpui`'s own lib tests don't build
+  (fonts missing from the copy); `gpui_windows`'s do (`--features test-support`).
 - gpui-component 0.7 splits inputs: `InputState` (one line), `TextareaState` (multi-line),
   `EditorState` (code). Code ported from 0.5 (AgentOps) must pick the right one per field.
   `open_window` from gpui-kit already wraps the view in `Root`.
