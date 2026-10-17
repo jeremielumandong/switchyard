@@ -8,10 +8,11 @@
 //! marking dirty exactly once per real edit, and `draft::build` never learns
 //! the grids exist. Nothing here touches storage or transport.
 
+use crate::menus::ContextMenuExt;
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::component::input::TextareaState;
 use gpui_kit::component::input::{InputEvent, InputState};
-use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::{
     Sizable,
     button::{Button, ButtonVariants},

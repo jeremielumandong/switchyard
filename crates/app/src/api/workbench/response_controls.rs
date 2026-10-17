@@ -1,9 +1,10 @@
 //! Response-only formatting and document queries; the original response remains intact.
 use super::*;
+use crate::menus::DropdownMenu;
 use gpui_kit::component::{
     Disableable, Sizable,
     button::{Button, ButtonVariants},
-    menu::{DropdownMenu, PopupMenuItem},
+    menu::PopupMenuItem,
 };
 use gpui_kit::{AnyElement, div};
 

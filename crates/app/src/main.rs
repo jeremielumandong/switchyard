@@ -36,6 +36,7 @@ mod forwards_editor;
 mod grid;
 mod infra;
 mod log_file;
+mod menus;
 mod named_secrets;
 mod object_search;
 mod object_tab;

@@ -2990,6 +2990,8 @@ impl Workspace {
                 .top(rpx(34.))
                 .left(rpx(8.))
                 .w(rpx(280.))
+                .max_h(rpx(480.))
+                .overflow_y_scroll()
                 .p(rpx(4.))
                 .bg(p.elev)
                 .border_1()

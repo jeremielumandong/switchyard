@@ -3130,6 +3130,8 @@ impl SqlTab {
                 .top(rpx(28.))
                 .right(rpx(0.))
                 .w(rpx(260.))
+                .max_h(rpx(360.))
+                .overflow_y_scroll()
                 .p(rpx(4.))
                 .bg(p.elev)
                 .rounded(px(7.))

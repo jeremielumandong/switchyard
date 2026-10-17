@@ -1,10 +1,11 @@
 //! Persistent desktop pane preferences. Resize completion is the persistence boundary.
 use super::*;
+use crate::menus::DropdownMenu;
 use gpui_kit::AnyElement;
 use gpui_kit::component::{
     Sizable,
     button::{Button, ButtonVariants},
-    menu::{DropdownMenu, PopupMenuItem},
+    menu::PopupMenuItem,
     resizable::ResizableState,
 };
 
