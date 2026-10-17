@@ -95,7 +95,12 @@ pub enum SqlTabEvent {
         /// WHERE condition.
         filter: String,
     },
+    /// Pick a file to save the script to (Save As, or Save of a tab with no file).
+    SaveAs,
 }
+
+/// Choices for the rows fetched before a result pauses (Fetch all continues).
+pub const FETCH_LIMITS: &[usize] = &[200, 1_000, 10_000, 100_000];
 
 /// Statements waiting for a confirmation or parameter values.
 #[derive(Clone, Debug)]
@@ -230,6 +235,27 @@ pub enum ViewerFormat {
     Image,
 }
 
+/// Editor commands of the SQL tab (see [`crate::sql_edit`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditCmd {
+    /// Comment or uncomment the lines with `--`.
+    ToggleComment,
+    /// Wrap or unwrap the selection in `/* */`.
+    ToggleBlockComment,
+    /// Upper-case the selection or word.
+    UpperCase,
+    /// Lower-case the selection or word.
+    LowerCase,
+    /// Duplicate the selection or line.
+    Duplicate,
+    /// Move the lines up.
+    MoveUp,
+    /// Move the lines down.
+    MoveDown,
+    /// Delete the lines.
+    DeleteLine,
+}
+
 /// An SQL editor tab.
 pub struct SqlTab {
     core: RuntimeHandle,
@@ -276,6 +302,8 @@ pub struct SqlTab {
     fetch_limit: usize,
     notices: usize,
     last_affected: Option<u64>,
+    /// This run's totals for the script summary: (statements done, failed, rows affected).
+    run_totals: (usize, usize, u64),
     focus: FocusHandle,
     autosave: Option<Task<()>>,
     /// Redraws the elapsed time while a query runs (nothing else notifies when no
@@ -306,6 +334,20 @@ pub struct SqlTab {
     /// Statement text to show in the editor at the next render (paging runs without a
     /// window at hand).
     pending_text: Option<String>,
+    /// The `.sql` file on this computer the script was opened from or saved to.
+    pub file: Option<std::path::PathBuf>,
+    /// Its modification time when last read or written (conflict check on save).
+    file_modified: Option<i64>,
+    /// Edits not yet saved to `file`.
+    pub file_dirty: bool,
+    /// The save in flight.
+    save_request: Option<RequestId>,
+    /// The file changed on disk: the next Save overwrites it.
+    force_save: bool,
+    /// Scripts run on after a failing statement (DBeaver's "ignore" error handling).
+    pub continue_on_error: bool,
+    /// Parameter values last entered, offered again next time.
+    param_values: Vec<(String, String)>,
     _subs: Vec<Subscription>,
 }
 
@@ -339,11 +381,18 @@ impl SqlTab {
         let sub = cx.subscribe_in(&editor, window, |this, _, ev: &InputEvent, window, cx| {
             if let InputEvent::Change = ev {
                 crate::completion::place_snippet_cursor(&this.completion, &this.editor, cx);
-                this.dirty = true;
-                this.peek = None;
+                // Keystrokes stay cheap: the workspace only hears of the first edit after a
+                // save (for the unsaved dot), not of every key.
+                let was_dirty = std::mem::replace(&mut this.dirty, true);
+                let was_file_dirty = std::mem::replace(&mut this.file_dirty, this.file.is_some());
+                if this.peek.take().is_some() {
+                    cx.notify();
+                }
                 this.schedule_autosave(cx);
                 this.schedule_lint(window, cx);
-                cx.emit(SqlTabEvent::Changed);
+                if !was_dirty || was_file_dirty != this.file_dirty {
+                    cx.emit(SqlTabEvent::Changed);
+                }
             }
         });
         let completion: Rc<RefCell<CompletionState>> = Rc::default();
@@ -399,6 +448,7 @@ impl SqlTab {
             fetch_limit: DEFAULT_FETCH_LIMIT,
             notices: 0,
             last_affected: None,
+            run_totals: (0, 0, 0),
             focus: cx.focus_handle(),
             autosave: None,
             ticker: None,
@@ -420,6 +470,13 @@ impl SqlTab {
             pager: None,
             _pager_sub: None,
             pending_text: None,
+            file: buffer.file.map(std::path::PathBuf::from),
+            file_modified: None,
+            file_dirty: false,
+            save_request: None,
+            force_save: false,
+            continue_on_error: false,
+            param_values: Vec::new(),
             _subs: vec![sub, filter_sub, plan_sub],
         };
         if let Some(c) = connection {
@@ -613,6 +670,7 @@ impl SqlTab {
             connection_id: self.connection.as_ref().map(|c| c.id.clone()),
             text: editor.value().to_string(),
             cursor: editor.cursor(),
+            file: self.file.as_ref().map(|p| p.to_string_lossy().into_owned()),
         }
     }
 
@@ -636,19 +694,37 @@ impl SqlTab {
         cx.emit(SqlTabEvent::Changed);
     }
 
+    /// Diagnostics and folds after a pause in typing. Parsing runs on the background
+    /// executor, so a large script never stalls typing; a newer edit drops the stale run.
     fn schedule_lint(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.lint = Some(cx.spawn_in(window, async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(250))
                 .await;
-            let _ = this.update_in(cx, |tab, _window, cx| tab.lint_now(cx));
+            let Ok((text, dialect)) = this.update(cx, |tab, cx| {
+                (tab.editor.read(cx).value().to_string(), tab.dialect())
+            }) else {
+                return;
+            };
+            let (diags, folds) = cx
+                .background_executor()
+                .spawn(async move {
+                    (
+                        parse_diagnostics(dialect, &text),
+                        crate::folds::sql_folds(dialect, &text),
+                    )
+                })
+                .await;
+            let _ = this.update(cx, |tab, cx| tab.apply_lint(diags, folds, cx));
         }));
     }
 
-    fn lint_now(&mut self, cx: &mut Context<Self>) {
-        let text = self.editor.read(cx).value().to_string();
-        let diags = parse_diagnostics(self.dialect(), &text);
-        let folds = crate::folds::sql_folds(self.dialect(), &text);
+    fn apply_lint(
+        &mut self,
+        diags: Vec<switchyard_core::db::diagnostics::Diagnostic>,
+        folds: Vec<gpui_kit::base::input::FoldRange>,
+        cx: &mut Context<Self>,
+    ) {
         self.editor.update(cx, |state, cx| {
             state.apply_highlighter_fold_candidates(folds, cx);
             if let Some(set) = state.diagnostics_mut() {
@@ -685,7 +761,7 @@ impl SqlTab {
         if sel.start < sel.end {
             let slice = &text[sel.clone()];
             dialect
-                .split_script(slice)
+                .split_statements(slice)
                 .iter()
                 .map(|s| StatementRequest {
                     sql: s.text(slice).to_owned(),
@@ -881,7 +957,7 @@ impl SqlTab {
         let text = self.editor.read(cx).value().to_string();
         let statements = self
             .dialect()
-            .split_script(&text)
+            .split_statements(&text)
             .iter()
             .map(|s| StatementRequest {
                 sql: s.text(&text).to_owned(),
@@ -1038,6 +1114,7 @@ impl SqlTab {
         self.selected = None;
         self.notices = 0;
         self.last_affected = None;
+        self.run_totals = (0, 0, 0);
         self.export_open = false;
         self.current_statements = pending.statements.clone();
         self.current_index = 0;
@@ -1083,7 +1160,12 @@ impl SqlTab {
             statements: pending.statements,
             tags: vec![],
             confirmed_destructive: confirmed,
-            fetch_limit: FetchLimit::Rows(self.fetch_limit),
+            fetch_limit: if self.fetch_limit == usize::MAX {
+                FetchLimit::All
+            } else {
+                FetchLimit::Rows(self.fetch_limit)
+            },
+            continue_on_error: self.continue_on_error,
         });
         cx.emit(SqlTabEvent::Changed);
         cx.notify();
@@ -1141,6 +1223,130 @@ impl SqlTab {
         self.manual_txn = manual;
         cx.emit(SqlTabEvent::Changed);
         cx.notify();
+    }
+
+    /// An editing command on the selection or the line at the cursor (DBeaver's editor
+    /// shortcuts), as one undo step.
+    pub fn edit_command(&mut self, cmd: EditCmd, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::sql_edit as ed;
+        let (text, sel) = {
+            let e = self.editor.read(cx);
+            (e.value().to_string(), e.selected_range())
+        };
+        let sel = sel.start.min(text.len())..sel.end.min(text.len());
+        let prefix = if self.dialect().flavor() == switchyard_core::db::dialect::Flavor::JavaScript
+        {
+            "//"
+        } else {
+            "--"
+        };
+        let edit = match cmd {
+            EditCmd::ToggleComment => Some(ed::toggle_line_comment(&text, sel, prefix)),
+            EditCmd::ToggleBlockComment => Some(ed::toggle_block_comment(&text, sel)),
+            EditCmd::UpperCase => Some(ed::change_case(&text, sel, true)),
+            EditCmd::LowerCase => Some(ed::change_case(&text, sel, false)),
+            EditCmd::Duplicate => Some(ed::duplicate(&text, sel)),
+            EditCmd::MoveUp => ed::move_lines(&text, sel, true),
+            EditCmd::MoveDown => ed::move_lines(&text, sel, false),
+            EditCmd::DeleteLine => Some(ed::delete_lines(&text, sel)),
+        };
+        if let Some(edit) = edit.filter(|e| e.text != text[e.range.clone()]) {
+            self.editor
+                .update(cx, |e, cx| ed::apply(e, edit, window, cx));
+        }
+    }
+
+    /// Save the script to its file, or ask for one ([`SqlTabEvent::SaveAs`]).
+    pub fn save_file(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.file.clone() else {
+            cx.emit(SqlTabEvent::SaveAs);
+            return;
+        };
+        let request = next_id();
+        self.save_request = Some(request);
+        self.core.send(Command::WriteTextFile {
+            request,
+            fs: switchyard_core::FsRef::Local,
+            path,
+            content: self.editor.read(cx).value().to_string(),
+            expect_modified: self.file_modified,
+            force: std::mem::take(&mut self.force_save),
+        });
+    }
+
+    /// Bind the tab to `path` (Save As) and save it there.
+    pub fn save_as(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        self.set_file(path, None, cx);
+        self.force_save = true;
+        self.save_file(cx);
+    }
+
+    /// Bind the tab to a script file just read or chosen; the title becomes its name.
+    pub fn set_file(
+        &mut self,
+        path: std::path::PathBuf,
+        modified: Option<i64>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(name) = path.file_name() {
+            self.title = name.to_string_lossy().into_owned().into();
+        }
+        self.file = Some(path);
+        self.file_modified = modified;
+        self.file_dirty = false;
+        self.save_now(cx);
+        cx.notify();
+    }
+
+    /// Whether `request` is this tab's file save.
+    pub fn owns_save(&self, request: RequestId) -> bool {
+        self.save_request == Some(request)
+    }
+
+    /// The file save finished.
+    pub fn on_file_saved(
+        &mut self,
+        result: &Result<Option<i64>, switchyard_core::SaveError>,
+        cx: &mut Context<Self>,
+    ) {
+        self.save_request = None;
+        let name = self.title.to_string();
+        match result {
+            Ok(modified) => {
+                self.file_modified = *modified;
+                self.file_dirty = false;
+                cx.emit(SqlTabEvent::Toast(format!("Saved {name}")));
+            }
+            Err(switchyard_core::SaveError::Conflict(_)) => {
+                self.force_save = true;
+                cx.emit(SqlTabEvent::Toast(format!(
+                    "{name} changed on disk since it was opened. Save again to overwrite it, or use Save As."
+                )));
+            }
+            Err(switchyard_core::SaveError::Failed(e)) => {
+                cx.emit(SqlTabEvent::Toast(format!("Could not save {name}: {e}")));
+            }
+        }
+        cx.emit(SqlTabEvent::Changed);
+        cx.notify();
+    }
+
+    /// Remember the parameter values just entered.
+    pub fn remember_params(&mut self, values: &[(String, String)]) {
+        for (k, v) in values {
+            match self.param_values.iter_mut().find(|(n, _)| n == k) {
+                Some(slot) => slot.1 = v.clone(),
+                None => self.param_values.push((k.clone(), v.clone())),
+            }
+        }
+    }
+
+    /// The value last entered for parameter `name`.
+    pub fn last_param(&self, name: &str) -> Option<&str> {
+        self.param_values
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.as_str())
     }
 
     /// Reformat the buffer.
@@ -1211,6 +1417,8 @@ impl SqlTab {
                 if completion.affected.is_some() {
                     self.last_affected = completion.affected;
                 }
+                self.run_totals.0 += 1;
+                self.run_totals.2 += completion.affected.unwrap_or(0);
             }
             QueryEvent::NeedsConfirmation { .. } => {
                 // The UI pre-checks; this only happens if the profile changed meanwhile.
@@ -1222,8 +1430,26 @@ impl SqlTab {
                 index,
                 error,
                 location,
-            } => self.on_failed(index, error, location, cx),
+            } => {
+                self.run_totals.1 += 1;
+                self.on_failed(index, error, location, cx)
+            }
             QueryEvent::Finished { elapsed, cancelled } => {
+                let total = self.current_statements.len();
+                if total > 1 {
+                    let (done, failed, affected) = self.run_totals;
+                    let p = palette(cx);
+                    let mut line = format!("Script: {done} of {total} statements ran");
+                    if failed > 0 {
+                        line.push_str(&format!(" · {failed} failed"));
+                    }
+                    if affected > 0 {
+                        line.push_str(&format!(" · {} rows affected", thousands(affected)));
+                    }
+                    line.push_str(&format!(" · {}", ui::duration(elapsed)));
+                    self.messages
+                        .push((if failed > 0 { p.prod } else { p.dev }, line));
+                }
                 let affected = if self.results.len() == self.run_base {
                     self.last_affected
                 } else {
@@ -1749,6 +1975,80 @@ impl SqlTab {
             })
             .collect();
         Some(export(fmt, &names, &rows, self.dialect(), "result"))
+    }
+
+    /// Status bar dropdowns: rows fetched before pausing, and what a script does after a
+    /// failing statement.
+    fn render_run_options(&self, cx: &mut Context<Self>) -> AnyElement {
+        use crate::menus::DropdownMenu as _;
+        use gpui_kit::component::button::{Button, ButtonVariants as _};
+        let limit = self.fetch_limit;
+        let limit_label = if limit == usize::MAX {
+            "Max rows: all".to_owned()
+        } else {
+            format!("Max rows: {}", thousands(limit as u64))
+        };
+        let weak = cx.entity().downgrade();
+        let rows = Button::new("fetch-limit")
+            .ghost()
+            .xsmall()
+            .label(limit_label)
+            .dropdown_menu(move |mut menu, _, _| {
+                for &n in FETCH_LIMITS.iter().chain(std::iter::once(&usize::MAX)) {
+                    let weak = weak.clone();
+                    let label = if n == usize::MAX {
+                        "All rows".to_owned()
+                    } else {
+                        thousands(n as u64)
+                    };
+                    menu = menu.item(PopupMenuItem::new(label).checked(n == limit).on_click(
+                        move |_, _, cx| {
+                            let _ = weak.update(cx, |t, cx| t.set_fetch_limit(n, cx));
+                        },
+                    ));
+                }
+                menu
+            });
+        let cont = self.continue_on_error;
+        let weak = cx.entity().downgrade();
+        let on_error = Button::new("on-error")
+            .ghost()
+            .xsmall()
+            .label(if cont {
+                "On error: continue"
+            } else {
+                "On error: stop"
+            })
+            .dropdown_menu(move |mut menu, _, _| {
+                for (value, label) in [
+                    (false, "Stop the script"),
+                    (true, "Continue with the next statement"),
+                ] {
+                    let weak = weak.clone();
+                    menu = menu.item(PopupMenuItem::new(label).checked(value == cont).on_click(
+                        move |_, _, cx| {
+                            let _ = weak.update(cx, |t, cx| {
+                                t.continue_on_error = value;
+                                cx.notify();
+                            });
+                        },
+                    ));
+                }
+                menu
+            });
+        div()
+            .flex()
+            .items_center()
+            .gap(rpx(2.))
+            .child(rows)
+            .child(on_error)
+            .into_any_element()
+    }
+
+    /// Rows fetched before a result pauses (`usize::MAX`: all).
+    pub fn set_fetch_limit(&mut self, limit: usize, cx: &mut Context<Self>) {
+        self.fetch_limit = limit;
+        cx.notify();
     }
 
     fn render_toolbar(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
@@ -2449,13 +2749,7 @@ impl SqlTab {
                         (false, n) => format!("{n} notice{}", if n == 1 { "" } else { "s" }),
                     },
                 ))
-                .child(
-                    div()
-                        .font_family(MONO)
-                        .text_color(p.fg3)
-                        .whitespace_nowrap()
-                        .child(format!("limit {}", thousands(self.fetch_limit as u64))),
-                );
+                .child(self.render_run_options(cx));
 
         let pager_bar = self
             .pager
@@ -3452,6 +3746,38 @@ impl Render for SqlTab {
             .on_action(
                 cx.listener(|this, _: &crate::actions::ExtendRight, _, cx| this.extend(0, 1, cx)),
             )
+            .on_action(
+                cx.listener(|this, _: &crate::actions::ToggleComment, w, cx| {
+                    this.edit_command(EditCmd::ToggleComment, w, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::actions::ToggleBlockComment, w, cx| {
+                    this.edit_command(EditCmd::ToggleBlockComment, w, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &crate::actions::UpperCase, w, cx| {
+                this.edit_command(EditCmd::UpperCase, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &crate::actions::LowerCase, w, cx| {
+                this.edit_command(EditCmd::LowerCase, w, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &crate::actions::DuplicateLine, w, cx| {
+                    this.edit_command(EditCmd::Duplicate, w, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &crate::actions::MoveLineUp, w, cx| {
+                this.edit_command(EditCmd::MoveUp, w, cx)
+            }))
+            .on_action(
+                cx.listener(|this, _: &crate::actions::MoveLineDown, w, cx| {
+                    this.edit_command(EditCmd::MoveDown, w, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &crate::actions::DeleteLine, w, cx| {
+                this.edit_command(EditCmd::DeleteLine, w, cx)
+            }))
             .size_full()
             .flex()
             .flex_col()

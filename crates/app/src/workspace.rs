@@ -168,6 +168,8 @@ pub struct Workspace {
     pending_open: Option<ProfileId>,
     /// A remote file the Files panel asked to open (needs the window).
     pending_editor: Option<(FsRef, PathBuf)>,
+    /// Open SQL Script reads in flight.
+    pub(crate) sql_opens: crate::sql_files::SqlFileOpens,
     /// The shared transfer queue (Files tab drawer, sidebar panel, status bar).
     pub(crate) transfers: Entity<Transfers>,
     /// Unsaved-changes dialog state (`crate::unsaved`).
@@ -378,6 +380,7 @@ impl Workspace {
             prompts: std::collections::VecDeque::new(),
             pending_open: None,
             pending_editor: None,
+            sql_opens: Default::default(),
             transfers,
             unsaved: Default::default(),
             pending_files: None,
@@ -1090,7 +1093,12 @@ impl Workspace {
             Event::TextFileRead { .. } | Event::TextFileSaved { .. } => {
                 if let Event::TextFileRead { request, result } = &ev {
                     let result = result.as_ref().cloned().map_err(|e| e.to_string());
-                    self.on_cloud_text_file(*request, &result, window, cx);
+                    if !self.on_sql_file_read(*request, &result, window, cx) {
+                        self.on_cloud_text_file(*request, &result, window, cx);
+                    }
+                }
+                if let Event::TextFileSaved { request, result } = &ev {
+                    self.on_sql_file_saved(*request, result, cx);
                 }
                 for t in &self.tabs {
                     match t {
@@ -1282,7 +1290,7 @@ impl Workspace {
 
     // ------------------------------------------------------------------ tabs
 
-    fn new_sql_tab(
+    pub(crate) fn new_sql_tab(
         &mut self,
         buffer: BufferState,
         conn: Option<DbConnection>,
@@ -1331,8 +1339,15 @@ impl Workspace {
                 let inputs: Vec<(String, Entity<InputState>)> = names
                     .into_iter()
                     .map(|n| {
+                        // The value entered last time for this name.
+                        let last = tab.read(cx).last_param(&n).map(str::to_owned);
                         let i = cx.new(|cx| {
-                            InputState::new(window, cx).placeholder("value (NULL for null)")
+                            let i =
+                                InputState::new(window, cx).placeholder("value (NULL for null)");
+                            match last {
+                                Some(v) => i.default_value(v),
+                                None => i,
+                            }
                         });
                         (n, i)
                     })
@@ -1349,7 +1364,10 @@ impl Workspace {
             SqlTabEvent::Changed => {
                 self.sync_schema(cx);
                 self.sync_assistant(cx);
+                // Title and unsaved dot (only sent on changes, not on every keystroke).
+                cx.notify();
             }
+            SqlTabEvent::SaveAs => self.save_sql_script_as(tab, cx),
             SqlTabEvent::OpenData {
                 schema,
                 name,
@@ -1700,6 +1718,7 @@ impl Workspace {
             connection_id: Some(id.clone()),
             text: String::new(),
             cursor: 0,
+            file: None,
         };
         self.new_sql_tab(buffer, Some(conn), n as i64, window, cx);
         self.active = self.tabs.len() - 1;
@@ -1726,6 +1745,7 @@ impl Workspace {
             connection_id: Some(conn.id.clone()),
             text: String::new(),
             cursor: 0,
+            file: None,
         };
         let tab = self.new_sql_tab(buffer, Some(conn.clone()), n as i64, window, cx);
         self.active = self.tabs.len() - 1;
@@ -1750,6 +1770,7 @@ impl Workspace {
             connection_id: conn.as_ref().map(|c| c.id.clone()),
             text: String::new(),
             cursor: 0,
+            file: None,
         };
         let tab = self.new_sql_tab(buffer, conn, n as i64, window, cx);
         tab.update(cx, |t, cx| t.save_now(cx));
@@ -1790,15 +1811,27 @@ impl Workspace {
         // Highest first, so the remaining indices stay valid. Files with unsaved changes
         // wait for one Save / Discard / Cancel question.
         let mut dirty = Vec::new();
+        let mut kept_scripts = 0;
         for i in doomed.into_iter().rev() {
             match self.tabs.get(i) {
                 Some(Tab::Editor(e)) if e.read(cx).dirty => dirty.push(e.clone()),
+                // A script with changes not saved to its file stays open.
+                Some(Tab::Sql(t)) if t.read(cx).file_dirty => kept_scripts += 1,
                 _ => self.close_tab_now(i, cx),
             }
         }
         if !dirty.is_empty() {
             dirty.reverse();
             self.confirm_unsaved(dirty, crate::unsaved::AfterUnsaved::CloseTabs, window, cx);
+        }
+        if kept_scripts > 0 {
+            self.toast(
+                format!(
+                    "{kept_scripts} SQL script{} with unsaved changes stayed open",
+                    if kept_scripts == 1 { "" } else { "s" }
+                ),
+                cx,
+            );
         }
         cx.notify();
     }
@@ -1849,6 +1882,9 @@ impl Workspace {
 
     /// Close tab `ix`; a file with unsaved changes asks Save / Discard / Cancel first.
     fn close_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.confirm_sql_close(ix, window, cx) {
+            return;
+        }
         if let Some(Tab::Editor(e)) = self.tabs.get(ix)
             && e.read(cx).dirty
         {
@@ -2768,6 +2804,22 @@ impl Workspace {
                     t.update(cx, |t, cx| t.format(window, cx));
                 }
             }
+            CommandId::OpenSqlScript => self.open_sql_script(cx),
+            CommandId::SaveSqlScript => {
+                if let Some(t) = self.active_sql() {
+                    t.update(cx, |t, cx| t.save_file(cx));
+                }
+            }
+            CommandId::SaveSqlScriptAs => {
+                if let Some(t) = self.active_sql() {
+                    self.save_sql_script_as(t, cx);
+                }
+            }
+            CommandId::SqlEdit(cmd) => {
+                if let Some(t) = self.active_sql() {
+                    t.update(cx, |t, cx| t.edit_command(cmd, window, cx));
+                }
+            }
             CommandId::CommitTransaction => {
                 if let Some(t) = self.active_sql() {
                     t.update(cx, |t, cx| t.end_transaction(true, cx));
@@ -3271,7 +3323,7 @@ impl Workspace {
                     badge.into(),
                     t.title.clone(),
                     t.connection.as_ref().map(|c| c.environment),
-                    t.dirty,
+                    t.dirty || t.file_dirty,
                 )
             }
             Tab::Terminal(t) => {
@@ -4095,6 +4147,15 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &actions::FormatSql, w, cx| {
                 this.run_command(CommandId::FormatSql, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::OpenSqlScript, w, cx| {
+                this.run_command(CommandId::OpenSqlScript, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::SaveSqlScript, w, cx| {
+                this.run_command(CommandId::SaveSqlScript, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::SaveSqlScriptAs, w, cx| {
+                this.run_command(CommandId::SaveSqlScriptAs, w, cx)
             }))
             .on_action(cx.listener(|this, _: &actions::ShowHistory, w, cx| {
                 this.run_command(CommandId::ShowHistory, w, cx)

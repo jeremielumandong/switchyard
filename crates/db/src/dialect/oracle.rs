@@ -3,8 +3,8 @@
 
 use super::lexer::{self, Flavor, SegKind};
 use super::{
-    COMMON_KEYWORDS, Dialect, ParamRef, ParamStyle, StatementSpan, line_of_byte,
-    split_on_semicolons, temporal_text,
+    COMMON_KEYWORDS, Dialect, ParamRef, ParamStyle, StatementSpan, split_on_semicolons,
+    temporal_text,
 };
 use crate::catalog::ObjectKind;
 use crate::value::{self, Engine, Value};
@@ -179,10 +179,10 @@ fn trimmed_span(sql: &str, start: usize, end: usize) -> Option<StatementSpan> {
     let text = &sql[start..end];
     let s = start + (text.len() - text.trim_start().len());
     let e = end - (text.len() - text.trim_end().len());
-    (e > s).then(|| StatementSpan {
+    (e > s).then_some(StatementSpan {
         start: s,
         end: e,
-        line: line_of_byte(sql, s),
+        line: 0,
         repeat: 1,
     })
 }
@@ -202,7 +202,7 @@ fn split_chunk(sql: &str, from: usize, to: usize, out: &mut Vec<StatementSpan>) 
         out.push(StatementSpan {
             start,
             end: from + span.end,
-            line: line_of_byte(sql, start),
+            line: 0,
             repeat: 1,
         });
     }
@@ -233,7 +233,7 @@ impl Dialect for OracleDialect {
             from = end;
         }
         split_chunk(sql, from, sql.len(), &mut out);
-        out
+        super::with_lines(sql, out)
     }
 
     fn select_rows(&self, qualified: &str, limit: u64) -> String {

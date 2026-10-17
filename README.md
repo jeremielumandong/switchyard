@@ -157,8 +157,22 @@ FETCH FIRST, script splitting and catalog queries are engine-aware everywhere.
   cached catalog; aliases resolved from FROM / JOIN; recently used objects rank first.
 - **Run** statement at cursor, selection, or the whole script. Splitting respects strings,
   comments, PostgreSQL dollar-quoted bodies, Snowflake `$$` bodies, Oracle PL/SQL units and
-  SQL Server `GO`.
-- **Parameters**: `:name`, `$1` and `@name` placeholders prompt for values.
+  SQL Server `GO`. Like DBeaver's "Smart" mode, a blank line between two complete
+  statements also separates them, so queries without semicolons run one at a time;
+  procedural blocks (DECLARE, BEGIN … END, routine bodies) stay whole.
+- **Scripts**: stop at the first error or continue with the next statement, and a summary
+  of statements run, failed and rows affected. Max rows per result (200 to all) sits in
+  the results status bar.
+- **Editing shortcuts**: toggle line / block comment (Ctrl/⌘+/, Ctrl/⌘+Shift+/), upper /
+  lower case (Ctrl/⌘+Shift+X / Y), duplicate (Ctrl/⌘+Shift+D), delete line (Ctrl/⌘+D),
+  move lines (Alt+Up / Down).
+- **Script files**: Open SQL Script (Ctrl/⌘+O), Save (Ctrl/⌘+S) and Save As
+  (Ctrl/⌘+Shift+S) on this computer; a tab remembers its file across restarts and asks
+  before closing with unsaved changes.
+- Large scripts stay responsive: splitting is linear and parsing for diagnostics and folds
+  runs off the UI thread.
+- **Parameters**: `:name`, `$1` and `@name` placeholders prompt for values, pre-filled with
+  the last ones entered.
 - **Diagnostics**: parse errors underlined as you type; server errors mapped to line and column.
 - **Peek table**: hover or F12 on an identifier to see its columns.
 - **Per-tab database / schema switcher.**

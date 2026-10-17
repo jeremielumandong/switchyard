@@ -991,6 +991,7 @@ impl Service {
                 tags,
                 confirmed_destructive,
                 fetch_limit,
+                continue_on_error,
             } => {
                 let span = info_span!("query", query, session);
                 self.execute(
@@ -1000,6 +1001,7 @@ impl Service {
                     tags,
                     confirmed_destructive,
                     fetch_limit,
+                    continue_on_error,
                 )
                 .instrument(span)
                 .await
@@ -3075,6 +3077,7 @@ impl Service {
         tags: Vec<String>,
         confirmed_destructive: bool,
         fetch_limit: FetchLimit,
+        continue_on_error: bool,
     ) {
         let started = Instant::now();
         let Some(slot) = self.slot(session) else {
@@ -3184,6 +3187,7 @@ impl Service {
                     }
                 }
             };
+            let mut failed = false;
             match started {
                 Err(e) => {
                     outcome = self.fail(query, index, dialect, st, e, &mut cancelled);
@@ -3197,11 +3201,10 @@ impl Service {
                         &tags,
                     )
                     .await;
-                    break 'statements;
+                    failed = true;
                 }
                 Ok(mut stream) => {
                     let mut rows_in_set = 0usize;
-                    let mut failed = false;
                     while let Some(ev) = stream.next().await {
                         match ev {
                             Ok(ResultEvent::Columns(c)) => {
@@ -3274,10 +3277,10 @@ impl Service {
                         &tags,
                     )
                     .await;
-                    if failed {
-                        break 'statements;
-                    }
                 }
+            }
+            if failed && (cancelled || !continue_on_error) {
+                break 'statements;
             }
             // Transaction bookkeeping.
             let open = inner.session.in_transaction();

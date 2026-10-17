@@ -528,6 +528,9 @@ pub enum Command {
         confirmed_destructive: bool,
         /// Fetch limit for each result set.
         fetch_limit: FetchLimit,
+        /// Run the remaining statements after one fails (each failure is still
+        /// reported); otherwise the first failure ends the run.
+        continue_on_error: bool,
     },
     /// Continue a query paused at its fetch limit.
     FetchMore {

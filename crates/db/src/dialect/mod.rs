@@ -5,6 +5,7 @@ pub mod mongo;
 pub mod mysql;
 pub mod oracle;
 pub mod postgres;
+mod smart;
 pub mod snowflake;
 pub mod sqlite;
 pub mod tsql;
@@ -102,6 +103,13 @@ pub trait Dialect: Send + Sync {
     }
     /// Split a script into executable units.
     fn split_script(&self, sql: &str) -> Vec<StatementSpan>;
+    /// The statements the SQL editor runs one by one: [`Self::split_script`]'s units, also
+    /// split at blank lines between complete statements (DBeaver's "Smart" delimiter)
+    /// and, inside T-SQL batches, at top-level `;`. Procedural units stay whole.
+    fn split_statements(&self, sql: &str) -> Vec<StatementSpan> {
+        let flavor = self.flavor();
+        smart::refine(sql, flavor, self.split_script(sql), flavor == Flavor::TSql)
+    }
     /// `SELECT * FROM <qualified> ` limited to `limit` rows.
     fn select_rows(&self, qualified: &str, limit: u64) -> String;
     /// `SELECT` of `cols` (all columns when empty) from `qualified`, limited to `limit`
@@ -261,10 +269,11 @@ pub trait Dialect: Send + Sync {
         PlanSupport::NONE
     }
 
-    /// The unit containing byte `offset` (statement at cursor). Falls back to the closest
+    /// The statement ([`Self::split_statements`]) containing byte `offset` (statement at
+    /// cursor). Falls back to the closest
     /// preceding unit, then the following one.
     fn statement_at(&self, sql: &str, offset: usize) -> Option<StatementSpan> {
-        let spans = self.split_script(sql);
+        let spans = self.split_statements(sql);
         // Inside, or between the end of a statement and its terminator / end of line.
         if let Some(s) = spans.iter().find(|s| s.start <= offset && offset <= s.end) {
             return Some(*s);
@@ -510,6 +519,23 @@ pub fn line_of_byte(text: &str, offset: usize) -> u32 {
         + 1
 }
 
+/// Fill in each span's `line` in one pass over `sql` (spans in order), instead of
+/// counting from the start for each one, which is quadratic on a large script.
+pub(crate) fn with_lines(sql: &str, mut spans: Vec<StatementSpan>) -> Vec<StatementSpan> {
+    let b = sql.as_bytes();
+    let (mut pos, mut line) = (0usize, 1u32);
+    for s in &mut spans {
+        let at = s.start.min(b.len());
+        if at < pos {
+            (pos, line) = (0, 1);
+        }
+        line += b[pos..at].iter().filter(|c| **c == b'\n').count() as u32;
+        pos = at;
+        s.line = line;
+    }
+    spans
+}
+
 /// Split on `;` in code, trimming whitespace and dropping units without code.
 pub(crate) fn split_on_semicolons(sql: &str, flavor: Flavor) -> Vec<StatementSpan> {
     let segs = lexer::segments(sql, flavor);
@@ -530,7 +556,7 @@ pub(crate) fn split_on_semicolons(sql: &str, flavor: Flavor) -> Vec<StatementSpa
             out.push(StatementSpan {
                 start: s,
                 end: e,
-                line: line_of_byte(sql, s),
+                line: 0,
                 repeat: 1,
             });
         }
@@ -562,7 +588,7 @@ pub(crate) fn split_on_semicolons(sql: &str, flavor: Flavor) -> Vec<StatementSpa
         }
     }
     finish(&mut out, start, sql.len(), has_code);
-    out
+    with_lines(sql, out)
 }
 
 /// Escape a string literal with doubled single quotes.

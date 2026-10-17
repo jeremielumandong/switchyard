@@ -93,6 +93,7 @@ async fn scalar(core: &Core, rx: &mut EventReceiver, query: u64, sql: &str) -> S
         tags: vec![],
         confirmed_destructive: false,
         fetch_limit: FetchLimit::All,
+        continue_on_error: false,
     });
     next(rx, |e| match e {
         Event::Query {

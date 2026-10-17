@@ -64,7 +64,8 @@ fn clean_message(msg: &str) -> String {
 pub fn parse_diagnostics(dialect: &dyn Dialect, script: &str) -> Vec<Diagnostic> {
     let pd = dialect.parser_dialect();
     let mut out = Vec::new();
-    for span in dialect.split_script(script) {
+    // The statements the editor runs: two queries separated by a blank line are fine.
+    for span in dialect.split_statements(script) {
         let text = span.text(script);
         if !CHECKED_LEADS.contains(&leading_keyword(text).as_str()) {
             continue;

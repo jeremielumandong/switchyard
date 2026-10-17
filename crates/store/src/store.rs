@@ -134,6 +134,8 @@ pub(crate) const MIGRATIONS: &[&str] = &[
         os TEXT,
         last_connected INTEGER
     );",
+    // 9: SQL tabs remember the script file they were opened from or saved to.
+    "ALTER TABLE buffers ADD COLUMN file TEXT;",
 ];
 
 /// Replace the `host_tags` rows of `profile` (a Host) with its tags.
@@ -1153,6 +1155,7 @@ mod tests {
                     connection_id: None,
                     text: "select 1;\nselect 2".into(),
                     cursor: 7,
+                    file: None,
                 },
                 0,
             )
