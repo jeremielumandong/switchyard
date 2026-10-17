@@ -363,6 +363,9 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
 - sspi's `Username::new(user, Some(domain))` rejects a `\` in the account name
   ("invalid username" from CredSSP), so `DOMAIN\user` typed with the Domain field set
   fails; `rdp::session::sign_in_name` normalizes the user and domain first.
+- IronRDP errors print as `[context @ file:line] kind`; for CredSSP the kind is just
+  "CredSSP" and the real cause (sspi's error, the server's NTSTATUS) is only in `source()`.
+  Map them through `rdp::errors`, never `to_string()` them for the user.
 - gpui-component's `PopupMenu` scrolls only with `.scrollable(true)` (or > 20 owned items),
   so long menus ran off the window. Import `DropdownMenu` / `ContextMenuExt` from
   `crate::menus`, not gpui-component; custom pickers need `max_h` + `overflow_y_scroll`.
