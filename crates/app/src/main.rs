@@ -203,10 +203,13 @@ fn main() -> Result<()> {
                 rendering::init(window.gpu_specs().as_ref());
                 cx.new(|cx| workspace::Workspace::new(handle, events, window, cx))
             });
-            if let Err(e) = opened {
-                tracing::error!(error = %e, "failed to open the main window");
-                cx.quit();
-                return;
+            match opened {
+                Ok((handle, _)) => rendering::skip_root_background(handle, cx),
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to open the main window");
+                    cx.quit();
+                    return;
+                }
             }
             cx.activate(true);
         });

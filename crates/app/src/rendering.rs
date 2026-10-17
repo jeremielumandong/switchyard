@@ -1,22 +1,21 @@
-//! Rendering policy for software GPUs and remote desktops (Windows).
+//! Rendering policy for software GPUs and remote desktops.
 //!
-//! A VM without a GPU renders through WARP ("Microsoft Basic Render Driver"),
-//! where every drawn pixel costs CPU. There Switchyard leaves out blurred
-//! shadows and paces frames at 30 Hz; over Remote Desktop it paces frames too.
-//! The renderer's own software paths (solid quad shader, native fills) follow
-//! the adapter by themselves. `SWITCHYARD_LOW_POWER_RENDERING=1` (or `0`)
-//! forces frame pacing on (or off). No effect on other platforms.
+//! A VM without a GPU renders through WARP ("Microsoft Basic Render Driver")
+//! on Windows or a CPU Vulkan driver (llvmpipe / lavapipe) on Linux, where
+//! every drawn pixel costs CPU. There Switchyard leaves out blurred shadows and
+//! paces frames (30 Hz on Windows); over Remote Desktop it paces frames too.
+//! The Windows renderer's own software paths (solid quad shader, native fills)
+//! follow the adapter by themselves. `SWITCHYARD_LOW_POWER_RENDERING=1` (or
+//! `0`) forces frame pacing on (or off).
 
-use gpui_kit::GpuSpecs;
+use gpui_kit::base::Root;
+use gpui_kit::{AnyWindowHandle, App, GpuSpecs, Styled as _, transparent_black};
 
 /// Overrides the frame pacing decision: `0` off, anything else on.
 pub const LOW_POWER_ENV: &str = "SWITCHYARD_LOW_POWER_RENDERING";
 
 /// Sets the policy from the main window's GPU; call before its first frame.
 pub fn init(specs: Option<&GpuSpecs>) {
-    if !cfg!(target_os = "windows") {
-        return;
-    }
     let software = specs.is_some_and(software_renderer);
     let remote = remote_session();
     let low_power = low_power_policy(software, remote, std::env::var(LOW_POWER_ENV).ok());
@@ -31,7 +30,23 @@ pub fn init(specs: Option<&GpuSpecs>) {
     );
 }
 
-/// WARP reports the software flag; the device names cover drivers that don't.
+/// Stops the window root from painting the theme background under the workspace.
+///
+/// gpui-component's root fills the whole window with the theme background, and the
+/// workspace then covers all of it with its own: one window-sized fill per frame that
+/// nobody sees. On a software renderer that is a third of a frame's pixels.
+pub fn skip_root_background(window: AnyWindowHandle, cx: &mut App) {
+    let Some(root) = window.downcast::<Root>() else {
+        return;
+    };
+    let _ = root.update(cx, |root, _, cx| {
+        root.style().background = Some(transparent_black().into());
+        cx.notify();
+    });
+}
+
+/// WARP and wgpu's CPU adapters report the software flag; the device names cover
+/// drivers that don't.
 fn software_renderer(specs: &GpuSpecs) -> bool {
     specs.is_software_emulated
         || [
@@ -40,6 +55,9 @@ fn software_renderer(specs: &GpuSpecs) -> bool {
         ]
         .iter()
         .any(|name| specs.device_name.eq_ignore_ascii_case(name))
+        || ["llvmpipe", "lavapipe", "softpipe", "swiftshader"]
+            .iter()
+            .any(|name| specs.device_name.to_ascii_lowercase().contains(name))
 }
 
 fn low_power_policy(software: bool, remote: bool, override_value: Option<String>) -> bool {
@@ -82,6 +100,14 @@ mod tests {
         )));
         assert!(!software_renderer(&specs("NVIDIA A10", false)));
         assert!(!software_renderer(&specs("Microsoft Hyper-V Video", false)));
+        assert!(software_renderer(&specs(
+            "llvmpipe (LLVM 17.0.6, 256 bits)",
+            false
+        )));
+        assert!(!software_renderer(&specs(
+            "AMD Radeon Graphics (RADV)",
+            false
+        )));
     }
 
     #[test]
