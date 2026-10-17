@@ -1889,7 +1889,9 @@ impl Service {
         let (names, hosts) = crate::dbeaver_import::saved(&profiles);
         let only = only.into_iter().collect();
         let plan = crate::dbeaver_import::plan(entries, &only, &names, &hosts);
-        let profiles = plan
+        let mut profiles: Vec<Profile> = Vec::new();
+        let mut secrets = Vec::new();
+        let all = plan
             .hosts
             .into_iter()
             .map(|(h, s)| (Profile::Host(h), s))
@@ -1898,19 +1900,45 @@ impl Service {
                     .into_iter()
                     .map(|(d, s)| (Profile::Db(d), s)),
             );
-        let mut imported = 0;
-        for (mut profile, secret) in profiles {
+        for (mut profile, secret) in all {
             if let Some(secret) = secret {
                 let key = crate::dbeaver_import::secret_ref(&profile);
-                let k = key.clone();
-                self.with_secrets(move |s| s.set(&k, &secret)).await?;
-                profile.set_secret(key);
+                profile.set_secret(key.clone());
+                secrets.push((key, secret));
             }
-            let is_db = matches!(profile, Profile::Db(_));
-            self.with_store(move |s| s.save_profile_in_current(&profile))
-                .await?;
-            imported += usize::from(is_db);
+            profiles.push(profile);
         }
+        // Passwords first: a locked vault stops the import before anything is saved.
+        let stored = self
+            .with_secrets(move |s| {
+                let mut done = Vec::new();
+                for (key, secret) in &secrets {
+                    if let Err(e) = s.set(key, secret) {
+                        for k in &done {
+                            let _ = s.delete(k);
+                        }
+                        return Err(e);
+                    }
+                    done.push(key.clone());
+                }
+                Ok(())
+            })
+            .await;
+        if let Err(e) = stored {
+            self.emit_secret_backend();
+            return Err(e);
+        }
+        let imported = profiles
+            .iter()
+            .filter(|p| matches!(p, Profile::Db(_)))
+            .count();
+        self.with_store(move |s| {
+            for p in &profiles {
+                s.save_profile_in_current(p)?;
+            }
+            Ok(())
+        })
+        .await?;
         Ok(imported)
     }
 
