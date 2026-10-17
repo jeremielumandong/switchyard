@@ -164,6 +164,7 @@ pin them in `[workspace.dependencies]`.
 | Plans / CLI / MCP | `quick-xml` (showplan), `clap` (`swy`), `rmcp` (official Rust MCP SDK) |
 | Diagrams | `dagre` (ER diagram layout; see `docs/DECISIONS.md`) |
 | RDP | IronRDP: `ironrdp-connector` (vendored), `-session`, `-pdu`, `-graphics`, `-input`, `-core`, `-tokio` (see `docs/DECISIONS.md`) |
+| File search | `ignore` (parallel gitignore-aware walk; see `docs/DECISIONS.md`) |
 | Testing | `insta`, `criterion`, `tempfile` |
 
 ## Licensing

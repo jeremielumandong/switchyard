@@ -84,7 +84,7 @@ impl Files {
 }
 
 /// `dir/name` with the separator the target expects (SFTP paths are POSIX).
-fn child(dir: &Path, name: &str, posix: bool) -> PathBuf {
+pub(crate) fn child(dir: &Path, name: &str, posix: bool) -> PathBuf {
     if posix {
         let d = dir.to_string_lossy().replace('\\', "/");
         PathBuf::from(if d.ends_with('/') {

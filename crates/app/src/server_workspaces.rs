@@ -454,7 +454,7 @@ impl Workspace {
                     None => continue,
                 },
                 Tab::Files(f) => SavedTab::Files {
-                    host: f.read(cx).right_host().cloned(),
+                    host: f.read(cx).host().cloned(),
                 },
                 Tab::Servers => SavedTab::Servers,
                 Tab::Redis(r) => SavedTab::Profile {
@@ -847,7 +847,7 @@ impl Workspace {
         let id = match self.tabs.get(self.active)? {
             Tab::Sql(t) => t.read(cx).connection.as_ref().map(|c| c.id.clone()),
             Tab::Terminal(t) => t.read(cx).host().cloned(),
-            Tab::Files(f) => f.read(cx).right_host().cloned(),
+            Tab::Files(f) => f.read(cx).host().cloned(),
             Tab::Redis(r) => Some(r.read(cx).connection.id.clone()),
             Tab::Cloud(c) => Some(c.read(cx).connection.id.clone()),
             Tab::Containers(c) => Some(c.read(cx).connection.id.clone()),

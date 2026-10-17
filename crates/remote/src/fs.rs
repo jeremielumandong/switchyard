@@ -202,7 +202,8 @@ pub fn file_name(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-fn local_entry(path: &Path, meta: &std::fs::Metadata, kind: EntryKind) -> FileEntry {
+/// The entry for a local `path` with its metadata (file search builds rows with it).
+pub fn local_entry(path: &Path, meta: &std::fs::Metadata, kind: EntryKind) -> FileEntry {
     #[cfg(unix)]
     let mode = {
         use std::os::unix::fs::PermissionsExt;

@@ -1255,6 +1255,29 @@ are shared hotspots: one owner at a time.
   instead of polling, removing a run's worktree from the app, keeping agent sessions alive after the app
   quits (needs a background daemon; tmux covers it on Hosts).
 
+## Extra — OS-style file explorer and file search (user request, 2026-10-17)
+
+- [x] FE-1 Files tab looks and works like an OS file explorer: one pane by default (two-pane
+  toggle kept and remembered), Quick access / This computer / Servers / Storage places with
+  pinned folders, back / forward / up, breadcrumb address bar, Name / Date modified / Type /
+  Size columns with file-type icons, sort menu, show hidden files.
+- [x] FE-2 Context menus (items, folder background, New ▾, Sort ▾, search hits): Open, Open
+  outside (the system app), Open in terminal, Cut / Copy / Paste (also across sources),
+  Duplicate, inline Rename, Delete, New folder / New text file, Copy path / name, Pin to
+  Quick access, Show in the OS file manager, Properties. Text, code, config and images open
+  in the app; PDFs, Office files, media and archives open in the system app (remote ones
+  are downloaded first).
+- [x] FE-3 Search through subfolders from the search box (`core::file_search`): words with
+  typo tolerance, `'exact`, globs, `ext:`, `type:`, `size:`, `mtime:`. Local folders use
+  fsearch's daemon on macOS or Everything (`es.exe`) on Windows when installed, otherwise a
+  parallel walk with the `ignore` crate (skips gitignored and hidden files); Hosts and
+  storage use a bounded parallel listing walk. Results stream in and are cancellable.
+- [x] FE-4 Left Tools menu regrouped (Servers & files, Fleet, Databases, Runbooks &
+  secrets, Containers, Infra tools, AWS, Azure, Cloudflare, Import & setup) with foldable,
+  remembered sections.
+- Deferred: an indexed search for Linux (plocate needs root and a cron job; not worth
+  driving from the app yet), search inside file contents, thumbnails view.
+
 ## Extra — Software rendering on VMs (user request, 2026-10-16)
 
 - [x] SR-1 Port the CPU-relevant parts of AgentOps' DirectX software-rendering fixes to the

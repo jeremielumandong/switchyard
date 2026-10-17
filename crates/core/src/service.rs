@@ -1322,6 +1322,17 @@ impl Service {
                 self.files.finish(id);
                 self.emit(Event::TransferDone { id, result });
             }
+            Command::SearchFiles {
+                request,
+                fs,
+                root,
+                query,
+                everything,
+            } => {
+                self.search_files(request, fs, root, query, everything)
+                    .await
+            }
+            Command::CancelFileSearch { request } => self.files.cancel(request),
             Command::CancelTransfer { id } => self.files.cancel(id),
             Command::PauseTransfer { id } => self.files.pause(id),
             Command::GitStatus { request, dir } => {
@@ -1556,6 +1567,95 @@ impl Service {
 
     /// The file system behind `fs`, and whether its paths are POSIX. SFTP opens once per
     /// Host on the shared SSH session (prompting like a terminal would).
+    /// Run a file search, streaming its hits in batches.
+    async fn search_files(
+        &self,
+        request: crate::bus::RequestId,
+        fs: crate::bus::FsRef,
+        root: PathBuf,
+        query: String,
+        everything: bool,
+    ) {
+        use crate::file_search::{
+            ENGINE_WALK, NameQuery, search_index, search_local, search_remote,
+        };
+        let text = query;
+        let Some(query) = NameQuery::new(&text) else {
+            return self.emit(Event::FileSearchDone {
+                request,
+                result: Ok((false, ENGINE_WALK)),
+            });
+        };
+        let (f, posix) = match self.file_system(&fs).await {
+            Ok(x) => x,
+            Err(e) => {
+                return self.emit(Event::FileSearchDone {
+                    request,
+                    result: Err(e.to_string()),
+                });
+            }
+        };
+        let root = crate::files::expand_path(&root, &f.home(), posix);
+        let stop = self.files.start(request);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let walk = {
+            let stop = stop.clone();
+            async move {
+                if fs == crate::bus::FsRef::Local {
+                    // The platform's index when it runs, else a parallel walk.
+                    if let Some(done) = search_index(&root, &text, &query, everything, &tx).await {
+                        return done;
+                    }
+                    let walked = tokio::task::spawn_blocking(move || {
+                        search_local(&root, &query, everything, &stop, &tx)
+                    })
+                    .await
+                    .unwrap_or(false);
+                    (walked, ENGINE_WALK)
+                } else {
+                    let walked =
+                        search_remote(f, root, &query, everything, posix, &stop, &tx).await;
+                    (walked, ENGINE_WALK)
+                }
+            }
+        };
+        // Hits go out every 100 ms (or 256 at a time) while the walk runs.
+        let forward = async {
+            let mut batch = Vec::new();
+            let mut tick = tokio::time::interval(std::time::Duration::from_millis(100));
+            loop {
+                tokio::select! {
+                    hit = rx.recv() => match hit {
+                        Some(h) => {
+                            batch.push(h);
+                            if batch.len() >= 256 {
+                                self.emit(Event::FileSearchHits { request, hits: std::mem::take(&mut batch) });
+                            }
+                        }
+                        None => break,
+                    },
+                    _ = tick.tick() => {
+                        if !batch.is_empty() {
+                            self.emit(Event::FileSearchHits { request, hits: std::mem::take(&mut batch) });
+                        }
+                    }
+                }
+            }
+            if !batch.is_empty() {
+                self.emit(Event::FileSearchHits {
+                    request,
+                    hits: batch,
+                });
+            }
+        };
+        let (done, ()) = tokio::join!(walk, forward);
+        self.files.finish(request);
+        self.emit(Event::FileSearchDone {
+            request,
+            result: Ok(done),
+        });
+    }
+
     async fn file_system(
         &self,
         fs: &crate::bus::FsRef,
