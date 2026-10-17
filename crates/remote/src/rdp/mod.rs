@@ -6,6 +6,8 @@
 //! [`RdpInput`] into fast-path input. Nothing here touches the UI.
 
 pub mod cert;
+#[cfg(feature = "rdp-embedded")]
+mod errors;
 pub mod frame;
 pub mod input;
 #[cfg(feature = "rdp-embedded")]

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use ironrdp_connector::connection_activation::ConnectionActivationState;
-use ironrdp_connector::{ClientConnector, ConnectorError, ConnectorErrorKind, Credentials};
+use ironrdp_connector::{ClientConnector, Credentials};
 use ironrdp_core::WriteBuf;
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_input::{Database, Operation};
@@ -22,6 +22,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info};
 
 use super::cert::{self, CapturingVerifier, CertCheck, CertDecision, CertRequest};
+use super::errors::{connector_err, session_err};
 use super::{FrameBuffer, RdpError, RdpInput, RdpSettings, SessionCommand, SessionEvent};
 
 /// Asks the user about an untrusted server certificate.
@@ -128,19 +129,6 @@ impl NetworkClient for NoNetwork {
             "Kerberos (KDC) sign-in is not supported by the in-app client"
         ))
     }
-}
-
-fn connector_err(e: ConnectorError) -> RdpError {
-    match e.kind() {
-        ConnectorErrorKind::Credssp(_) | ConnectorErrorKind::AccessDenied => {
-            RdpError::Auth(e.to_string())
-        }
-        _ => RdpError::Protocol(e.to_string()),
-    }
-}
-
-fn session_err(e: impl std::fmt::Display) -> RdpError {
-    RdpError::Protocol(e.to_string())
 }
 
 /// Connect over `stream` to `server` (the real name: TLS, the certificate and the
