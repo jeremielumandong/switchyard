@@ -30,27 +30,66 @@ use crate::workspace::{AppMode, Tab, Workspace};
 
 /// The app's own icons (Lucide, ISC: `assets/icons/LICENSE-LUCIDE`), served before
 /// gpui-kit's component set.
-const ICONS: [(&str, &[u8]); 5] = [
-    (
-        "icons/swy-layers.svg",
-        include_bytes!("../assets/icons/swy-layers.svg"),
-    ),
-    (
-        "icons/swy-database.svg",
-        include_bytes!("../assets/icons/swy-database.svg"),
-    ),
-    (
-        "icons/swy-wrench.svg",
-        include_bytes!("../assets/icons/swy-wrench.svg"),
-    ),
-    (
-        "icons/swy-activity.svg",
-        include_bytes!("../assets/icons/swy-activity.svg"),
-    ),
-    (
-        "icons/swy-sliders-horizontal.svg",
-        include_bytes!("../assets/icons/swy-sliders-horizontal.svg"),
-    ),
+macro_rules! icon {
+    ($name:literal) => {
+        (
+            concat!("icons/", $name, ".svg"),
+            include_bytes!(concat!("../assets/icons/", $name, ".svg")),
+        )
+    };
+}
+
+const ICONS: &[(&str, &[u8])] = &[
+    icon!("swy-activity"),
+    icon!("swy-arrow-left"),
+    icon!("swy-arrow-right"),
+    icon!("swy-arrow-up"),
+    icon!("swy-arrow-up-down"),
+    icon!("swy-chevron-down"),
+    icon!("swy-chevron-right"),
+    icon!("swy-clipboard-paste"),
+    icon!("swy-cloud"),
+    icon!("swy-code"),
+    icon!("swy-columns-2"),
+    icon!("swy-copy"),
+    icon!("swy-database"),
+    icon!("swy-download"),
+    icon!("swy-external-link"),
+    icon!("swy-eye"),
+    icon!("swy-file"),
+    icon!("swy-file-archive"),
+    icon!("swy-file-chart-pie"),
+    icon!("swy-file-code"),
+    icon!("swy-file-cog"),
+    icon!("swy-file-image"),
+    icon!("swy-file-music"),
+    icon!("swy-file-pen"),
+    icon!("swy-file-plus"),
+    icon!("swy-file-spreadsheet"),
+    icon!("swy-file-symlink"),
+    icon!("swy-file-terminal"),
+    icon!("swy-file-text"),
+    icon!("swy-file-type"),
+    icon!("swy-file-video-camera"),
+    icon!("swy-folder"),
+    icon!("swy-folder-open"),
+    icon!("swy-folder-plus"),
+    icon!("swy-folder-symlink"),
+    icon!("swy-hard-drive"),
+    icon!("swy-house"),
+    icon!("swy-image"),
+    icon!("swy-layers"),
+    icon!("swy-monitor"),
+    icon!("swy-pencil"),
+    icon!("swy-refresh-cw"),
+    icon!("swy-scissors"),
+    icon!("swy-search"),
+    icon!("swy-server"),
+    icon!("swy-sliders-horizontal"),
+    icon!("swy-star"),
+    icon!("swy-terminal"),
+    icon!("swy-trash"),
+    icon!("swy-wrench"),
 ];
 
 /// gpui-kit's assets plus [`ICONS`].
@@ -321,135 +360,172 @@ fn service_desc(s: CloudService) -> &'static str {
     }
 }
 
-/// The Tools pane's groups: servers and databases first, then each cloud provider
-/// with one tool per service (`Open` when one is saved, else `Add`).
+/// Setting key of the Tools pane groups the user opened or closed.
+pub const TOOLS_OPEN_KEY: &str = "tools.open";
+
+impl ToolGroup {
+    /// Whether the group starts open: places with something saved; setup and imports, and
+    /// clouds with nothing added yet, start closed.
+    pub fn open_by_default(&self) -> bool {
+        self.ready && self.name != "Import & setup"
+    }
+}
+
+fn tool(
+    badge: &'static str,
+    name: &'static str,
+    desc: &'static str,
+    cmd: CommandId,
+    tag: &'static str,
+) -> Tool {
+    Tool {
+        badge,
+        name,
+        desc,
+        cmd,
+        tag,
+    }
+}
+
+/// The Tools pane's groups: servers, fleet, databases, saved work, then containers,
+/// infra and each cloud provider (one tool per service: `Open` when one is saved, else
+/// `Add`), and imports and setup last.
 pub fn tool_groups(profiles: &Profiles) -> Vec<ToolGroup> {
     let hosts = profiles.hosts().count();
     let dbs = profiles.dbs().count();
-    let mut out = vec![ToolGroup {
-        badge: "SY",
-        name: "Servers & databases",
-        ident: format!(
-            "{hosts} server{} · {dbs} database{}",
-            if hosts == 1 { "" } else { "s" },
-            if dbs == 1 { "" } else { "s" }
-        ),
-        ready: true,
-        tools: vec![
-            Tool {
-                badge: "SRV",
-                name: "Servers",
-                desc: "Every Host and remote desktop of this workspace: status, OS, one-click SSH, SFTP, RDP",
-                cmd: CommandId::ShowServers,
-                tag: "Open",
-            },
-            Tool {
-                badge: "RDP",
-                name: "Remote desktop",
-                desc: "Add an RDP or VNC server; opens in the system client, tunnels through a Host",
-                cmd: CommandId::NewDesktop(switchyard_core::store::DesktopProtocol::Rdp),
-                tag: "New",
-            },
-            Tool {
-                badge: "CRD",
-                name: "Credentials",
-                desc: "One sign-in shared by many Hosts, connections and desktops; rotate it once",
-                cmd: CommandId::ManageCredentials,
-                tag: "Open",
-            },
-            Tool {
-                badge: "TUN",
-                name: "Port forwards",
-                desc: "Every tunnel across servers: start, stop, inspect",
-                cmd: CommandId::ShowActivityPane,
-                tag: "Open",
-            },
-            Tool {
-                badge: "SSH",
-                name: "Import ~/.ssh/config",
-                desc: "Add the hosts your SSH config already knows",
-                cmd: CommandId::ImportSshConfig,
-                tag: "Open",
-            },
-            Tool {
-                badge: "RUN",
-                name: "Run on many hosts",
-                desc: "One command or macro on a folder, tag or selection",
-                cmd: CommandId::FleetRun,
-                tag: "Open",
-            },
-            Tool {
-                badge: "FLT",
-                name: "Fleet dashboard",
-                desc: "Uptime, load, disk, memory and failed units per server",
-                cmd: CommandId::FleetDashboard,
-                tag: "Open",
-            },
-            Tool {
-                badge: "KEY",
-                name: "SSH key rollout",
-                desc: "Add, remove or audit authorized_keys across servers",
-                cmd: CommandId::FleetKeys,
-                tag: "Open",
-            },
-            Tool {
-                badge: "ANS",
-                name: "Import Ansible inventory",
-                desc: "Hosts and groups (as tags) from an INI or YAML inventory",
-                cmd: CommandId::ImportAnsible,
-                tag: "Open",
-            },
-            Tool {
-                badge: "HIS",
-                name: "Query history",
-                desc: "Every statement you and agents ran",
-                cmd: CommandId::ShowHistory,
-                tag: "Open",
-            },
-            Tool {
-                badge: "WL",
-                name: "Workload statistics",
-                desc: "Top queries and index usage of a database",
-                cmd: CommandId::ShowWorkload,
-                tag: "Open",
-            },
-            Tool {
-                badge: "AM",
-                name: "Activity monitor",
-                desc: "Sessions and running queries on a server",
-                cmd: CommandId::ShowActivity,
-                tag: "Open",
-            },
-            Tool {
-                badge: "SN",
-                name: "Snippets",
-                desc: "Saved SQL with placeholders",
-                cmd: CommandId::ManageSnippets,
-                tag: "Open",
-            },
-            Tool {
-                badge: "RB",
-                name: "Runbooks",
-                desc: "Saved step-by-step procedures: SQL, HTTP, shell",
-                cmd: CommandId::OpenRunbook,
-                tag: "Open",
-            },
-            Tool {
-                badge: "SV",
-                name: "Secret vault",
-                desc: "Named secrets, local or from Key Vault",
-                cmd: CommandId::ManageSecrets,
-                tag: "Open",
-            },
-            Tool {
-                badge: "DRV",
-                name: "Drivers",
-                desc: "Optional native components",
-                cmd: CommandId::SettingsDrivers,
-                tag: "Open",
-            },
-        ],
-    }];
+    let plural = |n: usize, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
+    let mut out = vec![
+        ToolGroup {
+            badge: "SRV",
+            name: "Servers & files",
+            ident: plural(hosts, "server"),
+            ready: true,
+            tools: vec![
+                tool(
+                    "SRV",
+                    "Servers",
+                    "Every Host and remote desktop of this workspace: status, OS, one-click SSH, SFTP, RDP",
+                    CommandId::ShowServers,
+                    "Open",
+                ),
+                tool(
+                    "FS",
+                    "File explorer",
+                    "Browse this computer, Hosts and storage; copy between them",
+                    CommandId::OpenFiles,
+                    "Open",
+                ),
+                tool(
+                    "RDP",
+                    "Remote desktop",
+                    "Add an RDP or VNC server; opens in the system client, tunnels through a Host",
+                    CommandId::NewDesktop(switchyard_core::store::DesktopProtocol::Rdp),
+                    "New",
+                ),
+                tool(
+                    "TUN",
+                    "Port forwards",
+                    "Every tunnel across servers: start, stop, inspect",
+                    CommandId::ShowActivityPane,
+                    "Open",
+                ),
+            ],
+        },
+        ToolGroup {
+            badge: "FLT",
+            name: "Fleet",
+            ident: "Many servers at once".into(),
+            ready: true,
+            tools: vec![
+                tool(
+                    "RUN",
+                    "Run on many hosts",
+                    "One command or macro on a folder, tag or selection",
+                    CommandId::FleetRun,
+                    "Open",
+                ),
+                tool(
+                    "FLT",
+                    "Fleet dashboard",
+                    "Uptime, load, disk, memory and failed units per server",
+                    CommandId::FleetDashboard,
+                    "Open",
+                ),
+                tool(
+                    "KEY",
+                    "SSH key rollout",
+                    "Add, remove or audit authorized_keys across servers",
+                    CommandId::FleetKeys,
+                    "Open",
+                ),
+            ],
+        },
+        ToolGroup {
+            badge: "DB",
+            name: "Databases",
+            ident: plural(dbs, "database"),
+            ready: true,
+            tools: vec![
+                tool(
+                    "HIS",
+                    "Query history",
+                    "Every statement you and agents ran",
+                    CommandId::ShowHistory,
+                    "Open",
+                ),
+                tool(
+                    "WL",
+                    "Workload statistics",
+                    "Top queries and index usage of a database",
+                    CommandId::ShowWorkload,
+                    "Open",
+                ),
+                tool(
+                    "AM",
+                    "Activity monitor",
+                    "Sessions and running queries on a server",
+                    CommandId::ShowActivity,
+                    "Open",
+                ),
+                tool(
+                    "SN",
+                    "Snippets",
+                    "Saved SQL with placeholders",
+                    CommandId::ManageSnippets,
+                    "Open",
+                ),
+            ],
+        },
+        ToolGroup {
+            badge: "RB",
+            name: "Runbooks & secrets",
+            ident: "Procedures and sign-ins".into(),
+            ready: true,
+            tools: vec![
+                tool(
+                    "RB",
+                    "Runbooks",
+                    "Saved step-by-step procedures: SQL, HTTP, shell",
+                    CommandId::OpenRunbook,
+                    "Open",
+                ),
+                tool(
+                    "CRD",
+                    "Credentials",
+                    "One sign-in shared by many Hosts, connections and desktops; rotate it once",
+                    CommandId::ManageCredentials,
+                    "Open",
+                ),
+                tool(
+                    "SV",
+                    "Secret vault",
+                    "Named secrets, local or from Key Vault",
+                    CommandId::ManageSecrets,
+                    "Open",
+                ),
+            ],
+        },
+    ];
     {
         use switchyard_core::store::ContainerPlatform;
         let count = |pl: ContainerPlatform| {
@@ -555,6 +631,42 @@ pub fn tool_groups(profiles: &Profiles) -> Vec<ToolGroup> {
             tools,
         });
     }
+    out.push(ToolGroup {
+        badge: "IMP",
+        name: "Import & setup",
+        ident: "SSH config, Ansible, DBeaver, drivers".into(),
+        ready: true,
+        tools: vec![
+            tool(
+                "SSH",
+                "Import ~/.ssh/config",
+                "Add the hosts your SSH config already knows",
+                CommandId::ImportSshConfig,
+                "Open",
+            ),
+            tool(
+                "ANS",
+                "Import Ansible inventory",
+                "Hosts and groups (as tags) from an INI or YAML inventory",
+                CommandId::ImportAnsible,
+                "Open",
+            ),
+            tool(
+                "DBV",
+                "Import from DBeaver",
+                "Database connections from a DBeaver workspace",
+                CommandId::ImportDbeaver,
+                "Open",
+            ),
+            tool(
+                "DRV",
+                "Drivers",
+                "Optional native components",
+                CommandId::SettingsDrivers,
+                "Open",
+            ),
+        ],
+    });
     out
 }
 
@@ -723,8 +835,9 @@ impl Workspace {
             .into_any_element()
     }
 
-    /// The Tools pane: per place, the tools it offers.
+    /// The Tools pane: per place, the tools it offers, in groups that fold.
     pub(crate) fn render_tools_pane(&self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+        use gpui_kit::component::tooltip::Tooltip;
         let groups = tool_groups(&self.profiles);
         let mut list = div()
             .id("tools-pane")
@@ -733,23 +846,72 @@ impl Workspace {
             .overflow_y_scroll()
             .pb(rpx(8.));
         let mut n = 0usize;
-        for g in groups {
+        for (gi, g) in groups.into_iter().enumerate() {
+            let open = self
+                .tools_open
+                .get(g.name)
+                .copied()
+                .unwrap_or_else(|| g.open_by_default());
+            let name = g.name;
+            let count = g.tools.len();
             list = list.child(
                 div()
+                    .id(("tool-group", gi))
                     .h(rpx(28.))
-                    .pt(rpx(8.))
-                    .px(rpx(12.))
+                    .mt(rpx(4.))
+                    .px(rpx(10.))
                     .flex()
                     .items_center()
-                    .gap(rpx(8.))
+                    .gap(rpx(6.))
                     .text_size(ts::SMALL)
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(p.fg3)
+                    .cursor_pointer()
+                    .hover(|s| s.text_color(p.fg))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.tools_open.insert(name.to_owned(), !open);
+                        if let Ok(value) = serde_json::to_value(&this.tools_open) {
+                            this.core.send(switchyard_core::Command::SetSetting {
+                                key: TOOLS_OPEN_KEY.into(),
+                                value,
+                            });
+                        }
+                        cx.notify();
+                    }))
+                    .child(
+                        svg()
+                            .path(if open {
+                                "icons/swy-chevron-down.svg"
+                            } else {
+                                "icons/swy-chevron-right.svg"
+                            })
+                            .size(rpx(11.))
+                            .text_color(p.fg3),
+                    )
                     .child(ui::dot(if g.ready { p.dev } else { p.fg3 }, 6.))
-                    .child(div().flex_1().truncate().child(g.name.to_uppercase())),
+                    .child(div().flex_none().child(g.name.to_uppercase()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_right()
+                            .font_weight(FontWeight::NORMAL)
+                            .font_family(MONO)
+                            .text_size(ts::CAPTION)
+                            .child(if open {
+                                g.ident.clone()
+                            } else {
+                                count.to_string()
+                            }),
+                    ),
             );
+            if !open {
+                continue;
+            }
             for t in g.tools {
                 let cmd = t.cmd;
+                let desc = t.desc;
                 n += 1;
                 list = list.child(
                     div()
@@ -758,11 +920,12 @@ impl Workspace {
                         .flex()
                         .items_center()
                         .gap(rpx(8.))
-                        .pl(rpx(14.))
+                        .pl(rpx(26.))
                         .pr(rpx(12.))
                         .text_size(ts::UI)
                         .cursor_pointer()
                         .hover(|s| s.bg(p.hover))
+                        .tooltip(move |w, cx| Tooltip::new(desc).build(w, cx))
                         .on_click(cx.listener(move |this, _, w, cx| this.run_command(cmd, w, cx)))
                         .child(ui::monogram(t.badge, 28., p))
                         .child(div().flex_1().min_w_0().truncate().child(t.name))
@@ -1552,15 +1715,35 @@ mod tests {
         assert_eq!(
             groups.iter().map(|g| g.name).collect::<Vec<_>>(),
             [
-                "Servers & databases",
+                "Servers & files",
+                "Fleet",
+                "Databases",
+                "Runbooks & secrets",
                 "Containers",
                 "Infra tools",
                 "AWS",
                 "Azure",
-                "Cloudflare"
+                "Cloudflare",
+                "Import & setup"
             ]
         );
-        assert!(groups[3..].iter().all(|g| !g.ready));
+        assert!(groups[6..9].iter().all(|g| !g.ready));
+        // Nothing saved yet and setup start folded; the everyday groups start open.
+        let open: Vec<_> = groups
+            .iter()
+            .filter(|g| g.open_by_default())
+            .map(|g| g.name)
+            .collect();
+        assert_eq!(
+            open,
+            [
+                "Servers & files",
+                "Fleet",
+                "Databases",
+                "Runbooks & secrets",
+                "Infra tools"
+            ]
+        );
         let s3: switchyard_core::store::CloudConnection =
             serde_json::from_value(serde_json::json!({
                 "id": "c1", "name": "assets", "service": "s3", "environment": "production",

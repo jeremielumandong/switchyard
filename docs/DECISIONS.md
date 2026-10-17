@@ -1789,3 +1789,17 @@ every install. Importing saved passwords needs those two RustCrypto crates, whic
 on the approved list. They were already in the tree (`keyring`'s `oo7`, `ssh-key`'s
 `pkcs5`), so the workspace pins the same versions (`aes` 0.8, `cbc` 0.1) and nothing new is
 downloaded or built. Only `core::dbeaver_import` uses them, to decrypt that one file.
+
+## 2026-10-17 — File search: `ignore` crate and optional OS indexes
+
+Jeremie approved adding `ignore` (BurntSushi, MIT / Unlicense; already in the lockfile) for
+the Files tab's subfolder search: a parallel directory walk that honours `.gitignore`,
+which is what ripgrep and fd use and is the fastest portable option. Jeremie also asked for
+`fsearch` (github.com/noahdunnagan/fsearch, MIT) on macOS. It is not linked: it only builds
+on macOS (FSEvents, Apple-only syscalls), it indexes the whole disk with a resident daemon
+(about 0.77 GB peak while indexing), and optional native components are runtime-loaded.
+Instead, when the user has it installed, `core::file_search::fsearch` asks its daemon over
+its socket (or `fsearch stdio`), and on Windows `everything` asks Everything's `es.exe`.
+Both are best effort with a short timeout; no hits or any error falls back to the walk, so
+a stale or missing index never hides files. The query syntax (typo tolerance, `ext:`,
+`type:`, `size:`, `mtime:`) follows fsearch's so results read the same either way.

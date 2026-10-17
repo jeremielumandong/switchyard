@@ -887,6 +887,25 @@ pub enum Command {
         /// Continue an earlier, interrupted attempt from its last byte.
         resume: bool,
     },
+    /// Find files and folders by name under `root` ([`Event::FileSearchHits`], then
+    /// [`Event::FileSearchDone`]).
+    SearchFiles {
+        /// Request id (also what [`Command::CancelFileSearch`] names).
+        request: RequestId,
+        /// File system.
+        fs: FsRef,
+        /// The folder to search under.
+        root: PathBuf,
+        /// Words that must all appear in the name, or a `*` / `?` pattern.
+        query: String,
+        /// Also hidden and git-ignored files.
+        everything: bool,
+    },
+    /// Stop a file search.
+    CancelFileSearch {
+        /// Its request id.
+        request: RequestId,
+    },
     /// Stop a transfer and delete its partial file.
     CancelTransfer {
         /// Transfer id.
@@ -1813,6 +1832,21 @@ pub enum Event {
         done: u64,
         /// Total bytes, when known.
         total: Option<u64>,
+    },
+    /// Matches of a [`Command::SearchFiles`], a batch at a time.
+    FileSearchHits {
+        /// Request id.
+        request: RequestId,
+        /// The matches.
+        hits: Vec<crate::file_search::FileHit>,
+    },
+    /// A file search ended.
+    FileSearchDone {
+        /// Request id.
+        request: RequestId,
+        /// `Ok((truncated, engine))`: whether it stopped at its limit and what answered
+        /// (a file index or the folder walk); or why it failed.
+        result: Result<(bool, &'static str), String>,
     },
     /// A transfer ended.
     TransferDone {

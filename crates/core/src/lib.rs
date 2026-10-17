@@ -10,6 +10,7 @@ pub mod dbeaver_import;
 mod entra;
 pub mod env;
 pub mod error;
+pub mod file_search;
 pub mod files;
 pub mod fleet;
 pub mod git;

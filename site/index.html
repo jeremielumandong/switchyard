@@ -584,6 +584,7 @@ textarea::placeholder,input::placeholder{color:var(--t8)}
     <p style="color:var(--t5);font-size:16px;max-width:46ch;margin:0;line-height:1.5;text-wrap:pretty">The Files tab is a keyboard-driven, git-aware file manager, and every folder, on your machine or a server, is one click from Claude Code, Codex CLI, Gemini CLI, Aider or OpenCode.</p>
   </div>
   <div style="margin-top:48px;border-radius:12px;border:1px solid var(--b3);background:var(--p3);padding:5px"><a href="screenshots/coding-layout.png" style="display:block"><img src="screenshots/coding-layout.png" alt="Claude Code running in a project folder, with the folder's files and their git badges on the left" loading="lazy" style="display:block;width:100%;height:auto;border-radius:8px"></a></div>
+  <div style="margin-top:20px;border-radius:12px;border:1px solid var(--b3);background:var(--p3);padding:5px"><a href="screenshots/file-explorer.png" style="display:block"><img src="screenshots/file-explorer.png" alt="The Files tab as an OS-style explorer with Quick access places and a right-click menu" loading="lazy" style="display:block;width:100%;height:auto;border-radius:8px"></a></div>
   <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,340px),1fr));gap:20px;margin-top:20px">
     <div style="border:1px solid var(--b2);border-radius:12px;background:var(--p1);padding:24px">
       <h3 style="font-size:18px;font-weight:600;letter-spacing:-0.015em;margin:0">Code here</h3>
@@ -592,6 +593,10 @@ textarea::placeholder,input::placeholder{color:var(--t8)}
     <div style="border:1px solid var(--b2);border-radius:12px;background:var(--p1);padding:24px">
       <h3 style="font-size:18px;font-weight:600;letter-spacing:-0.015em;margin:0">See every edit live</h3>
       <p style="color:var(--t3);font-size:14.5px;line-height:1.55;margin:8px 0 0;text-wrap:pretty">Folders refresh on their own. Changed files carry M, A, ? and D badges, the footer shows the branch, and one toggle narrows the list to what changed. The agent's tab has Changes for a git diff stat beside it.</p>
+    </div>
+    <div style="border:1px solid var(--b2);border-radius:12px;background:var(--p1);padding:24px">
+      <h3 style="font-size:18px;font-weight:600;letter-spacing:-0.015em;margin:0">A real file explorer</h3>
+      <p style="color:var(--t3);font-size:14.5px;line-height:1.55;margin:8px 0 0;text-wrap:pretty">One pane with Quick access, pinned folders and servers on the side, and the right-click menu you expect: cut, copy, paste, rename, duplicate, properties. Text and images open in the app, the rest in their own apps. Search finds files in every subfolder as you type, through fsearch on macOS or Everything on Windows when you have them.</p>
     </div>
     <div style="border:1px solid var(--b2);border-radius:12px;background:var(--p1);padding:24px">
       <h3 style="font-size:18px;font-weight:600;letter-spacing:-0.015em;margin:0">Agents side by side</h3>
@@ -814,6 +819,7 @@ const FEATURES = [
   ['Query plans', ['One normalized operator tree across engines', 'Graph and flame views, ranked hotspots linked to nodes', 'HypoPG what-if indexes — no real index created']],
   ['SSH & terminals', ['GPU-rendered on alacritty_terminal, 10k-line scrollback', 'ProxyJump chains, agent and X11 forwarding', 'Split panes with input broadcast, macros, session logs']],
   ['Tunnels', ['Local, remote and dynamic (SOCKS) forwards', '“Via Host” connections tunnel automatically', 'Status-bar manager with bytes, Start / Stop']],
+  ['File explorer', ['Works like your OS explorer: places, pins, context menus', 'Cut, copy, paste, rename and open across local, SFTP and buckets', 'Fast search through subfolders, with fsearch or Everything when installed']],
   ['File transfer', ['SFTP on the existing session, plus FTP / FTPS', 'Dual-pane browser with drag and drop, image viewer', 'Resumable queue — even after the app is killed']],
   ['Server workspaces', ['Per-team views of Hosts, connections and desktops', 'Servers view with live reachability; Connect to (⌘K)', 'RDP / VNC in the system client; shared credentials']],
   ['Fleet', ['Run a command on a tag, folder or selection', 'Dashboard: load, disk, memory, failed units', 'File push, SSH key rollout, Ansible inventory import']],

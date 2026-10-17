@@ -111,6 +111,8 @@ pub struct Workspace {
     pub(crate) active: usize,
     pub(crate) sidebar_open: bool,
     pub(crate) side_tab: SideTab,
+    /// Tools pane groups the user opened or closed (the rest follow their default).
+    pub(crate) tools_open: std::collections::HashMap<String, bool>,
     /// How the Explorer groups its sources.
     pub(crate) explorer_group: crate::explorer_tree::ExplorerGroup,
     /// The Explorer's "Filter everything" field.
@@ -231,6 +233,9 @@ impl Workspace {
             key: crate::sidebar::EXPLORER_GROUP_KEY.into(),
         });
         core.send(Command::LoadSetting {
+            key: crate::rail::TOOLS_OPEN_KEY.into(),
+        });
+        core.send(Command::LoadSetting {
             key: switchyard_core::agent_run::ASSISTANT_SETTINGS_KEY.into(),
         });
         core.send(Command::LoadSetting {
@@ -326,6 +331,7 @@ impl Workspace {
             active: 0,
             sidebar_open: true,
             side_tab: SideTab::Explorer,
+            tools_open: Default::default(),
             explorer_group: Default::default(),
             explorer_filter,
             top_menu: None,
@@ -711,6 +717,18 @@ impl Workspace {
                     ed.update(cx, |ed, cx| ed.set_error(message, cx));
                 }
             }
+            Event::Setting { ref key, .. } if key == crate::files_tab::FILES_SETTINGS_KEY => {
+                for t in &self.tabs {
+                    if let Tab::Files(f) = t {
+                        f.update(cx, |f, cx| f.on_event(&ev, cx));
+                    }
+                }
+            }
+            Event::Setting { key, value } if key == crate::rail::TOOLS_OPEN_KEY => {
+                self.tools_open = value
+                    .and_then(|v| serde_json::from_value(v).ok())
+                    .unwrap_or_default();
+            }
             Event::Setting { key, value } if key == "inspector.width" => {
                 if let Some(w) = value.as_ref().and_then(|v| v.as_f64()) {
                     self.inspector_width = (w as f32).max(crate::sidebar::INSPECTOR_MIN);
@@ -1045,6 +1063,8 @@ impl Workspace {
             }
             Event::Workspace(w) => self.restore(w, window, cx),
             Event::FsListing { .. }
+            | Event::FileSearchHits { .. }
+            | Event::FileSearchDone { .. }
             | Event::FsOpDone { .. }
             | Event::TransferQueued { .. }
             | Event::TransferProgress { .. }
@@ -1073,8 +1093,13 @@ impl Workspace {
                     self.on_cloud_text_file(*request, &result, window, cx);
                 }
                 for t in &self.tabs {
-                    if let Tab::Editor(e) = t {
-                        e.update(cx, |e, cx| e.on_event(&ev, window, cx));
+                    match t {
+                        Tab::Editor(e) => e.update(cx, |e, cx| e.on_event(&ev, window, cx)),
+                        // "New file" waits for its empty file.
+                        Tab::Files(f) if matches!(ev, Event::TextFileSaved { .. }) => {
+                            f.update(cx, |f, cx| f.on_event(&ev, cx))
+                        }
+                        _ => {}
                     }
                 }
                 self.finish_saved_closes(window, cx);
@@ -2098,7 +2123,7 @@ impl Workspace {
                 FsRef::Host(h) => Some(h.clone()),
                 FsRef::Local | FsRef::Conn(_) => None,
             },
-            Some(Tab::Files(f)) => f.read(cx).right_host().cloned(),
+            Some(Tab::Files(f)) => f.read(cx).host().cloned(),
             _ => None,
         }
     }
@@ -2207,7 +2232,7 @@ impl Workspace {
         if let Some(ix) = self.tabs.iter().position(|t| matches!(t, Tab::Files(_))) {
             if let (Some(fs), Tab::Files(f)) = (right, &self.tabs[ix]) {
                 f.update(cx, |f, cx| {
-                    if *f.right_source() != fs {
+                    if !f.shows(&fs) {
                         f.show(fs, cx)
                     }
                 });
@@ -3257,7 +3282,7 @@ impl Workspace {
                 )
             }
             Tab::Files(f) => {
-                let right = match f.read(cx).right_source() {
+                let right = match f.read(cx).source() {
                     FsRef::Local => "local".to_owned(),
                     FsRef::Host(id) | FsRef::Conn(id) => self
                         .profiles

@@ -185,7 +185,9 @@ impl EditorTab {
             transfers,
             viewer: None,
         };
-        this.set_terminal(true, cx);
+        // A Host file gets its shell beside it; a local file opens alone (Ctrl+` adds one).
+        let host = matches!(this.fs, FsRef::Host(_));
+        this.set_terminal(host, cx);
         this
     }
 
