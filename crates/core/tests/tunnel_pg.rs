@@ -136,6 +136,7 @@ async fn postgres_through_a_tunnel() {
         tags: vec![],
         confirmed_destructive: false,
         fetch_limit: FetchLimit::All,
+        continue_on_error: false,
     });
     let mut rows = 0;
     next(&mut rx, 15, |e| match e {
@@ -163,6 +164,7 @@ async fn postgres_through_a_tunnel() {
         tags: vec![],
         confirmed_destructive: false,
         fetch_limit: FetchLimit::All,
+        continue_on_error: false,
     });
     next(&mut rx, 5, |e| {
         matches!(

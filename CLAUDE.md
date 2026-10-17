@@ -370,6 +370,10 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
   fills the window with the theme background; the main window's root is made transparent
   (`rendering::skip_root_background`) and the workspace's fill is the center's background,
   so don't add another window- or center-sized `.bg(..)` that repeats it.
+- gpui-base's `Input` binds Ctrl+. (code actions), ⇧⌘F (Replace on macOS) and other keys
+  in its own context, which beats app bindings without one while an editor has focus.
+  SQL tab shortcuts are bound on `SqlTab > Input` (`actions.rs`), registered after the
+  input's.
 - GPUI `RenderImage` pixels are BGRA. Every replaced image must go through
   `cx.drop_image(old, Some(window))`, or its sprite-atlas tile is never freed (the RDP tab
   swaps one per update).

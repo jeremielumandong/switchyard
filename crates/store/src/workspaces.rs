@@ -564,10 +564,10 @@ impl Store {
         ws: &str,
     ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO buffers (id, title, connection_id, text, cursor, position, updated_at, workspace_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO buffers (id, title, connection_id, text, cursor, position, updated_at, workspace_id, file)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(id) DO UPDATE SET title = ?2, connection_id = ?3, text = ?4,
-                 cursor = ?5, position = ?6, updated_at = ?7",
+                 cursor = ?5, position = ?6, updated_at = ?7, file = ?9",
             params![
                 b.id,
                 b.title,
@@ -576,7 +576,8 @@ impl Store {
                 b.cursor as i64,
                 position,
                 now_ms(),
-                ws
+                ws,
+                b.file
             ],
         )?;
         Ok(())
@@ -585,7 +586,7 @@ impl Store {
     /// Buffers of workspace `ws` in tab order.
     pub fn buffers_of(&self, ws: &str) -> Result<Vec<crate::model::BufferState>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, connection_id, text, cursor FROM buffers WHERE workspace_id = ?1
+            "SELECT id, title, connection_id, text, cursor, file FROM buffers WHERE workspace_id = ?1
              ORDER BY position, updated_at",
         )?;
         let rows = stmt.query_map([ws], |r| {
@@ -595,6 +596,7 @@ impl Store {
                 connection_id: r.get::<_, Option<String>>(2)?.map(ProfileId),
                 text: r.get(3)?,
                 cursor: r.get::<_, i64>(4)?.max(0) as usize,
+                file: r.get(5)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
@@ -714,6 +716,7 @@ mod tests {
             connection_id: None,
             text: text.into(),
             cursor: 0,
+            file: None,
         }
     }
 

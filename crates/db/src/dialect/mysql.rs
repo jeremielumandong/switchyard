@@ -2,9 +2,7 @@
 //! databases as schemas, and switching schemas is `USE`.
 
 use super::lexer::{self, Flavor, SegKind};
-use super::{
-    COMMON_KEYWORDS, Dialect, ParamRef, ParamStyle, StatementSpan, is_plain_ident, line_of_byte,
-};
+use super::{COMMON_KEYWORDS, Dialect, ParamRef, ParamStyle, StatementSpan, is_plain_ident};
 use crate::catalog::ObjectKind;
 use crate::value::{self, Engine, Value};
 
@@ -203,7 +201,7 @@ fn split_with_delimiters(sql: &str) -> Vec<StatementSpan> {
             out.push(StatementSpan {
                 start: s,
                 end: e,
-                line: line_of_byte(sql, s),
+                line: 0,
                 repeat: 1,
             });
         }
@@ -257,7 +255,7 @@ fn split_with_delimiters(sql: &str) -> Vec<StatementSpan> {
         }
     }
     finish(&mut out, start, sql.len(), has_code);
-    out
+    super::with_lines(sql, out)
 }
 
 impl Dialect for MySqlDialect {

@@ -57,6 +57,8 @@ mod servers_view;
 mod sidebar;
 mod snippets;
 mod split;
+mod sql_edit;
+mod sql_files;
 mod sql_tab;
 mod ssh_prompts;
 mod terminal_settings;

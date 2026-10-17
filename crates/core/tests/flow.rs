@@ -91,6 +91,7 @@ async fn streams_with_fetch_limit_and_fetch_all() {
         tags: vec![],
         confirmed_destructive: false,
         fetch_limit: FetchLimit::Rows(10_000),
+        continue_on_error: false,
     });
     let mut rows = 0;
     let paused_at = next_matching(&mut rx, |e| match e {
@@ -162,6 +163,7 @@ async fn cancel_stops_a_running_query_quickly() {
         tags: vec![],
         confirmed_destructive: false,
         fetch_limit: FetchLimit::All,
+        continue_on_error: false,
     });
     next_matching(&mut rx, |e| {
         matches!(
@@ -205,6 +207,7 @@ async fn production_requires_confirmation() {
         tags: vec![],
         confirmed_destructive: false,
         fetch_limit: FetchLimit::All,
+        continue_on_error: false,
     });
     let d = next_matching(&mut rx, |e| match e {
         Event::Query {
@@ -232,6 +235,7 @@ async fn read_only_blocks_writes() {
         tags: vec![],
         confirmed_destructive: true,
         fetch_limit: FetchLimit::All,
+        continue_on_error: false,
     });
     let msg = next_matching(&mut rx, |e| match e {
         Event::Query {
@@ -279,6 +283,7 @@ async fn history_off_switch_records_nothing() {
         tags: vec![],
         confirmed_destructive: false,
         fetch_limit: FetchLimit::Rows(10_000),
+        continue_on_error: false,
     });
     next_matching(&mut rx, |e| {
         matches!(
@@ -554,6 +559,7 @@ async fn switches_database_and_schema_in_place() {
         tags: vec![],
         confirmed_destructive: false,
         fetch_limit: FetchLimit::All,
+        continue_on_error: false,
     });
     let cancelled = next_matching(&mut rx, |e| match e {
         Event::Query {
@@ -586,4 +592,53 @@ async fn switches_database_and_schema_in_place() {
     })
     .await;
     assert!(r.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn script_stops_or_continues_after_a_failure() {
+    for continue_on_error in [false, true] {
+        let (core, mut rx) = setup(EnvironmentLabel::Development, false).await;
+        let h = core.handle();
+        h.send(Command::Execute {
+            session: 7,
+            query: 9,
+            statements: vec![stmt("rows 1"), stmt("fail"), stmt("rows 2")],
+            tags: vec![],
+            confirmed_destructive: false,
+            fetch_limit: FetchLimit::All,
+            continue_on_error,
+        });
+        let mut started = Vec::new();
+        let mut failed = Vec::new();
+        let cancelled = next_matching(&mut rx, |e| match e {
+            Event::Query {
+                event: QueryEvent::StatementStarted { index },
+                ..
+            } => {
+                started.push(index);
+                None
+            }
+            Event::Query {
+                event: QueryEvent::Failed { index, .. },
+                ..
+            } => {
+                failed.push(index);
+                None
+            }
+            Event::Query {
+                event: QueryEvent::Finished { cancelled, .. },
+                ..
+            } => Some(cancelled),
+            _ => None,
+        })
+        .await;
+        assert!(!cancelled);
+        assert_eq!(failed, [1]);
+        let want: &[usize] = if continue_on_error {
+            &[0, 1, 2]
+        } else {
+            &[0, 1]
+        };
+        assert_eq!(started, want, "continue_on_error = {continue_on_error}");
+    }
 }

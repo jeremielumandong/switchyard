@@ -1226,6 +1226,9 @@ pub struct BufferState {
     pub text: String,
     /// Cursor byte offset.
     pub cursor: usize,
+    /// The `.sql` file on this computer the tab was opened from or saved to.
+    #[serde(default)]
+    pub file: Option<String>,
 }
 
 /// A saved workspace of the Default side: a named scope (which Hosts, connections,

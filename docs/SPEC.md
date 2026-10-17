@@ -101,11 +101,12 @@ The editor is the gpui-component code editor with a tree-sitter SQL grammar, plu
 
 - **Highlighting:** tree-sitter SQL grammar with per-dialect keyword sets (PostgreSQL, T-SQL).
 - **Completion:** keywords, schemas, tables, columns, functions and procedures from the cached catalog. Aliases resolve from FROM and JOIN clauses. Ranking favors recently used objects.
-- **Execution:** run statement at cursor (Ctrl/Cmd+Enter), run selection, run whole script (Ctrl/Cmd+Shift+Enter). Script splitting follows dialect rules: `;` for PostgreSQL including dollar-quoted bodies, `GO` batch separators for SQL Server.
+- **Execution:** run statement at cursor (Ctrl/Cmd+Enter), run selection, run whole script (Ctrl/Cmd+Shift+Enter). Script splitting follows dialect rules: `;` for PostgreSQL including dollar-quoted bodies, `GO` batch separators for SQL Server. As in DBeaver's "Smart" mode, a blank line between two complete statements also ends a statement (and so does a top-level `;` inside a SQL Server batch); units with procedural code (DECLARE, BEGIN … END blocks, IF / WHILE, routine bodies) stay whole. A script stops at the first error, or continues with the next statement when "On error: continue" is chosen; a summary line lists statements run, failed and rows affected.
 - **Multiple result sets** each open in their own results tab under the editor.
 - **Parameters:** `:name`, `$1` and `@name` placeholders prompt for values before running.
 - **Diagnostics:** parse errors from `sqlparser-rs` underlined as you type. Server errors map to a line and column (PostgreSQL returns a character position; SQL Server returns a line number).
-- **Editing:** multi-cursor, find and replace, bracket matching, comment toggle, format document, code folding.
+- **Editing:** multi-cursor, find and replace, bracket matching, line and block comment toggle (Ctrl/Cmd+/, Ctrl/Cmd+Shift+/), upper / lower case (Ctrl/Cmd+Shift+X / Y), duplicate (Ctrl/Cmd+Shift+D), delete line (Ctrl/Cmd+D), move lines (Alt+Up / Down), format document, code folding. Diagnostics and folds are computed off the UI thread.
+- **Script files:** Open SQL Script (Ctrl/Cmd+O) opens `.sql` files from this computer in new tabs; Save (Ctrl/Cmd+S) and Save As (Ctrl/Cmd+Shift+S) write them back, with a conflict check when the file changed on disk. Closing a tab with changes not saved to its file asks Save / Discard / Cancel.
 - **History:** every executed statement is stored with connection, duration and row count, and is searchable. History can be turned off per connection.
 - **Buffers:** autosaved continuously, restored after a crash or restart.
 - **Transactions:** auto-commit by default; a manual transaction mode shows an open-transaction indicator in the status bar and warns before closing a tab with uncommitted work.

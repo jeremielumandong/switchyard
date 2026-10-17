@@ -116,6 +116,7 @@ async fn edits_commit_and_roll_back_atomically() {
         tags: vec![],
         confirmed_destructive: false,
         fetch_limit: switchyard_core::FetchLimit::All,
+        continue_on_error: false,
     });
     let seg = next(&mut rx, |e| match e {
         Event::Query {

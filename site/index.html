@@ -813,7 +813,7 @@ function visitorTab() {
   return 'linux';
 }
 const FEATURES = [
-  ['SQL editor', ['Tree-sitter highlighting, multi-cursor, folding, format', 'Schema-aware completion with aliases resolved from FROM / JOIN', 'Parse errors underlined as you type; buffers autosave']],
+  ['SQL editor', ['Schema-aware completion, folding, format, comment and case toggles', 'Blank lines split statements like DBeaver; open and save .sql files', 'Scripts stop or continue on error; parsing never blocks typing']],
   ['Results grid', ['Streams and virtualizes: 1M rows × 10 columns under 150 MB', 'Inline edits staged and committed in one transaction', 'Foreign-key navigation, pin and compare result tabs']],
   ['Schema explorer', ['Lazy tree with a local SQLite catalog cache', 'Script as CREATE / DROP, DDL, dependencies, ER diagram', 'Activity monitor with kill session']],
   ['Query plans', ['One normalized operator tree across engines', 'Graph and flame views, ranked hotspots linked to nodes', 'HypoPG what-if indexes — no real index created']],
@@ -849,6 +849,8 @@ const SHORTCUTS = [
   ['Command palette', '⌘⇧P', 'Ctrl+Shift+P'], ['Quick switch', '⌘P', 'Ctrl+P'], ['Connect to…', '⌘K', 'Ctrl+K'],
   ['Run statement / script', '⌘↩ / ⌘⇧↩', 'Ctrl+Enter / Ctrl+Shift+Enter'], ['Explain / Explain Analyze', '⌘E / ⌘⇧E', 'Ctrl+E / Ctrl+Shift+E'],
   ['Stop query', '⌘.', 'Ctrl+.'], ['Format SQL', '⌘⇧F', 'Ctrl+Shift+F'], ['Query history', '⌘⇧H', 'Ctrl+Shift+H'],
+  ['Toggle comment', '⌘/', 'Ctrl+/'], ['Upper / lower case', '⌘⇧X / ⌘⇧Y', 'Ctrl+Shift+X / Ctrl+Shift+Y'],
+  ['Open / save SQL script', '⌘O / ⌘S', 'Ctrl+O / Ctrl+S'], ['Move line', '⌥↑ / ⌥↓', 'Alt+Up / Alt+Down'],
   ['New connection / query tab', '⌘N / ⌘⌥N', 'Ctrl+N / Ctrl+Alt+N'], ['New terminal', '⌘T', 'Ctrl+Shift+T'],
   ['Split terminal', '⌘D', 'Ctrl+Shift+D'], ['Split right / down', '⌘\\ / ⌘⇧\\', 'Ctrl+\\ / Ctrl+Shift+\\'],
   ['Toggle sidebar / assistant', '⌘B / ⌘J', 'Ctrl+B / Ctrl+J'], ['Settings', '⌘,', 'Ctrl+,'], ['Peek table', 'F12', 'F12'],

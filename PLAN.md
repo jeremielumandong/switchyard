@@ -1316,6 +1316,29 @@ are shared hotspots: one owner at a time.
   1440×900 a Welcome frame fills 1.85 M pixels instead of 4.1 M, and CPU while moving the
   mouse over the window drops from ~20 % to ~13 % (idle stays under 1 %).
 
+## Extra — SQL editor and runner at DBeaver level (user request, 2026-10-17)
+
+- [x] SQL-1 Statement delimiting like DBeaver's "Smart" mode: `Dialect::split_statements`
+  (`db/src/dialect/smart.rs`) splits `split_script`'s units at blank lines between complete
+  statements (and T-SQL batches at top-level `;`); procedural units stay whole. Used by run
+  at cursor, run selection / script, diagnostics, folds and completion.
+- [x] SQL-2 Speed on large scripts: statement lines counted in one pass (`with_lines`),
+  `lexer::in_code` and segment lookups by binary search (splitting was quadratic: a 20,000
+  statement script now splits in well under a second); diagnostics and folds parse on the
+  background executor; keystrokes no longer notify the workspace and assistant.
+- [x] SQL-3 Editor commands (`app/src/sql_edit.rs`): line / block comment, upper / lower
+  case, duplicate, delete and move lines, in the palette and keymap. Ctrl/⌘+. and
+  Ctrl/⌘+Shift+F now also work while the editor has focus (the input's own bindings took
+  them).
+- [x] SQL-4 Script files: Open SQL Script, Save, Save As (core `ReadTextFile` /
+  `WriteTextFile`, conflict check), the file kept with the buffer (store schema 9), Save /
+  Discard / Cancel when closing a tab with unsaved file changes.
+- [x] SQL-5 Run options: "On error: stop / continue" (`Command::Execute`
+  `continue_on_error`), Max rows (200, 1,000, 10,000, 100,000, all) in the results status
+  bar, a script summary line, parameter values pre-filled from the last run.
+  Deferred (see Follow-ups): total row count of a result, client-side `@set` variables,
+  saving the run options per connection.
+
 ## M6 — Packaging and beta
 
 Exit: every performance budget passes on all three platforms; signed builds published.
@@ -1362,6 +1385,12 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 - Workload-wide index advisor, snippet library, import wizard, data compare, folder sync.
 
 ## Follow-ups
+
+- SQL editor: "Count rows" for a result (`SELECT COUNT(*)` around the statement, per
+  dialect); DBeaver-style `@set` / `${var}` client variables; run options and Max rows
+  saved per connection (today per tab, reset on restart); opening `.sql` files from the
+  Files tab in a SQL tab (they open in the text editor); a setting to turn blank-line
+  delimiting off.
 
 - DBeaver import: passwords kept in Eclipse secure storage (DBeaver EE "Use secure
   storage") are not read; jump servers inside a DBeaver SSH tunnel and per-driver

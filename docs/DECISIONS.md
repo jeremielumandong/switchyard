@@ -1824,3 +1824,20 @@ its socket (or `fsearch stdio`), and on Windows `everything` asks Everything's `
 Both are best effort with a short timeout; no hits or any error falls back to the walk, so
 a stale or missing index never hides files. The query syntax (typo tolerance, `ext:`,
 `type:`, `size:`, `mtime:`) follows fsearch's so results read the same either way.
+
+## 2026-10-17 — Blank lines delimit statements in the SQL editor
+
+Jeremie asked for a SQL editor and runner at DBeaver's level. DBeaver's default
+("Blank line is statement delimiter: Smart") lets people keep queries without semicolons
+apart with an empty line and run each with Ctrl+Enter; Switchyard only split on `;` (and
+`GO`), so Ctrl+Enter ran both queries at once and failed, and a SQL Server tab without `GO`
+ran the whole buffer. The editor now uses `Dialect::split_statements`: `split_script`'s
+units, split again at a blank line when the next word starts a statement and the text
+before it is complete (not after a comma, an operator, `UNION`, `AS`, `WHERE`…; not an
+`INSERT` without its rows, an `UPDATE` without `SET` or a `WITH` without its query; not
+inside parentheses). Units with procedural code (DECLARE, BEGIN blocks, IF / WHILE at the
+start of a line, CREATE FUNCTION / PROCEDURE / TRIGGER) are never split, since their
+statements share variables. `split_script` itself is unchanged, so the CLI, runbooks,
+schema compare and the agent tools keep their exact batches. No setting yet to turn it
+off (Follow-ups).
+

@@ -560,6 +560,7 @@ impl ObjectTab {
             tags: vec![],
             confirmed_destructive: false,
             fetch_limit: FetchLimit::Rows(self.pager.page_size as usize),
+            continue_on_error: false,
         });
         cx.notify();
     }
