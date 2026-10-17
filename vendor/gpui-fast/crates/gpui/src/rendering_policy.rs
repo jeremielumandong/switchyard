@@ -1,66 +1,45 @@
-//! Switchyard's Windows rendering policy for software adapters and remote
-//! sessions (ported from AgentOps' GPUI patch). All other platforms keep
-//! upstream behavior, including the high-rate input keepalive on macOS.
+//! Switchyard's rendering policy for software adapters and remote sessions
+//! (ported from AgentOps' GPUI patch for Windows, extended to Linux's CPU
+//! Vulkan drivers such as llvmpipe / lavapipe). With the policy off, every
+//! platform keeps upstream behavior, including the high-rate input keepalive
+//! on macOS.
 
 use std::time::{Duration, Instant};
 
-#[cfg(target_os = "windows")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
-#[cfg(target_os = "windows")]
 static LOW_POWER_RENDERING: AtomicBool = AtomicBool::new(false);
 
-#[cfg(target_os = "windows")]
 static SOFTWARE_RENDERING_EFFECTS: AtomicBool = AtomicBool::new(false);
 
-/// Omit decorative blurred shadows on Windows software renderers. Callers
-/// should enable it only after identifying a software adapter; zero-blur
-/// focus rings and outlines remain. Configure before the first paint.
-/// A no-op on other platforms.
+/// Omit decorative blurred shadows on software renderers. Callers should
+/// enable it only after identifying a software adapter; zero-blur focus rings
+/// and outlines remain. Configure before the first paint.
 pub fn set_software_rendering_effects(enabled: bool) {
-    #[cfg(target_os = "windows")]
     SOFTWARE_RENDERING_EFFECTS.store(enabled, Ordering::Relaxed);
-    #[cfg(not(target_os = "windows"))]
-    let _ = enabled;
 }
 
 pub(crate) fn software_rendering_effects() -> bool {
-    #[cfg(target_os = "windows")]
-    {
-        SOFTWARE_RENDERING_EFFECTS.load(Ordering::Relaxed)
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        false
-    }
+    SOFTWARE_RENDERING_EFFECTS.load(Ordering::Relaxed)
 }
 
-/// Enable economical rendering for Windows software adapters and remote sessions.
+/// Enable economical rendering for software adapters and remote sessions.
 ///
-/// While enabled, the Windows frame scheduler runs at most 30 times per second,
-/// expensive frames leave the UI thread recovery time before the next scheduled
-/// draw, and moving the window without resizing it reuses the current scene.
-/// Scene changes, explicit presentation requests and frame callbacks are kept.
-/// This process-wide setting may be changed after startup. It is a no-op on
-/// other platforms, and defaults to disabled.
+/// While enabled, expensive frames leave the UI thread recovery time before the
+/// next scheduled draw, unchanged scenes are not presented again during
+/// high-rate input, and moving the window without resizing it reuses the
+/// current scene. On Windows the frame scheduler also runs at most 30 times per
+/// second. Scene changes, explicit presentation requests and frame callbacks
+/// are kept. This process-wide setting may be changed after startup, and
+/// defaults to disabled.
 pub fn set_low_power_rendering(enabled: bool) {
-    #[cfg(target_os = "windows")]
     LOW_POWER_RENDERING.store(enabled, Ordering::Relaxed);
-    #[cfg(not(target_os = "windows"))]
-    let _ = enabled;
 }
 
 /// Whether [`set_low_power_rendering`] is enabled. Read by the platform crates.
 #[doc(hidden)]
 pub fn low_power_rendering() -> bool {
-    #[cfg(target_os = "windows")]
-    {
-        LOW_POWER_RENDERING.load(Ordering::Relaxed)
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        false
-    }
+    LOW_POWER_RENDERING.load(Ordering::Relaxed)
 }
 
 /// The Windows frame scheduler's sleep between frame requests while low-power
@@ -75,15 +54,18 @@ pub fn low_power_frame_interval(low_power: bool) -> Option<Duration> {
 ///
 /// Windows' compositor keeps the last presented frame, and presenting there
 /// renders the whole scene again: on a software adapter each one costs a full
-/// frame of CPU. Windows therefore only presents when asked to, while other
-/// platforms keep upstream's keepalive during high-rate input (which stops
-/// ProMotion displays from lowering their refresh rate).
+/// frame of CPU. Windows therefore only presents when asked to, and so does
+/// every platform in low-power mode; otherwise other platforms keep upstream's
+/// keepalive during high-rate input (which stops ProMotion displays from
+/// lowering their refresh rate).
 pub(crate) fn requires_presentation(
     explicitly_required: bool,
     pending: bool,
     high_rate_input: bool,
 ) -> bool {
-    explicitly_required || pending || (!cfg!(target_os = "windows") && high_rate_input)
+    explicitly_required
+        || pending
+        || (!cfg!(target_os = "windows") && !low_power_rendering() && high_rate_input)
 }
 
 /// A timer frequency alone cannot leave CPU headroom when a frame takes longer

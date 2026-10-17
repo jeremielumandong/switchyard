@@ -444,6 +444,8 @@ impl FilesTab {
         div()
             .id(id)
             .w(rpx(width))
+            .max_h(rpx(480.))
+            .overflow_y_scroll()
             .p(rpx(4.))
             .bg(p.elev)
             .border_1()

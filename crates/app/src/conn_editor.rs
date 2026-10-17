@@ -1101,6 +1101,8 @@ impl ConnEditor {
                             .top(rpx(30.))
                             .left_0()
                             .right_0()
+                            .max_h(rpx(320.))
+                            .overflow_y_scroll()
                             .p(rpx(4.))
                             .bg(p.elev)
                             .rounded(px(7.))

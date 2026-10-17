@@ -363,6 +363,13 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
 - sspi's `Username::new(user, Some(domain))` rejects a `\` in the account name
   ("invalid username" from CredSSP), so `DOMAIN\user` typed with the Domain field set
   fails; `rdp::session::sign_in_name` normalizes the user and domain first.
+- gpui-component's `PopupMenu` scrolls only with `.scrollable(true)` (or > 20 owned items),
+  so long menus ran off the window. Import `DropdownMenu` / `ContextMenuExt` from
+  `crate::menus`, not gpui-component; custom pickers need `max_h` + `overflow_y_scroll`.
+- On a software renderer CPU cost follows pixels filled per frame. gpui-component's root
+  fills the window with the theme background; the main window's root is made transparent
+  (`rendering::skip_root_background`) and the workspace's fill is the center's background,
+  so don't add another window- or center-sized `.bg(..)` that repeats it.
 - GPUI `RenderImage` pixels are BGRA. Every replaced image must go through
   `cx.drop_image(old, Some(window))`, or its sprite-atlas tile is never freed (the RDP tab
   swaps one per update).

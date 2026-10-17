@@ -1301,6 +1301,21 @@ are shared hotspots: one owner at a time.
   Deferred (see Follow-ups): DBeaver's Eclipse secure storage (EE "Use secure storage"),
   jump servers inside a DBeaver tunnel, driver properties.
 
+## Extra — Scrollable dropdowns and CPU rendering (user request, 2026-10-17)
+
+- [x] UX-1 Every dropdown scrolls when its list is long: `app/src/menus.rs` shadows
+  gpui-component's `dropdown_menu` / `context_menu` with versions that turn on
+  `PopupMenu::scrollable` (the cloud tab's namespace / store picker could not reach its
+  last entries), and the app's own pickers cap their height and scroll (connection form
+  selects, Files source picker and Code menu, mode menu, result compare menu, explorer
+  submenus).
+- [x] SR-2 CPU rendering: the software-adapter policy (no blurred shadows, low-power
+  pacing, no keepalive presents) also applies on Linux CPU Vulkan drivers (llvmpipe /
+  lavapipe); the window root no longer paints a background under the workspace, and the
+  workspace's one window-sized fill doubles as the center's background. Under lavapipe at
+  1440×900 a Welcome frame fills 1.85 M pixels instead of 4.1 M, and CPU while moving the
+  mouse over the window drops from ~20 % to ~13 % (idle stays under 1 %).
+
 ## M6 — Packaging and beta
 
 Exit: every performance budget passes on all three platforms; signed builds published.
@@ -1367,6 +1382,10 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   running app's unlocked secrets over the loopback handoff, scoped by the session token.
 
 (Add items here instead of doing them mid-task.)
+- Overdraw (SR-2 leftovers): tab roots that paint `p.bg` (Files, Redis, Fleet, Containers,
+  Infra, Runbook) still fill the center over the workspace's `p.surface`; DDL, Object and
+  ER tabs repeat `p.surface`. A renderer-side cull of quads hidden under a later opaque
+  rectangle would cover all of them.
 - Software rendering (SR-1) leftovers from AgentOps' GPUI patch: coalesce mouse moves in
   low-power mode (`hover_input.rs`, with live caption hit tests); fill the interior of large
   rounded or bordered panels with `ClearView` (needs the edge quads uploaded with the
