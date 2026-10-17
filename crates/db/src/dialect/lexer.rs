@@ -269,8 +269,11 @@ pub fn segments(sql: &str, flavor: Flavor) -> Vec<Segment> {
 
 /// Whether byte offset `at` lies in a code segment.
 pub fn in_code(segs: &[Segment], at: usize) -> bool {
-    segs.iter()
-        .find(|s| s.start <= at && at < s.end)
+    // Segments are sorted and do not overlap: binary search, so callers can ask once per
+    // line of a large script.
+    let i = segs.partition_point(|s| s.end <= at);
+    segs.get(i)
+        .filter(|s| s.start <= at)
         .is_none_or(|s| s.kind == SegKind::Code)
 }
 

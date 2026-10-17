@@ -348,6 +348,7 @@ impl Service {
             tags,
             confirmed_destructive,
             FetchLimit::Rows(SQL_ROW_CAP),
+            false,
         )
         .await;
         Ok(())

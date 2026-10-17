@@ -1462,6 +1462,7 @@ impl Workspace {
                             .child(ui::button("params-run", "Run", Kind::Primary, p).on_click(cx.listener(move |this, _, w, cx| {
                                 let values: Vec<(String, String)> =
                                     inputs.iter().map(|(n, i)| (n.clone(), i.read(cx).value().to_string())).collect();
+                                tab.update(cx, |t, _| t.remember_params(&values));
                                 let bound = tab.read(cx).bind(pending.clone(), &values);
                                 this.dismiss(w, cx);
                                 if bound.destructive.is_empty() {

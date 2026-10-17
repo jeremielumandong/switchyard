@@ -36,9 +36,12 @@ pub fn sql_fold_lines(dialect: &dyn Dialect, text: &str) -> Vec<(usize, usize)> 
     let segments = switchyard_core::db::dialect::lexer::segments(text, dialect.flavor());
     // Where real code starts at or after `at`: past whitespace and comments.
     let code_from = |at: usize| -> usize {
-        segments
+        // Segments are sorted: start the search at `at` (a scan from the top for each
+        // statement made large scripts quadratic).
+        let first = segments.partition_point(|g| g.end <= at);
+        segments[first..]
             .iter()
-            .filter(|g| g.end > at && g.kind != SegKind::Comment)
+            .filter(|g| g.kind != SegKind::Comment)
             .find_map(|g| {
                 let from = g.start.max(at);
                 let rest = &text[from..g.end];
@@ -47,7 +50,7 @@ pub fn sql_fold_lines(dialect: &dyn Dialect, text: &str) -> Vec<(usize, usize)> 
             })
             .unwrap_or(at)
     };
-    for s in dialect.split_script(text) {
+    for s in dialect.split_statements(text) {
         let start = code_from(s.start).min(s.end);
         let end = start + text[start..s.end].trim_end().len();
         if end > start {

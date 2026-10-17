@@ -3,7 +3,7 @@
 //! shell parser rather than `sqlparser`.
 
 use super::lexer::Flavor;
-use super::{Dialect, ParamRef, SortKey, StatementSpan, line_of_byte};
+use super::{Dialect, ParamRef, SortKey, StatementSpan, with_lines};
 use crate::catalog::ObjectKind;
 use crate::guard::{Classification, Destructive as GuardDestructive, DestructiveKind};
 use crate::mongo::shell::{self, Destructive, Effect};
@@ -124,15 +124,16 @@ impl Dialect for MongoDialect {
     }
 
     fn split_script(&self, sql: &str) -> Vec<StatementSpan> {
-        shell::split(sql)
+        let spans = shell::split(sql)
             .into_iter()
             .map(|(start, end)| StatementSpan {
                 start,
                 end,
-                line: line_of_byte(sql, start),
+                line: 0,
                 repeat: 1,
             })
-            .collect()
+            .collect();
+        with_lines(sql, spans)
     }
 
     fn select_rows(&self, qualified: &str, limit: u64) -> String {

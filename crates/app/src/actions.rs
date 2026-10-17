@@ -64,6 +64,17 @@ actions!(
         ZoomIn,
         ZoomOut,
         ZoomReset,
+        ToggleComment,
+        ToggleBlockComment,
+        UpperCase,
+        LowerCase,
+        DuplicateLine,
+        MoveLineUp,
+        MoveLineDown,
+        DeleteLine,
+        OpenSqlScript,
+        SaveSqlScript,
+        SaveSqlScriptAs,
     ]
 );
 
@@ -129,6 +140,34 @@ pub fn init(cx: &mut App) {
         // Peek table: the columns of the table under the cursor; Escape closes it (the
         // binding only exists while the popover is open, so the editor keeps Escape).
         KeyBinding::new("f12", PeekTable, Some("SqlTab > Input")),
+        // SQL editor commands (DBeaver's keys). Bound on the editor so they win over the
+        // input's own keys: Ctrl+. there toggles code actions, and on macOS ⇧⌘F is Replace
+        // (⌥⌘F replaces in the SQL editor instead).
+        KeyBinding::new("secondary-.", StopQuery, Some("SqlTab > Input")),
+        KeyBinding::new("secondary-shift-f", FormatSql, Some("SqlTab > Input")),
+        KeyBinding::new("secondary-/", ToggleComment, Some("SqlTab > Input")),
+        KeyBinding::new(
+            "secondary-shift-/",
+            ToggleBlockComment,
+            Some("SqlTab > Input"),
+        ),
+        // Linux and Windows report Shift+/ as `?`.
+        KeyBinding::new("secondary-?", ToggleBlockComment, Some("SqlTab > Input")),
+        KeyBinding::new("secondary-shift-x", UpperCase, Some("SqlTab > Input")),
+        KeyBinding::new("secondary-shift-y", LowerCase, Some("SqlTab > Input")),
+        KeyBinding::new("secondary-shift-d", DuplicateLine, Some("SqlTab > Input")),
+        KeyBinding::new("secondary-d", DeleteLine, Some("SqlTab > Input")),
+        KeyBinding::new("alt-up", MoveLineUp, Some("SqlTab > Input")),
+        KeyBinding::new("alt-down", MoveLineDown, Some("SqlTab > Input")),
+        KeyBinding::new("secondary-o", OpenSqlScript, Some("Workspace")),
+        KeyBinding::new("secondary-s", SaveSqlScript, Some("SqlTab")),
+        KeyBinding::new("secondary-shift-s", SaveSqlScriptAs, Some("SqlTab")),
+        #[cfg(target_os = "macos")]
+        KeyBinding::new(
+            "cmd-alt-f",
+            gpui_kit::base::input::Replace,
+            Some("SqlTab > Input"),
+        ),
         KeyBinding::new("escape", ClosePeek, Some("Peek > Input")),
         KeyBinding::new("escape", ClosePeek, Some("Peek")),
         // Text size: Cmd/Ctrl with = (or +), - and 0, like a browser.
@@ -159,6 +198,7 @@ pub fn init(cx: &mut App) {
                 "ctrl-.",
                 "ctrl-,",
                 "ctrl-alt-n",
+                "ctrl-o",
             ]
             .map(|key| KeyBinding::new(key, gpui_kit::NoAction, Some("Terminal"))),
         );
@@ -178,6 +218,14 @@ pub enum CommandId {
     Explain,
     ExplainAnalyze,
     FormatSql,
+    /// Open a `.sql` file from this computer in a new SQL tab.
+    OpenSqlScript,
+    /// Save the SQL tab to its file.
+    SaveSqlScript,
+    /// Save the SQL tab to a new file.
+    SaveSqlScriptAs,
+    /// An editing command in the SQL tab in front.
+    SqlEdit(crate::sql_tab::EditCmd),
     CommitTransaction,
     RollbackTransaction,
     OpenFiles,
@@ -438,6 +486,72 @@ pub fn palette_commands() -> Vec<PaletteCommand> {
             k("⇧⌘E", "Ctrl+Shift+E"),
         ),
         c(FormatSql, "Format SQL", "Editor", k("⇧⌘F", "Ctrl+Shift+F")),
+        c(
+            OpenSqlScript,
+            "Open SQL Script…",
+            "Editor",
+            k("⌘O", "Ctrl+O"),
+        ),
+        c(
+            SaveSqlScript,
+            "Save SQL Script",
+            "Editor",
+            k("⌘S", "Ctrl+S"),
+        ),
+        c(
+            SaveSqlScriptAs,
+            "Save SQL Script As…",
+            "Editor",
+            k("⇧⌘S", "Ctrl+Shift+S"),
+        ),
+        c(
+            SqlEdit(crate::sql_tab::EditCmd::ToggleComment),
+            "Toggle Line Comment",
+            "Editor",
+            k("⌘/", "Ctrl+/"),
+        ),
+        c(
+            SqlEdit(crate::sql_tab::EditCmd::ToggleBlockComment),
+            "Toggle Block Comment",
+            "Editor",
+            k("⇧⌘/", "Ctrl+Shift+/"),
+        ),
+        c(
+            SqlEdit(crate::sql_tab::EditCmd::UpperCase),
+            "To Upper Case",
+            "Editor",
+            k("⇧⌘X", "Ctrl+Shift+X"),
+        ),
+        c(
+            SqlEdit(crate::sql_tab::EditCmd::LowerCase),
+            "To Lower Case",
+            "Editor",
+            k("⇧⌘Y", "Ctrl+Shift+Y"),
+        ),
+        c(
+            SqlEdit(crate::sql_tab::EditCmd::Duplicate),
+            "Duplicate Line or Selection",
+            "Editor",
+            k("⇧⌘D", "Ctrl+Shift+D"),
+        ),
+        c(
+            SqlEdit(crate::sql_tab::EditCmd::DeleteLine),
+            "Delete Line",
+            "Editor",
+            k("⌘D", "Ctrl+D"),
+        ),
+        c(
+            SqlEdit(crate::sql_tab::EditCmd::MoveUp),
+            "Move Line Up",
+            "Editor",
+            k("⌥↑", "Alt+Up"),
+        ),
+        c(
+            SqlEdit(crate::sql_tab::EditCmd::MoveDown),
+            "Move Line Down",
+            "Editor",
+            k("⌥↓", "Alt+Down"),
+        ),
         c(CommitTransaction, "Commit Transaction", "Editor", "".into()),
         c(
             RollbackTransaction,
@@ -695,6 +809,17 @@ mod tests {
             Explain,
             ExplainAnalyze,
             FormatSql,
+            OpenSqlScript,
+            SaveSqlScript,
+            SaveSqlScriptAs,
+            SqlEdit(crate::sql_tab::EditCmd::ToggleComment),
+            SqlEdit(crate::sql_tab::EditCmd::ToggleBlockComment),
+            SqlEdit(crate::sql_tab::EditCmd::UpperCase),
+            SqlEdit(crate::sql_tab::EditCmd::LowerCase),
+            SqlEdit(crate::sql_tab::EditCmd::Duplicate),
+            SqlEdit(crate::sql_tab::EditCmd::DeleteLine),
+            SqlEdit(crate::sql_tab::EditCmd::MoveUp),
+            SqlEdit(crate::sql_tab::EditCmd::MoveDown),
             ShowHistory,
             Settings,
             ToggleAssistant,

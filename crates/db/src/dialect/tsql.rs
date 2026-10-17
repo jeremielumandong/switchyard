@@ -2,8 +2,8 @@
 
 use super::lexer::{self, Flavor, SegKind};
 use super::{
-    COMMON_KEYWORDS, Dialect, ParamRef, ParamStyle, StatementSpan, is_plain_ident, line_of_byte,
-    quote_string, temporal_text,
+    COMMON_KEYWORDS, Dialect, ParamRef, ParamStyle, StatementSpan, is_plain_ident, quote_string,
+    temporal_text,
 };
 use crate::catalog::ObjectKind;
 use crate::value::{self, Engine, Value};
@@ -155,20 +155,27 @@ impl Dialect for TSqlDialect {
             let text = &sql[start..end];
             let s = start + (text.len() - text.trim_start().len());
             let e = end - (text.len() - text.trim_end().len());
-            let has_code = segs.iter().any(|seg| {
-                seg.start < e
-                    && seg.end > s
-                    && match seg.kind {
-                        SegKind::Code => !sql[seg.start.max(s)..seg.end.min(e)].trim().is_empty(),
-                        SegKind::Str | SegKind::Ident => true,
-                        SegKind::Comment => false,
-                    }
-            });
+            // Only the segments overlapping the batch (binary search; segments are sorted).
+            let first = segs.partition_point(|seg| seg.end <= s);
+            let has_code = segs[first..]
+                .iter()
+                .take_while(|seg| seg.start < e)
+                .any(|seg| {
+                    seg.start < e
+                        && seg.end > s
+                        && match seg.kind {
+                            SegKind::Code => {
+                                !sql[seg.start.max(s)..seg.end.min(e)].trim().is_empty()
+                            }
+                            SegKind::Str | SegKind::Ident => true,
+                            SegKind::Comment => false,
+                        }
+                });
             if e > s && has_code {
                 out.push(StatementSpan {
                     start: s,
                     end: e,
-                    line: line_of_byte(sql, s),
+                    line: 0,
                     repeat,
                 });
             }
@@ -184,7 +191,7 @@ impl Dialect for TSqlDialect {
             line_start = line_end;
         }
         push(&mut out, batch_start, sql.len(), 1);
-        out
+        super::with_lines(sql, out)
     }
 
     fn select_rows(&self, qualified: &str, limit: u64) -> String {

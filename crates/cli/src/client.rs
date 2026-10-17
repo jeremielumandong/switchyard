@@ -230,6 +230,7 @@ impl Client {
             tags,
             confirmed_destructive: confirmed,
             fetch_limit: FetchLimit::All,
+            continue_on_error: false,
         });
         let mut failure = None;
         loop {
