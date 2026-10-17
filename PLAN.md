@@ -1268,6 +1268,16 @@ are shared hotspots: one owner at a time.
 - Deferred (see Follow-ups): AgentOps' hover-move coalescing, native fills of rounded
   panel interiors, the modal underlay cache; a CPU measurement on the affected VM.
 
+## Extra — Import from DBeaver (user request, 2026-10-17)
+
+- [x] DB-1 Import database connections from DBeaver (`core::dbeaver_import`): finds
+  `data-sources*.json` in every DBeaver workspace (standard, Flatpak, Snap) or a picked
+  file, decrypts `credentials-config.json` (DBeaver's fixed AES key), maps supported
+  drivers, folders, connection types, SSL, SQL Server sign-in and SSH tunnels (new or
+  matching saved Hosts), and previews before saving; passwords go to the keychain.
+  Deferred (see Follow-ups): DBeaver's Eclipse secure storage (EE "Use secure storage"),
+  jump servers inside a DBeaver tunnel, driver properties.
+
 ## M6 — Packaging and beta
 
 Exit: every performance budget passes on all three platforms; signed builds published.
@@ -1314,6 +1324,10 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 - Workload-wide index advisor, snippet library, import wizard, data compare, folder sync.
 
 ## Follow-ups
+
+- DBeaver import: passwords kept in Eclipse secure storage (DBeaver EE "Use secure
+  storage") are not read; jump servers inside a DBeaver SSH tunnel and per-driver
+  properties are not imported.
 
 - SQLite: a "New database file" save dialog in the connection editor (today a typed path is created on connect).
 

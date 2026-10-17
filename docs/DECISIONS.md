@@ -1781,3 +1781,11 @@ departs from "update by re-copying from AgentOpsChat" (2026-10-14); the patch is
   changes for modal move/resize loops. See Follow-ups.
 - `GPUI_RENDER_DIAGNOSTICS=1` logs frame rate and frame cost every 5 s (`switchyard.log`), to
   compare before and after on the VM.
+
+## 2026-10-17 — `aes` and `cbc` for the DBeaver import
+
+DBeaver encrypts `credentials-config.json` with AES-128-CBC under a key that is the same in
+every install. Importing saved passwords needs those two RustCrypto crates, which were not
+on the approved list. They were already in the tree (`keyring`'s `oo7`, `ssh-key`'s
+`pkcs5`), so the workspace pins the same versions (`aes` 0.8, `cbc` 0.1) and nothing new is
+downloaded or built. Only `core::dbeaver_import` uses them, to decrypt that one file.

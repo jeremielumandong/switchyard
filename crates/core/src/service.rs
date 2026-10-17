@@ -1427,6 +1427,24 @@ impl Service {
                 }
                 Err(e) => self.error("Import ssh config", e),
             },
+            Command::PreviewDbeaver { file } => match self.preview_dbeaver(file).await {
+                Ok((files, connections)) => self.emit(Event::DbeaverPreview { files, connections }),
+                Err(e) => self.error("Read DBeaver connections", e),
+            },
+            Command::ImportDbeaver { files, only } => {
+                match self.import_dbeaver(files, only).await {
+                    Ok(0) => self.emit(Event::Toast("Nothing imported from DBeaver".into())),
+                    Ok(n) => {
+                        self.emit(Event::Toast(format!(
+                            "Imported {n} connection{} from DBeaver",
+                            if n == 1 { "" } else { "s" }
+                        )));
+                        self.emit_profiles().await;
+                        self.emit_workspaces().await;
+                    }
+                    Err(e) => self.error("Import from DBeaver", e),
+                }
+            }
             Command::ApplyEdits {
                 session,
                 request,
@@ -1829,6 +1847,71 @@ impl Service {
             Ok(hosts.len())
         })
         .await
+    }
+
+    async fn read_dbeaver(
+        files: Vec<PathBuf>,
+    ) -> Result<(Vec<PathBuf>, Vec<crate::dbeaver_import::Entry>)> {
+        tokio::task::spawn_blocking(move || {
+            let files = if files.is_empty() {
+                crate::dbeaver_import::default_files()
+            } else {
+                files
+            };
+            // None found: the preview offers to pick a file.
+            let entries = crate::dbeaver_import::read(&files).map_err(CoreError::Unsupported)?;
+            Ok((files, entries))
+        })
+        .await
+        .map_err(|e| CoreError::Internal(e.to_string()))?
+    }
+
+    async fn preview_dbeaver(
+        &self,
+        file: Option<PathBuf>,
+    ) -> Result<(Vec<PathBuf>, Vec<crate::dbeaver_import::DbeaverCandidate>)> {
+        let (files, entries) = Self::read_dbeaver(file.into_iter().collect()).await?;
+        let profiles = self.with_store(|s| s.profiles()).await?;
+        let (names, hosts) = crate::dbeaver_import::saved(&profiles);
+        Ok((
+            files,
+            crate::dbeaver_import::candidates(&entries, &names, &hosts),
+        ))
+    }
+
+    /// Save the chosen DBeaver connections (and tunnel Hosts) with their secrets.
+    async fn import_dbeaver(&self, files: Vec<PathBuf>, only: Vec<String>) -> Result<usize> {
+        if files.is_empty() {
+            return Ok(0);
+        }
+        let (_, entries) = Self::read_dbeaver(files).await?;
+        let profiles = self.with_store(|s| s.profiles()).await?;
+        let (names, hosts) = crate::dbeaver_import::saved(&profiles);
+        let only = only.into_iter().collect();
+        let plan = crate::dbeaver_import::plan(entries, &only, &names, &hosts);
+        let profiles = plan
+            .hosts
+            .into_iter()
+            .map(|(h, s)| (Profile::Host(h), s))
+            .chain(
+                plan.connections
+                    .into_iter()
+                    .map(|(d, s)| (Profile::Db(d), s)),
+            );
+        let mut imported = 0;
+        for (mut profile, secret) in profiles {
+            if let Some(secret) = secret {
+                let key = crate::dbeaver_import::secret_ref(&profile);
+                let k = key.clone();
+                self.with_secrets(move |s| s.set(&k, &secret)).await?;
+                profile.set_secret(key);
+            }
+            let is_db = matches!(profile, Profile::Db(_));
+            self.with_store(move |s| s.save_profile_in_current(&profile))
+                .await?;
+            imported += usize::from(is_db);
+        }
+        Ok(imported)
     }
 
     async fn apply_edits(&self, session: SessionId, statements: Vec<String>) -> Result<u64> {

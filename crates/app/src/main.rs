@@ -22,6 +22,7 @@ mod conn_editor;
 mod connect_to;
 mod container_editor;
 mod containers_tab;
+mod dbeaver_import;
 mod ddl_tab;
 mod drivers_page;
 mod editor_tab;

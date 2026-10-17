@@ -164,6 +164,7 @@ pub fn menu_lines(menu: TopMenu, s: MenuState) -> Vec<MenuLine> {
             Sep,
             Item("Import from ~/.ssh/config…", none(), ImportSshConfig, false),
             Item("Import Ansible inventory…", none(), ImportAnsible, false),
+            Item("Import from DBeaver…", none(), ImportDbeaver, false),
             Item(
                 "Export profiles (no secrets)…",
                 none(),
@@ -1428,42 +1429,64 @@ impl Workspace {
                                     .text_color(p.fg3)
                                     .child("FOUND ON THIS MACHINE"),
                             )
-                            .child(
-                                div()
-                                    .id("new-import-ssh")
-                                    .h(rpx(32.))
-                                    .flex()
-                                    .items_center()
-                                    .gap(rpx(10.))
-                                    .px(rpx(10.))
-                                    .border_1()
-                                    .border_color(p.bd)
-                                    .rounded(px(6.))
-                                    .text_size(ts::UI)
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(p.hover))
-                                    .on_click(cx.listener(|this, _, w, cx| {
-                                        this.overlay = None;
-                                        this.run_command(CommandId::ImportSshConfig, w, cx);
-                                    }))
-                                    .child(
-                                        div()
-                                            .font_family(MONO)
-                                            .text_size(ts::LABEL)
-                                            .child("~/.ssh/config"),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .text_color(p.fg2)
-                                            .child("Hosts, jump hosts and identity files"),
-                                    )
-                                    .child(div().text_color(p.acc).child("Import")),
-                            ),
+                            .child(import_row(
+                                "new-import-ssh",
+                                "~/.ssh/config",
+                                "Hosts, jump hosts and identity files",
+                                CommandId::ImportSshConfig,
+                                p,
+                                cx,
+                            ))
+                            .child(import_row(
+                                "new-import-dbeaver",
+                                "DBeaver",
+                                "Database connections, saved passwords and SSH tunnels",
+                                CommandId::ImportDbeaver,
+                                p,
+                                cx,
+                            )),
                     ),
             )
             .into_any_element()
     }
+}
+
+/// One "Found on this machine" line of the New chooser.
+fn import_row(
+    id: &'static str,
+    source: &'static str,
+    what: &'static str,
+    cmd: CommandId,
+    p: &Palette,
+    cx: &mut Context<Workspace>,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .h(rpx(32.))
+        .flex()
+        .items_center()
+        .gap(rpx(10.))
+        .px(rpx(10.))
+        .border_1()
+        .border_color(p.bd)
+        .rounded(px(6.))
+        .text_size(ts::UI)
+        .cursor_pointer()
+        .hover(|s| s.bg(p.hover))
+        .on_click(cx.listener(move |this, _, w, cx| {
+            this.overlay = None;
+            this.run_command(cmd, w, cx);
+        }))
+        .child(
+            div()
+                .w(rpx(96.))
+                .flex_none()
+                .font_family(MONO)
+                .text_size(ts::LABEL)
+                .child(source),
+        )
+        .child(div().flex_1().text_color(p.fg2).child(what))
+        .child(div().text_color(p.acc).child("Import"))
 }
 
 #[cfg(test)]

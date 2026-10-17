@@ -260,6 +260,8 @@ pub enum CommandId {
     FleetKeys,
     /// Import Hosts from an Ansible inventory.
     ImportAnsible,
+    /// Import database connections from DBeaver.
+    ImportDbeaver,
     /// Close the tab in front.
     CloseTab,
     /// Next tab.
@@ -559,6 +561,12 @@ pub fn palette_commands() -> Vec<PaletteCommand> {
         c(
             ImportAnsible,
             "Import Hosts from Ansible Inventory…",
+            "Connections",
+            "".into(),
+        ),
+        c(
+            ImportDbeaver,
+            "Import Connections from DBeaver…",
             "Connections",
             "".into(),
         ),

@@ -99,6 +99,12 @@ See [Install (macOS)](#install-macos) for the `swy` CLI, updates and uninstallin
   DELETE/UPDATE without WHERE, detected by parsing, not regex), and can be locked read-only.
 - **Import Hosts from `~/.ssh/config`** with a preview (alias, user@host:port, auth,
   ProxyJump; already-saved entries greyed out).
+- **Import connections from DBeaver** (File → Import from DBeaver…): reads every DBeaver
+  workspace on the machine, or a `data-sources.json` you pick, and shows a preview first.
+  PostgreSQL, SQL Server, MySQL/MariaDB, Oracle, SQLite, Snowflake, MongoDB and Redis
+  connections come over with their folder, connection type (as the environment label),
+  SSL mode, saved user and password (from `credentials-config.json`, stored in the
+  keychain) and SSH tunnel, which becomes a Host or reuses a saved one.
 - **Profiles** stored in local SQLite; JSON export and import, always without secrets.
 - **Shared credentials**: one user name and password or SSH key used by many Hosts,
   database connections and remote desktops. Rotate it once and every user picks it up.
