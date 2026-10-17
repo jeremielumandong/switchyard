@@ -133,6 +133,9 @@ psl = "2.1"
 regex = "1"
 serde_yaml = "0.9"
 sha2 = "0.10"
+# DBeaver credentials-config.json (AES-128-CBC); the versions keyring/ssh-key already use.
+aes = "0.8"
+cbc = "0.1"
 # Oracle: ODPI-C built from source; it loads Instant Client at runtime (no build-time link).
 oracle = "0.6"
 # MySQL / MariaDB: pure-Rust wire protocol on tokio + rustls (MIT OR Apache-2.0); no

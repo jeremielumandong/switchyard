@@ -1012,6 +1012,21 @@ pub enum Command {
         /// Aliases to import; `None` imports every entry not saved yet.
         only: Option<Vec<String>>,
     },
+    /// Read DBeaver's saved connections and answer with [`Event::DbeaverPreview`]; nothing
+    /// is saved. `file` is a `data-sources.json` the user picked; `None` reads every
+    /// DBeaver workspace on this machine.
+    PreviewDbeaver {
+        /// A picked file.
+        file: Option<PathBuf>,
+    },
+    /// Import the DBeaver connections named in `only` (keys from the preview), with their
+    /// saved passwords and SSH tunnels.
+    ImportDbeaver {
+        /// The files the preview read.
+        files: Vec<PathBuf>,
+        /// Candidate keys.
+        only: Vec<String>,
+    },
     /// Apply staged inline edits in one transaction. Each statement must change exactly
     /// one row; otherwise everything is rolled back. Sessions without transactions
     /// (MongoDB) apply them in order and stop at the first failure.
@@ -1399,6 +1414,13 @@ pub enum Event {
         path: PathBuf,
         /// Every usable `Host` entry, saved ones marked.
         hosts: Vec<crate::ssh_import::SshImportCandidate>,
+    },
+    /// What importing from DBeaver would add (answer to `PreviewDbeaver`).
+    DbeaverPreview {
+        /// The files read.
+        files: Vec<PathBuf>,
+        /// Every connection in them, saved and unsupported ones marked.
+        connections: Vec<crate::dbeaver_import::DbeaverCandidate>,
     },
     /// Answer to [`Command::Ping`].
     Pong {

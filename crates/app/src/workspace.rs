@@ -1150,6 +1150,13 @@ impl Workspace {
                 window.focus(&self.overlay_focus, cx);
                 cx.notify();
             }
+            Event::DbeaverPreview { files, connections } => {
+                self.overlay = Some(Overlay::DbeaverImport(
+                    crate::dbeaver_import::DbeaverImportPreview::new(files, connections),
+                ));
+                window.focus(&self.overlay_focus, cx);
+                cx.notify();
+            }
             Event::Error { context, message } => self.toast(format!("{context}: {message}"), cx),
         }
         if let Some(id) = self.pending_open.clone()
@@ -2857,6 +2864,10 @@ impl Workspace {
                 self.open_fleet(crate::fleet_tab::Mode::Keys, pick, window, cx)
             }
             CommandId::ImportAnsible => self.import_ansible(cx),
+            CommandId::ImportDbeaver => {
+                self.core.send(Command::PreviewDbeaver { file: None });
+                self.toast("Reading DBeaver's connections…", cx);
+            }
             CommandId::CloseTab => self.close_tab(self.active, window, cx),
             CommandId::NextTab | CommandId::PrevTab if !self.tabs.is_empty() => {
                 let shown = self.visible_tabs();

@@ -89,6 +89,8 @@ pub enum Overlay {
     History(Entity<InputState>),
     /// Hosts found in `~/.ssh/config`, to pick before importing.
     SshImport(SshImportPreview),
+    /// DBeaver connections, to pick before importing.
+    DbeaverImport(crate::dbeaver_import::DbeaverImportPreview),
     /// Bulk edit of Hosts (MX-6).
     BulkEdit(Entity<crate::bulk_edit::BulkEditView>),
     /// "What do you want to connect to?" (design v3).
@@ -131,7 +133,7 @@ pub(crate) fn scrim(p: &Palette, top: bool) -> gpui_kit::Stateful<gpui_kit::Div>
         .occlude()
 }
 
-fn dialog(p: &Palette, width: f32) -> gpui_kit::Stateful<gpui_kit::Div> {
+pub(crate) fn dialog(p: &Palette, width: f32) -> gpui_kit::Stateful<gpui_kit::Div> {
     div()
         .id("dialog")
         .w(rpx(width))
@@ -339,6 +341,9 @@ impl Workspace {
             Some(Overlay::Components) => Some(self.render_components(p, cx)),
             Some(Overlay::History(input)) => Some(self.render_history(input.clone(), p, cx)),
             Some(Overlay::SshImport(preview)) => Some(self.render_ssh_import(preview, p, cx)),
+            Some(Overlay::DbeaverImport(preview)) => {
+                Some(crate::dbeaver_import::render(self, preview, p, cx))
+            }
             Some(Overlay::NewChooser) => Some(self.render_new_chooser(p, cx)),
             Some(Overlay::ConfirmDisconnect {
                 profile,

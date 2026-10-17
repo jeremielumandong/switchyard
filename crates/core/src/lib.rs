@@ -6,6 +6,7 @@ pub mod agent_run;
 pub mod api_secrets;
 pub mod bus;
 pub mod components;
+pub mod dbeaver_import;
 mod entra;
 pub mod env;
 pub mod error;
