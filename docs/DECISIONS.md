@@ -1789,3 +1789,24 @@ every install. Importing saved passwords needs those two RustCrypto crates, whic
 on the approved list. They were already in the tree (`keyring`'s `oo7`, `ssh-key`'s
 `pkcs5`), so the workspace pins the same versions (`aes` 0.8, `cbc` 0.1) and nothing new is
 downloaded or built. Only `core::dbeaver_import` uses them, to decrypt that one file.
+
+## 2026-10-17 — Software rendering policy on Linux, and less overdraw
+
+Profiling under lavapipe (Xvfb, 1440×900) showed ~85 % of the app's CPU while the mouse
+moves is the CPU Vulkan driver rasterizing frames, so cost scales with pixels filled per
+frame. Two changes, both measured there:
+
+- The 2026-10-16 policy (`app/src/rendering.rs`, `gpui/src/rendering_policy.rs`) is no
+  longer Windows-only. wgpu reports llvmpipe / lavapipe / SwiftShader as a CPU adapter
+  (`is_software_emulated`), and the device names are matched too. Low-power mode also
+  turns off the high-rate-input keepalive presents on every platform. The Windows 30 Hz
+  frame thread stays Windows-only; elsewhere pacing is the "wait the last frame's cost"
+  rule. Patched in the vendored `gpui` (listed in `vendor/gpui-fast/PARITY-PATCH.md`).
+- gpui-component's root plugin fills the window with the theme background and the
+  workspace covered it with `p.bg`, then the center with `p.surface`: three window-sized
+  layers. `rendering::skip_root_background` gives the main window's `Root` a transparent
+  background (a transparent fill paints no quad), and the workspace's own fill is
+  `p.surface`, so the center paints nothing. Every other region already painted its own
+  color; screenshots before and after are pixel-identical apart from the dropped blurred
+  shadows. A Welcome frame went from 4.1 M to 1.85 M filled pixels; CPU while hovering
+  from ~20 % to ~13 %.

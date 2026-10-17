@@ -814,6 +814,8 @@ impl Workspace {
         };
         let sub_panel = sub.map(|(sub_items, top)| {
             panel("ctx-submenu")
+                .max_h(rpx(360.))
+                .overflow_y_scroll()
                 .left(ctx.at.x + crate::appearance::scaled(MENU_W - 2., cx))
                 .top(ctx.at.y + crate::appearance::scaled(top, cx))
                 .children(sub_items.into_iter().enumerate().map(

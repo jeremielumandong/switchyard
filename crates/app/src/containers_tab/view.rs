@@ -1,10 +1,11 @@
 //! Drawing of the containers tab: header (context, namespace, view, filter), hint cards,
 //! the virtualized list and the detail pane (actions, logs, inspect text, forms).
 
+use crate::menus::DropdownMenu as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Editor, Input};
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, ClipboardItem, Context, FontWeight, Hsla, InteractiveElement as _, IntoElement,

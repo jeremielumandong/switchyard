@@ -12,9 +12,10 @@
 //! `render_*` methods below are one per panel tab, in the order of the tab
 //! strip.
 
+use crate::menus::{ContextMenuExt, DropdownMenu};
 use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonVariants};
 use gpui_kit::component::input::InputState;
-use gpui_kit::component::menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::resizable::{h_resizable, resizable_panel, v_resizable};
 use gpui_kit::component::scroll::{ScrollableElement, Scrollbar};
 use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable};

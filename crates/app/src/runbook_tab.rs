@@ -11,10 +11,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::menus::DropdownMenu as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::component::table::{DataTable, TableState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{

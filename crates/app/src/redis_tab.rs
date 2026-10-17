@@ -15,10 +15,11 @@ use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use crate::menus::DropdownMenu as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, AppContext as _, ClipboardItem, Context, Entity, FontWeight, Hsla,

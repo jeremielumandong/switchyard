@@ -2990,6 +2990,8 @@ impl Workspace {
                 .top(rpx(34.))
                 .left(rpx(8.))
                 .w(rpx(280.))
+                .max_h(rpx(480.))
+                .overflow_y_scroll()
                 .p(rpx(4.))
                 .bg(p.elev)
                 .border_1()
@@ -4012,7 +4014,10 @@ impl Render for Workspace {
             .relative()
             .flex()
             .flex_col()
-            .bg(p.bg)
+            // The window root paints nothing (`rendering::skip_root_background`) and the
+            // center is the largest region, so this fill is its background too: a software
+            // renderer draws each window-sized fill on the CPU every frame.
+            .bg(p.surface)
             .text_color(p.fg)
             .font_family(SANS)
             .text_size(crate::appearance::ui_font_size(cx))
@@ -4142,7 +4147,6 @@ impl Render for Workspace {
                                 .min_w_0()
                                 .flex()
                                 .flex_col()
-                                .bg(p.surface)
                                 .child(strip)
                                 .child(div().flex_1().min_h_0().flex().flex_col().child(center)),
                         )

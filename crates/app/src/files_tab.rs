@@ -1799,6 +1799,8 @@ impl FilesTab {
                     .top(rpx(30.))
                     .left(rpx(8.))
                     .w(rpx(280.))
+                    .max_h(rpx(360.))
+                    .overflow_y_scroll()
                     .py(rpx(4.))
                     .bg(p.elev)
                     .border_1()
@@ -1871,10 +1873,14 @@ impl FilesTab {
             items.extend(self.sources.iter().cloned());
             deferred(
                 div()
+                    .id("files-picker")
                     .absolute()
                     .top(rpx(30.))
                     .left(rpx(8.))
                     .w(rpx(220.))
+                    .max_h(rpx(360.))
+                    .overflow_y_scroll()
+                    .occlude()
                     .py(rpx(4.))
                     .bg(p.elev)
                     .border_1()

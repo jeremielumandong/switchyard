@@ -130,3 +130,6 @@ software adapter (WARP). `crates/gpui_windows` is copied unchanged from gpui-fas
 - Tests: `software_rendering_tests.rs` draws on WARP into a composition swap chain and
   compares each path with upstream's drawing (one 8-bit step allowed); unit tests cover
   quad eligibility, crop plans and vertex reuse; `rendering_policy` tests cover pacing.
+- 2026-10-17: `rendering_policy.rs` is no longer Windows-only (Switchyard enables it on
+  Linux CPU Vulkan drivers too), and low-power mode also skips the high-rate-input
+  keepalive presents on other platforms. The Windows 30 Hz frame thread is unchanged.

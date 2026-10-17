@@ -6,9 +6,10 @@
 use std::collections::VecDeque;
 use std::ops::Range;
 
+use crate::menus::DropdownMenu as _;
 use gpui_kit::component::Sizable as _;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, AppContext as _, ClipboardItem, Context, Entity, FontWeight, HighlightStyle, Hsla,
