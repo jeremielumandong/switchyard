@@ -44,6 +44,38 @@ pub enum SideTab {
     Activity,
 }
 
+/// A row of the Explorer: a saved source, or a row of a database's schema tree shown
+/// under the database's own row.
+#[derive(Clone)]
+pub(crate) enum SideRow {
+    Conn(ConnRow),
+    Schema(TreeRow),
+}
+
+/// The Explorer's rows: `conns`, each SQL database followed by its schema tree while
+/// its node is expanded (one place for a connection and its data, as a Host's terminal
+/// and files are).
+pub(crate) fn side_rows(
+    conns: Vec<ConnRow>,
+    tree_of: impl Fn(&ProfileId) -> Option<Vec<TreeRow>>,
+) -> Vec<SideRow> {
+    let mut out = Vec::with_capacity(conns.len());
+    for r in conns {
+        let tree = (r.kind == RowKind::Leaf && r.action == ConnAction::Open)
+            .then_some(r.profile.as_ref())
+            .flatten()
+            .and_then(&tree_of);
+        let depth = usize::from(r.depth) + 1;
+        out.push(SideRow::Conn(r));
+        // The tree's own node row is the database's row above it.
+        for mut t in tree.into_iter().flatten().skip(1) {
+            t.depth += depth;
+            out.push(SideRow::Schema(t));
+        }
+    }
+    out
+}
+
 /// Setting key of the Explorer's grouping (`place` or `type`).
 pub(crate) const EXPLORER_GROUP_KEY: &str = "explorer.group";
 
@@ -1348,7 +1380,9 @@ impl Workspace {
         };
         let core = self.core.clone();
         self.explorer.ensure_connected(conn, &core);
-        self.side_tab = SideTab::Schema;
+        // The tree shows under the database's row in the Explorer.
+        self.side_tab = SideTab::Explorer;
+        self.sidebar_open = true;
         let node = RowId::node(id);
         self.explorer.scroll_to(&node);
         self.explorer.cursor = Some(node);
@@ -1958,7 +1992,7 @@ impl Workspace {
                         .border_color(p.bd)
                         .text_size(ts::SMALL)
                         .text_color(p.fg3)
-                        .child("Right-click anything for its actions"),
+                        .child("▸ browses a database · right-click for actions"),
                 )
             })
             .into_any_element()
@@ -1976,8 +2010,79 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The Explorer's rows with the expanded databases' trees ([`side_rows`]).
+    fn side_rows(&self, cx: &Context<Self>) -> Vec<SideRow> {
+        side_rows(self.conn_rows(cx), |id| {
+            let s = self.explorer.state(id)?;
+            if !s.expanded.contains("db") {
+                return None;
+            }
+            let mut rows = Vec::new();
+            connection_rows(s, false, &mut rows);
+            Some(rows)
+        })
+    }
+
+    /// Whether a database row can show its schema tree under it (SQL engines; MongoDB
+    /// and Redis open their own browser).
+    fn has_inline_tree(&self, r: &ConnRow) -> bool {
+        r.action == ConnAction::Open
+            && r.profile
+                .as_ref()
+                .and_then(|id| self.profiles.db(id))
+                .is_some_and(|c| c.engine.is_sql())
+    }
+
+    /// A database row's caret: show or hide its schema tree without opening a tab
+    /// (connecting the catalog session on the first expand).
+    pub(crate) fn toggle_inline_tree(&mut self, id: &ProfileId, cx: &mut Context<Self>) {
+        let Some(conn) = self.profiles.db(id).cloned() else {
+            return;
+        };
+        self.explorer.ensure(conn);
+        let core = self.core.clone();
+        if let Some(s) = self.explorer.state_mut(id) {
+            s.toggle("db", None, &core);
+        }
+        cx.notify();
+    }
+
+    /// Up / Down in the Explorer: through the schema rows shown there.
+    fn inline_move(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let rows = self.side_rows(cx);
+        let schema: Vec<(usize, &TreeRow)> = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| match r {
+                SideRow::Schema(t) => Some((i, t)),
+                SideRow::Conn(_) => None,
+            })
+            .collect();
+        if schema.is_empty() {
+            return;
+        }
+        let at = self
+            .explorer
+            .cursor
+            .as_ref()
+            .and_then(|c| schema.iter().position(|(_, t)| c.is(t)));
+        let next = match at {
+            Some(at) => at.saturating_add_signed(delta).min(schema.len() - 1),
+            None => 0,
+        };
+        let (ix, t) = schema[next];
+        self.explorer.cursor = Some(RowId::of(t));
+        if let Some(o) = obj_ref(t) {
+            self.explorer.selected = Some(o);
+        }
+        self.explorer
+            .conn_scroll
+            .scroll_to_item(ix, ScrollStrategy::Nearest);
+        cx.notify();
+    }
+
     fn render_conn_list(&mut self, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
-        let rows = self.conn_rows(cx);
+        let rows = self.side_rows(cx);
         let count = rows.len();
         let p = *p;
         if count == 0 {
@@ -1990,18 +2095,46 @@ impl Workspace {
                 .child("Nothing matches the filter")
                 .into_any_element();
         }
-        uniform_list(
-            "conn-rows",
-            count,
-            cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
-                range
-                    .map(|i| this.render_conn_row(&rows[i], i, &p, cx))
-                    .collect::<Vec<_>>()
-            }),
-        )
-        .flex_1()
-        .pb(rpx(8.))
-        .into_any_element()
+        let focus = self
+            .explorer
+            .focus
+            .get_or_insert_with(|| cx.focus_handle())
+            .clone();
+        let scroll = self.explorer.conn_scroll.clone();
+        // The schema rows take the tree's keys, as in the Schema pane.
+        div()
+            .key_context("SchemaTree")
+            .track_focus(&focus)
+            .on_action(cx.listener(|this, _: &TreeUp, _, cx| this.inline_move(-1, cx)))
+            .on_action(cx.listener(|this, _: &TreeDown, _, cx| this.inline_move(1, cx)))
+            .on_action(cx.listener(|this, _: &TreeExpand, _, cx| this.tree_expand(cx)))
+            .on_action(cx.listener(|this, _: &TreeCollapse, _, cx| this.tree_collapse(cx)))
+            .on_action(cx.listener(|this, _: &TreeOpen, w, cx| this.tree_open(w, cx)))
+            .on_action(cx.listener(|this, _: &TreeCopy, w, cx| this.tree_copy(w, cx)))
+            .on_action(cx.listener(|this, _: &TreeRefresh, _, cx| this.tree_refresh(cx)))
+            .on_action(cx.listener(|this, _: &TreePin, _, cx| this.tree_pin(cx)))
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(
+                uniform_list(
+                    "conn-rows",
+                    count,
+                    cx.processor(move |this, range: std::ops::Range<usize>, _window, cx| {
+                        range
+                            .map(|i| match &rows[i] {
+                                SideRow::Conn(r) => this.render_conn_row(r, i, &p, cx),
+                                SideRow::Schema(t) => this.render_schema_row(t, i, &p, cx),
+                            })
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .track_scroll(&scroll)
+                .flex_1()
+                .pb(rpx(8.)),
+            )
+            .into_any_element()
     }
 
     fn render_conn_row(
@@ -2021,6 +2154,16 @@ impl Workspace {
         let action = r.action.clone();
         let profile = r.profile.clone();
         let collapsed = self.collapsed.contains(&r.key);
+        // A SQL database folds its schema tree open under it.
+        let tree_caret = self.has_inline_tree(r).then(|| {
+            let open = r
+                .profile
+                .as_ref()
+                .and_then(|id| self.explorer.state(id))
+                .is_some_and(|s| s.expanded.contains("db"));
+            if open { "▾" } else { "▸" }
+        });
+        let caret_profile = r.profile.clone();
         let ctx_profile = r.profile.clone();
         let ctx_folder = r.folder.clone();
         let ctx_tag = r.tag.clone();
@@ -2165,10 +2308,25 @@ impl Workspace {
                         .flex_none()
                         .text_color(p.fg3)
                         .text_size(ts::TINY)
-                        .child(if r.kind == RowKind::Group {
-                            if collapsed { "▸" } else { "▾" }
-                        } else {
-                            ""
+                        .when_some(tree_caret.zip(caret_profile), |d, (_, id)| {
+                            d.on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _: &MouseDownEvent, _, cx| {
+                                    cx.stop_propagation();
+                                    this.toggle_inline_tree(&id, cx);
+                                }),
+                            )
+                        })
+                        .child(match (r.kind, tree_caret) {
+                            (RowKind::Group, _) => {
+                                if collapsed {
+                                    "▸"
+                                } else {
+                                    "▾"
+                                }
+                            }
+                            (_, Some(c)) => c,
+                            _ => "",
                         }),
                 )
             })
@@ -3632,6 +3790,64 @@ mod folder_tests {
                 ("Dev".to_owned(), vec!["d"]),
                 ("prod".to_owned(), vec!["b", "e"])
             ]
+        );
+    }
+
+    #[test]
+    fn databases_show_their_tree_under_their_row() {
+        use crate::app_state::Profiles;
+        use crate::explorer_tree::{ExplorerGroup, explorer_rows};
+        use switchyard_core::store::Profile;
+        let db = |id: &str, name: &str| {
+            Profile::Db(
+                serde_json::from_value(serde_json::json!({
+                    "id": id, "name": name, "engine": "postgres", "server": "db.example",
+                    "port": 5432, "database": "shop", "user": "app", "environment": "staging",
+                }))
+                .unwrap_or_else(|e| panic!("db: {e}")),
+            )
+        };
+        let profiles = Profiles {
+            all: vec![db("d1", "shop"), db("d2", "billing")],
+        };
+        let conns = explorer_rows(
+            &profiles,
+            &HashSet::new(),
+            &HashSet::new(),
+            ExplorerGroup::Place,
+            "",
+        );
+        let shop = ProfileId("d1".into());
+        let rows = side_rows(conns, |id| {
+            (id == &shop).then(|| {
+                vec![
+                    TreeRow::new(0, "db".into()),
+                    TreeRow::new(1, "s:public".into()),
+                    TreeRow::new(2, "f:public:Table".into()),
+                ]
+            })
+        });
+        let shape: Vec<String> = rows
+            .iter()
+            .map(|r| match r {
+                SideRow::Conn(c) => format!("{}{}", "  ".repeat(c.depth.into()), c.label),
+                SideRow::Schema(t) => format!("{}#{}", "  ".repeat(t.depth), t.key),
+            })
+            .collect();
+        let at = shape
+            .iter()
+            .position(|l| l.trim() == "shop")
+            .unwrap_or_else(|| panic!("no shop row: {shape:?}"));
+        let depth = shape[at].len() - shape[at].trim_start().len();
+        // The node row is skipped; the tree indents one level under the database.
+        assert_eq!(shape[at + 1], format!("{}#s:public", " ".repeat(depth + 4)));
+        assert_eq!(
+            shape[at + 2],
+            format!("{}#f:public:Table", " ".repeat(depth + 6))
+        );
+        assert!(
+            !matches!(rows.get(at + 3), Some(SideRow::Schema(_))),
+            "{shape:?}"
         );
     }
 }

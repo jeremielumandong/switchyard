@@ -20,6 +20,39 @@ gpui_kit::actions!(
     ]
 );
 
+/// A page of the Workbench the main window's rail and Tools pane open directly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ApiPage {
+    /// Requests and their responses.
+    Compose,
+    /// Postman, Insomnia, OpenAPI, HAR and cURL imports.
+    Import,
+    /// Collection runs over a data file.
+    Runner,
+    /// Environments and their variables.
+    Environments,
+    /// Every request sent.
+    History,
+    /// Load tests of the open request.
+    Load,
+    /// Local mock servers from saved examples.
+    Mocks,
+}
+
+impl From<ApiPage> for Tab {
+    fn from(p: ApiPage) -> Self {
+        match p {
+            ApiPage::Compose => Tab::Compose,
+            ApiPage::Import => Tab::Import,
+            ApiPage::Runner => Tab::Data,
+            ApiPage::Environments => Tab::Environments,
+            ApiPage::History => Tab::History,
+            ApiPage::Load => Tab::Load,
+            ApiPage::Mocks => Tab::Mocks,
+        }
+    }
+}
+
 impl Tab {
     /// The action that switches to this tab (its `secondary-N` binding).
     pub(super) fn action(self) -> Box<dyn gpui_kit::Action> {
@@ -55,6 +88,11 @@ impl WorkbenchPanel {
             this.show_tab(Tab::Compose, cx);
             this.url.focus_handle(cx).focus(window, cx);
         }))
+    }
+
+    /// Bring a page to front (the main window's rail and Tools pane).
+    pub fn show_page(&mut self, page: ApiPage, cx: &mut Context<Self>) {
+        self.show_tab(page.into(), cx);
     }
 
     fn show_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {

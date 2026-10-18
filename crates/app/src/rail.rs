@@ -75,6 +75,7 @@ const ICONS: &[(&str, &[u8])] = &[
     icon!("swy-folder-open"),
     icon!("swy-folder-plus"),
     icon!("swy-folder-symlink"),
+    icon!("swy-globe"),
     icon!("swy-hard-drive"),
     icon!("swy-house"),
     icon!("swy-image"),
@@ -200,6 +201,12 @@ pub fn menu_lines(menu: TopMenu, s: MenuState) -> Vec<MenuLine> {
             Item("New…", k("⌘N", "Ctrl+N"), NewChooser, false),
             Item("New SQL tab", k("⌥⌘N", "Ctrl+Alt+N"), NewQueryTab, false),
             Item("New terminal", k("⌘T", "Ctrl+Shift+T"), NewTerminal, false),
+            Item(
+                "New API request",
+                none(),
+                OpenApi(crate::api::workbench::ApiPage::Compose),
+                false,
+            ),
             Sep,
             Item("Import from ~/.ssh/config…", none(), ImportSshConfig, false),
             Item("Import Ansible inventory…", none(), ImportAnsible, false),
@@ -218,6 +225,7 @@ pub fn menu_lines(menu: TopMenu, s: MenuState) -> Vec<MenuLine> {
         ],
         TopMenu::View => vec![
             Item("Explorer", none(), ShowExplorer, side(SideTab::Explorer)),
+            Item("API", none(), SwitchToApi, s.api),
             Item("Schema", none(), ShowSchema, side(SideTab::Schema)),
             Item("Tools", none(), ShowTools, side(SideTab::Tools)),
             Item(
@@ -387,7 +395,69 @@ fn tool(
     }
 }
 
-/// The Tools pane's groups: servers, fleet, databases, saved work, then containers,
+/// The API workspace's pages, so the Workbench is found from the main window.
+fn api_group() -> ToolGroup {
+    use crate::api::workbench::ApiPage;
+    ToolGroup {
+        badge: "API",
+        name: "API",
+        ident: "HTTP, GraphQL, gRPC".into(),
+        ready: true,
+        tools: vec![
+            tool(
+                "REQ",
+                "Requests",
+                "Collections, requests and their responses",
+                CommandId::OpenApi(ApiPage::Compose),
+                "Open",
+            ),
+            tool(
+                "IMP",
+                "Import API",
+                "Postman, Insomnia, OpenAPI, HAR or a cURL command",
+                CommandId::OpenApi(ApiPage::Import),
+                "Open",
+            ),
+            tool(
+                "ENV",
+                "Environments",
+                "Base URLs, tokens and variables per environment",
+                CommandId::OpenApi(ApiPage::Environments),
+                "Open",
+            ),
+            tool(
+                "RUN",
+                "Collection runner",
+                "Run a collection, or once per row of a data file",
+                CommandId::OpenApi(ApiPage::Runner),
+                "Open",
+            ),
+            tool(
+                "LT",
+                "Load test",
+                "Send the open request many times and chart latency",
+                CommandId::OpenApi(ApiPage::Load),
+                "Open",
+            ),
+            tool(
+                "MCK",
+                "Mock servers",
+                "Serve saved examples locally, with chaos and record mode",
+                CommandId::OpenApi(ApiPage::Mocks),
+                "Open",
+            ),
+            tool(
+                "HIS",
+                "Request history",
+                "Every request sent, to reopen or compare",
+                CommandId::OpenApi(ApiPage::History),
+                "Open",
+            ),
+        ],
+    }
+}
+
+/// The Tools pane's groups: servers, the API workspace, fleet, databases, saved work, then containers,
 /// infra and each cloud provider (one tool per service: `Open` when one is saved, else
 /// `Add`), and imports and setup last.
 pub fn tool_groups(profiles: &Profiles) -> Vec<ToolGroup> {
@@ -431,6 +501,7 @@ pub fn tool_groups(profiles: &Profiles) -> Vec<ToolGroup> {
                 ),
             ],
         },
+        api_group(),
         ToolGroup {
             badge: "FLT",
             name: "Fleet",
@@ -711,32 +782,34 @@ impl Workspace {
                 .items
                 .iter()
                 .any(|i| matches!(i.state, crate::transfers::State::Failed(_)));
-        let item = |id: &'static str,
-                    icon: &'static str,
-                    tip: &'static str,
-                    tab: SideTab,
-                    badge: bool,
-                    cx: &mut Context<Self>| {
-            let on = self.sidebar_open && self.side_tab == tab;
+        let api_mode = self.mode == AppMode::Api;
+        // Each place is an icon with its name under it, so nothing hides behind a tooltip.
+        let entry = |id: &'static str,
+                     icon: &'static str,
+                     label: &'static str,
+                     tip: &'static str,
+                     on: bool,
+                     badge: bool| {
             div()
                 .id(id)
                 .relative()
-                .size(rpx(36.))
+                .w(rpx(48.))
+                .py(rpx(5.))
                 .flex()
+                .flex_col()
                 .items_center()
-                .justify_center()
+                .gap(rpx(2.))
                 .rounded(px(8.))
                 .cursor_pointer()
                 .when(on, |d| d.bg(p.hover))
                 .hover(|s| s.bg(p.hover))
                 .tooltip(move |w, cx| Tooltip::new(tip).build(w, cx))
-                .on_click(cx.listener(move |this, _, _, cx| this.show_side(tab, true, cx)))
                 .child(
                     div()
                         .absolute()
-                        .left(rpx(-6.))
-                        .top(rpx(9.))
-                        .bottom(rpx(9.))
+                        .left(rpx(-4.))
+                        .top(rpx(10.))
+                        .bottom(rpx(10.))
                         .w(rpx(2.))
                         .rounded(px(2.))
                         .when(on, |d| d.bg(p.fg)),
@@ -747,52 +820,88 @@ impl Workspace {
                         .size(rpx(18.))
                         .text_color(if on { p.fg } else { p.fg3 }),
                 )
+                .child(
+                    div()
+                        .text_size(ts::MICRO)
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(if on { p.fg } else { p.fg3 })
+                        .child(label),
+                )
                 .when(badge, |d| {
                     d.child(
                         div()
                             .absolute()
-                            .top(rpx(5.))
-                            .right(rpx(5.))
+                            .top(rpx(4.))
+                            .right(rpx(10.))
                             .size(rpx(7.))
                             .rounded_full()
                             .bg(p.prod),
                     )
                 })
         };
-        let explorer = item(
+        let side = |id: &'static str,
+                    icon: &'static str,
+                    label: &'static str,
+                    tip: &'static str,
+                    tab: SideTab,
+                    badge: bool,
+                    cx: &mut Context<Self>| {
+            let on = !api_mode && self.sidebar_open && self.side_tab == tab;
+            entry(id, icon, label, tip, on, badge).on_click(cx.listener(move |this, _, w, cx| {
+                // From the API workspace a place opens in the main one.
+                if this.mode == AppMode::Api {
+                    this.set_mode(AppMode::Default, w, cx);
+                    this.show_side(tab, false, cx);
+                } else {
+                    this.show_side(tab, true, cx);
+                }
+            }))
+        };
+        let explorer = side(
             "rail-explorer",
             "icons/swy-layers.svg",
             "Explorer",
+            "Explorer: servers, databases, files and cloud, with their data",
             SideTab::Explorer,
             false,
             cx,
         );
-        let schema = item(
-            "rail-schema",
-            "icons/swy-database.svg",
-            "Schema",
-            SideTab::Schema,
+        let api = entry(
+            "rail-api",
+            "icons/swy-globe.svg",
+            "API",
+            "API: requests, collections, imports, load tests and mocks",
+            api_mode,
             false,
-            cx,
-        );
-        let tools = item(
+        )
+        .on_click(cx.listener(|this, _, w, cx| {
+            let mode = if this.mode == AppMode::Api {
+                AppMode::Default
+            } else {
+                AppMode::Api
+            };
+            this.set_mode(mode, w, cx);
+        }));
+        let tools = side(
             "rail-tools",
             "icons/swy-wrench.svg",
             "Tools",
+            "Tools: everything Switchyard can do, by place",
             SideTab::Tools,
             false,
             cx,
         );
-        let activity = item(
+        let activity = side(
             "rail-activity",
             "icons/swy-activity.svg",
             "Activity",
+            "Activity: sessions, queries, tunnels and transfers",
             SideTab::Activity,
             alert,
             cx,
         );
         div()
-            .w(rpx(48.))
+            .w(rpx(56.))
             .flex_none()
             .flex()
             .flex_col()
@@ -803,7 +912,7 @@ impl Workspace {
             .border_r_1()
             .border_color(p.bd)
             .child(explorer)
-            .child(schema)
+            .child(api)
             .child(tools)
             .child(activity)
             .child(div().flex_1())
@@ -1444,8 +1553,9 @@ impl Workspace {
         enum NewTarget {
             Conn(ConnKind),
             Containers(ContainerPlatform),
+            Command(CommandId),
         }
-        let options: [(&[&str], &str, &str, NewTarget); 6] = [
+        let options: [(&[&str], &str, &str, NewTarget); 8] = [
             (
                 &["SSH"],
                 "Server",
@@ -1482,6 +1592,20 @@ impl Workspace {
                 "Pods, deployments, logs and port forwards: AKS, GKE, EKS, Rancher or a local cluster.",
                 NewTarget::Containers(ContainerPlatform::Kubernetes),
             ),
+            (
+                &["API", "GQL", "WS"],
+                "API request",
+                "HTTP, GraphQL, WebSocket or gRPC requests in collections; import Postman or OpenAPI.",
+                NewTarget::Command(CommandId::OpenApi(crate::api::workbench::ApiPage::Compose)),
+            ),
+            (
+                &["RDP", "VNC"],
+                "Remote desktop",
+                "An RDP or VNC server, directly or tunnelled through a saved server.",
+                NewTarget::Command(CommandId::NewDesktop(
+                    switchyard_core::store::DesktopProtocol::Rdp,
+                )),
+            ),
         ];
         let card = |i: usize,
                     (badges, title, desc, target): (&[&str], &str, &str, NewTarget),
@@ -1507,6 +1631,7 @@ impl Workspace {
                         NewTarget::Containers(platform) => {
                             this.open_container_editor(platform, None, w, cx)
                         }
+                        NewTarget::Command(cmd) => this.run_command(cmd, w, cx),
                     }
                 }))
                 .child(
@@ -1535,7 +1660,7 @@ impl Workspace {
             .gap(rpx(10.))
             .px(rpx(20.))
             .py(rpx(14.));
-        for _ in 0..3 {
+        for _ in 0..4 {
             let row = div()
                 .flex()
                 .gap(rpx(10.))
@@ -1716,6 +1841,7 @@ mod tests {
             groups.iter().map(|g| g.name).collect::<Vec<_>>(),
             [
                 "Servers & files",
+                "API",
                 "Fleet",
                 "Databases",
                 "Runbooks & secrets",
@@ -1727,7 +1853,7 @@ mod tests {
                 "Import & setup"
             ]
         );
-        assert!(groups[6..9].iter().all(|g| !g.ready));
+        assert!(groups[7..10].iter().all(|g| !g.ready));
         // Nothing saved yet and setup start folded; the everyday groups start open.
         let open: Vec<_> = groups
             .iter()
@@ -1738,6 +1864,7 @@ mod tests {
             open,
             [
                 "Servers & files",
+                "API",
                 "Fleet",
                 "Databases",
                 "Runbooks & secrets",

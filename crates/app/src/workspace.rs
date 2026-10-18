@@ -2735,6 +2735,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let before = (self.tabs.len(), self.active);
+        self.run_command_inner(id, window, cx);
+        // A command run from the API workspace that opens a tab shows it.
+        if self.mode == AppMode::Api && (self.tabs.len(), self.active) != before {
+            self.set_mode(AppMode::Default, window, cx);
+        }
+    }
+
+    fn run_command_inner(&mut self, id: CommandId, window: &mut Window, cx: &mut Context<Self>) {
         use crate::conn_editor::ConnKind;
         let current = self.servers.current.clone();
         match id {
@@ -2876,7 +2885,6 @@ impl Workspace {
                 window.focus(&self.overlay_focus, cx);
             }
             CommandId::RefreshSchema => {
-                self.side_tab = SideTab::Schema;
                 self.refresh_explorer(cx);
             }
             CommandId::ImportSshConfig => self.import_ssh_config(cx),
@@ -2974,6 +2982,12 @@ impl Workspace {
                 match saved {
                     Some(c) => self.open_containers(c, window, cx),
                     None => self.open_container_editor(platform, None, window, cx),
+                }
+            }
+            CommandId::OpenApi(page) => {
+                self.set_mode(AppMode::Api, window, cx);
+                if let Some(api) = &self.api {
+                    api.update(cx, |a, cx| a.show_page(page, cx));
                 }
             }
             CommandId::OpenCloud(service) => {
@@ -4049,6 +4063,8 @@ impl Render for Workspace {
                 .border_color(p.bd)
                 .child(self.assistant_panel.clone())
         });
+        // The rail stays in both workspaces, so API is one click from anything else.
+        let mut rail = Some(self.render_rail(&p, cx));
         // The API workspace shows the assistant beside the Workbench.
         let api_body = match (self.mode, &self.api) {
             (AppMode::Api, Some(api)) => Some(
@@ -4056,6 +4072,7 @@ impl Render for Workspace {
                     .flex_1()
                     .min_h_0()
                     .flex()
+                    .children(rail.take())
                     .child(
                         div()
                             .flex_1()
@@ -4077,7 +4094,6 @@ impl Render for Workspace {
             .sidebar_open
             .then(|| self.render_sidebar(&p, window, cx));
         let inspector = show_inspector.then(|| self.render_inspector(&p, cx));
-        let rail = self.render_rail(&p, cx);
         let title = self.render_title_bar(&p, cx);
         let strip = self.render_tab_strip(&p, cx);
         let status = self.render_status_bar(&p, cx);
@@ -4225,7 +4241,7 @@ impl Render for Workspace {
                         .flex_1()
                         .min_h_0()
                         .flex()
-                        .child(rail)
+                        .children(rail)
                         .children(sidebar)
                         .child(
                             div()

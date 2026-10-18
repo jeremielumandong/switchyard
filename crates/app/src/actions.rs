@@ -318,6 +318,8 @@ pub enum CommandId {
     PrevTab,
     /// Settings: keybindings.
     SettingsKeybindings,
+    /// Show the API workspace on one of its pages.
+    OpenApi(crate::api::workbench::ApiPage),
     /// Open the first saved connection of a cloud service, or add one.
     OpenCloud(switchyard_core::store::CloudService),
     /// Open the first saved connection of an engine, or add one.

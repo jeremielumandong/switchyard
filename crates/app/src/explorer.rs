@@ -128,6 +128,9 @@ pub struct Explorer {
     pub scroll: UniformListScrollHandle,
     /// Focus of the tree, for its key bindings (`SchemaTree` context).
     pub focus: Option<FocusHandle>,
+    /// Scroll position of the sidebar's Explorer, which shows each database's tree
+    /// under its row.
+    pub conn_scroll: UniformListScrollHandle,
     /// [`Self::rows`] as last built. Every `&mut` access that can change the tree (node
     /// state, node list, profiles, pins, filter) clears it, so a render that follows an
     /// unrelated core event reuses it instead of rebuilding and re-matching every row.
@@ -153,6 +156,7 @@ impl Default for Explorer {
             reveal: None,
             scroll: UniformListScrollHandle::default(),
             focus: None,
+            conn_scroll: UniformListScrollHandle::default(),
             rows_cache: RefCell::new(None),
         }
     }
