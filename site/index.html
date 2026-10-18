@@ -7,7 +7,7 @@
 <meta property="og:title" content="Switchyard">
 <meta property="og:image" content="screenshots/query.png">
 <link rel="icon" type="image/svg+xml" href="icon.svg">
-<script>window.__resources = {"shot_plan": "screenshots/plan.png", "shot_table_data": "screenshots/table-data.png", "shot_api_request": "screenshots/api-request.png", "shot_terminal": "screenshots/terminal.png", "shot_schema": "screenshots/schema.png", "shot_api_runner": "screenshots/api-runner.png", "shot_api_load": "screenshots/api-load.png", "shot_api_mocks": "screenshots/api-mocks.png", "shot_api_contract": "screenshots/api-contract.png", "shot_palette": "screenshots/palette.png", "shot_new_connection": "screenshots/new-connection.png", "shot_servers": "screenshots/servers.png", "shot_fleet": "screenshots/fleet.png", "shot_containers": "screenshots/containers.png", "shot_schema_compare": "screenshots/schema-compare.png", "shot_runbook": "screenshots/runbook.png", "shot_terraform": "screenshots/terraform.png", "shot_redis": "screenshots/redis.png", "https://unpkg.com/react@18.3.1/umd/react.production.min.js": "assets/react.production.min.js", "https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js": "assets/react-dom.production.min.js"};</script>
+<script>window.__resources = {"shot_plan": "screenshots/plan.png", "shot_table_data": "screenshots/table-data.png", "shot_api_request": "screenshots/api-request.png", "shot_terminal": "screenshots/terminal.png", "shot_schema": "screenshots/schema.png", "shot_explorer": "screenshots/explorer.png", "shot_api_runner": "screenshots/api-runner.png", "shot_api_load": "screenshots/api-load.png", "shot_api_mocks": "screenshots/api-mocks.png", "shot_api_contract": "screenshots/api-contract.png", "shot_palette": "screenshots/palette.png", "shot_new_connection": "screenshots/new-connection.png", "shot_servers": "screenshots/servers.png", "shot_fleet": "screenshots/fleet.png", "shot_containers": "screenshots/containers.png", "shot_schema_compare": "screenshots/schema-compare.png", "shot_runbook": "screenshots/runbook.png", "shot_terraform": "screenshots/terraform.png", "shot_redis": "screenshots/redis.png", "https://unpkg.com/react@18.3.1/umd/react.production.min.js": "assets/react.production.min.js", "https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js": "assets/react-dom.production.min.js"};</script>
 <script src="assets/dc-runtime.js"></script>
 </head>
 <body>
@@ -406,7 +406,7 @@ textarea::placeholder,input::placeholder{color:var(--t8)}
     <div style="flex:1;min-height:0;display:flex">
       <div style="width:48px;flex:none;display:flex;flex-direction:column;align-items:center;gap:6px;padding:8px 0;background:var(--a-panel);border-right:1px solid var(--a-bd)">
         <span style="width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:6px;background:var(--a-hover)"><span style="width:18px;height:18px;background:var(--a-fg);-webkit-mask:url(assets/icons/swy-layers.svg) center/contain no-repeat;mask:url(assets/icons/swy-layers.svg) center/contain no-repeat"></span></span>
-        <span style="width:34px;height:34px;display:flex;align-items:center;justify-content:center"><span style="width:18px;height:18px;background:var(--a-fg2);-webkit-mask:url(assets/icons/swy-database.svg) center/contain no-repeat;mask:url(assets/icons/swy-database.svg) center/contain no-repeat"></span></span>
+        <span style="width:34px;height:34px;display:flex;align-items:center;justify-content:center"><span style="width:18px;height:18px;background:var(--a-fg2);-webkit-mask:url(assets/icons/swy-globe.svg) center/contain no-repeat;mask:url(assets/icons/swy-globe.svg) center/contain no-repeat"></span></span>
         <span style="width:34px;height:34px;display:flex;align-items:center;justify-content:center"><span style="width:18px;height:18px;background:var(--a-fg2);-webkit-mask:url(assets/icons/swy-wrench.svg) center/contain no-repeat;mask:url(assets/icons/swy-wrench.svg) center/contain no-repeat"></span></span>
         <span style="width:34px;height:34px;display:flex;align-items:center;justify-content:center"><span style="width:18px;height:18px;background:var(--a-fg2);-webkit-mask:url(assets/icons/swy-activity.svg) center/contain no-repeat;mask:url(assets/icons/swy-activity.svg) center/contain no-repeat"></span></span>
         <span style="width:34px;height:34px;display:flex;align-items:center;justify-content:center;margin-top:auto"><span style="width:18px;height:18px;background:var(--a-fg2);-webkit-mask:url(assets/icons/swy-sliders-horizontal.svg) center/contain no-repeat;mask:url(assets/icons/swy-sliders-horizontal.svg) center/contain no-repeat"></span></span>
@@ -427,7 +427,7 @@ textarea::placeholder,input::placeholder{color:var(--t8)}
         <sc-for list="{{ appConns }}" as="c" hint-placeholder-count="6">
           <div onClick="{{ c.select }}" style="height:30px;display:flex;align-items:center;gap:10px;padding:0 12px 0 26px;background:{{ c.bg }};cursor:pointer"><span style="width:6px;height:6px;border-radius:50%;background:{{ c.dot }}"></span><span style="flex:none;width:22px;height:15px;display:flex;align-items:center;justify-content:center;border-radius:3px;background:var(--a-hover);border:1px solid var(--a-bd);color:var(--a-fg2);font-family:'Geist Mono',monospace;font-weight:600;font-size:8.5px">{{ c.mono }}</span><span style="flex:1">{{ c.name }}</span><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--a-fg3)">{{ c.port }}</span></div>
         </sc-for>
-        <div style="margin-top:auto;padding:10px 12px;border-top:1px solid var(--a-bd);font-size:11.5px;color:var(--a-fg3)">Right-click anything for its actions</div>
+        <div style="margin-top:auto;padding:10px 12px;border-top:1px solid var(--a-bd);font-size:11.5px;color:var(--a-fg3)">▸ browses a database · right-click for actions</div>
       </div>
       <div style="flex:1;min-width:0;display:flex;flex-direction:column;background:var(--a-surface)">
         <div style="height:34px;flex:none;display:flex;background:var(--a-panel);border-bottom:1px solid var(--a-bd)">
@@ -783,6 +783,7 @@ const SHOT = 'screenshots/';
 const SHOTS = [
   ['plan', 'Query plans', 'Hotspots, flame view and per-node details from EXPLAIN ANALYZE.'],
   ['table-data', 'Results grid', 'Typed columns, WHERE filter, paging and inline edits.'],
+  ['explorer', 'One Explorer', 'Each database folds its tables open under its own row; double-click opens the data.'],
   ['schema', 'Schema explorer', 'Lazy tree, row counts and actions on every object.'],
   ['terminal', 'Terminals', 'Local shells and SSH sessions next to your queries.'],
   ['new-connection', 'One connection model', 'Servers, databases, file servers and cloud services.'],
@@ -815,7 +816,7 @@ function visitorTab() {
 const FEATURES = [
   ['SQL editor', ['Schema-aware completion, folding, format, comment and case toggles', 'Blank lines split statements like DBeaver; open and save .sql files', 'Scripts stop or continue on error; parsing never blocks typing']],
   ['Results grid', ['Streams and virtualizes: 1M rows × 10 columns under 150 MB', 'Inline edits staged and committed in one transaction', 'Foreign-key navigation, pin and compare result tabs']],
-  ['Schema explorer', ['Lazy tree with a local SQLite catalog cache', 'Script as CREATE / DROP, DDL, dependencies, ER diagram', 'Activity monitor with kill session']],
+  ['Schema explorer', ['Lazy tree under each database in the Explorer, cached locally', 'Script as CREATE / DROP, DDL, dependencies, ER diagram', 'Activity monitor with kill session']],
   ['Query plans', ['One normalized operator tree across engines', 'Graph and flame views, ranked hotspots linked to nodes', 'HypoPG what-if indexes — no real index created']],
   ['SSH & terminals', ['GPU-rendered on alacritty_terminal, 10k-line scrollback', 'ProxyJump chains, agent and X11 forwarding', 'Split panes with input broadcast, macros, session logs']],
   ['Tunnels', ['Local, remote and dynamic (SOCKS) forwards', '“Via Host” connections tunnel automatically', 'Status-bar manager with bytes, Start / Stop']],

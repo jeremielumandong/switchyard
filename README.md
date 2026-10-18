@@ -504,9 +504,15 @@ then the Driver Manager detects it, explains why, installs it and retries the co
 
 ### Workspace and UI
 
-- **Activity rail** with Explorer, Schema, Tools and Activity panes. The Explorer groups
-  everything by place (servers, cloud accounts, direct connections) or by type (databases,
-  terminals, files and storage, config and secrets), with one filter over all of it.
+- **Activity rail** with labelled Explorer, API, Tools and Activity entries, shown in both
+  workspaces. The Explorer groups everything by place (servers, cloud accounts, direct
+  connections) or by type (databases, terminals, files and storage, config and secrets),
+  with one filter over all of it. A database's ▸ folds its schemas and tables open under
+  its own row, the way a server lists its terminal and files; double-click a table for its
+  data. View → Schema still shows every open database's tree on its own.
+- **API** is one click away: the rail's API entry, the Tools pane's API group (requests,
+  import, environments, runner, load test, mocks, history), File → New API request and the
+  New chooser all open the Workbench on the right page.
 - **Tools** pane: port forwards, history, workload statistics, activity monitor, snippets,
   drivers, Servers, Fleet, Containers, Runbooks, Infra tools, and one entry per cloud
   service. **Activity** pane: sessions, running queries,

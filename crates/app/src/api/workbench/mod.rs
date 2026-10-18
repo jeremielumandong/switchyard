@@ -83,8 +83,8 @@ use crate::api::compat::theme::{palette, text};
 use crate::api::compat::{AnyInput, TextValue};
 
 pub use keys::{
-    FocusUrl, ShowCompose, ShowDiff, ShowEnvs, ShowHistory, ShowImport, ShowLoadTest, ShowMocks,
-    ShowRunner,
+    ApiPage, FocusUrl, ShowCompose, ShowDiff, ShowEnvs, ShowHistory, ShowImport, ShowLoadTest,
+    ShowMocks, ShowRunner,
 };
 
 /// Key scope for request-draft commands such as Save.

@@ -1339,6 +1339,20 @@ are shared hotspots: one owner at a time.
   Deferred (see Follow-ups): total row count of a result, client-side `@set` variables,
   saving the run options per connection.
 
+## Extra — One place per connection, API easy to find (user request, 2026-10-18)
+
+- [x] NAV-1 A SQL database's Explorer row has a ▸ that folds its schema tree open under it
+  (`sidebar::side_rows`); clicking the row opens a query tab and the tree, as before, so a
+  connection and its data sit in one place like a Host and its terminal. The rail's
+  separate Schema entry is gone (View → Schema still shows every open tree);
+  "Show in explorer" and Refresh schema stay in the Explorer.
+- [x] NAV-2 API: a labelled rail with an API entry, kept in the API workspace too (other
+  entries switch back); an API group in the Tools pane and palette
+  (`CommandId::OpenApi(ApiPage)` opens a Workbench page); File → New API request; API
+  request and Remote desktop cards in the New chooser. A command run from the API
+  workspace that opens a tab switches back to show it.
+  Deferred (see Follow-ups): Up / Down in the Explorer step through schema rows only.
+
 ## M6 — Packaging and beta
 
 Exit: every performance budget passes on all three platforms; signed builds published.
@@ -1564,3 +1578,5 @@ Exit: every performance budget passes on all three platforms; signed builds publ
   (cancel-all only); macros with control keystrokes are refused (only plain lines run as a
   script); sudo / become from Ansible vars is ignored; a saved Fleet selection (named
   group) and run history per selection; UI tests.
+- Explorer navigation: Up / Down over every Explorer row (today they move through the
+  inline schema rows only); API collections listed in the Explorer as their own place.
