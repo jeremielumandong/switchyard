@@ -1841,3 +1841,17 @@ statements share variables. `split_script` itself is unchanged, so the CLI, runb
 schema compare and the agent tools keep their exact batches. No setting yet to turn it
 off (Follow-ups).
 
+
+## 2026-10-18 — Scratchpad notes are markdown files in the data folder
+
+Jeremie asked for Notepad-style scratch notes that come back until he closes them, opened
+with a shortcut, "like a local Obsidian". Notes are plain files rather than rows in the
+SQLite store, so the folder (`<data>/notes`, `notes/.scratch` for unsaved ones) can be
+opened in Obsidian or any editor and backed up as is. Scratch notes are written as typed
+(300 ms after a pause, and when the window closes) and deleted only when closed or saved
+under a name; saved notes autosave too, as Obsidian does. The core handles notes on one
+task in command order, so a later autosave never loses to an earlier one. The shortcut is
+Ctrl/⌘+Shift+N (free in the app; pressed again with the scratchpad in front it starts a new
+scratch note). The scratchpad is shown in every workspace (it is the user's, not a
+workspace's) and reopens with the layout (`SavedTab::Notes`). Markdown has no tree-sitter
+grammar in the editor (that would be a new dependency); Read mode renders it instead.

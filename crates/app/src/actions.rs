@@ -75,6 +75,7 @@ actions!(
         OpenSqlScript,
         SaveSqlScript,
         SaveSqlScriptAs,
+        OpenScratchpad,
     ]
 );
 
@@ -109,6 +110,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-j", ToggleAssistant, None),
         KeyBinding::new("secondary-shift-f", FormatSql, Some("Workspace")),
         KeyBinding::new("secondary-shift-h", ShowHistory, None),
+        KeyBinding::new("secondary-shift-n", OpenScratchpad, None),
         KeyBinding::new("secondary-\\", SplitRight, None),
         KeyBinding::new("secondary-c", CopyCells, Some("DataTable")),
         // Shift+arrows extend the selected range in the results grid.
@@ -278,6 +280,8 @@ pub enum CommandId {
     CheckForUpdates,
     /// Open the folder holding the app's log files.
     OpenLogFolder,
+    /// Show the scratchpad (a new scratch note when it is already in front).
+    OpenScratchpad,
     /// "What do you want to connect to?" (design v3's New button, ⌘N).
     NewChooser,
     /// Open anything: connections, tools and commands (⌘P).
@@ -575,6 +579,12 @@ pub fn palette_commands() -> Vec<PaletteCommand> {
         ),
         c(ShowActivity, "Activity Monitor", "Editor", "".into()),
         c(ManageSnippets, "Manage Snippets…", "Editor", "".into()),
+        c(
+            OpenScratchpad,
+            "Scratchpad: Notes",
+            "Notes",
+            k("⇧⌘N", "Ctrl+Shift+N"),
+        ),
         c(ManageSecrets, "Secret Vault…", "Connections", "".into()),
         c(NewRunbook, "New Runbook", "Runbooks", "".into()),
         c(OpenRunbook, "Open Runbook…", "Runbooks", "".into()),
@@ -823,6 +833,7 @@ mod tests {
             SqlEdit(crate::sql_tab::EditCmd::MoveUp),
             SqlEdit(crate::sql_tab::EditCmd::MoveDown),
             ShowHistory,
+            OpenScratchpad,
             Settings,
             ToggleAssistant,
             ToggleSidebar,

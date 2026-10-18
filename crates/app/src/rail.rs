@@ -252,6 +252,12 @@ pub fn menu_lines(menu: TopMenu, s: MenuState) -> Vec<MenuLine> {
             Item("Tag", none(), GroupByTag, s.group == ExplorerGroup::Tag),
             Sep,
             Item("Assistant", k("⌘J", "Ctrl+J"), ToggleAssistant, s.assistant),
+            Item(
+                "Scratchpad",
+                k("⇧⌘N", "Ctrl+Shift+N"),
+                OpenScratchpad,
+                false,
+            ),
             Item("Value inspector", none(), ToggleInspector, s.inspector),
             Item("Split right", k("⌘\\", "Ctrl+\\"), SplitRight, false),
             Item("Split down", k("⇧⌘\\", "Ctrl+Shift+\\"), SplitDown, false),

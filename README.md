@@ -502,6 +502,19 @@ then the Driver Manager detects it, explains why, installs it and retries the co
 - Inline setup card in the connection editor and a Settings → Drivers page. Native libraries
   load at runtime; a missing one disables one feature and never stops the app from starting.
 
+### Scratchpad and notes
+
+- **Scratchpad** (Ctrl/⌘+Shift+N, or View → Scratchpad): a Notepad-style place to paste
+  and jot temporary text. Scratch notes are kept as you type, survive restarts, and stay
+  until you close them (closing one with text asks first). Press the shortcut again while
+  the scratchpad is in front for a new scratch note.
+- **Notes**, like a small local Obsidian: Ctrl/⌘+S saves a scratch note under a name as a
+  markdown file in the app's data folder (`notes/<name>.md`, so other editors can open
+  the folder too). Saved notes save their own edits, can be renamed or deleted, and are
+  searched by name and text from the list.
+- **Read** mode (Ctrl/⌘+E) renders the markdown; `[[Note name]]` links show under the
+  note and open the note they name, or create it.
+
 ### Workspace and UI
 
 - **Activity rail** with labelled Explorer, API, Tools and Activity entries, shown in both
@@ -551,6 +564,7 @@ then the Driver Manager detects it, explains why, installs it and retries the co
 | Stop query | ⌘. | Ctrl+. |
 | Format SQL | ⌘⇧F | Ctrl+Shift+F |
 | Query history | ⌘⇧H | Ctrl+Shift+H |
+| Scratchpad (again: new scratch note) | ⌘⇧N | Ctrl+Shift+N |
 | New connection / query tab | ⌘N / ⌘⌥N | Ctrl+N / Ctrl+Alt+N |
 | New terminal | ⌘T | Ctrl+Shift+T |
 | Split terminal | ⌘D | Ctrl+Shift+D |
