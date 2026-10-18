@@ -16,6 +16,7 @@ pub mod fleet;
 pub mod git;
 pub mod handoff;
 pub mod infra;
+pub mod notes;
 pub mod prompts;
 pub mod runbook;
 pub mod runtime;

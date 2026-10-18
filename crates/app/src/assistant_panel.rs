@@ -191,7 +191,7 @@ fn rich(id: String, text: Inline, order: u64, p: &crate::theme::Palette) -> Rich
 }
 
 /// One block of an answer, its text selectable in reading order (`next` numbers the runs).
-fn markdown_block(
+pub(crate) fn markdown_block(
     block: Block,
     id: &str,
     next: &dyn Fn() -> u64,

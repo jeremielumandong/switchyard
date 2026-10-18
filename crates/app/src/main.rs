@@ -38,6 +38,7 @@ mod infra;
 mod log_file;
 mod menus;
 mod named_secrets;
+mod notes_tab;
 mod object_search;
 mod object_tab;
 mod omarchy;
@@ -178,6 +179,7 @@ fn main() -> Result<()> {
             cx.set_global(updates::LogDir(paths.logs_dir()));
             actions::init(cx);
             editor_tab::init(cx);
+            notes_tab::init(cx);
             // The saved theme arrives from the store once the workspace loads.
             // SWITCHYARD_ZOOM (tests, screenshots: `1.5`) wins over the saved zoom.
             if let Some(z) = appearance::env_zoom() {

@@ -66,7 +66,8 @@ pub(crate) enum TabKey {
 pub(crate) fn tab_key(tab: &Tab) -> Option<TabKey> {
     use crate::infra::InfraTab;
     let id = match tab {
-        Tab::Welcome => return None,
+        // Shown in every workspace: the scratchpad is yours, not a workspace's.
+        Tab::Welcome | Tab::Notes(_) => return None,
         Tab::Servers => return Some(TabKey::Servers),
         Tab::Sql(e) => e.entity_id(),
         Tab::Terminal(e) => e.entity_id(),
@@ -457,6 +458,7 @@ impl Workspace {
                     host: f.read(cx).host().cloned(),
                 },
                 Tab::Servers => SavedTab::Servers,
+                Tab::Notes(_) => SavedTab::Notes,
                 Tab::Redis(r) => SavedTab::Profile {
                     id: r.read(cx).connection.id.clone(),
                 },
@@ -510,6 +512,7 @@ impl Workspace {
                 }
                 SavedTab::Files { host } => self.open_files_for(host, cx),
                 SavedTab::Servers => self.open_servers(cx),
+                SavedTab::Notes => self.reopen_notes(window, cx),
                 SavedTab::Profile { id } => {
                     if self.profiles.all.iter().any(|p| p.id() == &id) {
                         self.open_profile(&id, window, cx);

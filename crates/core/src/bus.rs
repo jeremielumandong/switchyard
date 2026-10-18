@@ -1025,6 +1025,8 @@ pub enum Command {
     Fleet(crate::fleet::FleetCommand),
     /// Workspaces, workspace files, reachability, credentials and remote desktops.
     Servers(crate::servers::ServersCommand),
+    /// The scratchpad's notes ([`Event::Notes`]), handled in the order sent.
+    Notes(crate::notes::NotesCommand),
     /// The in-app RDP tab: connect, input, disconnect ([`Event::Rdp`]).
     Rdp(crate::servers::embedded::RdpCommand),
     /// Read `~/.ssh/config` and answer with [`Event::SshConfigPreview`]; nothing is saved.
@@ -1428,6 +1430,8 @@ pub enum Event {
     Fleet(crate::fleet::FleetEvent),
     /// Answers to [`Command::Servers`] (and reachability results).
     Servers(crate::servers::ServersEvent),
+    /// Answers to [`Command::Notes`].
+    Notes(crate::notes::NotesEvent),
     /// In-app RDP sessions: state and desktop image updates ([`Command::Rdp`]).
     Rdp(crate::servers::embedded::RdpEvent),
     /// What importing `~/.ssh/config` would add (answer to `PreviewSshConfig`).

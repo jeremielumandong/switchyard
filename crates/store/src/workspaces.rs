@@ -179,6 +179,8 @@ pub enum SavedTab {
     },
     /// The Servers view.
     Servers,
+    /// The scratchpad.
+    Notes,
     /// Any other saved profile (Redis, cloud tools, containers).
     Profile {
         /// Profile.

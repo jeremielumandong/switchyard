@@ -412,6 +412,7 @@ impl Service {
                 }
             }
         });
+        let notes = crate::notes::spawn(self.data_dir.join("notes"), self.events.clone());
         while let Some(cmd) = commands.recv().await {
             // A terminal on a Host starts its auto-start forwards, beside the login.
             if let Command::OpenTerminal {
@@ -435,6 +436,11 @@ impl Service {
                 }
                 Command::ReconnectTerminal { term } => {
                     self.terminals.send(term, TermInput::Reconnect);
+                    continue;
+                }
+                // Autosaves must land in the order they were typed.
+                Command::Notes(c) => {
+                    let _ = notes.send(c);
                     continue;
                 }
                 Command::AnswerPrompt { request, answer } => {
@@ -1425,6 +1431,8 @@ impl Service {
             }
             Command::Fleet(c) => self.fleet(c).await,
             Command::Servers(c) => self.servers(c).await,
+            // Handled in `run`, on the notes task.
+            Command::Notes(_) => {}
             Command::Rdp(c) => self.rdp(c).await,
             Command::PreviewSshConfig => match self.preview_ssh_config().await {
                 Ok((path, hosts)) => self.emit(Event::SshConfigPreview { path, hosts }),

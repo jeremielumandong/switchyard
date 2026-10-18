@@ -83,6 +83,8 @@ pub enum Tab {
     Rdp(Entity<crate::rdp_tab::RdpTab>),
     /// Every Host and remote desktop of the current workspace (one per window).
     Servers,
+    /// The scratchpad: scratch notes and saved markdown notes (one per window).
+    Notes(Entity<crate::notes_tab::NotesTab>),
 }
 
 /// The root view.
@@ -436,6 +438,7 @@ impl Workspace {
         match ev {
             Event::Pong { .. } => {}
             Event::Servers(ev) => self.on_servers_event(ev, window, cx),
+            Event::Notes(ev) => self.on_notes_event(ev, window, cx),
             Event::Setting { key, value } if key == switchyard_core::servers::REACH_SETTING => {
                 self.servers.reach_on = value.as_ref().and_then(|v| v.as_bool()).unwrap_or(true);
                 self.sync_reach();
@@ -1551,6 +1554,7 @@ impl Workspace {
             Some(Tab::Containers(c)) => c.clone().into_any_element(),
             Some(Tab::Rdp(r)) => r.clone().into_any_element(),
             Some(Tab::Servers) => self.render_servers(p, cx),
+            Some(Tab::Notes(n)) => n.clone().into_any_element(),
             _ => self.render_welcome(p, cx),
         }
     }
@@ -1955,6 +1959,10 @@ impl Workspace {
         }
         if let Tab::Editor(e) = &self.tabs[ix] {
             e.update(cx, |e, cx| e.shutdown(cx));
+        }
+        // Scratch notes stay in the notes folder: closing the tab only hides them.
+        if let Tab::Notes(n) = &self.tabs[ix] {
+            n.update(cx, |n, cx| n.flush(cx));
         }
         self.tabs.remove(ix);
         if self.tabs.is_empty() {
@@ -2908,6 +2916,7 @@ impl Workspace {
             CommandId::ResetZoom => self.zoom_by(|_| 1.0, window, cx),
             CommandId::CheckForUpdates => self.check_for_updates(cx),
             CommandId::OpenLogFolder => self.open_log_folder(cx),
+            CommandId::OpenScratchpad => self.open_notes(window, cx),
             CommandId::NewChooser => self.open_new_chooser(window, cx),
             CommandId::OpenAnything => self.open_palette(PaletteMode::Anything, window, cx),
             CommandId::OpenCommands => self.open_palette(PaletteMode::Commands, window, cx),
@@ -3307,6 +3316,10 @@ impl Workspace {
         match tab {
             Tab::Welcome => ("SY".into(), "Welcome".into(), None, false),
             Tab::Servers => ("SRV".into(), "Servers".into(), None, false),
+            Tab::Notes(n) => {
+                let n = n.read(cx);
+                ("TXT".into(), n.title(), None, n.has_scratch_text())
+            }
             Tab::Rdp(t) => {
                 let d = &t.read(cx).desktop;
                 (
@@ -4159,6 +4172,9 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &actions::ShowHistory, w, cx| {
                 this.run_command(CommandId::ShowHistory, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &actions::OpenScratchpad, w, cx| {
+                this.run_command(CommandId::OpenScratchpad, w, cx)
             }))
             .on_action(cx.listener(|this, _: &actions::Dismiss, w, cx| this.dismiss(w, cx)))
             .on_mouse_move(cx.listener(|this, ev: &gpui_kit::MouseMoveEvent, w, cx| {

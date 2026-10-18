@@ -208,6 +208,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        self.flush_notes(cx);
         if self.unsaved.window_close_confirmed {
             return true;
         }
