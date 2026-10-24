@@ -270,8 +270,9 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
 - For GPUI Kit 0.7.3, `gpui-base` and gpui-fast's `gpui` / `gpui_linux` / `gpui_windows` are
   vendored (`vendor/gpui-base`, `vendor/gpui-fast`), copied from AgentOpsChat's patched stack;
   re-copy from there rather than editing or bumping them here (see `docs/DECISIONS.md`). The
-  one exception is the Windows software-rendering patch (2026-10-16, listed at the end of
-  `vendor/gpui-fast/PARITY-PATCH.md`): carry it over when re-copying.
+  exceptions are the Windows software-rendering patch (2026-10-16) and the backport of
+  gpui-fast #84, Windows frames on demand (2026-10-24), both listed at the end of
+  `vendor/gpui-fast/PARITY-PATCH.md`: carry them over when re-copying.
 - The vendored crates are not root workspace members. Test them from `vendor/gpui-fast`
   with `--config 'patch."https://github.com/longbridge/gpui-fast".gpui.path="crates/gpui"'`
   (or they build against git's unpatched `gpui`) and `CARGO_TARGET_DIR=../../target/vendor-tests`,

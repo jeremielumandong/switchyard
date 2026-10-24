@@ -1855,3 +1855,14 @@ Ctrl/⌘+Shift+N (free in the app; pressed again with the scratchpad in front it
 scratch note). The scratchpad is shown in every workspace (it is the user's, not a
 workspace's) and reopens with the layout (`SavedTab::Notes`). Markdown has no tree-sitter
 grammar in the editor (that would be a new dependency); Read mode renders it instead.
+
+## 2026-10-24 — gpui-fast #84 (Windows frames on demand) as a backport
+
+Jeremie asked to integrate longbridge/gpui-fast PR #84, merged upstream as `124f79b`. It
+only touches `gpui_windows`: the backend stops repainting every window at the display
+refresh rate while idle (upstream measured 96 % less idle CPU). Rather than moving the
+whole stack to `124f79b` (64 upstream commits, including two Zed syncs, under the vendored
+`gpui` / `gpui_linux` and the Kit compat facades, which are re-copied from AgentOpsChat, not
+rebased here), the PR is applied onto the vendored `598306f` `gpui_windows`; it needs no
+core change. Every other GPUI Fast crate stays on `598306f`. Details and how to drop it
+are in `vendor/gpui-fast/PARITY-PATCH.md`.

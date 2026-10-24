@@ -133,3 +133,22 @@ software adapter (WARP). `crates/gpui_windows` is copied unchanged from gpui-fas
 - 2026-10-17: `rendering_policy.rs` is no longer Windows-only (Switchyard enables it on
   Linux CPU Vulkan drivers too), and low-power mode also skips the high-rate-input
   keepalive presents on other platforms. The Windows 30 Hz frame thread is unchanged.
+
+## Windows frames on demand (gpui-fast #84 backport, 2026-10-24)
+
+`crates/gpui_windows` carries longbridge/gpui-fast PR #84, "fast: schedule Windows frames
+on demand", merged upstream as `124f79b0f14c688ae87877e370c015a9dc9d7ce5`, applied onto
+the `598306f` copy. Before it, the VSync thread invalidated every window at the display
+refresh rate while idle. Now each window tracks frame demand, and the thread parks when
+none is pending; input, presents, deferred paints, active Direct Manipulation and device
+removal wake it. The new files `fast/frame_schedule.rs`, `fast/device_wake.rs` and
+`fast/native_tests.rs` (ignored tests that need an interactive desktop) are byte-identical
+to `124f79b`. The other hunks applied with offsets, except `fast/mod.rs`: at `598306f` it
+has no `class_names` or `rounded_clip`, so its three module lines were added by hand. The
+backend uses `PlatformWindow::frame_waker` / `schedule_frame`, already in the `598306f`
+core, so `gpui` is unchanged. The other gpui-fast commits between `598306f` and `124f79b`
+are not taken. Drop this section when AgentOpsChat moves to a revision containing `124f79b`.
+
+It composes with the Windows software-rendering patch above: in low-power mode a woken
+VSync thread still sleeps 33 ms instead of `DwmFlush`, and a draw the frame pacer skips
+leaves the window dirty, which `gpui/src/window.rs` re-arms through `schedule_frame`.
