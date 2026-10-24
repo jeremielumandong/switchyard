@@ -218,6 +218,20 @@ impl FilesTab {
                     .on_click(cx.listener(move |this, _, _, cx| this.copy_selection_across(ix, cx))),
                 )
             })
+            .when(!dual, |d| {
+                d.child(
+                    bar_button(
+                        "files-preview-toggle",
+                        "icons/swy-panel-right.svg",
+                        Some("Preview"),
+                        if self.show_preview { "Hide the preview pane · Alt+P" } else { "Preview the selected file · Alt+P" },
+                        true,
+                        p,
+                    )
+                    .when(self.show_preview, |d| d.text_color(p.acc))
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_preview(cx))),
+                )
+            })
             .child(
                 bar_button(
                     "files-places-toggle",
@@ -901,6 +915,10 @@ impl FilesTab {
             .relative()
             .flex_1()
             .min_w_0()
+            // Beside the preview the list keeps room for names and columns; the preview gives way.
+            .when(self.layout == Layout::Single && self.show_preview, |d| {
+                d.min_w(rpx(360.))
+            })
             .flex()
             .flex_col()
             .when(ix == 0 && dual, |d| d.border_r_1().border_color(p.bd))

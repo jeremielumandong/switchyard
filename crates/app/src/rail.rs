@@ -81,6 +81,7 @@ const ICONS: &[(&str, &[u8])] = &[
     icon!("swy-image"),
     icon!("swy-layers"),
     icon!("swy-monitor"),
+    icon!("swy-panel-right"),
     icon!("swy-pencil"),
     icon!("swy-refresh-cw"),
     icon!("swy-scissors"),

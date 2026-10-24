@@ -29,9 +29,9 @@ pub mod update;
 
 pub use bus::{
     AgentApproval, ApprovalKind, CloudEdit, CloudInfo, Command, CompareCatalog, ContainerForward,
-    Event, FetchLimit, FileBytes, ForwardState, FsOp, FsRef, OnConflict, PromptAnswer, QueryEvent,
-    QueryId, ReadError, RequestId, SaveError, SessionContext, SessionId, StatementRequest, TermId,
-    TermLogState, TermStatus, TermTarget, TextFile, TransferError,
+    Event, FetchLimit, FileBytes, FilePreview, ForwardState, FsOp, FsRef, OnConflict, PreviewBody,
+    PromptAnswer, QueryEvent, QueryId, ReadError, RequestId, SaveError, SessionContext, SessionId,
+    StatementRequest, TermId, TermLogState, TermStatus, TermTarget, TextFile, TransferError,
 };
 pub use error::{CoreError, Result};
 pub use runtime::{Core, EventReceiver, EventSender, RuntimeHandle};

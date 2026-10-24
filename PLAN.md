@@ -1353,6 +1353,16 @@ are shared hotspots: one owner at a time.
   workspace that opens a tab switches back to show it.
   Deferred (see Follow-ups): Up / Down in the Explorer step through schema rows only.
 
+## Extra — File preview in the explorer (user request, 2026-10-24)
+
+- [x] FP-1 Preview pane beside the Files tab's list (one-pane layout; Alt+P or *Preview* in
+  the command bar, shown by default, remembered, resizable). `Command::PreviewFile` reads at
+  most 64 KB of text (whole images up to the viewer's limit, 512 bytes of other binaries),
+  after the selection rests 120 ms; text shows with line numbers in a virtualized list,
+  images through the viewer's formats, binaries as hex, documents / media / archives and
+  folders as a card. A selected file that changes is read again.
+- Deferred: rendered Markdown, syntax colors, PDF and video thumbnails.
+
 ## M6 — Packaging and beta
 
 Exit: every performance budget passes on all three platforms; signed builds published.

@@ -94,6 +94,33 @@ pub struct TextFile {
     pub modified_ms: Option<i64>,
 }
 
+/// What the Files explorer's preview pane shows for one file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FilePreview {
+    /// File size in bytes.
+    pub size: u64,
+    /// Modification time (ms since epoch).
+    pub modified_ms: Option<i64>,
+    /// The part of the file that shows.
+    pub body: PreviewBody,
+}
+
+/// The part of a file the preview pane shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PreviewBody {
+    /// The start of a text file.
+    Text {
+        /// At most [`crate::files::PREVIEW_TEXT_BYTES`], cut at a character boundary.
+        text: String,
+        /// The file goes on past `text`.
+        truncated: bool,
+    },
+    /// The whole file: an image (raster or SVG) of at most [`crate::files::MAX_VIEW_BYTES`].
+    Image(FileBytes),
+    /// Not text and not an image: its first bytes, for a hex view.
+    Binary(FileBytes),
+}
+
 /// A file's raw bytes, shared between event receivers. `Debug` prints only the length.
 #[derive(Clone, PartialEq, Eq)]
 pub struct FileBytes(pub std::sync::Arc<[u8]>);
@@ -950,6 +977,16 @@ pub enum Command {
     /// Open a text file for editing ([`Event::TextFileRead`]); a binary file answers
     /// [`ReadError::Binary`], with its bytes when it is an image.
     ReadTextFile {
+        /// Request id.
+        request: RequestId,
+        /// File system.
+        fs: FsRef,
+        /// File.
+        path: PathBuf,
+    },
+    /// The start of a file (or the whole of an image) for the Files explorer's preview
+    /// pane ([`Event::FilePreview`]).
+    PreviewFile {
         /// Request id.
         request: RequestId,
         /// File system.
@@ -1893,6 +1930,13 @@ pub enum Event {
         request: RequestId,
         /// Contents, or why not (a binary file is [`ReadError::Binary`]).
         result: Result<TextFile, ReadError>,
+    },
+    /// Result of [`Command::PreviewFile`].
+    FilePreview {
+        /// Request id.
+        request: RequestId,
+        /// What shows, or why not.
+        result: Result<FilePreview, String>,
     },
     /// Result of [`Command::WriteTextFile`]: the new modification time.
     TextFileSaved {
