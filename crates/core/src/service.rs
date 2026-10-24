@@ -1384,6 +1384,13 @@ impl Service {
                 };
                 self.emit(Event::TextFileRead { request, result });
             }
+            Command::PreviewFile { request, fs, path } => {
+                let result = match self.file_system(&fs).await {
+                    Ok((f, _)) => crate::files::preview(f.as_ref(), &path).await,
+                    Err(e) => Err(e.to_string()),
+                };
+                self.emit(Event::FilePreview { request, result });
+            }
             Command::WriteTextFile {
                 request,
                 fs,

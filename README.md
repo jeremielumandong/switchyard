@@ -360,6 +360,15 @@ your own Claude Code, Codex or Gemini session access, see
   folder (with its files beside it). Copy path, Open with the default app and
   Reveal in the OS file manager for the selection.
 - **One pane or two**: two panes for copying between computers, one pane for browsing.
+- **Preview pane** (Alt+P, or *Preview* in the command bar): the selected file beside the list
+  without opening it. Text, code and configuration show their first lines with line numbers,
+  images show whole, other binary files their first bytes in hex, and documents, media and
+  archives a card with their details. Only the start of a file is read, so arrowing through
+  a folder of large logs, locally or on a Host, stays quick; a file that changes while it is
+  selected (a coding CLI editing it) updates. Drag its edge to resize it.
+
+  ![Files tab with the preview pane showing a Rust source file](docs/screenshots/file-preview.png)
+
 - **Git-aware and live**: folders on this computer refresh while the tab is on screen; in a
   git repository the footer shows the branch, ahead / behind and the number of changes, each
   changed file or folder gets a badge (M, A, D, R, ?, !), and *Changes* lists only what changed.

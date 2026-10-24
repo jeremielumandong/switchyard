@@ -10,7 +10,9 @@ use switchyard_remote::fs::file_name;
 use switchyard_remote::{FileEntry, FsError, RemoteFs, SftpFs};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-use crate::bus::{FileBytes, OnConflict, ReadError, SaveError, TextFile, TransferError};
+use crate::bus::{
+    FileBytes, FilePreview, OnConflict, PreviewBody, ReadError, SaveError, TextFile, TransferError,
+};
 
 /// Largest file the editor opens.
 pub const MAX_EDIT_BYTES: u64 = 5 * 1024 * 1024;
@@ -18,6 +20,10 @@ pub const MAX_EDIT_BYTES: u64 = 5 * 1024 * 1024;
 pub const MAX_VIEW_BYTES: u64 = 32 * 1024 * 1024;
 /// Bytes read to tell text from binary in a file too large to edit.
 const SNIFF_BYTES: u64 = 8 * 1024;
+/// Most of a text file the preview pane reads.
+pub const PREVIEW_TEXT_BYTES: u64 = 64 * 1024;
+/// Bytes of a binary file the preview pane shows in hex.
+pub const PREVIEW_HEX_BYTES: usize = 512;
 const CHUNK: usize = 256 * 1024;
 
 /// Transfers running at once; the rest wait their turn.
@@ -485,6 +491,57 @@ pub(crate) async fn read_text(fs: &dyn RemoteFs, path: &Path) -> Result<TextFile
     }
 }
 
+/// What the preview pane shows for `path`: the start of a text file, the whole of an
+/// image of at most [`MAX_VIEW_BYTES`], or the first bytes of anything else. Reads at most
+/// [`PREVIEW_TEXT_BYTES`] unless it is an image, so a large log or dump stays quick.
+pub(crate) async fn preview(fs: &dyn RemoteFs, path: &Path) -> Result<FilePreview, String> {
+    let meta = fs.stat(path).await.map_err(|e| e.to_string())?;
+    if meta.is_dir() {
+        return Err(format!("{} is a folder", meta.name));
+    }
+    let mut head = Vec::new();
+    let mut r = fs.open_read(path).await.map_err(|e| e.to_string())?;
+    (&mut r)
+        .take(PREVIEW_TEXT_BYTES)
+        .read_to_end(&mut head)
+        .await
+        .map_err(|e| e.to_string())?;
+    drop(r);
+    let truncated = (head.len() as u64) < meta.size;
+    let svg = file_name(path).to_ascii_lowercase().ends_with(".svg");
+    let image = looks_like_image(&head) || (svg && !is_binary(&head));
+    let body = if image && meta.size <= MAX_VIEW_BYTES {
+        let whole = if truncated {
+            fs.read_file(path, MAX_VIEW_BYTES)
+                .await
+                .map_err(|e| e.to_string())?
+        } else {
+            head
+        };
+        PreviewBody::Image(FileBytes(whole.into()))
+    } else if is_binary(&head) {
+        head.truncate(PREVIEW_HEX_BYTES);
+        PreviewBody::Binary(FileBytes(head.into()))
+    } else {
+        // Cut before a character split by the read limit.
+        let text = match String::from_utf8(head) {
+            Ok(t) => t,
+            Err(e) => {
+                let valid = e.utf8_error().valid_up_to();
+                let mut bytes = e.into_bytes();
+                bytes.truncate(valid);
+                String::from_utf8(bytes).unwrap_or_default()
+            }
+        };
+        PreviewBody::Text { text, truncated }
+    };
+    Ok(FilePreview {
+        size: meta.size,
+        modified_ms: meta.modified_ms,
+        body,
+    })
+}
+
 /// Save a text file unless it changed since `expect` (SFTP times are whole seconds).
 pub(crate) async fn write_text(
     fs: &dyn RemoteFs,
@@ -850,5 +907,57 @@ mod tests {
         // A UTF-8 character cut at the sniff boundary is still text.
         assert!(!is_binary("é".as_bytes().get(..1).unwrap()));
         assert!(is_binary(b"\xe9 x"));
+    }
+
+    /// The preview reads the start of text, all of an image, and a few bytes of the rest.
+    #[tokio::test]
+    async fn previews_text_images_and_binaries() {
+        let t = tempfile::tempdir().unwrap();
+        let fs = LocalFs;
+        let small = t.path().join("notes.md");
+        std::fs::write(&small, "# Notes\n").unwrap();
+        let p = preview(&fs, &small).await.unwrap();
+        assert_eq!(
+            p.body,
+            PreviewBody::Text {
+                text: "# Notes\n".into(),
+                truncated: false
+            }
+        );
+        // A long log: the first bytes only, cut before a split character.
+        let log = t.path().join("app.log");
+        let mut long = "a".repeat(PREVIEW_TEXT_BYTES as usize - 1);
+        long.push_str("éééé");
+        std::fs::write(&log, &long).unwrap();
+        let p = preview(&fs, &log).await.unwrap();
+        let PreviewBody::Text { text, truncated } = p.body else {
+            panic!("not text");
+        };
+        assert!(truncated);
+        assert_eq!(text.len(), PREVIEW_TEXT_BYTES as usize - 1);
+        assert_eq!(p.size, long.len() as u64);
+        // An image larger than the text limit is read whole.
+        let png = t.path().join("logo.png");
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        bytes.resize(100_000, 7);
+        std::fs::write(&png, &bytes).unwrap();
+        let PreviewBody::Image(b) = preview(&fs, &png).await.unwrap().body else {
+            panic!("not an image");
+        };
+        assert_eq!(b.0.len(), 100_000);
+        let svg = t.path().join("icon.svg");
+        std::fs::write(&svg, "<svg xmlns='http://www.w3.org/2000/svg'/>").unwrap();
+        assert!(matches!(
+            preview(&fs, &svg).await.unwrap().body,
+            PreviewBody::Image(_)
+        ));
+        // Anything else: a few bytes for the hex view.
+        let bin = t.path().join("data.bin");
+        std::fs::write(&bin, vec![0u8; 10_000]).unwrap();
+        let PreviewBody::Binary(b) = preview(&fs, &bin).await.unwrap().body else {
+            panic!("not binary");
+        };
+        assert_eq!(b.0.len(), PREVIEW_HEX_BYTES);
+        assert!(preview(&fs, t.path()).await.is_err());
     }
 }

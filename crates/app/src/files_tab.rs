@@ -28,6 +28,7 @@
 mod kinds;
 mod menu;
 mod places;
+mod preview;
 mod view;
 
 use std::cell::RefCell;
@@ -124,6 +125,12 @@ struct FilesSettings {
     /// Hide the places column.
     #[serde(default)]
     hide_places: bool,
+    /// Hide the preview pane.
+    #[serde(default)]
+    hide_preview: bool,
+    /// Width of the preview pane (100 % design units).
+    #[serde(default)]
+    preview_width: Option<f32>,
 }
 
 /// Files being dragged from one pane.
@@ -472,6 +479,18 @@ pub struct FilesTab {
     saves: bool,
     /// Bumped per keystroke in a search box: only the last one starts a search.
     search_ticket: u64,
+    /// Show the preview pane beside the list (one pane only).
+    show_preview: bool,
+    /// The file it shows.
+    preview: Option<preview::Preview>,
+    preview_width: f32,
+    /// Resizing it: where the drag started and the width then.
+    preview_drag: Option<(f32, f32)>,
+    /// Bumped per selection change: only the last one reads its file.
+    preview_ticket: u64,
+    preview_scroll: gpui_kit::UniformListScrollHandle,
+    /// Width of the row holding places, panes and preview (pixels), measured each frame.
+    body_width: Rc<std::cell::Cell<f32>>,
     _live: gpui_kit::Task<()>,
 }
 
@@ -583,6 +602,13 @@ impl FilesTab {
             layout: Layout::Single,
             saves: true,
             search_ticket: 0,
+            show_preview: true,
+            preview: None,
+            preview_width: preview::PREVIEW_WIDTH,
+            preview_drag: None,
+            preview_ticket: 0,
+            preview_scroll: Default::default(),
+            body_width: Rc::default(),
             _live: live,
         };
         this.list(0, None, cx);
@@ -693,6 +719,9 @@ impl FilesTab {
             pinned: self.pinned.clone(),
             show_hidden: self.panes[0].show_hidden,
             hide_places: !self.show_places,
+            hide_preview: !self.show_preview,
+            preview_width: (self.preview_width != preview::PREVIEW_WIDTH)
+                .then_some(self.preview_width.round()),
         }
     }
 
@@ -712,6 +741,10 @@ impl FilesTab {
         self.pinned = s.pinned;
         if self.layout != Layout::Sidebar {
             self.show_places = !s.hide_places;
+            self.show_preview = !s.hide_preview;
+            if let Some(w) = s.preview_width {
+                self.preview_width = w.max(preview::PREVIEW_MIN);
+            }
             self.set_layout(if s.dual { Layout::Dual } else { Layout::Single }, cx);
             for pane in &mut self.panes {
                 pane.show_hidden = s.show_hidden;
@@ -1184,6 +1217,7 @@ impl FilesTab {
                     Err(e) => f.error = Some(e.clone()),
                 }
             }
+            Event::FilePreview { .. } => self.on_preview(ev),
             Event::Setting { key, value } if key == FILES_SETTINGS_KEY => {
                 let s = value
                     .clone()
@@ -1974,6 +2008,7 @@ impl FilesTab {
             "`" if m.secondary() && self.panes[ix].has_shell() => self.run_here(ix, None, cx),
             "f" if m.secondary() => self.focus_search(ix, window, cx),
             "l" if m.secondary() => self.open_goto(ix, window, cx),
+            "p" if m.alt && self.layout == Layout::Single => self.toggle_preview(cx),
             k if !m.secondary() && !m.alt && !m.control && k.chars().count() == 1 => {
                 let Some(c) = k.chars().next().filter(|c| c.is_alphanumeric()) else {
                     return false;
@@ -2030,6 +2065,8 @@ impl Render for FilesTab {
         let menu = self.render_menu(&p, cx);
         let code_menu = self.render_code_menu(&p, cx);
         let properties = self.render_properties(&p, cx);
+        self.sync_preview(cx);
+        let preview = self.render_preview(&p, cx);
         div()
             .key_context("FilesTab")
             .track_focus(&self.focus)
@@ -2064,6 +2101,32 @@ impl Render for FilesTab {
                     }
                 }
             }))
+            .on_mouse_move(cx.listener(|this, ev: &gpui_kit::MouseMoveEvent, w, cx| {
+                let Some((x0, w0)) = this.preview_drag else {
+                    return;
+                };
+                if ev.pressed_button == Some(gpui_kit::MouseButton::Left) {
+                    // Widths are in 100 % design units (drawn with `rpx`).
+                    let z = crate::appearance::zoom(cx);
+                    let x: f32 = ev.position.x.into();
+                    let max = this.preview_max(cx).unwrap_or_else(|| {
+                        (f32::from(w.bounds().size.width) / z - 360.).max(preview::PREVIEW_MIN)
+                    });
+                    this.preview_width = (w0 - (x - x0) / z).clamp(preview::PREVIEW_MIN, max);
+                    cx.notify();
+                } else {
+                    this.preview_drag = None;
+                    this.save_settings();
+                }
+            }))
+            .on_mouse_up(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, _, _, _| {
+                    if this.preview_drag.take().is_some() {
+                        this.save_settings();
+                    }
+                }),
+            )
             .relative()
             .size_full()
             .flex()
@@ -2102,8 +2165,26 @@ impl Render for FilesTab {
                     .min_h_0()
                     .flex()
                     .children(places)
+                    .relative()
                     .child(left)
-                    .children(right),
+                    .children(right)
+                    .children(preview)
+                    .child({
+                        let cell = self.body_width.clone();
+                        gpui_kit::canvas(
+                            move |b, window, _| {
+                                let w = f32::from(b.size.width);
+                                // The preview's width depends on it: draw again when it changes.
+                                if (cell.get() - w).abs() > 0.5 {
+                                    cell.set(w);
+                                    window.refresh();
+                                }
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .size_full()
+                    }),
             )
             .children(drawer)
             .children(menu)
@@ -2227,6 +2308,8 @@ mod tests {
             pinned: vec!["/srv".into()],
             show_hidden: true,
             hide_places: false,
+            hide_preview: true,
+            preview_width: Some(420.),
         };
         let back: FilesSettings =
             serde_json::from_value(serde_json::to_value(&s).unwrap_or_default())

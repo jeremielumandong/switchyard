@@ -1068,6 +1068,13 @@ impl Workspace {
                 }
             }
             Event::Workspace(w) => self.restore(w, window, cx),
+            Event::FilePreview { .. } => {
+                for t in &self.tabs {
+                    if let Tab::Files(f) = t {
+                        f.update(cx, |f, cx| f.on_event(&ev, cx));
+                    }
+                }
+            }
             Event::FsListing { .. }
             | Event::FileSearchHits { .. }
             | Event::FileSearchDone { .. }
