@@ -133,3 +133,26 @@ software adapter (WARP). `crates/gpui_windows` is copied unchanged from gpui-fas
 - 2026-10-17: `rendering_policy.rs` is no longer Windows-only (Switchyard enables it on
   Linux CPU Vulkan drivers too), and low-power mode also skips the high-rate-input
   keepalive presents on other platforms. The Windows 30 Hz frame thread is unchanged.
+
+## Windows on-demand frames (Switchyard, 2026-10-24)
+
+Ported from gpui-fast PR #84 (merged as `124f79b`, "fast: schedule Windows frames on
+demand", based on `91f60ec`) onto the vendored `crates/gpui_windows` (`598306f` plus the
+software rendering patch above). Only that PR's `crates/gpui_windows` diff is taken; the
+rest of the gpui-fast tree stays at `598306f`. The diff applied cleanly except for
+`fast/mod.rs`, whose module list here lacks `class_names` and `rounded_clip` (added
+upstream after `598306f`); the three new modules were added by hand.
+
+- `fast/frame_schedule.rs` (new): per-window frame demand. The vsync thread waits until a
+  window asks for a frame and only invalidates windows that asked; input, presentation,
+  deferred paints, resize and `schedule_frame` / `frame_waker` (already in the vendored
+  `gpui` `PlatformWindow` trait) re-arm it. Idle windows no longer repaint every vsync.
+- `fast/device_wake.rs` (new): keeps device-loss detection running while the vsync
+  thread is paused.
+- `direct_manipulation.rs`: active touchpad gestures keep requesting frames.
+- `events.rs`, `platform.rs`, `window.rs`, `directx_renderer.rs`: the hooks forwarding to
+  those modules. `fast/native_tests.rs` (new, `#[cfg(test)]`) and the `serde_json`
+  dev-dependency are the PR's native Windows tests.
+- Not taken: `gpui_perf`'s `windows_idle_frames` example and the benchmark notes.
+- With low-power pacing a skipped draw leaves the window dirty, and `gpui`'s frame loop
+  calls `schedule_frame` while it stays dirty, so pacing keeps working with demand frames.

@@ -1410,6 +1410,11 @@ Exit: every performance budget passes on all three platforms; signed builds publ
 
 ## Follow-ups
 
+- GPUI Fast: only PR #84's `gpui_windows` diff (on-demand Windows frames) is ported onto the
+  vendored `598306f` stack; the other 60-odd upstream commits up to `124f79b` (incl. #83,
+  text measured in prepaint) wait for a full re-copy from AgentOpsChat. Its native Windows
+  tests (`fast/native_tests.rs`) were type-checked from Linux, not run.
+
 - SQL editor: "Count rows" for a result (`SELECT COUNT(*)` around the statement, per
   dialect); DBeaver-style `@set` / `${var}` client variables; run options and Max rows
   saved per connection (today per tab, reset on restart); opening `.sql` files from the
