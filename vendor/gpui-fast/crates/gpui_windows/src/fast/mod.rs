@@ -8,7 +8,11 @@
 //! topic.
 
 pub(crate) mod composition;
+pub(crate) mod device_wake;
 pub(crate) mod draw_state;
 pub(crate) mod frame;
+pub(crate) mod frame_schedule;
 pub(crate) mod globals;
 pub(crate) mod layers;
+#[cfg(test)]
+pub(crate) mod native_tests;

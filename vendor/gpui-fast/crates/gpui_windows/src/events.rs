@@ -37,6 +37,7 @@ const SIZE_MOVE_LOOP_TIMER_ID: usize = 1;
 /// because the coordination is inherently cross-window: while window A is
 /// drawing, a re-entrant paint request for window B must be deferred.
 pub(crate) struct DrawCoordinator {
+    pub(crate) fast_frame_wake: std::sync::Arc<crate::fast::frame_schedule::FrameWake>,
     /// Whether some window is currently inside `draw_window`. Win32 can
     /// re-enter the window procedure while a draw is in progress (e.g.
     /// cross-thread `SendMessage` dispatch during message pumping, or modal
@@ -49,6 +50,7 @@ pub(crate) struct DrawCoordinator {
 impl DrawCoordinator {
     pub(crate) fn new() -> Self {
         Self {
+            fast_frame_wake: Default::default(),
             drawing: Cell::new(false),
         }
     }
@@ -285,6 +287,7 @@ impl WindowsWindowInner {
             self.state
                 .invalidate_devices
                 .store(true, std::sync::atomic::Ordering::Release);
+            crate::fast::frame_schedule::FrameRequest::request(&self.state.fast_frame_request);
         }
         if let Some(mut callback) = self.state.callbacks.resize.take() {
             callback(new_logical_size, scale_factor);
@@ -1318,6 +1321,8 @@ impl WindowsWindowInner {
         // between) is treated as a forced render so it both clears
         // `skip_draws` and bypasses the view cache.
         self.state.force_render_pending.set(true);
+        #[cfg(test)]
+        crate::fast::native_tests::recovered();
         Some(0)
     }
 
@@ -1333,16 +1338,13 @@ impl WindowsWindowInner {
             if force_render {
                 self.state.force_render_pending.set(true);
             }
-            // Validate the region so a nested message pump doesn't keep
-            // re-dispatching WM_PAINT for the still-invalid region in a busy
-            // loop until the in-progress draw unwinds. The vsync thread
-            // re-invalidates every window on each vsync (see
-            // `begin_vsync_thread`), so the deferred frame still gets drawn,
-            // at most one vsync late.
-            unsafe { ValidateRect(Some(handle), None).ok().log_err() };
+            crate::fast::frame_schedule::defer_draw(self, handle);
             return Some(0);
         };
         let mut request_frame = self.state.callbacks.request_frame.take()?;
+        crate::fast::frame_schedule::validate_current_paint(handle);
+        #[cfg(test)]
+        crate::fast::native_tests::paint_started(handle);
 
         self.state.direct_manipulation.update();
 
@@ -1375,7 +1377,8 @@ impl WindowsWindowInner {
 
         self.state.callbacks.request_frame.set(Some(request_frame));
         self.update_ime_enabled(handle);
-        unsafe { ValidateRect(Some(handle), None).ok().log_err() };
+        #[cfg(test)]
+        crate::fast::native_tests::paint_done(handle);
 
         Some(0)
     }
