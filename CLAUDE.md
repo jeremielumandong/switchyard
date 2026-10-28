@@ -374,6 +374,10 @@ Cold start < 500 ms · editor keystroke-to-frame < 8 ms · first rows visible < 
   fills the window with the theme background; the main window's root is made transparent
   (`rendering::skip_root_background`) and the workspace's fill is the center's background,
   so don't add another window- or center-sized `.bg(..)` that repeats it.
+- gpui-base's `Root` binds Tab / Shift+Tab to focus-next / focus-prev and (not macOS)
+  Ctrl+C to copying the window's text selection. Key bindings fire before `on_key_down`,
+  so a view that takes raw keys (the terminal) binds those keys to `NoAction` in its own
+  context, or Tab moves focus out of it.
 - gpui-base's `Input` binds Ctrl+. (code actions), ⇧⌘F (Replace on macOS) and other keys
   in its own context, which beats app bindings without one while an editor has focus.
   SQL tab shortcuts are bound on `SqlTab > Input` (`actions.rs`), registered after the
