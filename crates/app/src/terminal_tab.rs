@@ -821,6 +821,21 @@ impl TerminalTab {
         }
     }
 
+    /// Copy the selection and clear it, as Ctrl+C does in Windows Terminal. False when
+    /// nothing is selected.
+    fn copy_selection(&mut self, ix: usize, cx: &mut Context<Self>) -> bool {
+        let Some(t) = self.panes.get(ix).and_then(|p| p.terminal.as_ref()) else {
+            return false;
+        };
+        let Some(text) = t.selection_text() else {
+            return false;
+        };
+        t.clear_selection();
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        cx.notify();
+        true
+    }
+
     fn paste(&mut self, ix: usize, cx: &mut Context<Self>) {
         let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) else {
             return;
@@ -1197,6 +1212,22 @@ impl TerminalTab {
         }
         if m.platform {
             return;
+        }
+        // Windows Terminal's keys: Ctrl+C copies a selection (and interrupts without
+        // one), Ctrl+V pastes.
+        if cfg!(target_os = "windows") && m.control && !m.shift && !m.alt {
+            match ks.key.as_str() {
+                "c" if self.copy_selection(ix, cx) => {
+                    cx.stop_propagation();
+                    return;
+                }
+                "v" => {
+                    self.paste(ix, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                _ => {}
+            }
         }
         let key = match ks.key.as_str() {
             "enter" => Key::Enter,

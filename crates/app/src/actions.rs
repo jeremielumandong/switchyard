@@ -188,10 +188,23 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(k("cmd-v", "ctrl-shift-v"), TermPaste, Some("Terminal")),
         KeyBinding::new(k("cmd-f", "ctrl-shift-f"), TermFind, Some("Terminal")),
         KeyBinding::new(k("cmd-d", "ctrl-shift-d"), TermSplit, Some("Terminal")),
+        // Tab is the shell's (completion), not gpui-base's focus-next on `Root`.
+        KeyBinding::new("tab", gpui_kit::NoAction, Some("Terminal")),
+        KeyBinding::new("shift-tab", gpui_kit::NoAction, Some("Terminal")),
     ]);
     if !mac {
+        // Ctrl+Insert / Shift+Insert: the classic copy and paste keys, and what
+        // Omarchy's universal Super+C / Super+V send.
+        cx.bind_keys([
+            KeyBinding::new("ctrl-insert", TermCopy, Some("Terminal")),
+            KeyBinding::new("shift-insert", TermPaste, Some("Terminal")),
+        ]);
+        // Ctrl+C included: the terminal's key handler copies a selection (Windows) or
+        // interrupts, instead of `Root` copying the window's text selection.
         cx.bind_keys(
             [
+                "ctrl-c",
+                "ctrl-v",
                 "ctrl-p",
                 "ctrl-k",
                 "ctrl-n",
